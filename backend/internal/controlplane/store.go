@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"sort"
 	"sync"
@@ -12,10 +14,23 @@ var (
 	ErrInvalid  = errors.New("invalid input")
 )
 
-type Store struct {
+type Store interface {
+	UpsertWorkflow(Workflow) error
+	UpsertTrigger(Trigger) error
+	ListWorkflows() []Workflow
+	ListTriggers() []Trigger
+	Trigger(string) (Trigger, bool)
+	CreateRun(CreateRunInput) (Run, error)
+	StartRun(string) (Run, error)
+	FinishRun(string, RunStatus, string) (Run, error)
+	AddEvent(string, string, string) (RunEvent, error)
+	ListRuns() []Run
+	RunDetail(string) (RunDetail, error)
+}
+
+type MemoryStore struct {
 	mu        sync.RWMutex
 	now       func() time.Time
-	seq       int64
 	workflows map[string]Workflow
 	triggers  map[string]Trigger
 	runs      map[string]Run
@@ -23,11 +38,11 @@ type Store struct {
 	artifacts map[string][]Artifact
 }
 
-func NewStore(now func() time.Time) *Store {
+func NewStore(now func() time.Time) *MemoryStore {
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{
+	return &MemoryStore{
 		now:       now,
 		workflows: map[string]Workflow{},
 		triggers:  map[string]Trigger{},
@@ -37,12 +52,15 @@ func NewStore(now func() time.Time) *Store {
 	}
 }
 
-func (s *Store) nextID(prefix string) string {
-	s.seq++
-	return prefix + "-" + time.Unix(0, s.seq).UTC().Format("150405.000000000")
+func newID(prefix string) string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return prefix + "-" + time.Now().UTC().Format("20060102150405.000000000")
+	}
+	return prefix + "-" + hex.EncodeToString(b[:])
 }
 
-func (s *Store) UpsertWorkflow(w Workflow) error {
+func (s *MemoryStore) UpsertWorkflow(w Workflow) error {
 	if w.ID == "" || w.Kind == "" || w.Name == "" {
 		return ErrInvalid
 	}
@@ -52,7 +70,7 @@ func (s *Store) UpsertWorkflow(w Workflow) error {
 	return nil
 }
 
-func (s *Store) UpsertTrigger(t Trigger) error {
+func (s *MemoryStore) UpsertTrigger(t Trigger) error {
 	if t.ID == "" || t.WorkflowID == "" || t.Type == "" || t.Name == "" {
 		return ErrInvalid
 	}
@@ -65,7 +83,7 @@ func (s *Store) UpsertTrigger(t Trigger) error {
 	return nil
 }
 
-func (s *Store) ListWorkflows() []Workflow {
+func (s *MemoryStore) ListWorkflows() []Workflow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Workflow, 0, len(s.workflows))
@@ -76,7 +94,7 @@ func (s *Store) ListWorkflows() []Workflow {
 	return out
 }
 
-func (s *Store) ListTriggers() []Trigger {
+func (s *MemoryStore) ListTriggers() []Trigger {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Trigger, 0, len(s.triggers))
@@ -87,14 +105,14 @@ func (s *Store) ListTriggers() []Trigger {
 	return out
 }
 
-func (s *Store) Trigger(id string) (Trigger, bool) {
+func (s *MemoryStore) Trigger(id string) (Trigger, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	t, ok := s.triggers[id]
 	return t, ok
 }
 
-func (s *Store) CreateRun(input CreateRunInput) (Run, error) {
+func (s *MemoryStore) CreateRun(input CreateRunInput) (Run, error) {
 	if input.WorkflowID == "" {
 		return Run{}, ErrInvalid
 	}
@@ -109,13 +127,13 @@ func (s *Store) CreateRun(input CreateRunInput) (Run, error) {
 		}
 	}
 	now := s.now().UTC()
-	r := Run{ID: s.nextID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now}
+	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now}
 	s.runs[r.ID] = r
-	s.events[r.ID] = append(s.events[r.ID], RunEvent{ID: s.nextID("evt"), RunID: r.ID, Type: "run.created", Message: "Run queued", CreatedAt: now})
+	s.events[r.ID] = append(s.events[r.ID], RunEvent{ID: newID("evt"), RunID: r.ID, Type: "run.created", Message: "Run queued", CreatedAt: now})
 	return r, nil
 }
 
-func (s *Store) StartRun(id string) (Run, error) {
+func (s *MemoryStore) StartRun(id string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.runs[id]
@@ -126,11 +144,11 @@ func (s *Store) StartRun(id string) (Run, error) {
 	r.Status = RunRunning
 	r.StartedAt = &now
 	s.runs[id] = r
-	s.events[id] = append(s.events[id], RunEvent{ID: s.nextID("evt"), RunID: id, Type: "run.started", Message: "Run started", CreatedAt: now})
+	s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run.started", Message: "Run started", CreatedAt: now})
 	return r, nil
 }
 
-func (s *Store) FinishRun(id string, status RunStatus, summary string) (Run, error) {
+func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.runs[id]
@@ -142,22 +160,22 @@ func (s *Store) FinishRun(id string, status RunStatus, summary string) (Run, err
 	r.FinishedAt = &now
 	r.Summary = summary
 	s.runs[id] = r
-	s.events[id] = append(s.events[id], RunEvent{ID: s.nextID("evt"), RunID: id, Type: "run." + string(status), Message: summary, CreatedAt: now})
+	s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run." + string(status), Message: summary, CreatedAt: now})
 	return r, nil
 }
 
-func (s *Store) AddEvent(runID, typ, message string) (RunEvent, error) {
+func (s *MemoryStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.runs[runID]; !ok {
 		return RunEvent{}, ErrNotFound
 	}
-	e := RunEvent{ID: s.nextID("evt"), RunID: runID, Type: typ, Message: message, CreatedAt: s.now().UTC()}
+	e := RunEvent{ID: newID("evt"), RunID: runID, Type: typ, Message: message, CreatedAt: s.now().UTC()}
 	s.events[runID] = append(s.events[runID], e)
 	return e, nil
 }
 
-func (s *Store) ListRuns() []Run {
+func (s *MemoryStore) ListRuns() []Run {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Run, 0, len(s.runs))
@@ -168,7 +186,7 @@ func (s *Store) ListRuns() []Run {
 	return out
 }
 
-func (s *Store) RunDetail(id string) (RunDetail, error) {
+func (s *MemoryStore) RunDetail(id string) (RunDetail, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.runs[id]

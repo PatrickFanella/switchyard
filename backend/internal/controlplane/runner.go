@@ -3,10 +3,10 @@ package controlplane
 import "context"
 
 type Runner struct {
-	store *Store
+	store Store
 }
 
-func NewRunner(store *Store) *Runner {
+func NewRunner(store Store) *Runner {
 	return &Runner{store: store}
 }
 

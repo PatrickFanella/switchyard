@@ -1,6 +1,6 @@
 package controlplane
 
-func SeedDefaults(store *Store) error {
+func SeedDefaults(store Store) error {
 	workflows := []Workflow{
 		{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot", Description: "Gitea issue selection, branch/PR policy, and agent run workflow.", Owns: []string{"gitea labels", "branches", "pull requests"}, Uses: []string{"llama-line", "ocq", "blacktower"}, Status: "planned"},
 		{ID: "changemaker", Kind: WorkflowChangemaker, Name: "Changemaker", Description: "Timed activity summarization and publication workflow.", Owns: []string{"change windows", "post generation", "publishing"}, Uses: []string{"llama-line"}, Status: "wrapped"},

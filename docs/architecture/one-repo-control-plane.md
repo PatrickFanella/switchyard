@@ -33,7 +33,7 @@ Switchyard UI
 
 ## Current MVP
 
-The initial backend is intentionally in-memory. It establishes the suite shape without prematurely committing to storage or deep service rewrites:
+The backend has durable Postgres storage when `DATABASE_URL` is configured and an in-memory fallback for local development without a database. It establishes the suite shape without prematurely committing to deep service rewrites:
 
 - `GET /healthz`
 - `GET /api/workflows`

@@ -8,11 +8,11 @@ import (
 )
 
 type API struct {
-	store  *Store
+	store  Store
 	runner *Runner
 }
 
-func NewAPI(store *Store, runner *Runner) *API {
+func NewAPI(store Store, runner *Runner) *API {
 	return &API{store: store, runner: runner}
 }
 

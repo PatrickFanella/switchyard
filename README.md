@@ -20,9 +20,15 @@ make docker-up        # start the local stack
 make docker-down      # stop the local stack
 ```
 
+## Control-plane storage
+
+The API uses Postgres when `DATABASE_URL` is set and runs embedded migrations on startup. Without `DATABASE_URL`, it falls back to in-memory storage for local UI/API development.
+
+The Docker Compose stack sets `DATABASE_URL` for the API service.
+
 ## Control-plane MVP
 
-The backend exposes an in-memory workflow/run API:
+The backend exposes a workflow/run API:
 
 - `GET /healthz`
 - `GET /api/workflows`
