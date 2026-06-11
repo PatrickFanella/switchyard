@@ -1,3 +1,3 @@
-module git.subcult.tv/subculture-collective/project-template-go-vite-react-ts-postgres-docker
+module git.subcult.tv/PatrickFanella/switchyard
 
 go 1.26

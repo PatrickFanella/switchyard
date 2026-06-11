@@ -1,8 +1,6 @@
-# Go + Vite React TypeScript + Postgres + Docker Template
+# Switchyard
 
-Full-stack template with Go backend, Vite React TypeScript Tailwind frontend, Postgres, Docker Compose, and Open Pilot conventions.
-
-Created from `subculture-collective/project-template`.
+Switchyard is a Go backend and Vite React TypeScript workspace with Postgres, Docker Compose, and Open Pilot conventions.
 
 ## Quick start
 
@@ -12,11 +10,11 @@ make verify
 
 ## Open Pilot
 
-This repository keeps the base Open Pilot issue template and PR template.
-Bootstrap labels after creating a repo from this template:
+This repository keeps the Open Pilot issue template and PR template.
+Bootstrap labels after creating or moving the repository:
 
 ```bash
-open-pilot labels bootstrap subculture-collective/project-template-go-vite-react-ts-postgres-docker
+open-pilot labels bootstrap PatrickFanella/switchyard
 ```
 
 ## License

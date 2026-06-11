@@ -15,6 +15,12 @@ id_ed25519
 .opencode/
 opencode-data/
 
+# Reference service checkouts copied into this repo for local analysis
+blacktower/
+changemaker/
+llama-line/
+ocq/
+
 # OS / editors
 .DS_Store
 Thumbs.db

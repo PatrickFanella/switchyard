@@ -1,8 +1,8 @@
 # Stack Reference
 
-Template: `project-template-go-vite-react-ts-postgres-docker`
+Project: `switchyard`
 
-Full-stack template with Go backend, Vite React TypeScript Tailwind frontend, Postgres, Docker Compose, and Open Pilot conventions.
+Full-stack project with Go backend, Vite React TypeScript Tailwind frontend, Postgres, Docker Compose, and Open Pilot conventions.
 
 The canonical verification command is:
 

@@ -1,5 +1,5 @@
 {
-  "name": "@subculture/project-template-go-vite-react-ts-postgres-docker-web",
+  "name": "@subculture/switchyard-web",
   "version": "0.1.0",
   "private": false,
   "type": "module",

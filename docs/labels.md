@@ -1,6 +1,6 @@
 # Labels
 
-This template is Open Pilot-ready after labels are bootstrapped:
+Switchyard is Open Pilot-ready after labels are bootstrapped:
 
 ```bash
 open-pilot labels bootstrap OWNER/REPO
@@ -31,7 +31,7 @@ open-pilot labels bootstrap OWNER/REPO
 ## Normal Open Pilot flow
 
 1. Human writes an issue using the Open Pilot task template.
-2. Template adds `ready-for-agent`.
+2. The issue template adds `ready-for-agent`.
 3. Human confirms scope and test command.
 4. Human adds `agent:queued`.
 5. Open Pilot implements the issue and opens a PR.

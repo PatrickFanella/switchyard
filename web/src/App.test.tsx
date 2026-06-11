@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import App from './App';
 
 describe('App', () => {
-  it('renders the template heading', () => {
-expect(renderToString(<App />)).toContain('Vite React TypeScript');
+  it('renders the Switchyard heading', () => {
+expect(renderToString(<App />)).toContain('Route work through the right lane');
   });
 });

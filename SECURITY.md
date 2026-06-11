@@ -2,9 +2,9 @@
 
 ## Supported scope
 
-This repository is a public base template. Security work here focuses on safe defaults, secret hygiene, and guidance for derived projects.
+This repository is the Switchyard project. Security work here focuses on safe defaults, secret hygiene, and project-specific guidance.
 
-Derived repositories should add stack-specific security policy details before production use.
+Add stack-specific security policy details before production use.
 
 ## Reporting a vulnerability
 
@@ -35,7 +35,7 @@ Use placeholders in docs and examples. Report only secret key names and presence
 
 ## Dependency and supply-chain hygiene
 
-Derived templates should:
+Switchyard should:
 
 - commit lockfiles for application projects when the stack expects them
 - pin container base images deliberately

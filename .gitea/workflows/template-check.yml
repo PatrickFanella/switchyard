@@ -1,4 +1,4 @@
-name: template-check
+name: switchyard-check
 
 on:
   push:
@@ -9,5 +9,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify template baseline
+      - name: Verify Switchyard baseline
         run: make verify

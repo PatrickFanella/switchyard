@@ -1,10 +1,10 @@
 # Agent Instructions
 
-This repository is a Go full-stack with Vite React TypeScript, Postgres, and Docker template derived from `subculture-collective/project-template`.
+This repository is Switchyard, a Go full-stack project with Vite React TypeScript, Postgres, Docker, and Open Pilot conventions.
 
 ## Priorities
 
-1. Keep the template runnable and minimal.
+1. Keep Switchyard runnable and minimal.
 2. Preserve Open Pilot issue and PR templates.
 3. Keep generated caches, secrets, and local data out of git.
 4. Update this file and `README.md` when stack conventions change.
