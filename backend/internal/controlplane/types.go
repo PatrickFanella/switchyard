@@ -39,6 +39,9 @@ type Trigger struct {
 	Schedule    string            `json:"schedule,omitempty"`
 	Inputs      map[string]string `json:"inputs,omitempty"`
 	NextRunAt   *time.Time        `json:"next_run_at,omitempty"`
+	LastRunAt   *time.Time        `json:"last_run_at,omitempty"`
+	UpdatedAt   *time.Time        `json:"updated_at,omitempty"`
+	LastError   string            `json:"last_error,omitempty"`
 }
 
 type RunStatus string

@@ -63,11 +63,12 @@ func (s *PostgresStore) UpsertTrigger(t Trigger) error {
 	if err != nil {
 		return err
 	}
+	now := s.now().UTC()
 	_, err = s.db.ExecContext(context.Background(), `
-		insert into triggers(id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at)
-		values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
-		on conflict(id) do update set workflow_id=excluded.workflow_id, type=excluded.type, name=excluded.name, description=excluded.description, enabled=excluded.enabled, schedule=excluded.schedule, inputs=excluded.inputs, next_run_at=excluded.next_run_at`,
-		t.ID, t.WorkflowID, t.Type, t.Name, t.Description, t.Enabled, t.Schedule, string(inputs), t.NextRunAt)
+		insert into triggers(id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at, last_run_at, updated_at, last_error)
+		values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12)
+		on conflict(id) do update set workflow_id=excluded.workflow_id, type=excluded.type, name=excluded.name, description=excluded.description, schedule=excluded.schedule, inputs=excluded.inputs, updated_at=excluded.updated_at`,
+		t.ID, t.WorkflowID, t.Type, t.Name, t.Description, t.Enabled, t.Schedule, string(inputs), t.NextRunAt, t.LastRunAt, now, t.LastError)
 	return mapPgErr(err)
 }
 
@@ -91,7 +92,7 @@ func (s *PostgresStore) ListWorkflows() []Workflow {
 }
 
 func (s *PostgresStore) ListTriggers() []Trigger {
-	rows, err := s.db.QueryContext(context.Background(), `select id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at from triggers order by id`)
+	rows, err := s.db.QueryContext(context.Background(), `select id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at, last_run_at, updated_at, last_error from triggers order by id`)
 	if err != nil {
 		return nil
 	}
@@ -106,9 +107,23 @@ func (s *PostgresStore) ListTriggers() []Trigger {
 }
 
 func (s *PostgresStore) Trigger(id string) (Trigger, bool) {
-	row := s.db.QueryRowContext(context.Background(), `select id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at from triggers where id=$1`, id)
+	row := s.db.QueryRowContext(context.Background(), `select id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at, last_run_at, updated_at, last_error from triggers where id=$1`, id)
 	t, err := scanTriggerRow(row)
 	return t, err == nil
+}
+
+func (s *PostgresStore) SetTriggerEnabled(id string, enabled bool) (Trigger, error) {
+	now := s.now().UTC()
+	row := s.db.QueryRowContext(context.Background(), `update triggers set enabled=$2, updated_at=$3 where id=$1 returning id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at, last_run_at, updated_at, last_error`, id, enabled, now)
+	t, err := scanTriggerRow(row)
+	return t, mapScanErr(err)
+}
+
+func (s *PostgresStore) UpdateTriggerScheduleState(id string, lastRunAt *time.Time, nextRunAt *time.Time, lastError string) (Trigger, error) {
+	now := s.now().UTC()
+	row := s.db.QueryRowContext(context.Background(), `update triggers set last_run_at=coalesce($2,last_run_at), next_run_at=coalesce($3,next_run_at), last_error=$4, updated_at=$5 where id=$1 returning id, workflow_id, type, name, description, enabled, schedule, inputs, next_run_at, last_run_at, updated_at, last_error`, id, lastRunAt, nextRunAt, lastError, now)
+	t, err := scanTriggerRow(row)
+	return t, mapScanErr(err)
 }
 
 func (s *PostgresStore) CreateRun(input CreateRunInput) (Run, error) {
@@ -247,12 +262,18 @@ func scanTrigger(rows *sql.Rows) (Trigger, bool) {
 func scanTriggerRow(row scanner) (Trigger, error) {
 	var t Trigger
 	var inputs []byte
-	var next sql.NullTime
-	if err := row.Scan(&t.ID, &t.WorkflowID, &t.Type, &t.Name, &t.Description, &t.Enabled, &t.Schedule, &inputs, &next); err != nil {
+	var next, last, updated sql.NullTime
+	if err := row.Scan(&t.ID, &t.WorkflowID, &t.Type, &t.Name, &t.Description, &t.Enabled, &t.Schedule, &inputs, &next, &last, &updated, &t.LastError); err != nil {
 		return Trigger{}, err
 	}
 	if next.Valid {
 		t.NextRunAt = &next.Time
+	}
+	if last.Valid {
+		t.LastRunAt = &last.Time
+	}
+	if updated.Valid {
+		t.UpdatedAt = &updated.Time
 	}
 	_ = json.Unmarshal(inputs, &t.Inputs)
 	return t, nil

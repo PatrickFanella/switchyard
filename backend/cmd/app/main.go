@@ -40,6 +40,19 @@ func main() {
 	}
 	runner := controlplane.NewRunner(store)
 	api := controlplane.NewAPI(store, runner)
+	if os.Getenv("SWITCHYARD_SCHEDULER_ENABLED") == "1" || os.Getenv("SWITCHYARD_SCHEDULER_ENABLED") == "true" {
+		interval := time.Minute
+		if raw := os.Getenv("SWITCHYARD_SCHEDULER_INTERVAL"); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil {
+				log.Fatalf("parse SWITCHYARD_SCHEDULER_INTERVAL: %v", err)
+			}
+			interval = parsed
+		}
+		scheduler := controlplane.NewScheduler(store, runner, interval, nil)
+		scheduler.Start(context.Background())
+		log.Printf("switchyard scheduler enabled interval=%s", interval)
+	}
 
 	fmt.Println(app.Greeting("Switchyard"))
 	log.Printf("switchyard control plane listening on %s", addr)

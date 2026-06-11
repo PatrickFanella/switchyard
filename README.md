@@ -41,6 +41,8 @@ Set optional adapter probe variables to replace placeholder HUD data with live e
 - `BLACKTOWER_BASE_URL` reads Blacktower control-center `/api/snapshot`.
 - `CHANGEMAKER_BASE_URL` and optional `CHANGEMAKER_ADMIN_TOKEN` read Changemaker `/health`, `/api/posts`, and `/api/runs/status`.
 
+Set `SWITCHYARD_SCHEDULER_ENABLED=true` to enable the in-process trigger scheduler. `SWITCHYARD_SCHEDULER_INTERVAL` defaults to `1m`.
+
 Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
 
 ```bash

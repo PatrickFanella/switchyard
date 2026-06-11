@@ -20,6 +20,8 @@ type Store interface {
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger
 	Trigger(string) (Trigger, bool)
+	SetTriggerEnabled(string, bool) (Trigger, error)
+	UpdateTriggerScheduleState(string, *time.Time, *time.Time, string) (Trigger, error)
 	CreateRun(CreateRunInput) (Run, error)
 	StartRun(string) (Run, error)
 	FinishRun(string, RunStatus, string) (Run, error)
@@ -79,6 +81,10 @@ func (s *MemoryStore) UpsertTrigger(t Trigger) error {
 	if _, ok := s.workflows[t.WorkflowID]; !ok {
 		return ErrNotFound
 	}
+	now := s.now().UTC()
+	if t.UpdatedAt == nil {
+		t.UpdatedAt = &now
+	}
 	s.triggers[t.ID] = t
 	return nil
 }
@@ -110,6 +116,42 @@ func (s *MemoryStore) Trigger(id string) (Trigger, bool) {
 	defer s.mu.RUnlock()
 	t, ok := s.triggers[id]
 	return t, ok
+}
+
+func (s *MemoryStore) SetTriggerEnabled(id string, enabled bool) (Trigger, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.triggers[id]
+	if !ok {
+		return Trigger{}, ErrNotFound
+	}
+	now := s.now().UTC()
+	t.Enabled = enabled
+	t.UpdatedAt = &now
+	s.triggers[id] = t
+	return t, nil
+}
+
+func (s *MemoryStore) UpdateTriggerScheduleState(id string, lastRunAt *time.Time, nextRunAt *time.Time, lastError string) (Trigger, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.triggers[id]
+	if !ok {
+		return Trigger{}, ErrNotFound
+	}
+	now := s.now().UTC()
+	if lastRunAt != nil {
+		last := lastRunAt.UTC()
+		t.LastRunAt = &last
+	}
+	if nextRunAt != nil {
+		next := nextRunAt.UTC()
+		t.NextRunAt = &next
+	}
+	t.LastError = lastError
+	t.UpdatedAt = &now
+	s.triggers[id] = t
+	return t, nil
 }
 
 func (s *MemoryStore) CreateRun(input CreateRunInput) (Run, error) {

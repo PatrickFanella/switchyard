@@ -21,6 +21,19 @@ func TestControlPlaneMigrationDeclaresDurableTables(t *testing.T) {
 	}
 }
 
+func TestTriggerSchedulerMigrationDeclaresMetadata(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/002_trigger_scheduler.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"last_run_at", "updated_at", "last_error", "triggers_due_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("scheduler migration missing %q", field)
+		}
+	}
+}
+
 func TestPostgresStoreIntegration(t *testing.T) {
 	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
 	if databaseURL == "" {
