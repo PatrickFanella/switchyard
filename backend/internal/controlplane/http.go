@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type API struct {
@@ -170,6 +171,114 @@ func staticAdapterPayload() AdapterPayload {
 				Details: "static placeholder payload",
 			}},
 			CheckedAt: adapterSampleTime,
+		},
+		LlamaLine: AdapterLlamaLine{
+			Requests: []AdapterLlamaRequest{{
+				ID:         "llama-request-1",
+				Model:      "llama3.1",
+				Route:      "chat/completions",
+				Status:     "completed",
+				LatencyMS:  184,
+				QueueDepth: 0,
+				CreatedAt:  adapterSampleTime,
+			}},
+			Stats: AdapterLlamaStats{
+				ActiveRequests: 2,
+				QueuedRequests: 1,
+				AvgLatencyMS:   210,
+				SuccessRate:    0.98,
+			},
+			Search: []AdapterLlamaSearchResult{{
+				Query:  "operator prompts",
+				Match:  "Default Operator Prompt",
+				Source: "prompts",
+				Score:  0.93,
+			}},
+			Upstreams: []AdapterLlamaUpstream{{
+				Name:       "ollama-local",
+				URL:        "http://127.0.0.1:11434",
+				Status:     "healthy",
+				Pending:    0,
+				LastSeenAt: adapterSampleTime,
+			}},
+		},
+		OCQ: AdapterOCQ{
+			Requests: []AdapterOCQRequest{{
+				ID:        "ocq-request-1",
+				Workflow:  string(WorkflowOpenPilot),
+				Trigger:   "manual-open-pilot",
+				Status:    "running",
+				Actor:     "operator",
+				StartedAt: adapterSampleTime,
+				UpdatedAt: adapterSampleTime,
+			}},
+			Logs: []AdapterOCQLog{{
+				ID:        "ocq-log-1",
+				Level:     "info",
+				Channel:   "adapter",
+				Message:   "OCQ surface placeholder loaded",
+				CreatedAt: adapterSampleTime,
+			}},
+			Sessions: []AdapterOCQSession{{
+				ID:        "ocq-session-1",
+				Title:     "Primary Operator Session",
+				Status:    "active",
+				User:      "operator",
+				StartedAt: adapterSampleTime,
+				UpdatedAt: adapterSampleTime,
+			}},
+			Settings: AdapterOCQSettings{
+				Workspace:     "switchyard",
+				Provider:      "local",
+				RetentionDays: 7,
+				CORSAllowed:   []string{"*"},
+			},
+		},
+		Blacktower: AdapterBlacktower{
+			Tasks: []AdapterBlacktowerTask{{
+				ID:        "bt-task-1",
+				Name:      "Sync operator skills",
+				Status:    "running",
+				Owner:     "blacktower",
+				Progress:  72,
+				UpdatedAt: adapterSampleTime,
+			}},
+			Reports: []AdapterBlacktowerReport{{
+				ID:          "bt-report-1",
+				Title:       "Scheduler health summary",
+				Type:        "health",
+				Status:      "ready",
+				Findings:    []string{"queue lag within limits", "no failed tasks"},
+				GeneratedAt: adapterSampleTime,
+			}},
+			SchedulerHealth: AdapterSchedulerHealth{
+				Status:      "healthy",
+				NextRunAt:   adapterSampleTime.Add(30 * time.Minute),
+				LastTickAt:  adapterSampleTime,
+				SkewSeconds: 0,
+			},
+		},
+		Changemaker: AdapterChangemaker{
+			Posts: []AdapterChangemakerPost{{
+				ID:          "cm-post-1",
+				Title:       "Launch checklist",
+				Status:      "published",
+				Tags:        []string{"open-pilot", "release"},
+				PublishedAt: adapterSampleTime,
+			}},
+			Service: AdapterChangemakerService{
+				Name:      "changemaker",
+				Status:    "healthy",
+				Version:   "static-placeholder",
+				Healthy:   true,
+				UpdatedAt: adapterSampleTime,
+			},
+			RunControl: AdapterChangemakerRunControl{
+				Enabled:     true,
+				Mode:        "manual",
+				ActiveRunID: "run-1",
+				QueuedRuns:  1,
+			},
 		},
 	}
 }

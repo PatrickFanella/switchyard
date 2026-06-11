@@ -73,6 +73,10 @@ type AdapterPayload = {
   agents: AdapterAgent[];
   skills: AdapterSkill[];
   health: AdapterHealth;
+  llama_line: AdapterLlamaLine;
+  ocq: AdapterOCQ;
+  blacktower: AdapterBlacktower;
+  changemaker: AdapterChangemaker;
 };
 
 type AdapterQueue = {
@@ -149,6 +153,32 @@ type AdapterService = {
   details?: string;
 };
 
+type AdapterLlamaLine = {
+  requests: { id: string; model: string; route: string; status: string; latency_ms: number; queue_depth: number; created_at: string }[];
+  stats: { active_requests: number; queued_requests: number; avg_latency_ms: number; success_rate: number };
+  search: { query: string; match: string; source: string; score: number }[];
+  upstreams: { name: string; url: string; status: string; pending: number; last_seen_at: string }[];
+};
+
+type AdapterOCQ = {
+  requests: { id: string; workflow: string; trigger: string; status: string; actor: string; started_at: string; updated_at: string }[];
+  logs: { id: string; level: string; channel: string; message: string; created_at: string }[];
+  sessions: { id: string; title: string; status: string; user: string; started_at: string; updated_at: string }[];
+  settings: { workspace: string; provider: string; retention_days: number; cors_allowed: string[] };
+};
+
+type AdapterBlacktower = {
+  tasks: { id: string; name: string; status: string; owner: string; progress: number; updated_at: string }[];
+  reports: { id: string; title: string; type: string; status: string; findings: string[]; generated_at: string }[];
+  scheduler_health: { status: string; next_run_at: string; last_tick_at: string; skew_seconds: number };
+};
+
+type AdapterChangemaker = {
+  posts: { id: string; title: string; status: string; tags: string[]; published_at: string }[];
+  service: { name: string; status: string; version: string; healthy: boolean; updated_at: string };
+  run_control: { enabled: boolean; mode: string; active_run_id?: string; queued_runs: number };
+};
+
 type ViewID = 'overview' | 'queues' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 type DashboardResponse<T> = {
@@ -209,6 +239,10 @@ const emptyAdapters: AdapterPayload = {
   agents: [],
   skills: [],
   health: { status: 'unknown', services: [], checked_at: '' },
+  llama_line: { requests: [], stats: { active_requests: 0, queued_requests: 0, avg_latency_ms: 0, success_rate: 0 }, search: [], upstreams: [] },
+  ocq: { requests: [], logs: [], sessions: [], settings: { workspace: '', provider: '', retention_days: 0, cors_allowed: [] } },
+  blacktower: { tasks: [], reports: [], scheduler_health: { status: 'unknown', next_run_at: '', last_tick_at: '', skew_seconds: 0 } },
+  changemaker: { posts: [], service: { name: '', status: 'unknown', version: '', healthy: false, updated_at: '' }, run_control: { enabled: false, mode: 'manual', queued_runs: 0 } },
 };
 
 function apiPath(path: string) {
@@ -292,6 +326,31 @@ function normalizeAdapters(adapters: AdapterPayload): AdapterPayload {
     skills: arrayOrEmpty(adapters.skills),
     health: adapters.health ?? emptyAdapters.health,
     config: adapters.config ?? emptyAdapters.config,
+    llama_line: {
+      ...emptyAdapters.llama_line,
+      ...(adapters.llama_line ?? {}),
+      requests: arrayOrEmpty(adapters.llama_line?.requests),
+      search: arrayOrEmpty(adapters.llama_line?.search),
+      upstreams: arrayOrEmpty(adapters.llama_line?.upstreams),
+    },
+    ocq: {
+      ...emptyAdapters.ocq,
+      ...(adapters.ocq ?? {}),
+      requests: arrayOrEmpty(adapters.ocq?.requests),
+      logs: arrayOrEmpty(adapters.ocq?.logs),
+      sessions: arrayOrEmpty(adapters.ocq?.sessions),
+    },
+    blacktower: {
+      ...emptyAdapters.blacktower,
+      ...(adapters.blacktower ?? {}),
+      tasks: arrayOrEmpty(adapters.blacktower?.tasks),
+      reports: arrayOrEmpty(adapters.blacktower?.reports),
+    },
+    changemaker: {
+      ...emptyAdapters.changemaker,
+      ...(adapters.changemaker ?? {}),
+      posts: arrayOrEmpty(adapters.changemaker?.posts),
+    },
   };
 }
 
@@ -312,6 +371,12 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
   if (view === 'queues') {
     return (
       <FeatureFrame title="Queue cockpit" kicker="llama-line" note="Queue, upstream health, inflight work, and broker control surfaces from llama-line.">
+        <div className="mb-4 grid gap-3 md:grid-cols-4">
+          <Field label="Active" value={adapters.llama_line.stats.active_requests} />
+          <Field label="Queued" value={adapters.llama_line.stats.queued_requests} />
+          <Field label="Avg latency" value={`${adapters.llama_line.stats.avg_latency_ms}ms`} />
+          <Field label="Success" value={`${Math.round(adapters.llama_line.stats.success_rate * 100)}%`} />
+        </div>
         {adapters.queues.length === 0 ? <EmptyState>No queue adapters have reported yet.</EmptyState> : null}
         <div className="grid gap-4 lg:grid-cols-2">
           {adapters.queues.map((queue) => (
@@ -332,6 +397,37 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
             </article>
           ))}
         </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <article className="hud-panel-strong p-4">
+            <h3 className="hud-label text-[hsl(var(--signal))]">Upstreams</h3>
+            <div className="mt-4 grid gap-3">
+              {adapters.llama_line.upstreams.map((upstream) => (
+                <div key={upstream.name} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-semibold text-[hsl(var(--ink))]">{upstream.name}</span>
+                    <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(upstream.status)}`}>{upstream.status}</span>
+                  </div>
+                  <p className="mt-2 break-all text-xs text-[hsl(var(--muted))]">{upstream.url}</p>
+                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Pending {upstream.pending} · seen {formatTime(upstream.last_seen_at)}</p>
+                </div>
+              ))}
+            </div>
+          </article>
+          <article className="hud-panel-strong p-4">
+            <h3 className="hud-label text-[hsl(var(--signal))]">Recent requests</h3>
+            <div className="mt-4 grid gap-3">
+              {adapters.llama_line.requests.map((request) => (
+                <div key={request.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-semibold text-[hsl(var(--ink))]">{request.model}</span>
+                    <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
+                  </div>
+                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{request.route} · {request.latency_ms}ms · depth {request.queue_depth}</p>
+                </div>
+              ))}
+            </div>
+          </article>
+        </div>
       </FeatureFrame>
     );
   }
@@ -339,6 +435,12 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
   if (view === 'sessions') {
     return (
       <FeatureFrame title="Session console" kicker="OCQ / Blacktower" note="OpenCode/Blacktower session list, transcript targets, and future send-prompt controls.">
+        <div className="mb-4 grid gap-3 md:grid-cols-4">
+          <Field label="Workspace" value={adapters.ocq.settings.workspace || 'unknown'} />
+          <Field label="Provider" value={adapters.ocq.settings.provider || 'unknown'} />
+          <Field label="Retention" value={`${adapters.ocq.settings.retention_days}d`} />
+          <Field label="CORS" value={adapters.ocq.settings.cors_allowed.join(', ') || 'none'} />
+        </div>
         {adapters.sessions.length === 0 ? <EmptyState>No sessions have been reported yet.</EmptyState> : null}
         <div className="grid gap-3">
           {adapters.sessions.map((session) => (
@@ -359,6 +461,20 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
             </article>
           ))}
         </div>
+        <article className="hud-panel-strong mt-4 p-4">
+          <h3 className="hud-label text-[hsl(var(--signal))]">OCQ requests</h3>
+          <div className="mt-4 grid gap-3">
+            {adapters.ocq.requests.map((request) => (
+              <div key={request.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{request.workflow}</span>
+                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
+                </div>
+                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{request.trigger} · {request.actor} · updated {formatTime(request.updated_at)}</p>
+              </div>
+            ))}
+          </div>
+        </article>
       </FeatureFrame>
     );
   }
@@ -366,9 +482,23 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
   if (view === 'logs') {
     return (
       <FeatureFrame title="Logs and search" kicker="llama-line / OCQ" note="Unified request, log, audit, and semantic-search surface for all adapters.">
+        <article className="hud-panel-strong mb-4 p-4">
+          <h3 className="hud-label text-[hsl(var(--signal))]">Search hits</h3>
+          <div className="mt-4 grid gap-3">
+            {adapters.llama_line.search.map((hit) => (
+              <div key={`${hit.source}-${hit.query}`} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{hit.match}</span>
+                  <span className="hud-chip bg-[hsl(var(--pulse-soft))] px-2.5 py-1 text-[0.62rem] text-[hsl(var(--pulse))]">{Math.round(hit.score * 100)}%</span>
+                </div>
+                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{hit.query} · {hit.source}</p>
+              </div>
+            ))}
+          </div>
+        </article>
         {adapters.logs.length === 0 ? <EmptyState>No logs are available yet.</EmptyState> : null}
         <div className="grid gap-3" role="log" aria-live="polite">
-          {adapters.logs.map((log) => (
+          {[...adapters.logs, ...adapters.ocq.logs.map((log) => ({ ...log, source: `ocq:${log.channel}` }))].map((log) => (
             <article key={log.id} className="hud-panel bg-[hsl(var(--panel-strong))] px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(log.level)}`}>{log.level}</span>
@@ -385,6 +515,12 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
   if (view === 'prompts') {
     return (
       <FeatureFrame title="Prompt workbench" kicker="Changemaker" note="Editable workflow prompt inventory, variables, and future review controls.">
+        <div className="mb-4 grid gap-3 md:grid-cols-4">
+          <Field label="Run mode" value={adapters.changemaker.run_control.mode} />
+          <Field label="Run control" value={adapters.changemaker.run_control.enabled ? 'enabled' : 'disabled'} />
+          <Field label="Queued runs" value={adapters.changemaker.run_control.queued_runs} />
+          <Field label="Active run" value={adapters.changemaker.run_control.active_run_id || 'none'} />
+        </div>
         {adapters.prompts.length === 0 ? <EmptyState>No prompt templates have been reported yet.</EmptyState> : null}
         <div className="grid gap-4 lg:grid-cols-2">
           {adapters.prompts.map((prompt) => (
@@ -397,6 +533,20 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
             </article>
           ))}
         </div>
+        <article className="hud-panel-strong mt-4 p-4">
+          <h3 className="hud-label text-[hsl(var(--signal))]">Posts</h3>
+          <div className="mt-4 grid gap-3">
+            {adapters.changemaker.posts.map((post) => (
+              <div key={post.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{post.title}</span>
+                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(post.status)}`}>{post.status}</span>
+                </div>
+                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{post.tags.join(', ') || 'untagged'} · {formatTime(post.published_at)}</p>
+              </div>
+            ))}
+          </div>
+        </article>
       </FeatureFrame>
     );
   }
@@ -408,6 +558,9 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
           <Field label="Environment" value={adapters.config.environment} />
           <Field label="Version" value={adapters.config.version} />
           <Field label="Base URL" value={adapters.config.base_url || 'not configured'} />
+          <Field label="Changemaker" value={`${adapters.changemaker.service.status} ${adapters.changemaker.service.version}`} />
+          <Field label="Health" value={adapters.health.status} />
+          <Field label="Checked" value={formatTime(adapters.health.checked_at)} />
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <article className="hud-panel-strong p-4">
@@ -423,6 +576,20 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
             </div>
           </article>
         </div>
+        <article className="hud-panel-strong mt-4 p-4">
+          <h3 className="hud-label text-[hsl(var(--signal))]">Service health</h3>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {adapters.health.services.map((service) => (
+              <div key={service.name} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{service.name}</span>
+                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(service.status)}`}>{service.status}</span>
+                </div>
+                <p className="mt-2 text-xs text-[hsl(var(--muted))]">{service.details || 'No details'}</p>
+              </div>
+            ))}
+          </div>
+        </article>
       </FeatureFrame>
     );
   }
@@ -446,12 +613,32 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
             </article>
           ))}
         </div>
+        <article className="hud-panel-strong mt-4 p-4">
+          <h3 className="hud-label text-[hsl(var(--signal))]">Control-center tasks</h3>
+          <div className="mt-4 grid gap-3">
+            {adapters.blacktower.tasks.map((task) => (
+              <div key={task.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{task.name}</span>
+                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(task.status)}`}>{task.progress}%</span>
+                </div>
+                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{task.owner} · {formatTime(task.updated_at)}</p>
+              </div>
+            ))}
+          </div>
+        </article>
       </FeatureFrame>
     );
   }
 
   return (
     <FeatureFrame title="Skill registry" kicker="Blacktower" note="Installed skills, categories, status, and future editing/sync controls.">
+      <div className="mb-4 grid gap-3 md:grid-cols-4">
+        <Field label="Scheduler" value={adapters.blacktower.scheduler_health.status} />
+        <Field label="Next run" value={formatTime(adapters.blacktower.scheduler_health.next_run_at)} />
+        <Field label="Last tick" value={formatTime(adapters.blacktower.scheduler_health.last_tick_at)} />
+        <Field label="Skew" value={`${adapters.blacktower.scheduler_health.skew_seconds}s`} />
+      </div>
       {adapters.skills.length === 0 ? <EmptyState>No skills have been reported yet.</EmptyState> : null}
       <div className="grid gap-4 lg:grid-cols-2">
         {adapters.skills.map((skill) => (
@@ -467,6 +654,22 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
           </article>
         ))}
       </div>
+      <article className="hud-panel-strong mt-4 p-4">
+        <h3 className="hud-label text-[hsl(var(--signal))]">Reports</h3>
+        <div className="mt-4 grid gap-3">
+          {adapters.blacktower.reports.map((report) => (
+            <div key={report.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-[hsl(var(--ink))]">{report.title}</span>
+                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(report.status)}`}>{report.type}</span>
+              </div>
+              <ul className="mt-3 list-inside list-disc text-sm leading-6 text-[hsl(var(--muted))]">
+                {report.findings.map((finding) => <li key={finding}>{finding}</li>)}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </article>
     </FeatureFrame>
   );
 }

@@ -75,14 +75,18 @@ func TestAPIAdaptersEndpointShape(t *testing.T) {
 	}
 
 	var body struct {
-		Queues   []controlplane.AdapterQueue   `json:"queues"`
-		Sessions []controlplane.AdapterSession `json:"sessions"`
-		Logs     []controlplane.AdapterLog     `json:"logs"`
-		Prompts  []controlplane.AdapterPrompt  `json:"prompts"`
-		Config   controlplane.AdapterConfig    `json:"config"`
-		Agents   []controlplane.AdapterAgent   `json:"agents"`
-		Skills   []controlplane.AdapterSkill   `json:"skills"`
-		Health   controlplane.AdapterHealth    `json:"health"`
+		Queues      []controlplane.AdapterQueue     `json:"queues"`
+		Sessions    []controlplane.AdapterSession   `json:"sessions"`
+		Logs        []controlplane.AdapterLog       `json:"logs"`
+		Prompts     []controlplane.AdapterPrompt    `json:"prompts"`
+		Config      controlplane.AdapterConfig      `json:"config"`
+		Agents      []controlplane.AdapterAgent     `json:"agents"`
+		Skills      []controlplane.AdapterSkill     `json:"skills"`
+		Health      controlplane.AdapterHealth      `json:"health"`
+		LlamaLine   controlplane.AdapterLlamaLine   `json:"llama_line"`
+		OCQ         controlplane.AdapterOCQ         `json:"ocq"`
+		Blacktower  controlplane.AdapterBlacktower  `json:"blacktower"`
+		Changemaker controlplane.AdapterChangemaker `json:"changemaker"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode adapters: %v", err)
@@ -107,5 +111,17 @@ func TestAPIAdaptersEndpointShape(t *testing.T) {
 	}
 	if body.Health.Status != "healthy" || len(body.Health.Services) != 1 {
 		t.Fatalf("health = %+v", body.Health)
+	}
+	if len(body.LlamaLine.Requests) != 1 || body.LlamaLine.Stats.ActiveRequests == 0 || len(body.LlamaLine.Upstreams) != 1 {
+		t.Fatalf("llama_line = %+v", body.LlamaLine)
+	}
+	if len(body.OCQ.Requests) != 1 || len(body.OCQ.Sessions) != 1 || body.OCQ.Settings.Provider == "" {
+		t.Fatalf("ocq = %+v", body.OCQ)
+	}
+	if len(body.Blacktower.Tasks) != 1 || len(body.Blacktower.Reports) != 1 || body.Blacktower.SchedulerHealth.Status != "healthy" {
+		t.Fatalf("blacktower = %+v", body.Blacktower)
+	}
+	if len(body.Changemaker.Posts) != 1 || !body.Changemaker.Service.Healthy || !body.Changemaker.RunControl.Enabled {
+		t.Fatalf("changemaker = %+v", body.Changemaker)
 	}
 }
