@@ -16,11 +16,11 @@ id_ed25519
 opencode-data/
 
 # Reference service checkouts copied into this repo for local analysis
-blacktower/
-changemaker/
-llama-line/
-ocq/
-reference-services/
+/blacktower/
+/changemaker/
+/llama-line/
+/ocq/
+/reference-services/
 
 # OS / editors
 .DS_Store
