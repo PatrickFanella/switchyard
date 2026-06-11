@@ -49,6 +49,8 @@ Workflow execution adapters are opt-in:
 - Open Pilot: `OPEN_PILOT_COMMAND` enables `open-pilot run --repo <repo> --issue <issue> --json`; runs must provide `repo` and `issue` inputs.
 - Devlog: `manual-devlog` generates a Markdown artifact from recent Switchyard run history. If `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, it asks the model `DEVLOG_MODEL` to polish the Markdown; otherwise it writes a deterministic local summary.
 
+Run cancellation is currently Switchyard-side: queued/running runs can be marked canceled and an event is recorded. True upstream cancellation will be added per adapter when Changemaker, OCQ, llama-line, and Open Pilot expose safe cancel/abort APIs.
+
 Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
 
 ```bash

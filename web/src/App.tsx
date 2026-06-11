@@ -710,6 +710,8 @@ export default function App() {
   const [runningTriggerID, setRunningTriggerID] = useState<string>('');
   const [updatingTriggerID, setUpdatingTriggerID] = useState<string>('');
   const [runActionID, setRunActionID] = useState<string>('');
+  const [openPilotRepo, setOpenPilotRepo] = useState('');
+  const [openPilotIssue, setOpenPilotIssue] = useState('');
   const [error, setError] = useState<string>('');
 
   const loadDashboard = useCallback(async () => {
@@ -786,7 +788,14 @@ export default function App() {
     setError('');
 
     try {
-      const data = await fetchJSON<{ run: Run }>(`/api/triggers/${triggerID}/run`, { method: 'POST' });
+      const trigger = dashboard.triggers.find((item) => item.id === triggerID);
+      const isOpenPilot = trigger?.workflow_id === 'open-pilot';
+      const data = isOpenPilot && openPilotRepo && openPilotIssue
+        ? await fetchJSON<{ run: Run }>('/api/runs', {
+            method: 'POST',
+            body: JSON.stringify({ workflow_id: 'open-pilot', trigger_id: triggerID, inputs: { repo: openPilotRepo, issue: openPilotIssue } }),
+          })
+        : await fetchJSON<{ run: Run }>(`/api/triggers/${triggerID}/run`, { method: 'POST' });
       setSelectedRunID(data.run.id);
       await loadDashboard();
       await loadRunDetail(data.run.id);
@@ -982,6 +991,29 @@ export default function App() {
 
                       <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{trigger.description}</p>
 
+                      {trigger.workflow_id === 'open-pilot' ? (
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+                            <span className="text-[hsl(var(--signal))]">Repo</span>
+                            <input
+                              className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]"
+                              onChange={(event) => setOpenPilotRepo(event.target.value)}
+                              placeholder="OWNER/REPO"
+                              value={openPilotRepo}
+                            />
+                          </label>
+                          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+                            <span className="text-[hsl(var(--signal))]">Issue</span>
+                            <input
+                              className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]"
+                              onChange={(event) => setOpenPilotIssue(event.target.value)}
+                              placeholder="123"
+                              value={openPilotIssue}
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+
                       <div className="mt-4 grid gap-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))] sm:grid-cols-2">
                         <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
                           <div className="text-[hsl(var(--signal))]">Schedule</div>
@@ -1144,6 +1176,9 @@ export default function App() {
                               </span>
                             </div>
                             <p className="mt-2 break-all text-xs text-[hsl(var(--muted))]">{artifact.uri}</p>
+                            <a className="mt-3 inline-block text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))] underline" href={artifact.uri} rel="noreferrer" target="_blank">
+                              Open artifact
+                            </a>
                           </div>
                         ))}
                       </div>
