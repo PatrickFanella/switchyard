@@ -10,6 +10,16 @@ The product direction is one repo with hard runtime boundaries: Switchyard owns 
 make verify
 ```
 
+Useful Switchyard-specific commands:
+
+```bash
+make api-run          # run the Switchyard API on :8080
+make web-dev          # run the Vite UI
+make switchyard-smoke # smoke-test health/workflow/trigger/run endpoints
+make docker-up        # start the local stack
+make docker-down      # stop the local stack
+```
+
 ## Control-plane MVP
 
 The backend exposes an in-memory workflow/run API:
