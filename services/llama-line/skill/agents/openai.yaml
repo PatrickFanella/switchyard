@@ -1,0 +1,4 @@
+interface:
+  display_name: "llama-line Client"
+  short_description: "Build apps that talk to the llama-line ollama broker"
+  default_prompt: "Help me integrate with the llama-line broker API"

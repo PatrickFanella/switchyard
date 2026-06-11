@@ -1,0 +1,141 @@
+# Address and port the broker listens on
+listen_addr: "0.0.0.0:11434"
+
+# URL of the upstream ollama instance
+ollama_url: "http://127.0.0.1:11435"
+
+# Default maximum number of queued requests per upstream (default: 20)
+max_queue_depth: 20
+
+# Seconds before an in-flight ollama request is cancelled (default: 300)
+request_timeout_secs: 300
+
+# Seconds a request can wait in the queue before being dropped (default: 600)
+queue_wait_timeout_secs: 600
+
+# Seconds between SSE heartbeat events sent to waiting clients (default: 5)
+heartbeat_interval_secs: 5
+
+# Maximum seconds for ollama retry backoff when ollama is unavailable (default: 60)
+ollama_retry_max_secs: 60
+
+# Upstream health probes shown in /broker/status and the web UI.
+# Probes are cached in the background; /broker/status never blocks on probing.
+# Default path is /api/version unless an upstream sets health_path.
+upstream_health_probe_interval_secs: 15
+upstream_health_probe_timeout_secs: 2
+
+# Log level: debug | info | warn | error (default: info)
+log_level: info
+
+# Admin API key — required to access /admin/* endpoints.
+# If omitted, the admin API returns 403 on all requests.
+# Use a strong random string distinct from client API keys.
+admin_key: changeme-replace-with-a-secure-admin-key
+
+# Observability — Prometheus metrics
+# metrics_enabled: expose a Prometheus /metrics endpoint (default: false)
+# metrics_path: path for the metrics endpoint (default: /metrics)
+metrics_enabled: false
+metrics_path: /metrics
+
+# Alerting — webhook notifications for queue_full and ollama_unavailable events
+# alert_webhook_url: POST JSON alerts to this URL (empty = disabled)
+# alert_queue_full_threshold: fire queue_full alert when depth >= this value (0 = disabled)
+alert_webhook_url: ""
+alert_queue_full_threshold: 0
+
+# Request deduplication and caching (v2)
+# cache_max_entries: global default for per-client LRU caches (0 = disabled globally)
+# Per-key settings (cache_ttl_secs, cache_max_entries, deduplicate) override global defaults.
+cache_max_entries: 200
+
+# Audit log — when set, every non-streaming request and response body is written as
+# JSON metadata to this file (one entry per line). Streaming responses are not captured.
+# Bodies are redacted by default; set audit_log_include_body only for local debugging.
+# Leave empty or omit to disable.
+# audit_log_path: /var/log/llama-line-audit.log
+# audit_log_include_body: false
+
+# Multi-model routing — optional, replaces ollama_url for multi-backend setups.
+# Each upstream has a url, optional models list, and optional max_queue_depth.
+# Requests are routed to the first upstream whose models list matches the
+# requested model (glob patterns supported, e.g. "llama3*").
+# An upstream with an empty models list is the catch-all fallback.
+# If upstreams is empty, ollama_url is used as the single fallback upstream.
+#
+# Example multi-upstream setup.
+# Replace the active `upstreams: []` below with this block to enable routing:
+# upstreams:
+#   - name: gpu-big
+#     url: http://127.0.0.1:11435
+#     models:
+#       - "llama3:70b"
+#       - "mixtral*"
+#     max_queue_depth: 5   # override global max for this upstream
+#   - name: gpu-small
+#     url: http://127.0.0.1:11436
+#     models:
+#       - "llama3:8b"
+#       - "phi3*"
+#   - name: ocq-almaz
+#     url: http://almaz:8088
+#     health_path: /healthz  # override when an upstream is not Ollama-compatible
+#     models:
+#       - "openai/gpt-*"
+#       - "github-copilot/*"
+#     auth:
+#       type: bearer
+#       token_env: OCQ_GATEWAY_KEY
+#     # llama-line client Authorization is not forwarded upstream.
+#     # OCQ owns OpenCode sessions for provider-prefixed OpenCode traffic.
+#     # Use ocq_session_id to continue an existing OCQ session.
+#   - name: fallback
+#     url: http://127.0.0.1:11437
+#     # no models — catches everything else
+upstreams: []
+
+# Phoenix observability — disabled by default.
+phoenix:
+  enabled: false
+  otlp_endpoint: "http://phoenix:6006/v1/traces"
+  project_name: "llama-line"
+  project_mode: "static"
+
+# Postgres persistence — disabled by default.
+database:
+  enabled: false
+  url: "postgres://llama:line@localhost:5432/llama_line?sslmode=disable"
+  max_conns: 4
+  run_migrations: true
+  persist_app_logs: true
+  persist_request_bodies: false
+  body_read_enabled: false
+  retention_days: 30
+
+# Embeddings — disabled by default.
+embeddings:
+  enabled: false
+  model: qwen3-embedding:0.6b
+  # Must stay 768 for the current pgvector schema (broker.request_embedding.embedding vector(768)).
+  dimension: 768
+  worker_count: 1
+  max_chunk_chars: 4000
+
+# API keys — each client must present one of these as Bearer token.
+# priority: optional integer (default 0). Higher value = served sooner.
+# Requests with equal priority are served FIFO.
+# deduplicate: if true, identical in-flight requests share one ollama call (default false).
+# cache_ttl_secs: non-streaming responses cached for this many seconds (0 = disabled).
+# cache_max_entries: max cached responses for this key (0 = use global cache_max_entries).
+keys:
+  - name: my-app
+    key: changeme-replace-with-a-secure-random-string
+    priority: 10   # interactive client — served before background jobs
+    deduplicate: true
+    cache_ttl_secs: 60
+    cache_max_entries: 100
+  - name: another-app
+    key: changeme-another-secure-random-string
+    # priority omitted — defaults to 0 (lowest tier)
+    # deduplicate, cache_ttl_secs omitted — caching and dedup disabled

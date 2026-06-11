@@ -1,0 +1,84 @@
+name: Open Pilot task
+about: Create a task that Open Pilot can implement and verify safely
+title: ""
+labels:
+  - ready-for-agent
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for work that Open Pilot should turn into a pull request.
+
+        The `Test Command` field is required because Open Pilot refuses to commit or open a PR without a deterministic verification command.
+
+        This template adds `ready-for-agent`, but it intentionally does **not** add `agent:queued`. Add `agent:queued` only when the issue is complete and ready for automation.
+
+  - type: input
+    id: goal
+    attributes:
+      label: Goal
+      description: One concrete outcome Open Pilot should produce.
+      placeholder: "Add docs/reference/postgres.md with local database setup notes."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Links, files, existing behavior, constraints, and any product or domain background needed.
+      placeholder: |
+        - Relevant files: README.md, docs/stacks.md
+        - Keep this docs-only; do not add application scaffolding.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checkable requirements. Keep them specific and observable.
+      value: |
+        - [ ] Required file or feature exists.
+        - [ ] Existing behavior remains unchanged unless explicitly requested.
+        - [ ] Implementation is limited to the scope described above.
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-command
+    attributes:
+      label: Test Command
+      description: A shell command Open Pilot can run from the repository root after implementation. Replace the example with the smallest deterministic check for this issue.
+      placeholder: |
+        make verify
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of Scope
+      description: Work Open Pilot should not do while implementing this issue.
+      value: |
+        - Do not modify unrelated files.
+        - Do not change secrets or deployment configuration.
+        - Do not merge the resulting PR automatically.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: queue-checklist
+    attributes:
+      label: Queue Checklist
+      description: Complete this before adding `agent:queued`.
+      options:
+        - label: The issue is small enough for one focused PR.
+          required: true
+        - label: The test command is specific to this issue and can run non-interactively.
+          required: true
+        - label: The target repository has Open Pilot labels bootstrapped.
+          required: true
+        - label: I will add `agent:queued` only after the issue body is final.
+          required: true

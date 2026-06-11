@@ -1,0 +1,36 @@
+* text=auto eol=lf
+
+# Shell and source files
+*.sh text eol=lf
+*.bash text eol=lf
+*.go text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Makefile text eol=lf
+
+# Common binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.tgz binary
+
+# Generated/minified artifacts, when present in derived projects
+*.min.js linguist-generated=true
+*.min.css linguist-generated=true
+dist/** linguist-generated=true
+build/** linguist-generated=true

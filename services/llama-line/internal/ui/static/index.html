@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>llama-line</title>
+<script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0f1117;
+    --card:     #1a1d27;
+    --border:   #2a2d3a;
+    --accent:   #6366f1;
+    --accent-h: #818cf8;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --success:  #22c55e;
+    --error:    #ef4444;
+    --warn:     #f59e0b;
+    --neutral:  #475569;
+    --radius:   8px;
+    --radius-sm:4px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 0 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    height: 52px;
+  }
+  header h1 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -.02em;
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+  }
+  header h1 span.llama { font-size: 1.2rem; }
+  #conn-badge {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--neutral);
+    color: var(--text);
+    transition: background .3s;
+  }
+  #conn-badge.live { background: var(--success); color: #fff; }
+  #conn-badge.dead { background: var(--error);   color: #fff; }
+
+  /* ── Tabs ── */
+  nav.tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    padding: 0 1.5rem;
+    overflow-x: auto;
+  }
+  nav.tabs button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: .75rem 1rem;
+    font-size: .875rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: color .15s, border-color .15s;
+  }
+  nav.tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  nav.tabs button:hover:not(.active) { color: var(--text); }
+
+  /* ── Main content ── */
+  main { padding: 1.5rem; max-width: 1100px; }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Stats bar ── */
+  .stats-bar {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: .75rem 1.25rem;
+    min-width: 130px;
+    flex: 1;
+  }
+  .stat-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 2px; transition: color .3s; }
+  .stat-card .value.busy { color: var(--warn); }
+  .stat-card .value.idle { color: var(--muted); }
+  .stat-card .value.live { color: var(--success); }
+
+  /* ── Section ── */
+  .section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: .75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: .875rem;
+  }
+  .section-body { padding: 1rem; }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .875rem;
+  }
+  th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 500;
+    padding: .5rem .75rem;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: .6rem .75rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,.025); }
+
+  /* ── Buttons ── */
+  button.btn {
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: .8125rem;
+    font-weight: 500;
+    padding: .35rem .85rem;
+    transition: opacity .15s, background .15s;
+  }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; }
+  button.btn:hover:not(:disabled) { opacity: .85; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-danger  { background: var(--error);  color: #fff; }
+  .btn-warn    { background: var(--warn);   color: #000; }
+  .btn-muted   { background: var(--neutral);color: var(--text); }
+
+  /* ── Status badges ── */
+  .badge {
+    display: inline-block;
+    border-radius: 99px;
+    padding: 2px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .badge-success  { background: rgba(34,197,94,.15);  color: var(--success); }
+  .badge-error    { background: rgba(239,68,68,.15);   color: var(--error);   }
+  .badge-timeout  { background: rgba(245,158,11,.15);  color: var(--warn);    }
+  .badge-dropped  { background: rgba(71,85,105,.2);    color: var(--muted);   }
+  .badge-queued   { background: rgba(99,102,241,.15);  color: var(--accent);  }
+  .badge-running  { background: rgba(34,197,94,.15);   color: var(--success); }
+
+  /* ── In-flight panel ── */
+  .inflight-idle {
+    color: var(--muted);
+    font-style: italic;
+    padding: .5rem 0;
+  }
+  .inflight-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: .75rem;
+  }
+  .inflight-item .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .inflight-item .value { font-weight: 600; margin-top: 2px; word-break: break-all; }
+
+  /* ── Empty state ── */
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 2rem 1rem;
+    font-style: italic;
+  }
+
+  /* ── Forms ── */
+  .form-row {
+    display: flex;
+    gap: .75rem;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-top: .75rem;
+  }
+  .form-group { display: flex; flex-direction: column; gap: .3rem; }
+  .form-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  input[type=text], input[type=number], input[type=password] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: .875rem;
+    padding: .4rem .7rem;
+    outline: none;
+    transition: border-color .15s;
+  }
+  input:focus { border-color: var(--accent); }
+
+  /* ── Toast ── */
+  #toast-container {
+    position: fixed;
+    bottom: 1.25rem;
+    right: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    z-index: 9999;
+    pointer-events: none;
+  }
+  .toast {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: .6rem 1rem;
+    font-size: .875rem;
+    max-width: 320px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    animation: slideIn .2s ease;
+    pointer-events: all;
+  }
+  .toast.ok  { border-color: var(--success); color: var(--success); }
+  .toast.err { border-color: var(--error);   color: var(--error);   }
+  @keyframes slideIn { from { transform: translateX(40px); opacity:0; } to { transform: none; opacity:1; } }
+
+  /* ── Modal ── */
+  #modal-backdrop {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  #modal-backdrop.open { display: flex; }
+  #modal {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    max-width: 480px;
+    width: 90%;
+  }
+  #modal h3 { margin-bottom: .75rem; }
+  #modal .key-value {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: .5rem .75rem;
+    font-family: monospace;
+    font-size: .875rem;
+    word-break: break-all;
+    margin-bottom: 1rem;
+  }
+  #modal .note { color: var(--warn); font-size: .8125rem; margin-bottom: 1rem; }
+
+  /* ── Banner ── */
+  #no-key-banner {
+    display: none;
+    background: rgba(245,158,11,.1);
+    border: 1px solid var(--warn);
+    border-radius: var(--radius);
+    padding: .6rem 1rem;
+    margin-bottom: 1rem;
+    color: var(--warn);
+    font-size: .875rem;
+  }
+  #no-key-banner.visible { display: block; }
+
+  .mono { font-family: monospace; font-size: .8125rem; }
+  .action-row { display: flex; gap: .5rem; }
+
+  /* ── Log viewer ── */
+  .log-toolbar {
+    display: flex;
+    gap: .5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: .6rem .75rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,.02);
+  }
+  .log-toolbar input[type=text] { min-width: 160px; }
+  .log-toolbar select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: .8125rem;
+    padding: .35rem .55rem;
+  }
+  .log-toolbar label.inline {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    font-size: .8125rem;
+    color: var(--muted);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .log-viewer {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    background: #0a0c12;
+    max-height: 65vh;
+    overflow-y: auto;
+    padding: .5rem .75rem;
+  }
+  .log-viewer.compact .log-body { display: none; }
+  .log-row {
+    display: flex;
+    gap: .5rem;
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(255,255,255,.03);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log-row:last-child { border-bottom: none; }
+  .log-time { color: var(--muted); flex-shrink: 0; }
+  .log-level {
+    flex-shrink: 0;
+    font-weight: 600;
+    min-width: 44px;
+  }
+  .log-level.INFO  { color: #60a5fa; }
+  .log-level.DEBUG { color: var(--muted); }
+  .log-level.WARN  { color: var(--warn); }
+  .log-level.ERROR { color: var(--error); }
+  .log-msg { color: var(--text); flex: 1; }
+  .log-fields { color: #9ca3af; }
+  .log-fields .k { color: #c4b5fd; }
+  .log-fields .v { color: #86efac; }
+  .log-fields .v.str { color: #fcd34d; }
+  .log-body {
+    margin-top: 4px;
+    padding: .4rem .6rem;
+    background: rgba(255,255,255,.03);
+    border-left: 2px solid var(--accent);
+    border-radius: 2px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #cbd5e1;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .log-row.has-body { flex-direction: column; gap: 0; }
+  .log-row.has-body .log-head { display: flex; gap: .5rem; }
+
+  /* Queue events panel */
+  #queue-events {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    background: #0a0c12;
+    max-height: 220px;
+    overflow-y: auto;
+    padding: .4rem .6rem;
+  }
+  #queue-events .log-row { border-bottom-color: rgba(255,255,255,.04); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="llama">🦙</span> llama-line</h1>
+  <span id="conn-badge">connecting…</span>
+</header>
+
+<nav class="tabs">
+  <button class="active" onclick="switchTab('queue', event)">Queue</button>
+  <button onclick="switchTab('history', event)">History</button>
+  <button onclick="switchTab('logs', event)">Logs</button>
+  <button onclick="switchTab('audit', event)">Audit</button>
+  <button onclick="switchTab('keys', event)">Keys</button>
+  <button onclick="switchTab('config', event)">Config</button>
+</nav>
+
+<main>
+  <div id="no-key-banner">
+    No admin key set — go to <strong>Config</strong> tab to set one. Admin actions will return 403.
+  </div>
+
+  <!-- ── Queue tab ── -->
+  <div id="tab-queue" class="tab-panel active">
+    <div class="stats-bar">
+      <div class="stat-card">
+        <div class="label">Queue Depth</div>
+        <div class="value idle" id="stat-depth">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Max Depth</div>
+        <div class="value" id="stat-max">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">In-Flight</div>
+        <div class="value idle" id="stat-inflight">idle</div>
+      </div>
+    </div>
+
+    <!-- In-flight section -->
+    <div class="section" id="inflight-section">
+      <div class="section-header">
+        <span>In-Flight Request</span>
+        <button class="btn btn-warn" id="btn-cancel" onclick="cancelInflight()">Cancel</button>
+      </div>
+      <div class="section-body">
+        <div id="inflight-content" class="inflight-idle">No request in flight.</div>
+      </div>
+    </div>
+
+    <!-- Queue table -->
+    <div class="section">
+      <div class="section-header">
+        <span>Queued Requests</span>
+        <button class="btn btn-danger" onclick="drainQueue()">Drain All</button>
+      </div>
+      <div class="section-body" style="padding:0">
+        <div id="queue-empty" class="empty" style="display:none">Queue is empty — no requests waiting.</div>
+        <table id="queue-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Client</th>
+              <th>Priority</th>
+              <th>Wait</th>
+              <th>ID</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="queue-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Queue events live tail -->
+    <div class="section">
+      <div class="section-header">
+        <span>Queue Events</span>
+        <label class="inline" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;">
+          <input type="checkbox" id="queue-events-pause"> Pause
+        </label>
+      </div>
+      <div id="queue-events"><div class="empty" style="padding:1rem">Waiting for events…</div></div>
+    </div>
+  </div>
+
+  <!-- ── History tab ── -->
+  <div id="tab-history" class="tab-panel">
+    <div class="section">
+      <div class="section-header">
+        <span>Request History</span>
+        <button class="btn btn-muted" onclick="loadHistory()">Refresh</button>
+      </div>
+      <div style="padding:0">
+        <div id="history-empty" class="empty" style="display:none">No history yet.</div>
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Client</th>
+              <th>Model</th>
+              <th>Status</th>
+              <th>Duration</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Logs tab ── -->
+  <div id="tab-logs" class="tab-panel">
+    <div class="section">
+      <div class="section-header">
+        <span>Live Logs</span>
+        <span id="logs-status" style="font-size:11px;color:var(--muted)">disconnected</span>
+      </div>
+      <div class="log-toolbar">
+        <div class="form-group">
+          <label>Filter</label>
+          <input type="text" id="logs-filter" placeholder="msg / client / model / id…">
+        </div>
+        <div class="form-group">
+          <label>Min Level</label>
+          <select id="logs-level">
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO" selected>INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+        </div>
+        <label class="inline"><input type="checkbox" id="logs-autoscroll" checked> Auto-scroll</label>
+        <label class="inline"><input type="checkbox" id="logs-pause"> Pause</label>
+        <button class="btn btn-muted" onclick="clearLogs()">Clear</button>
+      </div>
+      <div id="logs-viewer" class="log-viewer"></div>
+    </div>
+  </div>
+
+  <!-- ── Audit tab ── -->
+  <div id="tab-audit" class="tab-panel">
+    <div class="section">
+      <div class="section-header">
+        <span>Audit Log</span>
+        <span id="audit-status" style="font-size:11px;color:var(--muted)">disconnected</span>
+      </div>
+      <div class="log-toolbar">
+        <div class="form-group">
+          <label>Filter</label>
+          <input type="text" id="audit-filter" placeholder="client / model / path / id…">
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <select id="audit-status-filter">
+            <option value="">all</option>
+            <option value="success">success</option>
+            <option value="error">error</option>
+          </select>
+        </div>
+        <label class="inline"><input type="checkbox" id="audit-show-bodies"> Show bodies</label>
+        <label class="inline"><input type="checkbox" id="audit-autoscroll" checked> Auto-scroll</label>
+        <label class="inline"><input type="checkbox" id="audit-pause"> Pause</label>
+        <button class="btn btn-muted" onclick="clearAudit()">Clear</button>
+      </div>
+      <div id="audit-viewer" class="log-viewer"></div>
+    </div>
+  </div>
+
+  <div id="tab-keys" class="tab-panel">
+    <div class="section">
+      <div class="section-header">
+        <span>API Keys</span>
+      </div>
+      <div style="padding:0">
+        <div id="keys-empty" class="empty" style="display:none">No keys configured.</div>
+        <table id="keys-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Priority</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="keys-tbody"></tbody>
+        </table>
+      </div>
+      <div class="section-body" style="border-top:1px solid var(--border)">
+        <strong style="font-size:.875rem">Create Key</strong>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="new-key-name" placeholder="my-client" style="width:180px">
+          </div>
+          <div class="form-group">
+            <label>Priority</label>
+            <input type="number" id="new-key-priority" value="0" min="0" max="100" style="width:80px">
+          </div>
+          <button class="btn btn-primary" onclick="createKey()">Create</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Config tab ── -->
+  <div id="tab-config" class="tab-panel">
+    <div class="section">
+      <div class="section-header"><span>Configuration</span></div>
+      <div class="section-body">
+        <div class="form-group" style="max-width:420px">
+          <label>Admin Key</label>
+          <input type="password" id="cfg-admin-key" placeholder="Enter admin key…" style="width:100%">
+          <small style="color:var(--muted); margin-top:.35rem; display:block">
+            Stored in localStorage only. Sent as <code>X-Admin-Key</code> header.
+          </small>
+        </div>
+        <div style="margin-top:.75rem; display:flex; gap:.5rem">
+          <button class="btn btn-primary" onclick="saveAdminKey()">Save</button>
+          <button class="btn btn-danger" onclick="clearAdminKey()">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Modal for key reveal -->
+<div id="modal-backdrop">
+  <div id="modal">
+    <h3>Key Created</h3>
+    <p class="note">⚠ Copy this key now — it will not be shown again.</p>
+    <div class="key-value" id="modal-key-value">…</div>
+    <button class="btn btn-primary" onclick="copyKey()">Copy</button>
+    &nbsp;
+    <button class="btn btn-muted" onclick="closeModal()">Close</button>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+// ═══════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════
+let adminKey = localStorage.getItem('llama_line_admin_key') || '';
+let sseSource = null;
+let inflightTimer = null;
+let inflightStart = null;
+let tickTimer = null;   // every-second UI tick
+let queueData = [];     // cached queue items for tick updates
+let enqueueTimes = {};  // id -> ISO string
+
+// ═══════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('cfg-admin-key').value = adminKey;
+  if (!adminKey) {
+    document.getElementById('no-key-banner').classList.add('visible');
+  }
+  startSSE();
+  startTick();
+});
+
+// ═══════════════════════════════════════════
+// Tabs
+// ═══════════════════════════════════════════
+function switchTab(name, ev) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (ev && ev.target) ev.target.classList.add('active');
+  if (name === 'history') loadHistory();
+  if (name === 'keys')    loadKeys();
+  if (name === 'config')  document.getElementById('cfg-admin-key').value = adminKey;
+  if (name === 'logs')    ensureLogsStream();
+  if (name === 'audit')   ensureAuditStream();
+}
+
+// ═══════════════════════════════════════════
+// SSE
+// ═══════════════════════════════════════════
+function startSSE() {
+  if (sseSource) sseSource.close();
+  sseSource = new EventSource('/ui/api/stream');
+  const badge = document.getElementById('conn-badge');
+
+  sseSource.onopen = () => {
+    badge.textContent = 'live';
+    badge.className = 'live';
+  };
+
+  sseSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      applyStatus(data);
+    } catch (_) {}
+  };
+
+  sseSource.onerror = () => {
+    badge.textContent = 'reconnecting…';
+    badge.className = 'dead';
+    sseSource.close();
+    setTimeout(startSSE, 3000);
+  };
+}
+
+// ═══════════════════════════════════════════
+// Apply SSE status to DOM
+// ═══════════════════════════════════════════
+function applyStatus(data) {
+  const depth = data.queue_depth ?? 0;
+  const max   = data.max_depth   ?? 0;
+
+  // Stats bar
+  const depthEl = document.getElementById('stat-depth');
+  depthEl.textContent = depth;
+  depthEl.className = 'value ' + (depth > 0 ? 'busy' : 'idle');
+
+  document.getElementById('stat-max').textContent = max;
+
+  const inflightEl = document.getElementById('stat-inflight');
+  if (data.in_flight_client) {
+    inflightEl.textContent = data.in_flight_client;
+    inflightEl.className = 'value live';
+    if (!inflightStart) inflightStart = Date.now();
+  } else {
+    inflightEl.textContent = 'idle';
+    inflightEl.className = 'value idle';
+    inflightStart = null;
+  }
+
+  // Cache queue for tick updates
+  queueData = data.queue || [];
+
+  // Record enqueue times for wait calculation
+  queueData.forEach(item => {
+    if (!enqueueTimes[item.id]) enqueueTimes[item.id] = item.enqueued_at;
+  });
+  // Purge stale entries
+  const ids = new Set(queueData.map(i => i.id));
+  Object.keys(enqueueTimes).forEach(k => { if (!ids.has(k)) delete enqueueTimes[k]; });
+
+  renderQueue(data);
+}
+
+// ═══════════════════════════════════════════
+// Render queue table
+// ═══════════════════════════════════════════
+function renderQueue(data) {
+  const tbody = document.getElementById('queue-tbody');
+  const emptyEl = document.getElementById('queue-empty');
+  const table   = document.getElementById('queue-table');
+  const items   = data.queue || [];
+
+  if (items.length === 0) {
+    table.style.display = 'none';
+    emptyEl.style.display = 'block';
+  } else {
+    table.style.display = '';
+    emptyEl.style.display = 'none';
+    tbody.innerHTML = items.map(item => `
+      <tr>
+        <td>${item.position}</td>
+        <td><strong>${esc(item.client)}</strong></td>
+        <td>${item.priority}</td>
+        <td class="wait-cell" data-id="${esc(item.id)}">${fmtWait(item.enqueued_at)}</td>
+        <td class="mono">${esc(item.id).slice(0,12)}…</td>
+        <td><button class="btn btn-danger" onclick="dropRequest('${esc(item.id)}')">Drop</button></td>
+      </tr>`).join('');
+  }
+
+  // In-flight
+  const contentEl = document.getElementById('inflight-content');
+  const cancelBtn = document.getElementById('btn-cancel');
+  if (data.in_flight_id) {
+    cancelBtn.style.display = '';
+    contentEl.innerHTML = `
+      <div class="inflight-grid">
+        <div class="inflight-item"><div class="label">Client</div><div class="value">${esc(data.in_flight_client || '—')}</div></div>
+        <div class="inflight-item"><div class="label">Request ID</div><div class="value mono">${esc(data.in_flight_id)}</div></div>
+        <div class="inflight-item"><div class="label">Elapsed</div><div class="value" id="inflight-elapsed">${fmtElapsed()}</div></div>
+      </div>`;
+  } else {
+    cancelBtn.style.display = 'none';
+    contentEl.innerHTML = '<span class="inflight-idle">No request in flight.</span>';
+  }
+}
+
+// ═══════════════════════════════════════════
+// Every-second tick: update wait times + elapsed
+// ═══════════════════════════════════════════
+function startTick() {
+  tickTimer = setInterval(() => {
+    // Update wait cells
+    document.querySelectorAll('.wait-cell').forEach(cell => {
+      const id = cell.dataset.id;
+      const t = enqueueTimes[id];
+      if (t) cell.textContent = fmtWait(t);
+    });
+    // Update elapsed
+    const el = document.getElementById('inflight-elapsed');
+    if (el) el.textContent = fmtElapsed();
+  }, 1000);
+}
+
+function fmtWait(isoStr) {
+  if (!isoStr) return '—';
+  const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (secs < 60) return secs + 's';
+  return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+}
+
+function fmtElapsed() {
+  if (!inflightStart) return '—';
+  const secs = Math.floor((Date.now() - inflightStart) / 1000);
+  if (secs < 60) return secs + 's';
+  return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+}
+
+// ═══════════════════════════════════════════
+// Admin actions — Queue
+// ═══════════════════════════════════════════
+async function dropRequest(id) {
+  if (!confirmAdminKey()) return;
+  const btn = event.target;
+  setLoading(btn, 'Dropping…');
+  const ok = await adminFetch('DELETE', `/admin/queue/${id}`);
+  unsetLoading(btn, 'Drop');
+  if (ok) toast('Request dropped.', 'ok');
+}
+
+async function drainQueue() {
+  if (!confirmAdminKey()) return;
+  if (!confirm('Drain the entire queue? All waiting requests will be dropped.')) return;
+  const ok = await adminFetch('DELETE', '/admin/queue');
+  if (ok) toast('Queue drained.', 'ok');
+}
+
+async function cancelInflight() {
+  if (!confirmAdminKey()) return;
+  const btn = document.getElementById('btn-cancel');
+  setLoading(btn, 'Cancelling…');
+  const ok = await adminFetch('POST', '/admin/inflight/cancel');
+  unsetLoading(btn, 'Cancel');
+  if (ok) toast('In-flight request cancelled.', 'ok');
+}
+
+// ═══════════════════════════════════════════
+// History tab
+// ═══════════════════════════════════════════
+async function loadHistory() {
+  const res = await fetch('/ui/api/history');
+  if (!res.ok) { toast('Failed to load history', 'err'); return; }
+  const data = await res.json();
+  const entries = (data.entries || []).slice().reverse(); // newest first
+  const tbody = document.getElementById('history-tbody');
+  const empty = document.getElementById('history-empty');
+  const table = document.getElementById('history-table');
+
+  if (entries.length === 0) {
+    table.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  table.style.display = '';
+  empty.style.display = 'none';
+  tbody.innerHTML = entries.map(e => `
+    <tr>
+      <td>${fmtTime(e.completed_at)}</td>
+      <td>${esc(e.client || '—')}</td>
+      <td class="mono">${esc(e.model || '—')}</td>
+      <td>${statusBadge(e.status)}</td>
+      <td>${e.duration_ms > 0 ? fmtDuration(e.duration_ms) : '—'}</td>
+    </tr>`).join('');
+}
+
+function statusBadge(status) {
+  const cls = { success:'success', error:'error', timeout:'timeout', dropped:'dropped' }[status] || 'dropped';
+  return `<span class="badge badge-${cls}">${esc(status || '—')}</span>`;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString();
+}
+
+function fmtDuration(ms) {
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(1) + 's';
+}
+
+// ═══════════════════════════════════════════
+// Keys tab
+// ═══════════════════════════════════════════
+async function loadKeys() {
+  if (!confirmAdminKey(false)) return;
+  const res = await adminFetch('GET', '/admin/keys', null, true);
+  if (!res) return;
+  const data = await res.json();
+  const keys = data.keys || [];
+  const tbody = document.getElementById('keys-tbody');
+  const empty = document.getElementById('keys-empty');
+  const table = document.getElementById('keys-table');
+
+  if (keys.length === 0) {
+    table.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  table.style.display = '';
+  empty.style.display = 'none';
+  tbody.innerHTML = keys.map(k => `
+    <tr>
+      <td><strong>${esc(k.name)}</strong></td>
+      <td>${k.priority}</td>
+      <td>${fmtTime(k.created_at)}</td>
+      <td>
+        <div class="action-row">
+          <button class="btn btn-danger" onclick="revokeKey('${esc(k.name)}')">Revoke</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+async function createKey() {
+  if (!confirmAdminKey()) return;
+  const name     = document.getElementById('new-key-name').value.trim();
+  const priority = parseInt(document.getElementById('new-key-priority').value, 10) || 0;
+  if (!name) { toast('Name is required.', 'err'); return; }
+  const btn = event.target;
+  setLoading(btn, 'Creating…');
+  const res = await adminFetch('POST', '/admin/keys', { name, priority }, true);
+  unsetLoading(btn, 'Create');
+  if (!res) return;
+  const data = await res.json();
+  document.getElementById('new-key-name').value = '';
+  document.getElementById('new-key-priority').value = '0';
+  showModal(data.key);
+  loadKeys();
+}
+
+async function revokeKey(name) {
+  if (!confirmAdminKey()) return;
+  if (!confirm(`Revoke key "${name}"? This cannot be undone.`)) return;
+  const ok = await adminFetch('DELETE', `/admin/keys/${encodeURIComponent(name)}`);
+  if (ok) { toast('Key revoked.', 'ok'); loadKeys(); }
+}
+
+// ═══════════════════════════════════════════
+// Config tab
+// ═══════════════════════════════════════════
+function saveAdminKey() {
+  const val = document.getElementById('cfg-admin-key').value.trim();
+  adminKey = val;
+  if (val) {
+    localStorage.setItem('llama_line_admin_key', val);
+    document.getElementById('no-key-banner').classList.remove('visible');
+    toast('Admin key saved.', 'ok');
+  } else {
+    clearAdminKey();
+  }
+}
+
+function clearAdminKey() {
+  adminKey = '';
+  localStorage.removeItem('llama_line_admin_key');
+  document.getElementById('cfg-admin-key').value = '';
+  document.getElementById('no-key-banner').classList.add('visible');
+  toast('Admin key cleared.', 'ok');
+}
+
+// ═══════════════════════════════════════════
+// Modal (key reveal)
+// ═══════════════════════════════════════════
+function showModal(key) {
+  document.getElementById('modal-key-value').textContent = key;
+  document.getElementById('modal-backdrop').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modal-backdrop').classList.remove('open');
+}
+
+function copyKey() {
+  const val = document.getElementById('modal-key-value').textContent;
+  navigator.clipboard.writeText(val).then(() => toast('Copied!', 'ok'));
+}
+
+document.getElementById('modal-backdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+// ═══════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════
+
+// Perform an admin API call. If returnRes=true, returns the Response. Otherwise returns bool ok.
+async function adminFetch(method, path, body, returnRes) {
+  const opts = {
+    method,
+    headers: { 'X-Admin-Key': adminKey },
+  };
+  if (body !== null && body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  try {
+    const res = await fetch(path, opts);
+    if (res.status === 401 || res.status === 403) {
+      toast('Admin key invalid or not configured (403).', 'err');
+      return returnRes ? null : false;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      toast(`Error ${res.status}: ${text.slice(0,120)}`, 'err');
+      return returnRes ? null : false;
+    }
+    return returnRes ? res : true;
+  } catch (err) {
+    toast('Network error: ' + err.message, 'err');
+    return returnRes ? null : false;
+  }
+}
+
+// Check admin key; if check=true, show toast on missing
+function confirmAdminKey(showToast = true) {
+  if (!adminKey) {
+    if (showToast) toast('No admin key set. Go to Config tab.', 'err');
+    return false;
+  }
+  return true;
+}
+
+function setLoading(btn, text) {
+  btn.disabled = true;
+  btn._orig = btn.textContent;
+  btn.textContent = text;
+}
+
+function unsetLoading(btn, text) {
+  btn.disabled = false;
+  btn.textContent = text || btn._orig;
+}
+
+function toast(msg, type) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type === 'ok' ? 'ok' : 'err');
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+function esc(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

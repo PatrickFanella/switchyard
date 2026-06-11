@@ -1,0 +1,20 @@
+[Unit]
+Description=llama-line Ollama broker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=onnwee
+Group=onnwee
+WorkingDirectory=/home/onnwee/Projects/tools/llama-line
+EnvironmentFile=-/etc/llama-line/env
+ExecStart=/home/onnwee/Projects/tools/llama-line/bin/llama-line --config /home/onnwee/Projects/tools/llama-line/config.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llama-line
+
+[Install]
+WantedBy=multi-user.target
