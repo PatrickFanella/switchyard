@@ -62,6 +62,7 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 
 func TestAPIAdaptersEndpointShape(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
+	t.Setenv("OCQ_BASE_URL", "")
 	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
@@ -124,6 +125,50 @@ func TestAPIAdaptersEndpointShape(t *testing.T) {
 	}
 	if len(body.Changemaker.Posts) != 1 || !body.Changemaker.Service.Healthy || !body.Changemaker.RunControl.Enabled {
 		t.Fatalf("changemaker = %+v", body.Changemaker)
+	}
+}
+
+func TestAPIAdaptersProbesOCQWhenConfigured(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/ocq/sessions":
+			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			_, _ = w.Write([]byte(`{"sessions":[{"id":"ses_alpha","title":"Alpha","status":"active","user":"operator","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:01:00Z"}]}`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OCQ_GATEWAY_KEY", "test-key")
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/adapters")
+	if err != nil {
+		t.Fatalf("GET adapters error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body controlplane.AdapterPayload
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode adapters: %v", err)
+	}
+	if len(body.OCQ.Sessions) != 1 || body.OCQ.Sessions[0].ID != "ses_alpha" {
+		t.Fatalf("ocq sessions = %+v", body.OCQ.Sessions)
+	}
+	if len(body.Sessions) != 1 || body.Sessions[0].Surface != "ocq" {
+		t.Fatalf("sessions = %+v", body.Sessions)
+	}
+	if body.OCQ.Settings.Workspace != ocq.URL {
+		t.Fatalf("settings = %+v", body.OCQ.Settings)
 	}
 }
 
