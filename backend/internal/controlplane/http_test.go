@@ -212,3 +212,95 @@ func TestAPIAdaptersProbesLlamaLineWhenConfigured(t *testing.T) {
 		t.Fatalf("stats = %+v", body.LlamaLine.Stats)
 	}
 }
+
+func TestAPIAdaptersProbesBlacktowerWhenConfigured(t *testing.T) {
+	blacktower := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/snapshot" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{
+			"tasks":[{"name":"observe","badges":["daily"],"warnings":[],"latestRun":{"id":"run_bt_1","status":"completed","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:02:00Z","sessionId":"ses_bt_1"}}],
+			"selectedTask":{"report":{"path":"/tmp/report.md","updatedAt":"2026-01-01T00:03:00Z","content":"# Scheduler health\n- no failed tasks\n- queue lag nominal"}},
+			"health":{"status":"ok","summary":"scheduler ok","tasks":{"total":1,"enabled":1,"invalid":0},"recentFailureCount":0,"checkedAt":"2026-01-01T00:04:00Z"},
+			"schedulerEvents":[{"source":"scheduler","severity":"info","text":"scheduler tick","taskName":"observe","timestamp":"2026-01-01T00:05:00Z"}],
+			"generatedAt":"2026-01-01T00:06:00Z"
+		}`))
+	}))
+	t.Cleanup(blacktower.Close)
+	t.Setenv("BLACKTOWER_BASE_URL", blacktower.URL)
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/adapters")
+	if err != nil {
+		t.Fatalf("GET adapters error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body controlplane.AdapterPayload
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode adapters: %v", err)
+	}
+	if len(body.Blacktower.Tasks) != 1 || body.Blacktower.Tasks[0].Name != "observe" || body.Blacktower.Tasks[0].Progress != 100 {
+		t.Fatalf("blacktower tasks = %+v", body.Blacktower.Tasks)
+	}
+	if len(body.Blacktower.Reports) != 1 || body.Blacktower.Reports[0].Title != "Scheduler health" {
+		t.Fatalf("blacktower reports = %+v", body.Blacktower.Reports)
+	}
+	if body.Blacktower.SchedulerHealth.Status != "healthy" {
+		t.Fatalf("scheduler health = %+v", body.Blacktower.SchedulerHealth)
+	}
+	if len(body.Sessions) < 2 || body.Sessions[len(body.Sessions)-1].Surface != "blacktower" {
+		t.Fatalf("sessions = %+v", body.Sessions)
+	}
+}
+
+func TestAPIAdaptersProbesChangemakerWhenConfigured(t *testing.T) {
+	changemaker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/runs/status":
+			if got := r.Header.Get("Authorization"); got != "Bearer changemaker-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			_, _ = w.Write([]byte(`{"state":"running","startedAt":"2026-01-01T00:00:00Z","logs":["started","collecting changes"]}`))
+		case "/api/posts":
+			if got := r.Header.Get("Authorization"); got != "Bearer changemaker-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			_, _ = w.Write([]byte(`[{"fileName":"2026-01-01-post.md","date":"2026-01-01","title":"Field report"}]`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(changemaker.Close)
+	t.Setenv("CHANGEMAKER_BASE_URL", changemaker.URL)
+	t.Setenv("CHANGEMAKER_ADMIN_TOKEN", "changemaker-token")
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/adapters")
+	if err != nil {
+		t.Fatalf("GET adapters error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body controlplane.AdapterPayload
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode adapters: %v", err)
+	}
+	if !body.Changemaker.Service.Healthy || body.Changemaker.Service.Status != "healthy" {
+		t.Fatalf("changemaker service = %+v", body.Changemaker.Service)
+	}
+	if body.Changemaker.RunControl.Mode != "running" || body.Changemaker.RunControl.ActiveRunID == "" {
+		t.Fatalf("run control = %+v", body.Changemaker.RunControl)
+	}
+	if len(body.Changemaker.Posts) != 1 || body.Changemaker.Posts[0].Title != "Field report" {
+		t.Fatalf("posts = %+v", body.Changemaker.Posts)
+	}
+}

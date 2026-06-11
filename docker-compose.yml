@@ -22,6 +22,9 @@ services:
       LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-}
       OCQ_BASE_URL: ${OCQ_BASE_URL:-}
       OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-}
+      BLACKTOWER_BASE_URL: ${BLACKTOWER_BASE_URL:-}
+      CHANGEMAKER_BASE_URL: ${CHANGEMAKER_BASE_URL:-}
+      CHANGEMAKER_ADMIN_TOKEN: ${CHANGEMAKER_ADMIN_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

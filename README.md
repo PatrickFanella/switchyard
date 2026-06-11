@@ -34,7 +34,12 @@ The API uses Postgres when `DATABASE_URL` is set and runs embedded migrations on
 
 The Docker Compose stack sets `DATABASE_URL` for the API service using libpq keyword syntax so generated passwords with URL-significant characters do not need escaping.
 
-Set `LLAMA_LINE_BASE_URL` to have `/api/adapters` probe llama-line `/broker/status` and replace placeholder queue/upstream data with live broker state. Set `OCQ_BASE_URL` and optional `OCQ_GATEWAY_KEY` to probe OCQ health/session state.
+Set optional adapter probe variables to replace placeholder HUD data with live external state:
+
+- `LLAMA_LINE_BASE_URL` reads llama-line `/broker/status`.
+- `OCQ_BASE_URL` and optional `OCQ_GATEWAY_KEY` read OCQ `/healthz` and `/ocq/sessions`.
+- `BLACKTOWER_BASE_URL` reads Blacktower control-center `/api/snapshot`.
+- `CHANGEMAKER_BASE_URL` and optional `CHANGEMAKER_ADMIN_TOKEN` read Changemaker `/health`, `/api/posts`, and `/api/runs/status`.
 
 Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
 
