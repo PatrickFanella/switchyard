@@ -20,6 +20,9 @@ type Trigger = {
   schedule?: string;
   inputs?: Record<string, string>;
   next_run_at?: string;
+  last_run_at?: string;
+  updated_at?: string;
+  last_error?: string;
 };
 
 type Run = {
@@ -62,6 +65,15 @@ type DashboardState = {
   triggers: Trigger[];
   runs: Run[];
   adapters: AdapterPayload;
+  scheduler: SchedulerStatus;
+};
+
+type SchedulerStatus = {
+  enabled: boolean;
+  running: boolean;
+  interval?: string;
+  last_tick?: string;
+  last_error?: string;
 };
 
 type AdapterPayload = {
@@ -244,6 +256,8 @@ const emptyAdapters: AdapterPayload = {
   blacktower: { tasks: [], reports: [], scheduler_health: { status: 'unknown', next_run_at: '', last_tick_at: '', skew_seconds: 0 } },
   changemaker: { posts: [], service: { name: '', status: 'unknown', version: '', healthy: false, updated_at: '' }, run_control: { enabled: false, mode: 'manual', queued_runs: 0 } },
 };
+
+const emptyScheduler: SchedulerStatus = { enabled: false, running: false, interval: 'disabled' };
 
 function apiPath(path: string) {
   return `${apiBase}${path}`;
@@ -688,23 +702,26 @@ function FeatureFrame({ title, kicker, note, children }: { title: string; kicker
 }
 
 export default function App() {
-  const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters });
+  const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters, scheduler: emptyScheduler });
   const [selectedRunID, setSelectedRunID] = useState<string>('');
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [activeView, setActiveView] = useState<ViewID>('overview');
   const [loading, setLoading] = useState(true);
   const [runningTriggerID, setRunningTriggerID] = useState<string>('');
+  const [updatingTriggerID, setUpdatingTriggerID] = useState<string>('');
+  const [runActionID, setRunActionID] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const [workflowData, triggerData, runData, adapterData] = await Promise.all([
+      const [workflowData, triggerData, runData, adapterData, schedulerData] = await Promise.all([
         fetchJSON<DashboardResponse<Workflow>>('/api/workflows'),
         fetchJSON<DashboardResponse<Trigger>>('/api/triggers'),
         fetchJSON<DashboardResponse<Run>>('/api/runs'),
         fetchJSON<AdapterPayload>('/api/adapters'),
+        fetchJSON<SchedulerStatus>('/api/scheduler'),
       ]);
 
       setDashboard({
@@ -712,6 +729,7 @@ export default function App() {
         triggers: arrayOrEmpty(triggerData.triggers as Trigger[] | null | undefined),
         runs: arrayOrEmpty(runData.runs as Run[] | null | undefined),
         adapters: normalizeAdapters(adapterData),
+        scheduler: schedulerData ?? emptyScheduler,
       });
     } catch (caught) {
       setError(messageFrom(caught));
@@ -776,6 +794,37 @@ export default function App() {
       setError(messageFrom(caught));
     } finally {
       setRunningTriggerID('');
+    }
+  }
+
+  async function toggleTrigger(trigger: Trigger) {
+    setUpdatingTriggerID(trigger.id);
+    setError('');
+    try {
+      await fetchJSON<{ trigger: Trigger }>(`/api/triggers/${trigger.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: !trigger.enabled }),
+      });
+      await loadDashboard();
+    } catch (caught) {
+      setError(messageFrom(caught));
+    } finally {
+      setUpdatingTriggerID('');
+    }
+  }
+
+  async function runAction(runID: string, action: 'retry' | 'cancel') {
+    setRunActionID(`${runID}:${action}`);
+    setError('');
+    try {
+      const data = await fetchJSON<{ run: Run }>(`/api/runs/${runID}/${action}`, { method: 'POST' });
+      setSelectedRunID(data.run.id);
+      await loadDashboard();
+      await loadRunDetail(data.run.id);
+    } catch (caught) {
+      setError(messageFrom(caught));
+    } finally {
+      setRunActionID('');
     }
   }
 
@@ -911,14 +960,24 @@ export default function App() {
                           </p>
                         </div>
 
-                        <button
-                          className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={!trigger.enabled || runningTriggerID === trigger.id}
-                          onClick={() => void runTrigger(trigger.id)}
-                          type="button"
-                        >
-                          {runningTriggerID === trigger.id ? 'Running…' : 'Run now'}
-                        </button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!trigger.enabled || runningTriggerID === trigger.id}
+                            onClick={() => void runTrigger(trigger.id)}
+                            type="button"
+                          >
+                            {runningTriggerID === trigger.id ? 'Running…' : 'Run now'}
+                          </button>
+                          <button
+                            className={`hud-chip px-3 py-2 text-[0.62rem] transition disabled:cursor-not-allowed disabled:opacity-50 ${trigger.enabled ? 'border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] text-[hsl(var(--danger))]' : 'border-[hsl(var(--confirm))] bg-[hsl(var(--confirm-soft))] text-[hsl(var(--confirm))]'}`}
+                            disabled={updatingTriggerID === trigger.id}
+                            onClick={() => void toggleTrigger(trigger)}
+                            type="button"
+                          >
+                            {updatingTriggerID === trigger.id ? 'Saving…' : trigger.enabled ? 'Disable' : 'Enable'}
+                          </button>
+                        </div>
                       </div>
 
                       <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{trigger.description}</p>
@@ -932,7 +991,16 @@ export default function App() {
                           <div className="text-[hsl(var(--signal))]">Next run</div>
                           <div className="mt-1 text-[hsl(var(--ink))]">{formatTime(trigger.next_run_at)}</div>
                         </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <div className="text-[hsl(var(--signal))]">Last run</div>
+                          <div className="mt-1 text-[hsl(var(--ink))]">{formatTime(trigger.last_run_at)}</div>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <div className="text-[hsl(var(--signal))]">State</div>
+                          <div className="mt-1 text-[hsl(var(--ink))]">{trigger.enabled ? 'enabled' : 'disabled'}</div>
+                        </div>
                       </div>
+                      {trigger.last_error ? <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--danger))]">Last error: {trigger.last_error}</p> : null}
                     </article>
                   ))}
                 </div>
@@ -951,6 +1019,12 @@ export default function App() {
                       <div className="text-3xl font-semibold tracking-tight text-[hsl(var(--signal))]">{run.value}</div>
                     </div>
                   ))}
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <Field label="Scheduler" value={dashboard.scheduler.enabled ? (dashboard.scheduler.running ? 'running' : 'enabled') : 'disabled'} />
+                  <Field label="Interval" value={dashboard.scheduler.interval || 'disabled'} />
+                  <Field label="Last tick" value={formatTime(dashboard.scheduler.last_tick)} />
+                  <Field label="Last error" value={dashboard.scheduler.last_error || 'none'} />
                 </div>
               </div>
             </article>
@@ -1008,6 +1082,24 @@ export default function App() {
                         <dd className="mt-1 text-[hsl(var(--ink))]">{runDetail.artifacts.length}</dd>
                       </div>
                     </dl>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={runActionID === `${runDetail.run.id}:retry`}
+                        onClick={() => void runAction(runDetail.run.id, 'retry')}
+                        type="button"
+                      >
+                        {runActionID === `${runDetail.run.id}:retry` ? 'Retrying…' : 'Retry run'}
+                      </button>
+                      <button
+                        className="hud-chip border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--danger))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={!['queued', 'running'].includes(runDetail.run.status) || runActionID === `${runDetail.run.id}:cancel`}
+                        onClick={() => void runAction(runDetail.run.id, 'cancel')}
+                        type="button"
+                      >
+                        {runActionID === `${runDetail.run.id}:cancel` ? 'Canceling…' : 'Cancel run'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-3">
