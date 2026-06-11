@@ -1,12 +1,12 @@
 # Switchyard Roadmap
 
-Switchyard is now the monorepo for the control plane, imported services, and first-party workflows. Blacktower remains a separate optional operator environment.
+Switchyard is now the monorepo for the control plane, imported services, first-party workflows, and the future Blacktower agent/profile layer.
 
-The next major phase is to build **Switchyard Runtime**: a small, durable workflow orchestrator inspired by the useful parts of Blacktower, but scoped to Switchyard workflows instead of cloning Blacktower's full plugin, skill, and operator system.
+The next major phase is to build **Switchyard Runtime**: a small, durable workflow orchestrator with curated Blacktower agent profiles, scoped to Switchyard workflows instead of cloning a broad plugin/skill/operator system.
 
 ## North star
 
-Switchyard should run first-party automation without requiring Blacktower to be installed or kept in sync.
+Switchyard should run first-party automation with its own built-in agents/subagents and model assignment, without depending on an external Blacktower checkout.
 
 ```txt
 Switchyard
@@ -18,23 +18,23 @@ Switchyard
   opencode executor -> services/ocq
   workflows -> Open Pilot / Devlog / Changemaker
 
-Blacktower
-  optional external operator environment
-  OpenCode ergonomics
-  skills/plugins/install/diagnostics
+Blacktower profiles
+  curated agents/subagents
+  model assignments
+  workflow roles and prompt contracts
 ```
 
 ## Product principles
 
-1. **Switchyard must work without Blacktower.** Blacktower may enrich operator sessions, but it cannot be required for core workflow execution.
-2. **Runtime is workflow-scoped.** Switchyard gets durable runs, steps, executors, artifacts, model assignment, retry, and cancellation. It does not get a full skill/plugin marketplace.
+1. **Blacktower becomes native profiles.** The name can refer to the curated built-in agent/subagent set inside Switchyard Runtime.
+2. **Runtime is workflow-scoped.** Switchyard gets durable runs, steps, executors, artifacts, model assignment, retry, and cancellation. It does not need a full skill/plugin marketplace in the next phase.
 3. **Imported services keep their ownership.** `services/llama-line` owns model routing and queues. `services/ocq` owns OpenCode session mechanics. `workflows/changemaker` owns Changemaker content policy.
 4. **UI talks to Switchyard only.** The dashboard should not become a pile of direct service consoles.
 5. **Linear first, DAG later.** Start with ordered step pipelines. Add branching only after real workflow pressure demands it.
 
-## What the built-in mini-Blacktower includes
+## What native Blacktower includes
 
-Call this **Switchyard Runtime**, not Blacktower.
+Blacktower should be a curated layer on top of **Switchyard Runtime**.
 
 Included:
 
@@ -49,13 +49,16 @@ Included:
 - retry and cancellation propagation
 - session/request correlation IDs
 - simple subagent records attached to workflow steps
+- curated agent profiles
+- default model assignments
+- workflow role prompts
 
 Excluded:
 
-- Blacktower skill installation
+- broad skill installation
 - OpenCode plugin management
 - agent marketplace
-- full operator desktop/tmux environment
+- full operator desktop/tmux environment outside workflow runs
 - arbitrary plugin hooks
 - generalized autonomous daemon swarms
 - complex DAG engine in v1
@@ -71,7 +74,7 @@ Already done:
 - Scheduler with enabled cron/poll triggers.
 - API-backed HUD dashboard.
 - Imported `services/ocq`, `services/llama-line`, and `workflows/changemaker`.
-- Optional probes for llama-line, OCQ, Blacktower, and Changemaker.
+- Probes for llama-line, OCQ, external/reference Blacktower when configured, and Changemaker.
 - Open Pilot CLI/API contract.
 - Devlog Markdown artifact workflow.
 - Best-effort cancellation adapters.
@@ -80,7 +83,7 @@ Exit criteria before Phase 1:
 
 - `make verify` stays green.
 - `make switchyard-smoke` stays green.
-- Docker stack remains runnable with Blacktower absent.
+- Docker stack remains runnable without any external Blacktower checkout.
 - Current adapter env vars are documented and stable.
 
 ## Phase 1 — durable step runtime
@@ -168,7 +171,7 @@ open-pilot.agent-work
 
 Exit criteria:
 
-- Switchyard can run an OpenCode prompt through OCQ without Blacktower.
+- Switchyard can run an OpenCode prompt through OCQ using native runtime profiles.
 - HUD shows OCQ session/request correlation.
 - Cancel aborts the active OCQ request when possible.
 
@@ -210,7 +213,7 @@ Exit criteria:
 
 ## Phase 5 — Open Pilot v1
 
-Goal: make Open Pilot a Switchyard-native workflow that can process one issue end-to-end without Blacktower.
+Goal: make Open Pilot a Switchyard-native workflow that can process one issue end-to-end using native Blacktower profiles when useful.
 
 Build:
 
@@ -238,7 +241,7 @@ Exit criteria:
 
 - One manually selected issue can become a Switchyard run.
 - The run has step history, artifacts, and final operator summary.
-- Blacktower is not required.
+- External Blacktower is not required.
 
 ## Phase 6 — runtime hardening
 
@@ -262,21 +265,24 @@ Exit criteria:
 - Failed runs are diagnosable from the UI.
 - Retrying a failed step is safe and predictable.
 
-## Phase 7 — optional Blacktower integration
+## Phase 7 — Blacktower profile layer
 
-Goal: let Blacktower enhance Switchyard without being required.
+Goal: turn Blacktower into a named set of built-in Switchyard agents/subagents, model defaults, and workflow roles.
 
-Build only after Switchyard Runtime is useful on its own:
+Build after Switchyard Runtime has durable steps and executors:
 
-- Blacktower status probe improvements.
-- Optional handoff from Switchyard run to Blacktower operator session.
-- Optional import of Blacktower agent/skill metadata for display only.
-- No hard dependency on Blacktower config, plugins, or install state.
+- Agent profile registry.
+- Subagent role definitions.
+- Model assignment defaults by workflow/step/role.
+- Prompt contracts for planner, executor, reviewer, summarizer, and operator roles.
+- UI for selecting profiles and per-run model overrides.
+- Optional compatibility import from an external Blacktower checkout only as a migration aid.
 
 Exit criteria:
 
-- Switchyard works the same when `blacktower/` is absent.
-- When Blacktower is present, it adds richer operator ergonomics but does not own Switchyard run lifecycle.
+- Blacktower profiles are stored in Switchyard config/database.
+- Open Pilot and Devlog can select Blacktower profiles without external files.
+- External Blacktower compatibility is best-effort and not part of the core runtime contract.
 
 ## Milestones
 
@@ -309,7 +315,7 @@ Exit criteria:
 
 - One issue to one visible multi-step run.
 - Gitea policy remains workflow-owned.
-- No Blacktower requirement.
+- No external Blacktower requirement.
 
 ### M6: Production-Ready Runtime
 
@@ -332,8 +338,8 @@ Exit criteria:
 
 ## Non-goals for the next phase
 
-- No Blacktower plugin/skill installer inside Switchyard.
+- No broad plugin/skill installer inside Switchyard in this phase.
 - No full DAG engine.
 - No direct provider routing around llama-line.
 - No broad shell executor without a permissions model.
-- No requirement that Blacktower be checked out or running.
+- No requirement that external Blacktower be checked out or running.

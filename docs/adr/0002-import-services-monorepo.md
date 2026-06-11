@@ -6,7 +6,7 @@ Accepted — 2026-06-11
 
 ## Context
 
-Switchyard started with ignored local checkouts of four related repositories: `ocq`, `llama-line`, `changemaker`, and `blacktower`. The desired product shape is a Switchyard monorepo plus a separate Blacktower repository.
+Switchyard started with ignored local checkouts of four related repositories: `ocq`, `llama-line`, `changemaker`, and `blacktower`. The desired product shape is a Switchyard monorepo with OCQ, llama-line, Changemaker, and a future Switchyard-native Blacktower agent/profile set.
 
 ## Decision
 
@@ -16,7 +16,7 @@ Import three modules into Switchyard as tracked source:
 - `services/llama-line/` from local `llama-line` commit `db93967 fix: propagate ocq contract headers`
 - `workflows/changemaker/` from local `changemaker` commit `2e2b468 feat: add run cancellation endpoint`
 
-Keep Blacktower separate and optional. A local `blacktower/` checkout remains ignored by Switchyard.
+Do not import the external Blacktower checkout. A local `blacktower/` checkout remains ignored as legacy/reference material while Switchyard defines its own Blacktower agent/profile layer.
 
 The imports are copy-based rather than subtree-based. This keeps the migration simple and reviewable while the original repositories remain available for full history if needed.
 
@@ -26,14 +26,14 @@ The imports are copy-based rather than subtree-based. This keeps the migration s
 - `services/llama-line` owns model routing, queueing, upstream health, and observability.
 - `services/ocq` owns OpenCode/Blacktower session adapter behavior, request/session correlation, and abort semantics.
 - `workflows/changemaker` owns Changemaker content generation and domain policy.
-- Blacktower owns the full OpenCode plugin/agent/skill/operator environment and remains optional.
+- Blacktower in Switchyard will mean a curated set of built-in agent profiles/personas on top of Switchyard Runtime. It does not imply importing the external Blacktower plugin/skill/operator environment.
 
 ## Future direction
 
-Switchyard may add a small built-in orchestrator/subagent workflow runtime with assignable models from config or API calls. That layer should stay workflow-scoped and should not absorb Blacktower's full plugin, skill, and operator environment.
+Switchyard may add a small built-in orchestrator/subagent workflow runtime with assignable models from config or API calls. Blacktower can become the first curated profile set for that runtime.
 
 ## Consequences
 
-- There are now two conceptual repositories: Switchyard monorepo and Blacktower.
-- Switchyard can run without Blacktower.
+- There is one product repository: Switchyard monorepo.
+- External Blacktower history remains reference material, not a runtime dependency.
 - Build/test consolidation can happen gradually; do not force all imported modules into root `make verify` until their dependency setup is normalized.

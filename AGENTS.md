@@ -15,12 +15,12 @@ Switchyard is a one-repo control-plane suite. Preserve hard boundaries even when
 
 - Switchyard owns triggers, workflow runs, events, artifacts, and UI/API.
 - `services/llama-line` owns model routing, queueing, upstream health, and observability.
-- `services/ocq` owns OpenCode/Blacktower session and tmux adapter behavior.
+- `services/ocq` owns OpenCode session and tmux adapter behavior.
 - `workflows/changemaker` owns Changemaker content/workflow policy.
-- Blacktower remains a separate optional checkout/integration; Switchyard must function without it.
+- Blacktower is planned as a Switchyard-native set of agent profiles/personas for workflow execution, not as a required external checkout.
 - Open Pilot, Changemaker, and Devlog are first-party workflows that should not own generic scheduling.
 
-Future direction: Switchyard may grow a small built-in orchestrator/subagent runtime with assignable models from config or API input, but it should not absorb Blacktower's full plugin/skill/operator environment.
+Future direction: Switchyard should grow a small built-in orchestrator/subagent runtime with assignable models from config or API input. The Blacktower name can refer to the first curated agent/profile set inside that runtime.
 
 ## Verification
 

@@ -1,18 +1,18 @@
 # Switchyard
 
-Switchyard is a Go backend and Vite React TypeScript monorepo control-plane workspace for OpenCode/Blacktower workflows, `llama-line` model routing, OCQ session execution, and first-party workflows such as Open Pilot, Changemaker, and Devlog.
+Switchyard is a Go backend and Vite React TypeScript monorepo control-plane workspace for OpenCode workflows, `llama-line` model routing, OCQ session execution, built-in Blacktower agent profiles, and first-party workflows such as Open Pilot, Changemaker, and Devlog.
 
-The product direction is one monorepo with hard runtime boundaries: Switchyard owns triggers, workflow runs, events, artifacts, and UI; `services/llama-line` remains the model broker; `services/ocq` remains the OpenCode/Blacktower session adapter; workflow modules such as `workflows/changemaker` own domain policy. Blacktower remains a separate optional operator layer.
+The product direction is one monorepo with hard runtime boundaries: Switchyard owns triggers, workflow runs, events, artifacts, runtime orchestration, agent profiles, and UI; `services/llama-line` remains the model broker; `services/ocq` remains the OpenCode/session adapter; workflow modules such as `workflows/changemaker` own domain policy. Blacktower is now planned as a Switchyard-native set of agents/profiles rather than an external dependency.
 
 ## Monorepo layout
 
 ```txt
 backend/              Switchyard API, scheduler, runs, triggers, adapters
 web/                  Switchyard HUD dashboard
-services/ocq/         OpenCode/Blacktower session gateway
+services/ocq/         OpenCode session gateway
 services/llama-line/  model broker, queueing, upstream health
 workflows/changemaker/ first-party Changemaker workflow
-blacktower/           optional ignored checkout, not required for Switchyard
+blacktower/           legacy/reference checkout only, ignored when present
 ```
 
 ## Quick start
@@ -94,7 +94,7 @@ The backend exposes a workflow/run API:
 - `POST /api/triggers/{id}/run`
 - `PATCH /api/triggers/{id}`
 
-The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module shells for queues, sessions, logs/search, prompts, config, agents, and skills so the imported `llama-line`, OCQ, Changemaker, and optional Blacktower UI surfaces have Switchyard homes. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
+The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module shells for queues, sessions, logs/search, prompts, config, agents, and skills so the imported `llama-line`, OCQ, Changemaker, and planned Blacktower agent surfaces have Switchyard homes. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.
 
