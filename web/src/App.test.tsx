@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import App from './App';
 
 describe('App', () => {
-  it('renders the Switchyard heading', () => {
-expect(renderToString(<App />)).toContain('Route work through the right lane');
+  it('renders the Switchyard control-plane dashboard', () => {
+    const html = renderToString(<App />);
+
+    expect(html).toContain('Switchyard control-plane suite');
+    expect(html).toContain('UI → Switchyard → llama-line → OCQ → Blacktower');
   });
 });

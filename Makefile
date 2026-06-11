@@ -12,7 +12,7 @@ deps:
 verify: deps fmt lint test build compose-config open-pilot-check ## Run all checks
 
 fmt:
-	@git ls-files --cached --others --exclude-standard 'backend/*.go' | xargs -r gofmt -w
+	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
 	pnpm --dir web run format
 
 lint:

@@ -20,6 +20,7 @@ blacktower/
 changemaker/
 llama-line/
 ocq/
+reference-services/
 
 # OS / editors
 .DS_Store
@@ -82,5 +83,4 @@ postgres-data/
 *.tfstate
 *.tfstate.*
 
-# Keep generated lockfiles only when a derived template intentionally owns them.
-# Remove ignore rules above as needed for application repositories.
+# Keep local reference checkouts, generated caches, and secrets out of git.
