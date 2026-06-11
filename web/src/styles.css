@@ -1,6 +1,78 @@
 @import "tailwindcss";
+@config "../tailwind.config.js";
 
 :root {
   color-scheme: dark;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-stack);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: hsl(var(--void));
+  color: hsl(var(--ink));
+  font-family: var(--font-stack);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: hsl(var(--signal));
+  color: hsl(var(--void));
+}
+
+:focus-visible {
+  outline: 2px solid hsl(var(--pulse));
+  outline-offset: 2px;
+}
+
+@layer utilities {
+  .hud-panel {
+    border: 2px solid hsl(var(--border));
+    background: hsl(var(--panel));
+    box-shadow: 6px 6px 0 hsl(var(--shadow));
+  }
+
+  .hud-panel-strong {
+    border: 2px solid hsl(var(--border));
+    background: hsl(var(--panel-strong));
+    box-shadow: 8px 8px 0 hsl(var(--shadow));
+  }
+
+  .hud-label {
+    font-size: 0.6875rem;
+    letter-spacing: 0.3em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .hud-chip {
+    align-items: center;
+    border: 1px solid hsl(var(--border-faint));
+    display: inline-flex;
+    gap: 0.5rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .hud-led {
+    border-radius: 9999px;
+    display: inline-block;
+    height: 0.5rem;
+    width: 0.5rem;
+  }
 }
