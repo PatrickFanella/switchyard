@@ -1,6 +1,6 @@
 # Switchyard One-Repo Control Plane
 
-Switchyard is becoming one repository for the suite, but not one blended runtime.
+Switchyard is one repository for the suite, but not one blended runtime. Blacktower remains a separate optional operator layer.
 
 ## Product shape
 
@@ -8,9 +8,9 @@ Switchyard is becoming one repository for the suite, but not one blended runtime
 Switchyard UI
   -> Switchyard control plane
     -> workflow modules: open-pilot, changemaker, devlog
-    -> llama-line: model routing, queueing, upstream health, observability
-      -> ocq: OpenCode + Blacktower session/tmux adapter
-        -> blacktower: OpenCode agents, skills, plugins, operator environment
+    -> services/llama-line: model routing, queueing, upstream health, observability
+      -> services/ocq: OpenCode + optional Blacktower session/tmux adapter
+        -> external blacktower: OpenCode agents, skills, plugins, operator environment
 ```
 
 ## Hard boundaries
@@ -18,18 +18,18 @@ Switchyard UI
 - UI talks to Switchyard APIs only.
 - Switchyard owns triggers, schedules, run records, events, artifacts, and the workflow registry.
 - Workflows own domain policy: Gitea policy belongs to Open Pilot; content policy belongs to Changemaker/Devlog.
-- `llama-line` owns model routing and inference queues, not workflow semantics.
-- `ocq` owns OpenCode session reuse, request/session correlation, cancellation, and tmux binding.
-- `blacktower` owns the OpenCode distribution, agents, skills, plugins, and operator ergonomics.
+- `services/llama-line` owns model routing and inference queues, not workflow semantics.
+- `services/ocq` owns OpenCode session reuse, request/session correlation, cancellation, and tmux binding.
+- Blacktower owns the OpenCode distribution, agents, skills, plugins, and operator ergonomics. It is optional; Switchyard must run without it.
+- A future small Switchyard-native orchestrator/subagent layer may assign models from config/API input, but it should stay scoped to workflow execution and not replace Blacktower's full operator environment.
 
 ## Migration sequence
 
-1. Keep copied `blacktower`, `llama-line`, `ocq`, and `changemaker` checkouts as ignored references.
-2. Build Switchyard's control-plane API and UI around stable concepts: workflows, triggers, runs, events, artifacts, sessions, prompts, agents, and skills.
-3. Pull timers out of app-specific workflows. Cron, interval, webhook, manual, and Gitea-poll triggers belong to Switchyard.
-4. Wrap existing workflow behavior through adapters before rewriting internals.
-5. Move first-party workflow code into Switchyard once the API contracts are stable.
-6. Remove ignored reference checkouts after their useful code has been ported or replaced.
+1. Import OCQ and llama-line under `services/` and Changemaker under `workflows/`.
+2. Keep Blacktower as an ignored optional checkout/integration.
+3. Build Switchyard's control-plane API and UI around stable concepts: workflows, triggers, runs, events, artifacts, sessions, prompts, agents, and skills.
+4. Pull timers out of app-specific workflows. Cron, interval, webhook, manual, and Gitea-poll triggers belong to Switchyard.
+5. Wrap existing behavior through adapters before rewriting internals.
 
 ## Current MVP
 
@@ -43,4 +43,4 @@ The backend has durable Postgres storage when `DATABASE_URL` is configured and a
 - `POST /api/runs`
 - `POST /api/triggers/{id}/run`
 
-This MVP records run envelopes and events. Adapter execution is the next boundary to implement.
+This MVP records run envelopes and events, runs opt-in adapters, probes imported services, and keeps external Blacktower optional.

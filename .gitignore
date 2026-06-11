@@ -15,11 +15,8 @@ id_ed25519
 .opencode/
 opencode-data/
 
-# Reference service checkouts copied into this repo for local analysis
+# Optional external Blacktower checkout and temporary reference services
 /blacktower/
-/changemaker/
-/llama-line/
-/ocq/
 /reference-services/
 
 # OS / editors

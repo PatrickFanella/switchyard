@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is Switchyard, a Go full-stack project with Vite React TypeScript, Postgres, Docker, and Open Pilot conventions.
+This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScript, Postgres, Docker, Open Pilot conventions, imported service modules, and first-party workflows.
 
 ## Priorities
 
@@ -11,13 +11,16 @@ This repository is Switchyard, a Go full-stack project with Vite React TypeScrip
 
 ## Architecture Direction
 
-Switchyard is moving toward a one-repo control-plane suite. Preserve hard boundaries:
+Switchyard is a one-repo control-plane suite. Preserve hard boundaries even when code lives in one Git repository:
 
 - Switchyard owns triggers, workflow runs, events, artifacts, and UI/API.
-- `llama-line` owns model routing, queueing, upstream health, and observability.
-- OCQ owns OpenCode/Blacktower session and tmux adapter behavior.
-- Blacktower owns OpenCode agents, skills, plugins, and operator environment.
+- `services/llama-line` owns model routing, queueing, upstream health, and observability.
+- `services/ocq` owns OpenCode/Blacktower session and tmux adapter behavior.
+- `workflows/changemaker` owns Changemaker content/workflow policy.
+- Blacktower remains a separate optional checkout/integration; Switchyard must function without it.
 - Open Pilot, Changemaker, and Devlog are first-party workflows that should not own generic scheduling.
+
+Future direction: Switchyard may grow a small built-in orchestrator/subagent runtime with assignable models from config or API input, but it should not absorb Blacktower's full plugin/skill/operator environment.
 
 ## Verification
 
