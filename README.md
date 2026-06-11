@@ -20,11 +20,26 @@ make docker-up        # start the local stack
 make docker-down      # stop the local stack
 ```
 
+Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.
+
+Docker port defaults are configurable through `.env` or inline variables:
+
+```bash
+WEB_PORT=8081 API_PORT=18080 POSTGRES_PORT=5432 make docker-up
+```
+
 ## Control-plane storage
 
 The API uses Postgres when `DATABASE_URL` is set and runs embedded migrations on startup. Without `DATABASE_URL`, it falls back to in-memory storage for local UI/API development.
 
-The Docker Compose stack sets `DATABASE_URL` for the API service.
+The Docker Compose stack sets `DATABASE_URL` for the API service using libpq keyword syntax so generated passwords with URL-significant characters do not need escaping.
+
+Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
+
+```bash
+CONFIRM=1 make docker-reset
+make docker-up
+```
 
 ## Control-plane MVP
 
@@ -37,6 +52,8 @@ The backend exposes a workflow/run API:
 - `GET /api/runs/{id}`
 - `POST /api/runs`
 - `POST /api/triggers/{id}/run`
+
+The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo migration plan.
 

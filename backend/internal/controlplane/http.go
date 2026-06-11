@@ -20,13 +20,13 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"workflows": a.store.ListWorkflows()})
+		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
 	mux.HandleFunc("GET /api/triggers", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"triggers": a.store.ListTriggers()})
+		writeJSON(w, http.StatusOK, map[string]any{"triggers": triggersOrEmpty(a.store.ListTriggers())})
 	})
 	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"runs": a.store.ListRuns()})
+		writeJSON(w, http.StatusOK, map[string]any{"runs": runsOrEmpty(a.store.ListRuns())})
 	})
 	mux.HandleFunc("POST /api/runs", a.createRun)
 	mux.HandleFunc("GET /api/runs/", a.runDetail)
@@ -59,7 +59,44 @@ func (a *API) runDetail(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, err)
 		return
 	}
+	detail.Events = eventsOrEmpty(detail.Events)
+	detail.Artifacts = artifactsOrEmpty(detail.Artifacts)
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func workflowsOrEmpty(items []Workflow) []Workflow {
+	if items == nil {
+		return []Workflow{}
+	}
+	return items
+}
+
+func triggersOrEmpty(items []Trigger) []Trigger {
+	if items == nil {
+		return []Trigger{}
+	}
+	return items
+}
+
+func runsOrEmpty(items []Run) []Run {
+	if items == nil {
+		return []Run{}
+	}
+	return items
+}
+
+func eventsOrEmpty(items []RunEvent) []RunEvent {
+	if items == nil {
+		return []RunEvent{}
+	}
+	return items
+}
+
+func artifactsOrEmpty(items []Artifact) []Artifact {
+	if items == nil {
+		return []Artifact{}
+	}
+	return items
 }
 
 func (a *API) runTrigger(w http.ResponseWriter, r *http.Request) {

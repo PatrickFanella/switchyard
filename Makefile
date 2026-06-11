@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify deps fmt lint test build clean compose-config open-pilot-check api-run api-build api-test api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down
+.PHONY: help verify deps fmt lint test build clean compose-config open-pilot-check api-run api-build api-test api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -71,6 +71,10 @@ docker-up: ## Start local Switchyard stack
 
 docker-down: ## Stop local Switchyard stack
 	docker compose down
+
+docker-reset: ## Stop stack and remove local Postgres data volume; requires CONFIRM=1
+	@test "$(CONFIRM)" = "1" || (echo "Refusing to remove database volume. Rerun with CONFIRM=1 make docker-reset" && exit 1)
+	docker compose down -v
 
 clean: ## Remove generated build artifacts
 	rm -rf web/dist backend/app

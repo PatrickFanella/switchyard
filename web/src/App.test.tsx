@@ -8,5 +8,8 @@ describe('App', () => {
 
     expect(html).toContain('Switchyard control-plane suite');
     expect(html).toContain('UI → Switchyard → llama-line → OCQ → Blacktower');
+    expect(html).toContain('Open Pilot');
+    expect(html).toContain('Run detail');
+    expect(html).toContain('Events and artifacts');
   });
 });
