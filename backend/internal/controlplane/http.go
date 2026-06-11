@@ -13,16 +13,22 @@ type API struct {
 	store        Store
 	runner       *Runner
 	adapterProbe AdapterProbe
+	scheduler    *Scheduler
 }
 
 func NewAPI(store Store, runner *Runner) *API {
 	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe()}
 }
 
+func (a *API) SetScheduler(scheduler *Scheduler) {
+	a.scheduler = scheduler
+}
+
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/adapters", a.adapters)
+	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
@@ -33,8 +39,10 @@ func (a *API) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"runs": runsOrEmpty(a.store.ListRuns())})
 	})
 	mux.HandleFunc("POST /api/runs", a.createRun)
-	mux.HandleFunc("GET /api/runs/", a.runDetail)
-	mux.HandleFunc("POST /api/triggers/", a.runTrigger)
+	mux.HandleFunc("GET /api/runs/", a.runAction)
+	mux.HandleFunc("POST /api/runs/", a.runAction)
+	mux.HandleFunc("POST /api/triggers/", a.triggerAction)
+	mux.HandleFunc("PATCH /api/triggers/", a.triggerAction)
 	return withCORS(mux)
 }
 
@@ -42,6 +50,14 @@ func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	writeJSON(w, http.StatusOK, a.adapterProbe.Payload(ctx))
+}
+
+func (a *API) schedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if a.scheduler == nil {
+		writeJSON(w, http.StatusOK, SchedulerStatus{Enabled: false, Running: false})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.scheduler.Status())
 }
 
 func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
@@ -58,10 +74,27 @@ func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
 }
 
-func (a *API) runDetail(w http.ResponseWriter, r *http.Request) {
+func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/runs/")
-	if id == "" || strings.Contains(id, "/") {
+	if id == "" {
 		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if actionRunID, action, ok := strings.Cut(id, "/"); ok {
+		switch {
+		case r.Method == http.MethodPost && action == "retry":
+			a.retryRun(w, r, actionRunID)
+			return
+		case r.Method == http.MethodPost && action == "cancel":
+			a.cancelRun(w, actionRunID)
+			return
+		default:
+			writeError(w, http.StatusNotFound, "run action not found")
+			return
+		}
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusNotFound, "run action not found")
 		return
 	}
 	detail, err := a.store.RunDetail(id)
@@ -72,6 +105,40 @@ func (a *API) runDetail(w http.ResponseWriter, r *http.Request) {
 	detail.Events = eventsOrEmpty(detail.Events)
 	detail.Artifacts = artifactsOrEmpty(detail.Artifacts)
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
+	detail, err := a.store.RunDetail(id)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	run, err := a.runner.RunOnce(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: detail.Run.Inputs})
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	_, _ = a.store.AddEvent(run.ID, "run.retry", "Retried from "+id)
+	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+}
+
+func (a *API) cancelRun(w http.ResponseWriter, id string) {
+	detail, err := a.store.RunDetail(id)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	if detail.Run.Status != RunQueued && detail.Run.Status != RunRunning {
+		writeError(w, http.StatusBadRequest, "only queued or running runs can be canceled")
+		return
+	}
+	_, _ = a.store.AddEvent(id, "run.cancel.requested", "External adapter cancellation is not wired yet; marking Switchyard run canceled")
+	run, err := a.store.FinishRun(id, RunCanceled, "Canceled by operator")
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]Run{"run": run})
 }
 
 func workflowsOrEmpty(items []Workflow) []Workflow {
@@ -289,10 +356,18 @@ func staticAdapterPayload() AdapterPayload {
 	}
 }
 
-func (a *API) runTrigger(w http.ResponseWriter, r *http.Request) {
+func (a *API) triggerAction(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/triggers/")
-	triggerID, action, ok := strings.Cut(path, "/")
-	if !ok || action != "run" || triggerID == "" {
+	triggerID, action, hasAction := strings.Cut(path, "/")
+	if triggerID == "" {
+		writeError(w, http.StatusNotFound, "trigger not found")
+		return
+	}
+	if r.Method == http.MethodPatch && !hasAction {
+		a.updateTrigger(w, r, triggerID)
+		return
+	}
+	if r.Method != http.MethodPost || !hasAction || action != "run" {
 		writeError(w, http.StatusNotFound, "trigger action not found")
 		return
 	}
@@ -302,6 +377,26 @@ func (a *API) runTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+}
+
+func (a *API) updateTrigger(w http.ResponseWriter, r *http.Request, triggerID string) {
+	var input struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if input.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled is required")
+		return
+	}
+	trigger, err := a.store.SetTriggerEnabled(triggerID, *input.Enabled)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]Trigger{"trigger": trigger})
 }
 
 func writeControlError(w http.ResponseWriter, err error) {
@@ -329,7 +424,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "content-type, authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

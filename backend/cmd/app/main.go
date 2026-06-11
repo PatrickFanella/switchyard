@@ -50,6 +50,7 @@ func main() {
 			interval = parsed
 		}
 		scheduler := controlplane.NewScheduler(store, runner, interval, nil)
+		api.SetScheduler(scheduler)
 		scheduler.Start(context.Background())
 		log.Printf("switchyard scheduler enabled interval=%s", interval)
 	}

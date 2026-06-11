@@ -60,6 +60,101 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 	}
 }
 
+func TestAPIUpdatesTriggerEnabled(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/triggers/daily-changemaker", bytes.NewBufferString(`{"enabled":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH trigger error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	trigger, ok := store.Trigger("daily-changemaker")
+	if !ok || !trigger.Enabled {
+		t.Fatalf("trigger = %+v ok=%v", trigger, ok)
+	}
+}
+
+func TestAPIRetryAndCancelRun(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", TriggerID: "manual-open-pilot"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/cancel", nil)
+	if err != nil {
+		t.Fatalf("new cancel request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST cancel error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status = %d", resp.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/retry", nil)
+	if err != nil {
+		t.Fatalf("new retry request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST retry error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("retry status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode retry: %v", err)
+	}
+	if body.Run.ID == run.ID || body.Run.TriggerID != run.TriggerID || body.Run.Status != controlplane.RunSucceeded {
+		t.Fatalf("retry run = %+v original = %+v", body.Run, run)
+	}
+}
+
+func TestAPISchedulerStatusDisabledByDefault(t *testing.T) {
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/scheduler")
+	if err != nil {
+		t.Fatalf("GET scheduler error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body controlplane.SchedulerStatus
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode scheduler: %v", err)
+	}
+	if body.Enabled || body.Running {
+		t.Fatalf("scheduler = %+v", body)
+	}
+}
+
 func TestAPIAdaptersEndpointShape(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OCQ_BASE_URL", "")
