@@ -1,0 +1,80 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Open Pilot / agent state
+.open-pilot/
+.opencode/
+opencode-data/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Docker / local data
+data/
+tmp/
+.cache/
+
+# Node / TypeScript / React / Vite / Tailwind
+node_modules/
+dist/
+build/
+.next/
+.nuxt/
+.svelte-kit/
+coverage/
+*.tsbuildinfo
+vite.config.*.timestamp-*
+vite.config.*.mjs
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+htmlcov/
+*.egg-info/
+
+# Go
+bin/
+cover.out
+coverage.out
+
+# Rust
+target/
+Cargo.lock
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Terraform / infra
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Keep generated lockfiles only when a derived template intentionally owns them.
+# Remove ignore rules above as needed for application repositories.
