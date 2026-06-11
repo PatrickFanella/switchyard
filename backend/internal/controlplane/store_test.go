@@ -1,6 +1,7 @@
 package controlplane_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestRunnerCreatesRunEnvelope(t *testing.T) {
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
-	runner := controlplane.NewRunner(store)
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{})
 
 	run, err := runner.RunTrigger(t.Context(), "manual-open-pilot")
 	if err != nil {
@@ -52,5 +53,36 @@ func TestRunnerCreatesRunEnvelope(t *testing.T) {
 	}
 	if len(detail.Events) != 4 {
 		t.Fatalf("len(events) = %d, want 4: %+v", len(detail.Events), detail.Events)
+	}
+}
+
+func TestRunnerDispatchesChangemakerExecutor(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{
+		"changemaker": controlplane.WorkflowExecutorFunc(func(_ context.Context, run controlplane.Run) (controlplane.WorkflowExecution, error) {
+			if run.WorkflowID != "changemaker" {
+				t.Fatalf("workflow = %s", run.WorkflowID)
+			}
+			return controlplane.WorkflowExecution{Summary: "dispatched test changemaker", Events: []controlplane.WorkflowExecutionEvent{{Type: "changemaker.accepted", Message: "accepted"}}}, nil
+		}),
+	})
+
+	run, err := runner.RunTrigger(t.Context(), "daily-changemaker")
+	if err != nil {
+		t.Fatalf("RunTrigger() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || run.Summary != "dispatched test changemaker" {
+		t.Fatalf("run = %+v", run)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if detail.Events[2].Type != "changemaker.accepted" {
+		t.Fatalf("events = %+v", detail.Events)
 	}
 }
