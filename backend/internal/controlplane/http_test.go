@@ -2,6 +2,7 @@ package controlplane_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,41 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 	}
 }
 
+func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/workflows/open-pilot/run", "application/json", bytes.NewBufferString(`{"repo":"OWNER/REPO","issue":"123"}`))
+	if err != nil {
+		t.Fatalf("POST workflow error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if body.Run.WorkflowID != "open-pilot" || body.Run.Inputs["repo"] != "OWNER/REPO" || body.Run.Inputs["issue"] != "123" {
+		t.Fatalf("run = %+v", body.Run)
+	}
+}
+
+type fakeCanceler struct{ called bool }
+
+func (f *fakeCanceler) Cancel(context.Context, controlplane.Run) controlplane.CancelResult {
+	f.called = true
+	return controlplane.CancelResult{Events: []controlplane.WorkflowExecutionEvent{{Type: "fake.cancel", Message: "called"}}}
+}
+
 func TestAPIUpdatesTriggerEnabled(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -93,6 +129,8 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	canceler := &fakeCanceler{}
+	api.SetCancelDispatcher(canceler)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 
@@ -111,6 +149,9 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("cancel status = %d", resp.StatusCode)
+	}
+	if !canceler.called {
+		t.Fatal("canceler was not called")
 	}
 
 	req, err = http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/retry", nil)

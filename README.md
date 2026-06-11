@@ -49,7 +49,14 @@ Workflow execution adapters are opt-in:
 - Open Pilot: `OPEN_PILOT_COMMAND` enables `open-pilot run --repo <repo> --issue <issue> --json`; runs must provide `repo` and `issue` inputs.
 - Devlog: `manual-devlog` generates a Markdown artifact from recent Switchyard run history. If `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, it asks the model `DEVLOG_MODEL` to polish the Markdown; otherwise it writes a deterministic local summary.
 
-Run cancellation is currently Switchyard-side: queued/running runs can be marked canceled and an event is recorded. True upstream cancellation will be added per adapter when Changemaker, OCQ, llama-line, and Open Pilot expose safe cancel/abort APIs.
+Switchyard also ships its own CLI contract:
+
+```bash
+switchyard open-pilot run --repo OWNER/REPO --issue 123 --json --api-url http://127.0.0.1:8080
+switchyard open-pilot cancel --run RUN_ID --json --api-url http://127.0.0.1:8080
+```
+
+Run cancellation is Switchyard-side plus best-effort upstream cancellation. Switchyard calls Changemaker `POST /api/runs/cancel`, OCQ abort endpoints when `ocq_request_id` is present, llama-line `DELETE /admin/queue/{request_id}` when `llama_line_request_id` is present, and `OPEN_PILOT_COMMAND cancel --run <id> --json` when configured.
 
 Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
 
@@ -64,6 +71,7 @@ The backend exposes a workflow/run API:
 
 - `GET /healthz`
 - `GET /api/workflows`
+- `POST /api/workflows/open-pilot/run`
 - `GET /api/triggers`
 - `GET /api/runs`
 - `GET /api/runs/{id}`

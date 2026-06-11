@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify deps fmt lint test build clean compose-config open-pilot-check api-run api-build api-test api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset
+.PHONY: help verify deps fmt lint test build clean compose-config open-pilot-check api-run api-build cli-build api-test api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -33,8 +33,11 @@ web-test: ## Run Switchyard web tests
 
 build: api-build web-build ## Build backend and web
 
-api-build: ## Build Switchyard API binary
+api-build: cli-build ## Build Switchyard API binary
 	cd backend && go build ./cmd/app
+
+cli-build: ## Build Switchyard CLI binary
+	cd backend && go build ./cmd/switchyard
 
 web-build: ## Build Switchyard web UI
 	pnpm --dir web run build

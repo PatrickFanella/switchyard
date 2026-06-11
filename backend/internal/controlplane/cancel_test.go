@@ -1,0 +1,53 @@
+package controlplane_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
+)
+
+func TestEnvCancelDispatcherCallsChangemaker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/runs/cancel" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("CHANGEMAKER_BASE_URL", server.URL)
+	t.Setenv("CHANGEMAKER_ADMIN_TOKEN", "token")
+
+	result := controlplane.NewEnvCancelDispatcher().Cancel(t.Context(), controlplane.Run{WorkflowID: "changemaker"})
+	if len(result.Events) != 1 || result.Events[0].Type != "changemaker.cancel.accepted" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestEnvCancelDispatcherCallsOCQAndLlamaLine(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ocq/requests/ocq-1/abort" || r.Method != http.MethodPost {
+			t.Fatalf("ocq request = %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(ocq.Close)
+	llama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/admin/queue/llama-1" || r.Method != http.MethodDelete {
+			t.Fatalf("llama request = %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(llama.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("LLAMA_LINE_BASE_URL", llama.URL)
+
+	result := controlplane.NewEnvCancelDispatcher().Cancel(t.Context(), controlplane.Run{WorkflowID: "devlog", Inputs: map[string]string{"ocq_request_id": "ocq-1", "llama_line_request_id": "llama-1"}})
+	if len(result.Events) != 2 || result.Events[0].Type != "ocq.abort.accepted" || result.Events[1].Type != "llama-line.drop.accepted" {
+		t.Fatalf("result = %+v", result)
+	}
+}

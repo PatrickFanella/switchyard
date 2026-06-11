@@ -13,11 +13,16 @@ type API struct {
 	store        Store
 	runner       *Runner
 	adapterProbe AdapterProbe
+	canceler     CancelDispatcher
 	scheduler    *Scheduler
 }
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), canceler: NewEnvCancelDispatcher()}
+}
+
+func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
+	a.canceler = canceler
 }
 
 func (a *API) SetScheduler(scheduler *Scheduler) {
@@ -32,6 +37,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
+	mux.HandleFunc("POST /api/workflows/open-pilot/run", a.runOpenPilotWorkflow)
 	mux.HandleFunc("GET /api/triggers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"triggers": triggersOrEmpty(a.store.ListTriggers())})
 	})
@@ -67,6 +73,27 @@ func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run, err := a.runner.RunOnce(r.Context(), input)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+}
+
+func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Repo  string `json:"repo"`
+		Issue string `json:"issue"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if input.Repo == "" || input.Issue == "" {
+		writeError(w, http.StatusBadRequest, "repo and issue are required")
+		return
+	}
+	run, err := a.runner.RunOnce(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "manual-open-pilot", Inputs: map[string]string{"repo": input.Repo, "issue": input.Issue}})
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -132,7 +159,12 @@ func (a *API) cancelRun(w http.ResponseWriter, id string) {
 		writeError(w, http.StatusBadRequest, "only queued or running runs can be canceled")
 		return
 	}
-	_, _ = a.store.AddEvent(id, "run.cancel.requested", "External adapter cancellation is not wired yet; marking Switchyard run canceled")
+	_, _ = a.store.AddEvent(id, "run.cancel.requested", "Operator requested cancellation")
+	if a.canceler != nil {
+		for _, event := range a.canceler.Cancel(context.Background(), detail.Run).Events {
+			_, _ = a.store.AddEvent(id, event.Type, event.Message)
+		}
+	}
 	run, err := a.store.FinishRun(id, RunCanceled, "Canceled by operator")
 	if err != nil {
 		writeControlError(w, err)
