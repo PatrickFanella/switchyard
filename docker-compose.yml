@@ -19,6 +19,7 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
+      LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

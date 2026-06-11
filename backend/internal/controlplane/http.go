@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,20 +10,19 @@ import (
 )
 
 type API struct {
-	store  Store
-	runner *Runner
+	store        Store
+	runner       *Runner
+	adapterProbe AdapterProbe
 }
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe()}
 }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
-	mux.HandleFunc("GET /api/adapters", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, staticAdapterPayload())
-	})
+	mux.HandleFunc("GET /api/adapters", a.adapters)
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
@@ -36,6 +36,12 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/", a.runDetail)
 	mux.HandleFunc("POST /api/triggers/", a.runTrigger)
 	return withCORS(mux)
+}
+
+func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, a.adapterProbe.Payload(ctx))
 }
 
 func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
