@@ -26,6 +26,7 @@ type Store interface {
 	StartRun(string) (Run, error)
 	FinishRun(string, RunStatus, string) (Run, error)
 	AddEvent(string, string, string) (RunEvent, error)
+	AddArtifact(CreateArtifactInput) (Artifact, error)
 	ListRuns() []Run
 	RunDetail(string) (RunDetail, error)
 }
@@ -215,6 +216,22 @@ func (s *MemoryStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 	e := RunEvent{ID: newID("evt"), RunID: runID, Type: typ, Message: message, CreatedAt: s.now().UTC()}
 	s.events[runID] = append(s.events[runID], e)
 	return e, nil
+}
+
+func (s *MemoryStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
+	if input.RunID == "" || input.Name == "" || input.Kind == "" || input.URI == "" {
+		return Artifact{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.runs[input.RunID]; !ok {
+		return Artifact{}, ErrNotFound
+	}
+	now := s.now().UTC()
+	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, CreatedAt: now}
+	s.artifacts[input.RunID] = append(s.artifacts[input.RunID], artifact)
+	s.events[input.RunID] = append(s.events[input.RunID], RunEvent{ID: newID("evt"), RunID: input.RunID, Type: "artifact.created", Message: input.Name + " (" + input.Kind + ")", CreatedAt: now})
+	return artifact, nil
 }
 
 func (s *MemoryStore) ListRuns() []Run {

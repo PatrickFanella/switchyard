@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -51,6 +53,62 @@ func TestEnvWorkflowExecutorsDispatchesChangemaker(t *testing.T) {
 	}
 	if execution.Summary != "Dispatched Changemaker run" || len(execution.Events) != 2 {
 		t.Fatalf("execution = %+v", execution)
+	}
+}
+
+func TestEnvWorkflowExecutorsDispatchesOpenPilotCommand(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.txt")
+	scriptPath := filepath.Join(dir, "open-pilot-test")
+	script := "#!/bin/sh\nprintf '%s\n' \"$*\" > \"" + logPath + "\"\nprintf '{\"ok\":true}'\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	t.Setenv("OPEN_PILOT_COMMAND", scriptPath)
+
+	executor := controlplane.NewEnvWorkflowExecutors().ExecutorFor("open-pilot")
+	execution, err := executor.Execute(t.Context(), controlplane.Run{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "PatrickFanella/switchyard", "issue": "42"}})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if string(args) != "run --repo PatrickFanella/switchyard --issue 42 --json\n" {
+		t.Fatalf("args = %q", string(args))
+	}
+	if execution.Summary != "Dispatched Open Pilot issue 42" || execution.Events[1].Type != "open-pilot.accepted" {
+		t.Fatalf("execution = %+v", execution)
+	}
+}
+
+func TestRunnerGeneratesDevlogArtifact(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	seed, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if _, err := store.FinishRun(seed.ID, controlplane.RunSucceeded, "seed run complete"); err != nil {
+		t.Fatalf("FinishRun() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunTrigger(t.Context(), "manual-devlog")
+	if err != nil {
+		t.Fatalf("RunTrigger() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || run.Summary != "Generated Devlog markdown artifact" {
+		t.Fatalf("run = %+v", run)
+	}
+	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Kind != "markdown" || detail.Artifacts[0].Name != "devlog.md" {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
 

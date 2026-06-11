@@ -83,6 +83,13 @@ type Artifact struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type CreateArtifactInput struct {
+	RunID string `json:"run_id"`
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	URI   string `json:"uri"`
+}
+
 type RunDetail struct {
 	Run       Run        `json:"run"`
 	Events    []RunEvent `json:"events"`

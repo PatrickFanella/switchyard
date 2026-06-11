@@ -20,6 +20,7 @@ services:
     environment:
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
       LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-}
+      LLAMA_LINE_API_KEY: ${LLAMA_LINE_API_KEY:-}
       OCQ_BASE_URL: ${OCQ_BASE_URL:-}
       OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-}
       BLACKTOWER_BASE_URL: ${BLACKTOWER_BASE_URL:-}
@@ -27,6 +28,8 @@ services:
       CHANGEMAKER_ADMIN_TOKEN: ${CHANGEMAKER_ADMIN_TOKEN:-}
       SWITCHYARD_SCHEDULER_ENABLED: ${SWITCHYARD_SCHEDULER_ENABLED:-false}
       SWITCHYARD_SCHEDULER_INTERVAL: ${SWITCHYARD_SCHEDULER_INTERVAL:-1m}
+      OPEN_PILOT_COMMAND: ${OPEN_PILOT_COMMAND:-}
+      DEVLOG_MODEL: ${DEVLOG_MODEL:-opencode:gpt-5.5}
     depends_on:
       postgres:
         condition: service_healthy

@@ -206,6 +206,30 @@ func (s *PostgresStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 	return e, mapPgErr(err)
 }
 
+func (s *PostgresStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
+	if input.RunID == "" || input.Name == "" || input.Kind == "" || input.URI == "" {
+		return Artifact{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, CreatedAt: now}
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if _, err := tx.ExecContext(context.Background(), `insert into artifacts(id, run_id, name, kind, uri, created_at) values($1,$2,$3,$4,$5,$6)`, artifact.ID, artifact.RunID, artifact.Name, artifact.Kind, artifact.URI, artifact.CreatedAt); err != nil {
+		_ = tx.Rollback()
+		return Artifact{}, mapPgErr(err)
+	}
+	if _, err := tx.ExecContext(context.Background(), `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, newID("evt"), artifact.RunID, "artifact.created", artifact.Name+" ("+artifact.Kind+")", now); err != nil {
+		_ = tx.Rollback()
+		return Artifact{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Artifact{}, err
+	}
+	return artifact, nil
+}
+
 func (s *PostgresStore) ListRuns() []Run {
 	rows, err := s.db.QueryContext(context.Background(), `select id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, started_at, finished_at, summary from runs order by created_at desc, id desc`)
 	if err != nil {

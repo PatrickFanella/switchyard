@@ -8,7 +8,7 @@ type Runner struct {
 }
 
 func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
-	registry := ExecutorRegistry(NewEnvWorkflowExecutors())
+	registry := ExecutorRegistry(NewEnvWorkflowExecutors(store))
 	if len(executors) > 0 && executors[0] != nil {
 		registry = executors[0]
 	}
@@ -35,6 +35,10 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 	execution, err := executor.Execute(ctx, run)
 	for _, event := range execution.Events {
 		_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
+	}
+	for _, artifact := range execution.Artifacts {
+		artifact.RunID = run.ID
+		_, _ = r.store.AddArtifact(artifact)
 	}
 	if err != nil {
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())

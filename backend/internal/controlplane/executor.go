@@ -8,13 +8,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
 
 type WorkflowExecution struct {
-	Summary string
-	Events  []WorkflowExecutionEvent
+	Summary   string
+	Events    []WorkflowExecutionEvent
+	Artifacts []CreateArtifactInput
 }
 
 type WorkflowExecutionEvent struct {
@@ -43,15 +45,33 @@ func (r MapExecutorRegistry) ExecutorFor(workflowID string) WorkflowExecutor {
 }
 
 type EnvWorkflowExecutors struct {
+	store              Store
 	changemakerBaseURL string
 	changemakerToken   string
+	openPilotCommand   string
+	ocqBaseURL         string
+	ocqGatewayKey      string
+	llamaLineBaseURL   string
+	llamaLineAPIKey    string
+	devlogModel        string
 	client             *http.Client
 }
 
-func NewEnvWorkflowExecutors() *EnvWorkflowExecutors {
+func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
+	var configuredStore Store
+	if len(store) > 0 {
+		configuredStore = store[0]
+	}
 	return &EnvWorkflowExecutors{
+		store:              configuredStore,
 		changemakerBaseURL: strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
 		changemakerToken:   os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
+		openPilotCommand:   strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
+		ocqBaseURL:         strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
+		ocqGatewayKey:      os.Getenv("OCQ_GATEWAY_KEY"),
+		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		llamaLineAPIKey:    os.Getenv("LLAMA_LINE_API_KEY"),
+		devlogModel:        firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
 		client:             &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -61,9 +81,9 @@ func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	case string(WorkflowChangemaker):
 		return WorkflowExecutorFunc(e.executeChangemaker)
 	case string(WorkflowOpenPilot):
-		return WorkflowExecutorFunc(stubWorkflowExecution("open-pilot", "Open Pilot execution adapter is not wired yet"))
+		return WorkflowExecutorFunc(e.executeOpenPilot)
 	case string(WorkflowDevlog):
-		return WorkflowExecutorFunc(stubWorkflowExecution("devlog", "Devlog execution adapter is not wired yet"))
+		return WorkflowExecutorFunc(e.executeDevlog)
 	default:
 		return WorkflowExecutorFunc(stubWorkflowExecution(workflowID, "Workflow execution adapter is not wired yet"))
 	}
@@ -76,6 +96,35 @@ func stubWorkflowExecution(workflowID, message string) func(context.Context, Run
 			Events:  []WorkflowExecutionEvent{{Type: "workflow.stub", Message: message}},
 		}, nil
 	}
+}
+
+func (e *EnvWorkflowExecutors) executeOpenPilot(ctx context.Context, run Run) (WorkflowExecution, error) {
+	if e.openPilotCommand == "" {
+		return WorkflowExecution{Summary: "Recorded Switchyard run envelope for open-pilot", Events: []WorkflowExecutionEvent{{Type: "workflow.stub", Message: "OPEN_PILOT_COMMAND is not configured; expected command contract: open-pilot run --repo <owner/repo> --issue <number> --json"}}}, nil
+	}
+	repo := run.Inputs["repo"]
+	issue := run.Inputs["issue"]
+	if repo == "" || issue == "" {
+		return WorkflowExecution{}, fmt.Errorf("open-pilot requires run inputs repo and issue")
+	}
+	parts := strings.Fields(e.openPilotCommand)
+	if len(parts) == 0 {
+		return WorkflowExecution{}, fmt.Errorf("OPEN_PILOT_COMMAND is empty")
+	}
+	args := append(parts[1:], "run", "--repo", repo, "--issue", issue, "--json")
+	cmd := exec.CommandContext(ctx, parts[0], args...)
+	output, err := cmd.CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		if message == "" {
+			message = err.Error()
+		}
+		return WorkflowExecution{Events: []WorkflowExecutionEvent{{Type: "open-pilot.failed", Message: message}}}, fmt.Errorf("open-pilot dispatch failed: %w", err)
+	}
+	if message == "" {
+		message = "Open Pilot accepted issue " + issue
+	}
+	return WorkflowExecution{Summary: "Dispatched Open Pilot issue " + issue, Events: []WorkflowExecutionEvent{{Type: "workflow.dispatch", Message: strings.Join(append([]string{parts[0]}, args...), " ")}, {Type: "open-pilot.accepted", Message: message}}}, nil
 }
 
 func (e *EnvWorkflowExecutors) executeChangemaker(ctx context.Context, run Run) (WorkflowExecution, error) {
@@ -134,4 +183,102 @@ func changemakerRunRequest(inputs map[string]string) map[string]string {
 		request["until"] = inputs["until"]
 	}
 	return request
+}
+
+func (e *EnvWorkflowExecutors) executeDevlog(ctx context.Context, run Run) (WorkflowExecution, error) {
+	markdown := e.buildDevlogMarkdown(run)
+	if generated, err := e.generateDevlogWithLLM(ctx, markdown); err == nil && strings.TrimSpace(generated) != "" {
+		markdown = generated
+	}
+	uri := "data:text/markdown;charset=utf-8," + url.QueryEscape(markdown)
+	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}}, Artifacts: []CreateArtifactInput{{Name: "devlog.md", Kind: "markdown", URI: uri}}}, nil
+}
+
+func (e *EnvWorkflowExecutors) buildDevlogMarkdown(current Run) string {
+	var builder strings.Builder
+	builder.WriteString("# Switchyard Devlog\n\n")
+	builder.WriteString("Generated from Switchyard control-plane run history.\n\n")
+	builder.WriteString("## Current run\n\n- Workflow: " + current.WorkflowID + "\n")
+	if !current.CreatedAt.IsZero() {
+		builder.WriteString("- Created: " + current.CreatedAt.UTC().Format(time.RFC3339) + "\n")
+	}
+	builder.WriteString("\n## Recent runs\n\n")
+	if e.store == nil {
+		builder.WriteString("No store was attached to the devlog executor.\n")
+		return builder.String()
+	}
+	count := 0
+	for _, recent := range e.store.ListRuns() {
+		if recent.ID == current.ID || recent.WorkflowID == string(WorkflowDevlog) {
+			continue
+		}
+		builder.WriteString("- `" + recent.ID + "` " + recent.WorkflowID + " → " + string(recent.Status))
+		if recent.Summary != "" {
+			builder.WriteString(": " + recent.Summary)
+		}
+		builder.WriteString("\n")
+		if detail, err := e.store.RunDetail(recent.ID); err == nil {
+			for _, event := range detail.Events {
+				builder.WriteString("  - " + event.Type + ": " + event.Message + "\n")
+			}
+		}
+		count++
+		if count == 8 {
+			break
+		}
+	}
+	if count == 0 {
+		builder.WriteString("No recent non-devlog runs recorded yet.\n")
+	}
+	return builder.String()
+}
+
+func (e *EnvWorkflowExecutors) generateDevlogWithLLM(ctx context.Context, seed string) (string, error) {
+	baseURL := e.llamaLineBaseURL
+	token := e.llamaLineAPIKey
+	if baseURL == "" {
+		baseURL = e.ocqBaseURL
+		token = e.ocqGatewayKey
+	}
+	if baseURL == "" {
+		return "", fmt.Errorf("no LLM base URL configured")
+	}
+	endpoint, err := url.JoinPath(baseURL, "/v1/chat/completions")
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{"model": e.devlogModel, "stream": false, "messages": []map[string]string{{"role": "system", "content": "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."}, {"role": "user", "content": seed}}})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", fmt.Errorf("devlog model request failed: %s", resp.Status)
+	}
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return "", err
+	}
+	if len(decoded.Choices) == 0 {
+		return "", fmt.Errorf("devlog model response contained no choices")
+	}
+	return decoded.Choices[0].Message.Content, nil
 }

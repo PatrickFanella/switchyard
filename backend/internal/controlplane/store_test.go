@@ -86,3 +86,28 @@ func TestRunnerDispatchesChangemakerExecutor(t *testing.T) {
 		t.Fatalf("events = %+v", detail.Events)
 	}
 }
+
+func TestStoreAddsArtifacts(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	artifact, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "devlog.md", Kind: "markdown", URI: "data:text/markdown,hello"})
+	if err != nil {
+		t.Fatalf("AddArtifact() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Artifacts) != 1 || detail.Artifacts[0].ID != artifact.ID {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+	if detail.Events[len(detail.Events)-1].Type != "artifact.created" {
+		t.Fatalf("events = %+v", detail.Events)
+	}
+}
