@@ -19,6 +19,9 @@ func NewAPI(store Store, runner *Runner) *API {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
+	mux.HandleFunc("GET /api/adapters", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, staticAdapterPayload())
+	})
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
@@ -97,6 +100,78 @@ func artifactsOrEmpty(items []Artifact) []Artifact {
 		return []Artifact{}
 	}
 	return items
+}
+
+func staticAdapterPayload() AdapterPayload {
+	return AdapterPayload{
+		Queues: []AdapterQueue{{
+			ID:        "primary",
+			Name:      "Primary Control Queue",
+			Status:    "healthy",
+			Depth:     0,
+			Capacity:  100,
+			Workers:   1,
+			UpdatedAt: adapterSampleTime,
+		}},
+		Sessions: []AdapterSession{{
+			ID:         "session-1",
+			Name:       "Operator Session",
+			Surface:    "sessions",
+			Status:     "active",
+			WorkflowID: string(WorkflowOpenPilot),
+			StartedAt:  adapterSampleTime,
+			UpdatedAt:  adapterSampleTime,
+		}},
+		Logs: []AdapterLog{{
+			ID:        "log-1",
+			Level:     "info",
+			Source:    "controlplane",
+			Message:   "Adapter surface placeholder loaded",
+			CreatedAt: adapterSampleTime,
+		}},
+		Prompts: []AdapterPrompt{{
+			ID:          "prompt-1",
+			Name:        "Default Operator Prompt",
+			Surface:     "prompts",
+			Template:    "You are operating Switchyard control surfaces.",
+			Variables:   []string{"workflow", "status"},
+			Description: "Placeholder prompt contract for UI wiring.",
+		}},
+		Config: AdapterConfig{
+			Environment: "development",
+			Version:     "0.0.0-placeholder",
+			BaseURL:     "/api",
+			Features:    []string{"queues", "sessions", "logs", "prompts", "config", "agents", "skills", "health"},
+			Limits: map[string]int{
+				"max_concurrent_runs": 1,
+				"max_queue_depth":     100,
+			},
+		},
+		Agents: []AdapterAgent{{
+			ID:           "agent-1",
+			Name:         "Control Plane Agent",
+			Role:         "operator",
+			Status:       "online",
+			Model:        "placeholder",
+			Capabilities: []string{"run dispatch", "queue inspection", "surface rendering"},
+		}},
+		Skills: []AdapterSkill{{
+			ID:          "skill-1",
+			Name:        "Queue Inspector",
+			Category:    "control-plane",
+			Status:      "enabled",
+			Description: "Placeholder skill contract for future UI surfaces.",
+		}},
+		Health: AdapterHealth{
+			Status: "healthy",
+			Services: []AdapterService{{
+				Name:    "api",
+				Status:  "healthy",
+				Details: "static placeholder payload",
+			}},
+			CheckedAt: adapterSampleTime,
+		},
+	}
 }
 
 func (a *API) runTrigger(w http.ResponseWriter, r *http.Request) {

@@ -59,3 +59,53 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 		t.Fatalf("run = %+v", body.Run)
 	}
 }
+
+func TestAPIAdaptersEndpointShape(t *testing.T) {
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/adapters")
+	if err != nil {
+		t.Fatalf("GET adapters error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Queues   []controlplane.AdapterQueue   `json:"queues"`
+		Sessions []controlplane.AdapterSession `json:"sessions"`
+		Logs     []controlplane.AdapterLog     `json:"logs"`
+		Prompts  []controlplane.AdapterPrompt  `json:"prompts"`
+		Config   controlplane.AdapterConfig    `json:"config"`
+		Agents   []controlplane.AdapterAgent   `json:"agents"`
+		Skills   []controlplane.AdapterSkill   `json:"skills"`
+		Health   controlplane.AdapterHealth    `json:"health"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode adapters: %v", err)
+	}
+	if len(body.Queues) != 1 || body.Queues[0].Status != "healthy" {
+		t.Fatalf("queues = %+v", body.Queues)
+	}
+	if len(body.Sessions) != 1 || body.Sessions[0].Surface != "sessions" {
+		t.Fatalf("sessions = %+v", body.Sessions)
+	}
+	if len(body.Logs) != 1 || body.Logs[0].Level != "info" {
+		t.Fatalf("logs = %+v", body.Logs)
+	}
+	if len(body.Prompts) != 1 || body.Prompts[0].Name == "" {
+		t.Fatalf("prompts = %+v", body.Prompts)
+	}
+	if body.Config.Environment != "development" || len(body.Config.Features) == 0 {
+		t.Fatalf("config = %+v", body.Config)
+	}
+	if len(body.Agents) != 1 || len(body.Skills) != 1 {
+		t.Fatalf("agents/skills = %+v %+v", body.Agents, body.Skills)
+	}
+	if body.Health.Status != "healthy" || len(body.Health.Services) != 1 {
+		t.Fatalf("health = %+v", body.Health)
+	}
+}

@@ -11,5 +11,8 @@ describe('App', () => {
     expect(html).toContain('Open Pilot');
     expect(html).toContain('Run detail');
     expect(html).toContain('Events and artifacts');
+    expect(html).toContain('Queues');
+    expect(html).toContain('Agents');
+    expect(html).toContain('Skills');
   });
 });

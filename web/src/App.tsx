@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 type Workflow = {
   id: string;
@@ -61,7 +61,95 @@ type DashboardState = {
   workflows: Workflow[];
   triggers: Trigger[];
   runs: Run[];
+  adapters: AdapterPayload;
 };
+
+type AdapterPayload = {
+  queues: AdapterQueue[];
+  sessions: AdapterSession[];
+  logs: AdapterLog[];
+  prompts: AdapterPrompt[];
+  config: AdapterConfig;
+  agents: AdapterAgent[];
+  skills: AdapterSkill[];
+  health: AdapterHealth;
+};
+
+type AdapterQueue = {
+  id: string;
+  name: string;
+  status: string;
+  depth: number;
+  capacity: number;
+  workers: number;
+  updated_at: string;
+};
+
+type AdapterSession = {
+  id: string;
+  name: string;
+  surface: string;
+  status: string;
+  workflow_id?: string;
+  started_at: string;
+  updated_at: string;
+};
+
+type AdapterLog = {
+  id: string;
+  level: string;
+  source: string;
+  message: string;
+  created_at: string;
+};
+
+type AdapterPrompt = {
+  id: string;
+  name: string;
+  surface: string;
+  template: string;
+  variables: string[];
+  description: string;
+};
+
+type AdapterConfig = {
+  environment: string;
+  version: string;
+  base_url: string;
+  features: string[];
+  limits: Record<string, number>;
+};
+
+type AdapterAgent = {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  model: string;
+  capabilities: string[];
+};
+
+type AdapterSkill = {
+  id: string;
+  name: string;
+  category: string;
+  status: string;
+  description: string;
+};
+
+type AdapterHealth = {
+  status: string;
+  services: AdapterService[];
+  checked_at: string;
+};
+
+type AdapterService = {
+  name: string;
+  status: string;
+  details?: string;
+};
+
+type ViewID = 'overview' | 'queues' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 type DashboardResponse<T> = {
   [key: string]: T[] | null;
@@ -100,6 +188,28 @@ const starterWorkflows: Workflow[] = [
 ];
 
 const routingSteps = ['UI', 'Switchyard', 'llama-line', 'OCQ', 'Blacktower'];
+
+const views: { id: ViewID; label: string; source: string }[] = [
+  { id: 'overview', label: 'Overview', source: 'Switchyard' },
+  { id: 'queues', label: 'Queues', source: 'llama-line' },
+  { id: 'sessions', label: 'Sessions', source: 'OCQ / Blacktower' },
+  { id: 'logs', label: 'Logs / Search', source: 'llama-line / OCQ' },
+  { id: 'prompts', label: 'Prompts', source: 'Changemaker' },
+  { id: 'config', label: 'Config', source: 'Changemaker / broker' },
+  { id: 'agents', label: 'Agents', source: 'Blacktower' },
+  { id: 'skills', label: 'Skills', source: 'Blacktower' },
+];
+
+const emptyAdapters: AdapterPayload = {
+  queues: [],
+  sessions: [],
+  logs: [],
+  prompts: [],
+  config: { environment: 'unknown', version: 'unknown', base_url: '', features: [], limits: {} },
+  agents: [],
+  skills: [],
+  health: { status: 'unknown', services: [], checked_at: '' },
+};
 
 function apiPath(path: string) {
   return `${apiBase}${path}`;
@@ -170,10 +280,215 @@ function normalizeRunDetail(detail: RunDetail): RunDetail {
   };
 }
 
+function normalizeAdapters(adapters: AdapterPayload): AdapterPayload {
+  return {
+    ...emptyAdapters,
+    ...adapters,
+    queues: arrayOrEmpty(adapters.queues),
+    sessions: arrayOrEmpty(adapters.sessions),
+    logs: arrayOrEmpty(adapters.logs),
+    prompts: arrayOrEmpty(adapters.prompts),
+    agents: arrayOrEmpty(adapters.agents),
+    skills: arrayOrEmpty(adapters.skills),
+    health: adapters.health ?? emptyAdapters.health,
+    config: adapters.config ?? emptyAdapters.config,
+  };
+}
+
+function Field({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+      <div className="hud-label text-[hsl(var(--signal))]">{label}</div>
+      <div className="mt-2 break-words text-sm text-[hsl(var(--ink))]">{value}</div>
+    </div>
+  );
+}
+
+function EmptyState({ children }: { children: string }) {
+  return <p className="hud-panel bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">{children}</p>;
+}
+
+function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayload }) {
+  if (view === 'queues') {
+    return (
+      <FeatureFrame title="Queue cockpit" kicker="llama-line" note="Queue, upstream health, inflight work, and broker control surfaces from llama-line.">
+        {adapters.queues.length === 0 ? <EmptyState>No queue adapters have reported yet.</EmptyState> : null}
+        <div className="grid gap-4 lg:grid-cols-2">
+          {adapters.queues.map((queue) => (
+            <article key={queue.id} className="hud-panel-strong p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="hud-label text-[hsl(var(--faint))]">{queue.id}</p>
+                  <h3 className="mt-2 text-xl font-semibold text-[hsl(var(--ink))]">{queue.name}</h3>
+                </div>
+                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(queue.status)}`}>{queue.status}</span>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <Field label="Depth" value={queue.depth} />
+                <Field label="Capacity" value={queue.capacity} />
+                <Field label="Workers" value={queue.workers} />
+              </div>
+              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Updated {formatTime(queue.updated_at)}</p>
+            </article>
+          ))}
+        </div>
+      </FeatureFrame>
+    );
+  }
+
+  if (view === 'sessions') {
+    return (
+      <FeatureFrame title="Session console" kicker="OCQ / Blacktower" note="OpenCode/Blacktower session list, transcript targets, and future send-prompt controls.">
+        {adapters.sessions.length === 0 ? <EmptyState>No sessions have been reported yet.</EmptyState> : null}
+        <div className="grid gap-3">
+          {adapters.sessions.map((session) => (
+            <article key={session.id} className="hud-panel bg-[hsl(var(--panel-strong))] p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="hud-label text-[hsl(var(--faint))]">{session.surface}</p>
+                  <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{session.name}</h3>
+                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">{session.id}</p>
+                </div>
+                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(session.status)}`}>{session.status}</span>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <Field label="Workflow" value={session.workflow_id || 'unbound'} />
+                <Field label="Started" value={formatTime(session.started_at)} />
+                <Field label="Updated" value={formatTime(session.updated_at)} />
+              </div>
+            </article>
+          ))}
+        </div>
+      </FeatureFrame>
+    );
+  }
+
+  if (view === 'logs') {
+    return (
+      <FeatureFrame title="Logs and search" kicker="llama-line / OCQ" note="Unified request, log, audit, and semantic-search surface for all adapters.">
+        {adapters.logs.length === 0 ? <EmptyState>No logs are available yet.</EmptyState> : null}
+        <div className="grid gap-3" role="log" aria-live="polite">
+          {adapters.logs.map((log) => (
+            <article key={log.id} className="hud-panel bg-[hsl(var(--panel-strong))] px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(log.level)}`}>{log.level}</span>
+                <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{log.source} · {formatTime(log.created_at)}</span>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{log.message}</p>
+            </article>
+          ))}
+        </div>
+      </FeatureFrame>
+    );
+  }
+
+  if (view === 'prompts') {
+    return (
+      <FeatureFrame title="Prompt workbench" kicker="Changemaker" note="Editable workflow prompt inventory, variables, and future review controls.">
+        {adapters.prompts.length === 0 ? <EmptyState>No prompt templates have been reported yet.</EmptyState> : null}
+        <div className="grid gap-4 lg:grid-cols-2">
+          {adapters.prompts.map((prompt) => (
+            <article key={prompt.id} className="hud-panel-strong p-4">
+              <p className="hud-label text-[hsl(var(--faint))]">{prompt.surface}</p>
+              <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{prompt.name}</h3>
+              <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{prompt.description}</p>
+              <pre className="mt-4 overflow-auto border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] p-3 text-xs text-[hsl(var(--ink))]">{prompt.template}</pre>
+              <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Variables: {prompt.variables.join(', ') || 'none'}</p>
+            </article>
+          ))}
+        </div>
+      </FeatureFrame>
+    );
+  }
+
+  if (view === 'config') {
+    return (
+      <FeatureFrame title="Configuration matrix" kicker="Changemaker / broker" note="Runtime config, feature flags, limits, and future adapter edit surfaces.">
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="Environment" value={adapters.config.environment} />
+          <Field label="Version" value={adapters.config.version} />
+          <Field label="Base URL" value={adapters.config.base_url || 'not configured'} />
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <article className="hud-panel-strong p-4">
+            <h3 className="hud-label text-[hsl(var(--signal))]">Features</h3>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {adapters.config.features.map((feature) => <span key={feature} className="hud-chip bg-[hsl(var(--panel-soft))] px-2.5 py-1 text-[0.62rem] text-[hsl(var(--ink))]">{feature}</span>)}
+            </div>
+          </article>
+          <article className="hud-panel-strong p-4">
+            <h3 className="hud-label text-[hsl(var(--signal))]">Limits</h3>
+            <div className="mt-4 grid gap-2">
+              {Object.entries(adapters.config.limits).map(([key, value]) => <Field key={key} label={key} value={value} />)}
+            </div>
+          </article>
+        </div>
+      </FeatureFrame>
+    );
+  }
+
+  if (view === 'agents') {
+    return (
+      <FeatureFrame title="Agent board" kicker="Blacktower" note="Agent roles, model bindings, board controls, and capability inventory.">
+        {adapters.agents.length === 0 ? <EmptyState>No agents have been reported yet.</EmptyState> : null}
+        <div className="grid gap-4 lg:grid-cols-2">
+          {adapters.agents.map((agent) => (
+            <article key={agent.id} className="hud-panel-strong p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="hud-label text-[hsl(var(--faint))]">{agent.role}</p>
+                  <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{agent.name}</h3>
+                </div>
+                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(agent.status)}`}>{agent.status}</span>
+              </div>
+              <Field label="Model" value={agent.model} />
+              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Capabilities: {agent.capabilities.join(', ') || 'none'}</p>
+            </article>
+          ))}
+        </div>
+      </FeatureFrame>
+    );
+  }
+
+  return (
+    <FeatureFrame title="Skill registry" kicker="Blacktower" note="Installed skills, categories, status, and future editing/sync controls.">
+      {adapters.skills.length === 0 ? <EmptyState>No skills have been reported yet.</EmptyState> : null}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {adapters.skills.map((skill) => (
+          <article key={skill.id} className="hud-panel-strong p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="hud-label text-[hsl(var(--faint))]">{skill.category}</p>
+                <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{skill.name}</h3>
+              </div>
+              <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(skill.status)}`}>{skill.status}</span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{skill.description}</p>
+          </article>
+        ))}
+      </div>
+    </FeatureFrame>
+  );
+}
+
+function FeatureFrame({ title, kicker, note, children }: { title: string; kicker: string; note: string; children: ReactNode }) {
+  return (
+    <section className="hud-panel-strong p-4 sm:p-5">
+      <div className="border-b-2 border-[hsl(var(--border-faint))] pb-4">
+        <p className="hud-label text-[hsl(var(--faint))]">{kicker}</p>
+        <h2 className="mt-2 text-2xl font-semibold uppercase tracking-tight text-[hsl(var(--ink))]">{title}</h2>
+        <p className="mt-3 max-w-3xl text-sm leading-6 text-[hsl(var(--muted))]">{note}</p>
+      </div>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
 export default function App() {
-  const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [] });
+  const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters });
   const [selectedRunID, setSelectedRunID] = useState<string>('');
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
+  const [activeView, setActiveView] = useState<ViewID>('overview');
   const [loading, setLoading] = useState(true);
   const [runningTriggerID, setRunningTriggerID] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -182,16 +497,18 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const [workflowData, triggerData, runData] = await Promise.all([
+      const [workflowData, triggerData, runData, adapterData] = await Promise.all([
         fetchJSON<DashboardResponse<Workflow>>('/api/workflows'),
         fetchJSON<DashboardResponse<Trigger>>('/api/triggers'),
         fetchJSON<DashboardResponse<Run>>('/api/runs'),
+        fetchJSON<AdapterPayload>('/api/adapters'),
       ]);
 
       setDashboard({
         workflows: arrayOrEmpty(workflowData.workflows as Workflow[] | null | undefined),
         triggers: arrayOrEmpty(triggerData.triggers as Trigger[] | null | undefined),
         runs: arrayOrEmpty(runData.runs as Run[] | null | undefined),
+        adapters: normalizeAdapters(adapterData),
       });
     } catch (caught) {
       setError(messageFrom(caught));
@@ -305,6 +622,27 @@ export default function App() {
           </div>
         ) : null}
 
+        <nav className="hud-panel-strong p-3" aria-label="Switchyard UI modules">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {views.map((view) => (
+              <button
+                key={view.id}
+                className={`hud-chip shrink-0 px-3 py-2 text-[0.62rem] transition hover:border-[hsl(var(--signal))] hover:text-[hsl(var(--signal))] ${
+                  activeView === view.id
+                    ? 'border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] text-[hsl(var(--signal))]'
+                    : 'bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]'
+                }`}
+                onClick={() => setActiveView(view.id)}
+                type="button"
+              >
+                <span>{view.label}</span>
+                <span className="hidden text-[hsl(var(--faint))] sm:inline">/{view.source}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+
+        {activeView === 'overview' ? (
         <div className="grid gap-4 lg:grid-cols-[1.45fr_0.95fr]">
           <section className="grid gap-4">
             <article className="hud-panel-strong p-4 sm:p-5">
@@ -533,6 +871,9 @@ export default function App() {
             </article>
           </aside>
         </div>
+        ) : (
+          <FeaturePage view={activeView} adapters={dashboard.adapters} />
+        )}
       </section>
     </main>
   );

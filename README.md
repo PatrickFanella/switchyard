@@ -50,10 +50,11 @@ The backend exposes a workflow/run API:
 - `GET /api/triggers`
 - `GET /api/runs`
 - `GET /api/runs/{id}`
+- `GET /api/adapters`
 - `POST /api/runs`
 - `POST /api/triggers/{id}/run`
 
-The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
+The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module shells for queues, sessions, logs/search, prompts, config, agents, and skills so the existing `llama-line`, OCQ, Changemaker, and Blacktower UI surfaces have Switchyard homes. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo migration plan.
 
