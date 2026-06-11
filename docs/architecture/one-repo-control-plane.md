@@ -44,3 +44,5 @@ The backend has durable Postgres storage when `DATABASE_URL` is configured and a
 - `POST /api/triggers/{id}/run`
 
 This MVP records run envelopes and events, runs opt-in adapters, probes imported services, and keeps external Blacktower optional.
+
+See `../roadmap.md` for the next phase: Switchyard Runtime, a workflow-scoped orchestrator with durable steps, model execution through llama-line, OpenCode execution through OCQ, and optional Blacktower integration.
