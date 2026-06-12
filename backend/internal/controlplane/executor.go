@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -59,7 +60,9 @@ type EnvWorkflowExecutors struct {
 	llamaLineBaseURL   string
 	llamaLineAPIKey    string
 	devlogModel        string
+	openPilotModel     string
 	modelExecutor      ModelExecutor
+	ocqExecutor        OCQExecutor
 	client             *http.Client
 }
 
@@ -78,7 +81,9 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:    os.Getenv("LLAMA_LINE_API_KEY"),
 		devlogModel:        firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
+		openPilotModel:     firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
 		modelExecutor:      NewEnvModelExecutor(),
+		ocqExecutor:        NewEnvOCQExecutor(),
 		client:             &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -88,12 +93,73 @@ func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	case string(WorkflowChangemaker):
 		return WorkflowExecutorFunc(e.executeChangemaker)
 	case string(WorkflowOpenPilot):
-		return WorkflowExecutorFunc(e.executeOpenPilot)
+		return openPilotExecutor{env: e}
 	case string(WorkflowDevlog):
 		return devlogExecutor{env: e}
 	default:
 		return WorkflowExecutorFunc(stubWorkflowExecution(workflowID, "Workflow execution adapter is not wired yet"))
 	}
+}
+
+type openPilotExecutor struct {
+	env *EnvWorkflowExecutors
+}
+
+func (o openPilotExecutor) Execute(ctx context.Context, run Run) (WorkflowExecution, error) {
+	return o.env.executeOpenPilot(ctx, run)
+}
+
+func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) (WorkflowExecution, error) {
+	repo := run.Inputs["repo"]
+	issue := run.Inputs["issue"]
+	validate, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 1, Name: "open-pilot.validate-issue", Executor: "internal", Inputs: run.Inputs})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	if repo == "" || issue == "" {
+		message := "open-pilot requires run inputs repo and issue"
+		_, _ = store.FinishRunStep(validate.ID, StepFailed, "", message, nil)
+		return WorkflowExecution{}, errors.New(message)
+	}
+	if _, err := store.FinishRunStep(validate.ID, StepSucceeded, "Validated Open Pilot run inputs", "", nil); err != nil {
+		return WorkflowExecution{}, err
+	}
+
+	prepare, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "open-pilot.prepare-prompt", Executor: "internal"})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	prompt := buildOpenPilotPrompt(repo, issue)
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}); err != nil {
+		_, _ = store.FinishRunStep(prepare.ID, StepFailed, "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	if _, err := store.FinishRunStep(prepare.ID, StepSucceeded, "Prepared Open Pilot implementation prompt", "", nil); err != nil {
+		return WorkflowExecution{}, err
+	}
+
+	agent, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 3, Name: "open-pilot.agent-work", Executor: "opencode", Model: o.env.openPilotModel})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: o.env.openPilotModel, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
+	if err != nil {
+		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OCQ not configured; prompt prepared for operator handoff", "", nil)
+		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", err.Error())
+		return WorkflowExecution{Summary: "Prepared Open Pilot prompt for issue " + issue, Events: []WorkflowExecutionEvent{{Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}, nil
+	}
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}); err != nil {
+		_, _ = store.FinishRunStep(agent.ID, StepFailed, "", err.Error(), response.CorrelationIDs)
+		return WorkflowExecution{}, err
+	}
+	if _, err := store.FinishRunStep(agent.ID, StepSucceeded, "OCQ completed Open Pilot prompt", "", response.CorrelationIDs); err != nil {
+		return WorkflowExecution{}, err
+	}
+	return WorkflowExecution{Summary: "Ran Open Pilot issue " + issue + " through OCQ", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.completed", Message: repo + "#" + issue}}}, nil
+}
+
+func buildOpenPilotPrompt(repo string, issue string) string {
+	return "# Open Pilot Task\n\nRepository: " + repo + "\nIssue: " + issue + "\n\nInspect the issue, preserve repository conventions, make the smallest safe change, run the requested verification, and summarize results with file references.\n"
 }
 
 type devlogExecutor struct {

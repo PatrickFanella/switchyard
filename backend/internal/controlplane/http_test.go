@@ -38,7 +38,7 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 		t.Fatalf("len(workflows) = %d, want 3", len(workflows.Workflows))
 	}
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/triggers/manual-open-pilot/run", bytes.NewReader(nil))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/triggers/manual-devlog/run", bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode run: %v", err)
 	}
-	if body.Run.WorkflowID != "open-pilot" || body.Run.Status != controlplane.RunSucceeded {
+	if body.Run.WorkflowID != "devlog" || body.Run.Status != controlplane.RunSucceeded {
 		t.Fatalf("run = %+v", body.Run)
 	}
 }

@@ -84,6 +84,69 @@ func TestEnvWorkflowExecutorsDispatchesOpenPilotCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
+	t.Setenv("OCQ_BASE_URL", "")
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || run.Summary != "Prepared Open Pilot prompt for issue 123" {
+		t.Fatalf("run = %+v", run)
+	}
+	if len(detail.Steps) != 3 || detail.Steps[2].Executor != "opencode" || detail.Steps[2].OutputSummary != "OCQ not configured; prompt prepared for operator handoff" {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Name != "open-pilot-prompt.md" {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
+func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("X-OCQ-Request-ID", "req-1")
+		w.Header().Set("X-OCQ-Session", "ses-1")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_MODEL", "opencode-open-pilot")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 3 {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	if detail.Steps[2].Model != "opencode-open-pilot" || detail.Steps[2].CorrelationIDs["ocq_request_id"] != "req-1" || detail.Steps[2].CorrelationIDs["ocq_session_id"] != "ses-1" {
+		t.Fatalf("agent step = %+v", detail.Steps[2])
+	}
+	if len(detail.Artifacts) != 2 || detail.Artifacts[1].Name != "open-pilot-response.md" {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
 func TestRunnerGeneratesDevlogArtifact(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OCQ_BASE_URL", "")

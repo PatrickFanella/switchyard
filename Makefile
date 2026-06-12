@@ -63,7 +63,7 @@ api-smoke: api-build ## Start API temporarily and check core control-plane endpo
 	done; \
 	curl -fsS $(SMOKE_URL)/api/workflows >/dev/null; \
 	curl -fsS $(SMOKE_URL)/api/triggers >/dev/null; \
-	curl -fsS -X POST $(SMOKE_URL)/api/triggers/manual-open-pilot/run >/dev/null; \
+	curl -fsS -X POST $(SMOKE_URL)/api/triggers/manual-devlog/run >/dev/null; \
 	curl -fsS $(SMOKE_URL)/api/runs >/dev/null; \
 	echo "Switchyard API smoke passed at $(SMOKE_URL)"
 
