@@ -295,9 +295,9 @@ Exit criteria:
 
 ### M2: Step Runtime
 
-- `RunStep` persisted.
-- Devlog implemented as steps.
-- Step timeline in HUD.
+- `RunStep` persisted. Initial generic workflow execution step is complete.
+- Step timeline in HUD is complete.
+- Devlog implemented as a multi-step pipeline remains next.
 
 ### M3: Shared Model Executor
 

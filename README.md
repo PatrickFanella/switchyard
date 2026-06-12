@@ -86,11 +86,14 @@ The backend exposes a workflow/run API:
 - `GET /api/triggers`
 - `GET /api/runs`
 - `GET /api/runs/{id}`
+- `GET /api/runs/{id}/steps`
 - `GET /api/adapters`
 - `GET /api/scheduler`
 - `POST /api/runs`
 - `POST /api/runs/{id}/retry`
 - `POST /api/runs/{id}/cancel`
+- `POST /api/runs/{id}/steps/{step_id}/retry`
+- `POST /api/runs/{id}/steps/{step_id}/cancel`
 - `POST /api/triggers/{id}/run`
 - `PATCH /api/triggers/{id}`
 
