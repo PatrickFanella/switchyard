@@ -328,7 +328,7 @@ Exit criteria:
 ## Near-term implementation backlog
 
 1. Add workflow model config and API override beyond `DEVLOG_MODEL`/`OPEN_PILOT_MODEL`.
-2. Expand Gitea issue validation with label/template policy enforcement.
+2. Expand Open Pilot from prompt execution to branch/test/PR policy.
 3. Add worker pool and safe shutdown after long-running steps exist.
 4. Add retry-from-step resume semantics for Devlog/Open Pilot.
 

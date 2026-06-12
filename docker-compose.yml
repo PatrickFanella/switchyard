@@ -34,6 +34,8 @@ services:
       OPEN_PILOT_MODEL: ${OPEN_PILOT_MODEL:-opencode:gpt-5.5}
       GITEA_BASE_URL: ${GITEA_BASE_URL:-}
       GITEA_TOKEN: ${GITEA_TOKEN:-}
+      OPEN_PILOT_REQUIRED_LABELS: ${OPEN_PILOT_REQUIRED_LABELS:-ready-for-agent,agent:queued}
+      OPEN_PILOT_REQUIRE_ISSUE_SPEC: ${OPEN_PILOT_REQUIRE_ISSUE_SPEC:-false}
     depends_on:
       postgres:
         condition: service_healthy

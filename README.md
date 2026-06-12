@@ -57,7 +57,7 @@ Set `SWITCHYARD_SCHEDULER_ENABLED=true` to enable the in-process trigger schedul
 Workflow execution adapters are opt-in:
 
 - Changemaker: `CHANGEMAKER_BASE_URL` dispatches `POST /api/runs`.
-- Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, attach issue/prompt artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the model. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
+- Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, enforce required labels from `OPEN_PILOT_REQUIRED_LABELS`, attach issue/prompt artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the model. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
 - Devlog: `manual-devlog` runs a three-step pipeline that collects recent Switchyard run history, generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the model.
 
 Switchyard also ships its own CLI contract:

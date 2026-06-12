@@ -61,6 +61,8 @@ type EnvWorkflowExecutors struct {
 	llamaLineAPIKey    string
 	devlogModel        string
 	openPilotModel     string
+	openPilotLabels    []string
+	requireIssueSpec   bool
 	modelExecutor      ModelExecutor
 	ocqExecutor        OCQExecutor
 	issueFetcher       IssueFetcher
@@ -83,6 +85,8 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		llamaLineAPIKey:    os.Getenv("LLAMA_LINE_API_KEY"),
 		devlogModel:        firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
 		openPilotModel:     firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
+		openPilotLabels:    splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
+		requireIssueSpec:   strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
 		modelExecutor:      NewEnvModelExecutor(),
 		ocqExecutor:        NewEnvOCQExecutor(),
 		issueFetcher:       NewEnvGiteaClient(),
@@ -123,9 +127,15 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		_, _ = store.FinishRunStep(validate.ID, StepFailed, "", message, nil)
 		return WorkflowExecution{}, errors.New(message)
 	}
-	issueData, issueSummary, fetchErr := o.env.fetchOpenPilotIssue(ctx, repo, issue)
+	issueData, issueSummary, fetchedIssue, fetchErr := o.env.fetchOpenPilotIssue(ctx, repo, issue)
 	if fetchErr != nil {
 		_, _ = store.AddEvent(run.ID, "open-pilot.issue.fetch.skipped", fetchErr.Error())
+	}
+	if fetchedIssue != nil {
+		if err := o.env.validateOpenPilotIssue(*fetchedIssue); err != nil {
+			_, _ = store.FinishRunStep(validate.ID, StepFailed, "", err.Error(), nil)
+			return WorkflowExecution{}, err
+		}
 	}
 	if issueData != nil {
 		if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))}); err != nil {
@@ -174,14 +184,14 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	return WorkflowExecution{Summary: "Ran Open Pilot issue " + issue + " through OCQ", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.completed", Message: repo + "#" + issue}}}, nil
 }
 
-func (e *EnvWorkflowExecutors) fetchOpenPilotIssue(ctx context.Context, repo string, issue string) ([]byte, string, error) {
+func (e *EnvWorkflowExecutors) fetchOpenPilotIssue(ctx context.Context, repo string, issue string) ([]byte, string, *GiteaIssue, error) {
 	fetched, err := e.issueFetcher.FetchIssue(ctx, repo, issue)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	data, err := json.MarshalIndent(fetched, "", "  ")
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	summary := "Fetched issue"
 	if fetched.Title != "" {
@@ -190,7 +200,33 @@ func (e *EnvWorkflowExecutors) fetchOpenPilotIssue(ctx context.Context, repo str
 	if fetched.State != "" {
 		summary += " (" + fetched.State + ")"
 	}
-	return data, summary, nil
+	return data, summary, &fetched, nil
+}
+
+func (e *EnvWorkflowExecutors) validateOpenPilotIssue(issue GiteaIssue) error {
+	if issue.State != "" && issue.State != "open" {
+		return fmt.Errorf("open-pilot issue is not open: %s", issue.State)
+	}
+	labels := map[string]bool{}
+	for _, label := range issue.Labels {
+		labels[label] = true
+	}
+	missing := []string{}
+	for _, required := range e.openPilotLabels {
+		if required != "" && !labels[required] {
+			missing = append(missing, required)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("open-pilot issue missing required labels: %s", strings.Join(missing, ", "))
+	}
+	if e.requireIssueSpec {
+		body := strings.ToLower(issue.Body)
+		if !strings.Contains(body, "acceptance") || !strings.Contains(body, "test") {
+			return fmt.Errorf("open-pilot issue must include acceptance criteria and test instructions")
+		}
+	}
+	return nil
 }
 
 func buildOpenPilotPrompt(repo string, issue string, issueSummary string) string {
@@ -203,6 +239,20 @@ func buildOpenPilotPrompt(repo string, issue string, issueSummary string) string
 	}
 	builder.WriteString("\nInspect the issue, preserve repository conventions, make the smallest safe change, run the requested verification, and summarize results with file references.\n")
 	return builder.String()
+}
+
+func splitCSV(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 type devlogExecutor struct {
