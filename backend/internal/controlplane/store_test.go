@@ -193,3 +193,54 @@ func TestStoreRunStepCancelValidation(t *testing.T) {
 		t.Fatal("CancelRunStep() succeeded for terminal step")
 	}
 }
+
+func TestStoreClaimsQueuedRuns(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	claimed, err := store.ClaimNextRun("worker-1", time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimNextRun() error = %v", err)
+	}
+	if claimed.ID != run.ID || claimed.Status != controlplane.RunRunning || claimed.ClaimedBy != "worker-1" || claimed.AttemptCount != 1 || claimed.LeaseExpiresAt == nil {
+		t.Fatalf("claimed = %+v", claimed)
+	}
+	if _, err := store.ClaimNextRun("worker-2", time.Minute); err == nil {
+		t.Fatal("second claim unexpectedly succeeded")
+	}
+}
+
+func TestStoreRecoversExpiredLeases(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if _, err := store.ClaimNextRun("worker-1", time.Second); err != nil {
+		t.Fatalf("ClaimNextRun() error = %v", err)
+	}
+	requeued, failed, err := store.RecoverLeasedRuns(now.Add(2 * time.Second))
+	if err != nil {
+		t.Fatalf("RecoverLeasedRuns() error = %v", err)
+	}
+	if requeued != 0 || failed != 1 {
+		t.Fatalf("requeued=%d failed=%d", requeued, failed)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if detail.Run.Status != controlplane.RunFailed || detail.Run.Summary != "Worker lease expired" {
+		t.Fatalf("run = %+v", detail.Run)
+	}
+}

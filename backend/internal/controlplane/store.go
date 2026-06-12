@@ -24,6 +24,8 @@ type Store interface {
 	UpdateTriggerScheduleState(string, *time.Time, *time.Time, string) (Trigger, error)
 	CreateRun(CreateRunInput) (Run, error)
 	StartRun(string) (Run, error)
+	ClaimNextRun(string, time.Duration) (Run, error)
+	RecoverLeasedRuns(time.Time) (int, int, error)
 	FinishRun(string, RunStatus, string) (Run, error)
 	CreateRunStep(CreateRunStepInput) (RunStep, error)
 	StartRunStep(string) (RunStep, error)
@@ -179,7 +181,7 @@ func (s *MemoryStore) CreateRun(input CreateRunInput) (Run, error) {
 		}
 	}
 	now := s.now().UTC()
-	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now}
+	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: 1}
 	s.runs[r.ID] = r
 	s.events[r.ID] = append(s.events[r.ID], RunEvent{ID: newID("evt"), RunID: r.ID, Type: "run.created", Message: "Run queued", CreatedAt: now})
 	return r, nil
@@ -194,10 +196,76 @@ func (s *MemoryStore) StartRun(id string) (Run, error) {
 	}
 	now := s.now().UTC()
 	r.Status = RunRunning
+	r.AttemptCount++
 	r.StartedAt = &now
 	s.runs[id] = r
 	s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run.started", Message: "Run started", CreatedAt: now})
 	return r, nil
+}
+
+func (s *MemoryStore) ClaimNextRun(workerID string, lease time.Duration) (Run, error) {
+	if workerID == "" || lease <= 0 {
+		return Run{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	var selected *Run
+	for _, run := range s.runs {
+		if run.Status != RunQueued || run.AvailableAt.After(now) {
+			continue
+		}
+		candidate := run
+		if selected == nil || candidate.CreatedAt.Before(selected.CreatedAt) || (candidate.CreatedAt.Equal(selected.CreatedAt) && candidate.ID < selected.ID) {
+			selected = &candidate
+		}
+	}
+	if selected == nil {
+		return Run{}, ErrNotFound
+	}
+	r := *selected
+	expires := now.Add(lease).UTC()
+	r.Status = RunRunning
+	r.AttemptCount++
+	if r.StartedAt == nil {
+		r.StartedAt = &now
+	}
+	r.ClaimedAt = &now
+	r.ClaimedBy = workerID
+	r.LeaseExpiresAt = &expires
+	s.runs[r.ID] = r
+	s.events[r.ID] = append(s.events[r.ID], RunEvent{ID: newID("evt"), RunID: r.ID, Type: "run.started", Message: "Run claimed by " + workerID, CreatedAt: now})
+	return r, nil
+}
+
+func (s *MemoryStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := at.UTC()
+	requeued := 0
+	failed := 0
+	for id, run := range s.runs {
+		if run.Status != RunRunning || run.LeaseExpiresAt == nil || run.LeaseExpiresAt.After(now) {
+			continue
+		}
+		run.ClaimedAt = nil
+		run.ClaimedBy = ""
+		run.LeaseExpiresAt = nil
+		if run.AttemptCount < run.MaxAttempts {
+			run.Status = RunQueued
+			run.AvailableAt = now
+			s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run.recovered", Message: "Worker lease expired; run requeued", CreatedAt: now})
+			requeued++
+		} else {
+			run.Status = RunFailed
+			run.FinishedAt = &now
+			run.Summary = "Worker lease expired"
+			s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run.failed", Message: run.Summary, CreatedAt: now})
+			failed++
+		}
+		s.runs[id] = run
+	}
+	return requeued, failed, nil
 }
 
 func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
@@ -210,6 +278,9 @@ func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Ru
 	now := s.now().UTC()
 	r.Status = status
 	r.FinishedAt = &now
+	r.ClaimedAt = nil
+	r.ClaimedBy = ""
+	r.LeaseExpiresAt = nil
 	r.Summary = summary
 	s.runs[id] = r
 	s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run." + string(status), Message: summary, CreatedAt: now})

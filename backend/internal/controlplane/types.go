@@ -55,15 +55,22 @@ const (
 )
 
 type Run struct {
-	ID         string            `json:"id"`
-	WorkflowID string            `json:"workflow_id"`
-	TriggerID  string            `json:"trigger_id,omitempty"`
-	Status     RunStatus         `json:"status"`
-	Inputs     map[string]string `json:"inputs,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
-	StartedAt  *time.Time        `json:"started_at,omitempty"`
-	FinishedAt *time.Time        `json:"finished_at,omitempty"`
-	Summary    string            `json:"summary,omitempty"`
+	ID             string            `json:"id"`
+	WorkflowID     string            `json:"workflow_id"`
+	TriggerID      string            `json:"trigger_id,omitempty"`
+	Status         RunStatus         `json:"status"`
+	Inputs         map[string]string `json:"inputs,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	QueuedAt       time.Time         `json:"queued_at"`
+	AvailableAt    time.Time         `json:"available_at"`
+	StartedAt      *time.Time        `json:"started_at,omitempty"`
+	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
+	ClaimedAt      *time.Time        `json:"claimed_at,omitempty"`
+	ClaimedBy      string            `json:"claimed_by,omitempty"`
+	LeaseExpiresAt *time.Time        `json:"lease_expires_at,omitempty"`
+	AttemptCount   int               `json:"attempt_count"`
+	MaxAttempts    int               `json:"max_attempts"`
+	Summary        string            `json:"summary,omitempty"`
 }
 
 type RunStepStatus string

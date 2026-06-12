@@ -47,6 +47,19 @@ func TestRunStepsMigrationDeclaresStepTables(t *testing.T) {
 	}
 }
 
+func TestRunQueueMigrationDeclaresLeaseFields(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/004_run_queue_leases.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"queued_at", "available_at", "claimed_by", "lease_expires_at", "attempt_count", "runs_queue_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("run queue migration missing %q", field)
+		}
+	}
+}
+
 func TestPostgresStoreIntegration(t *testing.T) {
 	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
 	if databaseURL == "" {
