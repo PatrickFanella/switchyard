@@ -66,6 +66,7 @@ type EnvWorkflowExecutors struct {
 	modelExecutor      ModelExecutor
 	ocqExecutor        OCQExecutor
 	issueFetcher       IssueFetcher
+	commandRunner      CommandRunner
 	client             *http.Client
 }
 
@@ -90,6 +91,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		modelExecutor:      NewEnvModelExecutor(),
 		ocqExecutor:        NewEnvOCQExecutor(),
 		issueFetcher:       NewEnvGiteaClient(),
+		commandRunner:      NewEnvCommandRunner(),
 		client:             &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -180,6 +182,30 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	}
 	if _, err := store.FinishRunStep(agent.ID, StepSucceeded, "OCQ completed Open Pilot prompt", "", response.CorrelationIDs); err != nil {
 		return WorkflowExecution{}, err
+	}
+	if command := strings.TrimSpace(run.Inputs["test_command"]); command != "" {
+		verify, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 4, Name: "open-pilot.verify-command", Executor: "command", Inputs: map[string]string{"command": command}})
+		if err != nil {
+			return WorkflowExecution{}, err
+		}
+		result, err := o.env.commandRunner.Run(ctx, command)
+		correlation := map[string]string{"policy_reason": result.Decision.Reason}
+		if result.Decision.DryRun {
+			correlation["policy_mode"] = string(CommandPolicyDryRun)
+		}
+		if err != nil {
+			_, _ = store.FinishRunStep(verify.ID, StepFailed, result.Output, err.Error(), correlation)
+			return WorkflowExecution{}, err
+		}
+		summary := "Command allowed"
+		if result.Decision.DryRun {
+			summary = "Command allowed by policy in dry-run mode"
+		} else if result.Executed {
+			summary = "Command executed by policy runner"
+		}
+		if _, err := store.FinishRunStep(verify.ID, StepSucceeded, summary, "", correlation); err != nil {
+			return WorkflowExecution{}, err
+		}
 	}
 	return WorkflowExecution{Summary: "Ran Open Pilot issue " + issue + " through OCQ", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.completed", Message: repo + "#" + issue}}}, nil
 }

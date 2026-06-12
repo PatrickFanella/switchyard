@@ -62,6 +62,8 @@ Workflow execution adapters are opt-in:
 - Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, enforce required labels from `OPEN_PILOT_REQUIRED_LABELS`, attach issue/prompt artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the model. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
 - Devlog: `manual-devlog` runs a three-step pipeline that collects recent Switchyard run history, generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the model.
 
+Open Pilot command execution is deny-by-default. If a run includes `test_command`, Switchyard evaluates it through `OPEN_PILOT_COMMAND_POLICY_MODE` (`deny`, `dry-run`, or `allow`), exact allowed command lists, allowed git verbs, denied commands, timeout, and optional workdir. Use `dry-run` before enabling `allow`.
+
 Switchyard also ships its own CLI contract:
 
 ```bash

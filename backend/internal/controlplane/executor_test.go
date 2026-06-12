@@ -215,6 +215,63 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	}
 }
 
+func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status,diff")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "make verify"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 4 || detail.Steps[3].Name != "open-pilot.verify-command" || detail.Steps[3].Status != controlplane.StepSucceeded {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	if detail.Steps[3].CorrelationIDs["policy_mode"] != "dry-run" {
+		t.Fatalf("verify step = %+v", detail.Steps[3])
+	}
+}
+
+func TestRunnerFailsOpenPilotDeniedVerifyCommand(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "deny")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "make verify"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "deny") || len(detail.Steps) != 4 || detail.Steps[3].Status != controlplane.StepFailed {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+}
+
 func TestRunnerGeneratesDevlogArtifact(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OCQ_BASE_URL", "")

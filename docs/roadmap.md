@@ -330,9 +330,9 @@ Exit criteria:
 ## Near-term implementation backlog
 
 1. Add workflow model config and API override beyond `DEVLOG_MODEL`/`OPEN_PILOT_MODEL`.
-2. Expand Open Pilot from prompt execution to branch/test/PR policy.
-3. Add worker pool and safe shutdown after long-running steps exist.
-4. Add retry-from-step resume semantics for Devlog/Open Pilot.
+2. Expand Open Pilot from command policy checks to branch/test/PR policy.
+3. Add retry-from-step resume semantics for Devlog/Open Pilot.
+4. Add per-executor concurrency limits beyond the current worker pool.
 
 ## Non-goals for the next phase
 
