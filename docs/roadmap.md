@@ -307,13 +307,13 @@ Exit criteria:
 
 ### M4: Shared OCQ Executor
 
-- OpenCode prompt/session steps.
-- OCQ session/request IDs persisted.
-- Cancellation propagation works.
+- OpenCode prompt/session executor is available.
+- OCQ session/request IDs are persisted on Open Pilot agent steps.
+- Cancellation propagation works when OCQ request/session IDs are present.
 
 ### M5: Native Open Pilot Prototype
 
-- One issue to one visible multi-step run.
+- One issue to one visible multi-step run is prototyped.
 - Gitea policy remains workflow-owned.
 - No external Blacktower requirement.
 
@@ -327,11 +327,10 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Add workflow model config and API override beyond `DEVLOG_MODEL`.
-2. Add OCQ executor for prompt/session steps.
-3. Prototype Open Pilot issue pipeline.
-4. Add worker pool and safe shutdown after long-running steps exist.
-5. Add retry-from-step resume semantics for Devlog/Open Pilot.
+1. Add workflow model config and API override beyond `DEVLOG_MODEL`/`OPEN_PILOT_MODEL`.
+2. Add real Gitea issue fetch/validation to the Open Pilot pipeline.
+3. Add worker pool and safe shutdown after long-running steps exist.
+4. Add retry-from-step resume semantics for Devlog/Open Pilot.
 
 ## Non-goals for the next phase
 

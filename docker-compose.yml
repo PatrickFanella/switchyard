@@ -31,6 +31,7 @@ services:
       SWITCHYARD_SCHEDULER_INTERVAL: ${SWITCHYARD_SCHEDULER_INTERVAL:-1m}
       OPEN_PILOT_COMMAND: ${OPEN_PILOT_COMMAND:-}
       DEVLOG_MODEL: ${DEVLOG_MODEL:-opencode:gpt-5.5}
+      OPEN_PILOT_MODEL: ${OPEN_PILOT_MODEL:-opencode:gpt-5.5}
     depends_on:
       postgres:
         condition: service_healthy
