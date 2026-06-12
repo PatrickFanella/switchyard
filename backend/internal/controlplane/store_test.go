@@ -111,3 +111,79 @@ func TestStoreAddsArtifacts(t *testing.T) {
 		t.Fatalf("events = %+v", detail.Events)
 	}
 }
+
+func TestStoreRunStepLifecycle(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "collect history", Executor: "internal", Inputs: map[string]string{"scope": "recent"}})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+	if step.Status != controlplane.StepQueued || step.AttemptCount != 0 {
+		t.Fatalf("created step = %+v", step)
+	}
+	step, err = store.StartRunStep(step.ID)
+	if err != nil {
+		t.Fatalf("StartRunStep() error = %v", err)
+	}
+	if step.Status != controlplane.StepRunning || step.AttemptCount != 1 || step.StartedAt == nil {
+		t.Fatalf("started step = %+v", step)
+	}
+	step, err = store.FinishRunStep(step.ID, controlplane.StepFailed, "", "boom", map[string]string{"request": "req-1"})
+	if err != nil {
+		t.Fatalf("FinishRunStep() error = %v", err)
+	}
+	if step.Status != controlplane.StepFailed || step.Error != "boom" || step.CorrelationIDs["request"] != "req-1" {
+		t.Fatalf("failed step = %+v", step)
+	}
+	step, err = store.RetryRunStep(step.ID)
+	if err != nil {
+		t.Fatalf("RetryRunStep() error = %v", err)
+	}
+	if step.Status != controlplane.StepQueued || step.Error != "" || step.StartedAt != nil || step.FinishedAt != nil {
+		t.Fatalf("retried step = %+v", step)
+	}
+	steps := store.ListRunSteps(run.ID)
+	if len(steps) != 1 || steps[0].ID != step.ID {
+		t.Fatalf("steps = %+v", steps)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Steps) != 1 || detail.Steps[0].ID != step.ID {
+		t.Fatalf("detail steps = %+v", detail.Steps)
+	}
+}
+
+func TestStoreRunStepCancelValidation(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "generate", Executor: "model"})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+	step, err = store.CancelRunStep(step.ID)
+	if err != nil {
+		t.Fatalf("CancelRunStep() error = %v", err)
+	}
+	if step.Status != controlplane.StepCanceled || step.FinishedAt == nil {
+		t.Fatalf("canceled step = %+v", step)
+	}
+	if _, err := store.CancelRunStep(step.ID); err == nil {
+		t.Fatal("CancelRunStep() succeeded for terminal step")
+	}
+}

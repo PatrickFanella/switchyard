@@ -34,6 +34,19 @@ func TestTriggerSchedulerMigrationDeclaresMetadata(t *testing.T) {
 	}
 }
 
+func TestRunStepsMigrationDeclaresStepTables(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/003_run_steps.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"run_steps", "attempt_count", "correlation_ids", "run_step_id", "run_steps_run_id_position_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("run steps migration missing %q", field)
+		}
+	}
+}
+
 func TestPostgresStoreIntegration(t *testing.T) {
 	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
 	if databaseURL == "" {

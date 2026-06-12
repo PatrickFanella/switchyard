@@ -66,6 +66,45 @@ type Run struct {
 	Summary    string            `json:"summary,omitempty"`
 }
 
+type RunStepStatus string
+
+const (
+	StepQueued    RunStepStatus = "queued"
+	StepRunning   RunStepStatus = "running"
+	StepSucceeded RunStepStatus = "succeeded"
+	StepFailed    RunStepStatus = "failed"
+	StepCanceled  RunStepStatus = "canceled"
+	StepTimedOut  RunStepStatus = "timed_out"
+)
+
+type RunStep struct {
+	ID             string            `json:"id"`
+	RunID          string            `json:"run_id"`
+	Position       int               `json:"position"`
+	Name           string            `json:"name"`
+	Executor       string            `json:"executor"`
+	Model          string            `json:"model,omitempty"`
+	Status         RunStepStatus     `json:"status"`
+	Inputs         map[string]string `json:"inputs,omitempty"`
+	OutputSummary  string            `json:"output_summary,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	AttemptCount   int               `json:"attempt_count"`
+	CorrelationIDs map[string]string `json:"correlation_ids,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	StartedAt      *time.Time        `json:"started_at,omitempty"`
+	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
+}
+
+type CreateRunStepInput struct {
+	RunID          string            `json:"run_id"`
+	Position       int               `json:"position"`
+	Name           string            `json:"name"`
+	Executor       string            `json:"executor"`
+	Model          string            `json:"model,omitempty"`
+	Inputs         map[string]string `json:"inputs,omitempty"`
+	CorrelationIDs map[string]string `json:"correlation_ids,omitempty"`
+}
+
 type RunEvent struct {
 	ID        string    `json:"id"`
 	RunID     string    `json:"run_id"`
@@ -92,6 +131,7 @@ type CreateArtifactInput struct {
 
 type RunDetail struct {
 	Run       Run        `json:"run"`
+	Steps     []RunStep  `json:"steps"`
 	Events    []RunEvent `json:"events"`
 	Artifacts []Artifact `json:"artifacts"`
 }

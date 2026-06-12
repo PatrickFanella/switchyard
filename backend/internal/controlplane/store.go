@@ -25,6 +25,13 @@ type Store interface {
 	CreateRun(CreateRunInput) (Run, error)
 	StartRun(string) (Run, error)
 	FinishRun(string, RunStatus, string) (Run, error)
+	CreateRunStep(CreateRunStepInput) (RunStep, error)
+	StartRunStep(string) (RunStep, error)
+	FinishRunStep(string, RunStepStatus, string, string, map[string]string) (RunStep, error)
+	RetryRunStep(string) (RunStep, error)
+	CancelRunStep(string) (RunStep, error)
+	ListRunSteps(string) []RunStep
+	RunStep(string) (RunStep, error)
 	AddEvent(string, string, string) (RunEvent, error)
 	AddArtifact(CreateArtifactInput) (Artifact, error)
 	ListRuns() []Run
@@ -37,6 +44,7 @@ type MemoryStore struct {
 	workflows map[string]Workflow
 	triggers  map[string]Trigger
 	runs      map[string]Run
+	steps     map[string]RunStep
 	events    map[string][]RunEvent
 	artifacts map[string][]Artifact
 }
@@ -50,6 +58,7 @@ func NewStore(now func() time.Time) *MemoryStore {
 		workflows: map[string]Workflow{},
 		triggers:  map[string]Trigger{},
 		runs:      map[string]Run{},
+		steps:     map[string]RunStep{},
 		events:    map[string][]RunEvent{},
 		artifacts: map[string][]Artifact{},
 	}
@@ -207,6 +216,145 @@ func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Ru
 	return r, nil
 }
 
+func (s *MemoryStore) CreateRunStep(input CreateRunStepInput) (RunStep, error) {
+	if input.RunID == "" || input.Position < 1 || input.Name == "" || input.Executor == "" {
+		return RunStep{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.runs[input.RunID]; !ok {
+		return RunStep{}, ErrNotFound
+	}
+	for _, step := range s.steps {
+		if step.RunID == input.RunID && step.Position == input.Position {
+			return RunStep{}, ErrInvalid
+		}
+	}
+	now := s.now().UTC()
+	step := RunStep{ID: newID("step"), RunID: input.RunID, Position: input.Position, Name: input.Name, Executor: input.Executor, Model: input.Model, Status: StepQueued, Inputs: cloneMap(input.Inputs), CorrelationIDs: cloneMap(input.CorrelationIDs), CreatedAt: now}
+	s.steps[step.ID] = step
+	s.events[input.RunID] = append(s.events[input.RunID], RunEvent{ID: newID("evt"), RunID: input.RunID, Type: "step.created", Message: step.Name, CreatedAt: now})
+	return step, nil
+}
+
+func (s *MemoryStore) StartRunStep(id string) (RunStep, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	step, ok := s.steps[id]
+	if !ok {
+		return RunStep{}, ErrNotFound
+	}
+	if step.Status != StepQueued {
+		return RunStep{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	step.Status = StepRunning
+	step.AttemptCount++
+	step.StartedAt = &now
+	step.FinishedAt = nil
+	step.Error = ""
+	step.OutputSummary = ""
+	s.steps[id] = step
+	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.started", Message: step.Name, CreatedAt: now})
+	return step, nil
+}
+
+func (s *MemoryStore) FinishRunStep(id string, status RunStepStatus, outputSummary string, errText string, correlationIDs map[string]string) (RunStep, error) {
+	if !isTerminalStepStatus(status) {
+		return RunStep{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	step, ok := s.steps[id]
+	if !ok {
+		return RunStep{}, ErrNotFound
+	}
+	if step.Status != StepRunning && step.Status != StepQueued {
+		return RunStep{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	step.Status = status
+	step.OutputSummary = outputSummary
+	step.Error = errText
+	if len(correlationIDs) > 0 {
+		step.CorrelationIDs = cloneMap(correlationIDs)
+	}
+	step.FinishedAt = &now
+	s.steps[id] = step
+	message := outputSummary
+	if message == "" {
+		message = errText
+	}
+	if message == "" {
+		message = step.Name
+	}
+	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step." + string(status), Message: message, CreatedAt: now})
+	return step, nil
+}
+
+func (s *MemoryStore) RetryRunStep(id string) (RunStep, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	step, ok := s.steps[id]
+	if !ok {
+		return RunStep{}, ErrNotFound
+	}
+	if step.Status != StepFailed && step.Status != StepCanceled && step.Status != StepTimedOut {
+		return RunStep{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	step.Status = StepQueued
+	step.StartedAt = nil
+	step.FinishedAt = nil
+	step.Error = ""
+	step.OutputSummary = ""
+	s.steps[id] = step
+	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.retry", Message: step.Name, CreatedAt: now})
+	return step, nil
+}
+
+func (s *MemoryStore) CancelRunStep(id string) (RunStep, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	step, ok := s.steps[id]
+	if !ok {
+		return RunStep{}, ErrNotFound
+	}
+	if step.Status != StepQueued && step.Status != StepRunning {
+		return RunStep{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	step.Status = StepCanceled
+	step.FinishedAt = &now
+	step.Error = "Canceled by operator"
+	s.steps[id] = step
+	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.canceled", Message: step.Name, CreatedAt: now})
+	return step, nil
+}
+
+func (s *MemoryStore) ListRunSteps(runID string) []RunStep {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []RunStep{}
+	for _, step := range s.steps {
+		if step.RunID == runID {
+			out = append(out, step)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Position < out[j].Position })
+	return out
+}
+
+func (s *MemoryStore) RunStep(id string) (RunStep, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	step, ok := s.steps[id]
+	if !ok {
+		return RunStep{}, ErrNotFound
+	}
+	return step, nil
+}
+
 func (s *MemoryStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,7 +400,22 @@ func (s *MemoryStore) RunDetail(id string) (RunDetail, error) {
 	if !ok {
 		return RunDetail{}, ErrNotFound
 	}
-	return RunDetail{Run: r, Events: append([]RunEvent(nil), s.events[id]...), Artifacts: append([]Artifact(nil), s.artifacts[id]...)}, nil
+	return RunDetail{Run: r, Steps: s.listRunStepsLocked(id), Events: append([]RunEvent(nil), s.events[id]...), Artifacts: append([]Artifact(nil), s.artifacts[id]...)}, nil
+}
+
+func (s *MemoryStore) listRunStepsLocked(runID string) []RunStep {
+	out := []RunStep{}
+	for _, step := range s.steps {
+		if step.RunID == runID {
+			out = append(out, step)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Position < out[j].Position })
+	return out
+}
+
+func isTerminalStepStatus(status RunStepStatus) bool {
+	return status == StepSucceeded || status == StepFailed || status == StepCanceled || status == StepTimedOut
 }
 
 func cloneMap(in map[string]string) map[string]string {
