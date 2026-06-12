@@ -20,9 +20,18 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 	if err != nil {
 		return Run{}, err
 	}
-	if _, err := r.store.StartRun(run.ID); err != nil {
+	run, err = r.store.StartRun(run.ID)
+	if err != nil {
 		return Run{}, err
 	}
+	return r.ExecuteRun(ctx, run)
+}
+
+func (r *Runner) Enqueue(input CreateRunInput) (Run, error) {
+	return r.store.CreateRun(input)
+}
+
+func (r *Runner) ExecuteRun(ctx context.Context, run Run) (Run, error) {
 	select {
 	case <-ctx.Done():
 		return r.store.FinishRun(run.ID, RunCanceled, ctx.Err().Error())
@@ -96,4 +105,12 @@ func (r *Runner) RunTrigger(ctx context.Context, triggerID string) (Run, error) 
 		return Run{}, ErrNotFound
 	}
 	return r.RunOnce(ctx, CreateRunInput{WorkflowID: trigger.WorkflowID, TriggerID: trigger.ID, Inputs: trigger.Inputs})
+}
+
+func (r *Runner) EnqueueTrigger(triggerID string) (Run, error) {
+	trigger, ok := r.store.Trigger(triggerID)
+	if !ok {
+		return Run{}, ErrNotFound
+	}
+	return r.Enqueue(CreateRunInput{WorkflowID: trigger.WorkflowID, TriggerID: trigger.ID, Inputs: trigger.Inputs})
 }
