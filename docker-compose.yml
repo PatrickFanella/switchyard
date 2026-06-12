@@ -32,6 +32,8 @@ services:
       OPEN_PILOT_COMMAND: ${OPEN_PILOT_COMMAND:-}
       DEVLOG_MODEL: ${DEVLOG_MODEL:-opencode:gpt-5.5}
       OPEN_PILOT_MODEL: ${OPEN_PILOT_MODEL:-opencode:gpt-5.5}
+      GITEA_BASE_URL: ${GITEA_BASE_URL:-}
+      GITEA_TOKEN: ${GITEA_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

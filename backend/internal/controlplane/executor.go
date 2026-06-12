@@ -63,6 +63,7 @@ type EnvWorkflowExecutors struct {
 	openPilotModel     string
 	modelExecutor      ModelExecutor
 	ocqExecutor        OCQExecutor
+	issueFetcher       IssueFetcher
 	client             *http.Client
 }
 
@@ -84,6 +85,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotModel:     firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
 		modelExecutor:      NewEnvModelExecutor(),
 		ocqExecutor:        NewEnvOCQExecutor(),
+		issueFetcher:       NewEnvGiteaClient(),
 		client:             &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -121,7 +123,21 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		_, _ = store.FinishRunStep(validate.ID, StepFailed, "", message, nil)
 		return WorkflowExecution{}, errors.New(message)
 	}
-	if _, err := store.FinishRunStep(validate.ID, StepSucceeded, "Validated Open Pilot run inputs", "", nil); err != nil {
+	issueData, issueSummary, fetchErr := o.env.fetchOpenPilotIssue(ctx, repo, issue)
+	if fetchErr != nil {
+		_, _ = store.AddEvent(run.ID, "open-pilot.issue.fetch.skipped", fetchErr.Error())
+	}
+	if issueData != nil {
+		if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))}); err != nil {
+			_, _ = store.FinishRunStep(validate.ID, StepFailed, "", err.Error(), nil)
+			return WorkflowExecution{}, err
+		}
+	}
+	validateSummary := "Validated Open Pilot run inputs"
+	if issueSummary != "" {
+		validateSummary = issueSummary
+	}
+	if _, err := store.FinishRunStep(validate.ID, StepSucceeded, validateSummary, "", nil); err != nil {
 		return WorkflowExecution{}, err
 	}
 
@@ -129,7 +145,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	prompt := buildOpenPilotPrompt(repo, issue)
+	prompt := buildOpenPilotPrompt(repo, issue, issueSummary)
 	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}); err != nil {
 		_, _ = store.FinishRunStep(prepare.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
@@ -158,8 +174,35 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	return WorkflowExecution{Summary: "Ran Open Pilot issue " + issue + " through OCQ", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.completed", Message: repo + "#" + issue}}}, nil
 }
 
-func buildOpenPilotPrompt(repo string, issue string) string {
-	return "# Open Pilot Task\n\nRepository: " + repo + "\nIssue: " + issue + "\n\nInspect the issue, preserve repository conventions, make the smallest safe change, run the requested verification, and summarize results with file references.\n"
+func (e *EnvWorkflowExecutors) fetchOpenPilotIssue(ctx context.Context, repo string, issue string) ([]byte, string, error) {
+	fetched, err := e.issueFetcher.FetchIssue(ctx, repo, issue)
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := json.MarshalIndent(fetched, "", "  ")
+	if err != nil {
+		return nil, "", err
+	}
+	summary := "Fetched issue"
+	if fetched.Title != "" {
+		summary = "Fetched issue: " + fetched.Title
+	}
+	if fetched.State != "" {
+		summary += " (" + fetched.State + ")"
+	}
+	return data, summary, nil
+}
+
+func buildOpenPilotPrompt(repo string, issue string, issueSummary string) string {
+	var builder strings.Builder
+	builder.WriteString("# Open Pilot Task\n\n")
+	builder.WriteString("Repository: " + repo + "\n")
+	builder.WriteString("Issue: " + issue + "\n")
+	if issueSummary != "" {
+		builder.WriteString("Issue summary: " + issueSummary + "\n")
+	}
+	builder.WriteString("\nInspect the issue, preserve repository conventions, make the smallest safe change, run the requested verification, and summarize results with file references.\n")
+	return builder.String()
 }
 
 type devlogExecutor struct {

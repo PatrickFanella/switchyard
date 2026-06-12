@@ -86,6 +86,7 @@ func TestEnvWorkflowExecutorsDispatchesOpenPilotCommand(t *testing.T) {
 
 func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("GITEA_BASE_URL", "")
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
@@ -106,6 +107,44 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
 	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Name != "open-pilot-prompt.md" {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
+func TestRunnerFetchesOpenPilotIssueWhenGiteaConfigured(t *testing.T) {
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/issues/123" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"}]}`))
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OCQ_BASE_URL", "")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Steps) != 3 || detail.Steps[0].OutputSummary != "Fetched issue: Fix switchyard (open)" {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	foundIssueArtifact := false
+	for _, artifact := range detail.Artifacts {
+		if artifact.Name == "open-pilot-issue.json" && artifact.Kind == "json" {
+			foundIssueArtifact = true
+		}
+	}
+	if !foundIssueArtifact {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
