@@ -262,6 +262,8 @@ Build:
 Exit criteria:
 
 - Multiple scheduled workflows can run without blocking the API.
+- Async worker dispatch can claim queued runs with durable leases.
+- Startup recovery handles expired running leases.
 - Failed runs are diagnosable from the UI.
 - Retrying a failed step is safe and predictable.
 

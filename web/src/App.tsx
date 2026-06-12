@@ -85,6 +85,7 @@ type DashboardState = {
   runs: Run[];
   adapters: AdapterPayload;
   scheduler: SchedulerStatus;
+  workers: WorkerPoolStatus;
 };
 
 type SchedulerStatus = {
@@ -92,6 +93,21 @@ type SchedulerStatus = {
   running: boolean;
   interval?: string;
   last_tick?: string;
+  last_error?: string;
+};
+
+type WorkerPoolStatus = {
+  enabled: boolean;
+  running: boolean;
+  workers?: number;
+  active?: number;
+  lease?: string;
+  poll_interval?: string;
+  last_recover_at?: string;
+  recovered_runs?: number;
+  failed_leases?: number;
+  completed_runs?: number;
+  failed_runs?: number;
   last_error?: string;
 };
 
@@ -277,6 +293,7 @@ const emptyAdapters: AdapterPayload = {
 };
 
 const emptyScheduler: SchedulerStatus = { enabled: false, running: false, interval: 'disabled' };
+const emptyWorkers: WorkerPoolStatus = { enabled: false, running: false, workers: 0, active: 0 };
 
 function apiPath(path: string) {
   return `${apiBase}${path}`;
@@ -722,7 +739,7 @@ function FeatureFrame({ title, kicker, note, children }: { title: string; kicker
 }
 
 export default function App() {
-  const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters, scheduler: emptyScheduler });
+  const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters, scheduler: emptyScheduler, workers: emptyWorkers });
   const [selectedRunID, setSelectedRunID] = useState<string>('');
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [activeView, setActiveView] = useState<ViewID>('overview');
@@ -738,12 +755,13 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const [workflowData, triggerData, runData, adapterData, schedulerData] = await Promise.all([
+      const [workflowData, triggerData, runData, adapterData, schedulerData, workerData] = await Promise.all([
         fetchJSON<DashboardResponse<Workflow>>('/api/workflows'),
         fetchJSON<DashboardResponse<Trigger>>('/api/triggers'),
         fetchJSON<DashboardResponse<Run>>('/api/runs'),
         fetchJSON<AdapterPayload>('/api/adapters'),
         fetchJSON<SchedulerStatus>('/api/scheduler'),
+        fetchJSON<WorkerPoolStatus>('/api/workers'),
       ]);
 
       setDashboard({
@@ -752,6 +770,7 @@ export default function App() {
         runs: arrayOrEmpty(runData.runs as Run[] | null | undefined),
         adapters: normalizeAdapters(adapterData),
         scheduler: schedulerData ?? emptyScheduler,
+        workers: workerData ?? emptyWorkers,
       });
     } catch (caught) {
       setError(messageFrom(caught));
@@ -1091,6 +1110,10 @@ export default function App() {
                   <Field label="Interval" value={dashboard.scheduler.interval || 'disabled'} />
                   <Field label="Last tick" value={formatTime(dashboard.scheduler.last_tick)} />
                   <Field label="Last error" value={dashboard.scheduler.last_error || 'none'} />
+                  <Field label="Workers" value={dashboard.workers.enabled ? `${dashboard.workers.active ?? 0}/${dashboard.workers.workers ?? 0} active` : 'disabled'} />
+                  <Field label="Worker state" value={dashboard.workers.enabled ? (dashboard.workers.running ? 'running' : 'enabled') : 'disabled'} />
+                  <Field label="Completed" value={dashboard.workers.completed_runs ?? 0} />
+                  <Field label="Lease failures" value={dashboard.workers.failed_leases ?? 0} />
                 </div>
               </div>
             </article>

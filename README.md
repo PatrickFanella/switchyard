@@ -54,6 +54,8 @@ Set optional adapter probe variables to replace placeholder HUD data with live e
 
 Set `SWITCHYARD_SCHEDULER_ENABLED=true` to enable the in-process trigger scheduler. `SWITCHYARD_SCHEDULER_INTERVAL` defaults to `1m`.
 
+Set `SWITCHYARD_WORKER_ENABLED=true` to enable async worker dispatch for long-running workflows. When enabled, `POST /api/runs`, trigger runs, retries, and Open Pilot dispatch return `202 Accepted` with queued run state; workers claim runs using durable leases. Configure with `SWITCHYARD_WORKER_COUNT`, `SWITCHYARD_WORKER_LEASE`, and `SWITCHYARD_WORKER_POLL_INTERVAL`.
+
 Workflow execution adapters are opt-in:
 
 - Changemaker: `CHANGEMAKER_BASE_URL` dispatches `POST /api/runs`.
@@ -89,6 +91,7 @@ The backend exposes a workflow/run API:
 - `GET /api/runs/{id}/steps`
 - `GET /api/adapters`
 - `GET /api/scheduler`
+- `GET /api/workers`
 - `POST /api/runs`
 - `POST /api/runs/{id}/retry`
 - `POST /api/runs/{id}/cancel`
