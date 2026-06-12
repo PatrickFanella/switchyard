@@ -58,7 +58,7 @@ Workflow execution adapters are opt-in:
 
 - Changemaker: `CHANGEMAKER_BASE_URL` dispatches `POST /api/runs`.
 - Open Pilot: `OPEN_PILOT_COMMAND` enables `open-pilot run --repo <repo> --issue <issue> --json`; runs must provide `repo` and `issue` inputs.
-- Devlog: `manual-devlog` generates a Markdown artifact from recent Switchyard run history. If `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, it asks the model `DEVLOG_MODEL` to polish the Markdown; otherwise it writes a deterministic local summary.
+- Devlog: `manual-devlog` runs a three-step pipeline that collects recent Switchyard run history, generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the model.
 
 Switchyard also ships its own CLI contract:
 

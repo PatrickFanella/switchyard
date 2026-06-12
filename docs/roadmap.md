@@ -297,13 +297,13 @@ Exit criteria:
 
 - `RunStep` persisted. Initial generic workflow execution step is complete.
 - Step timeline in HUD is complete.
-- Devlog implemented as a multi-step pipeline remains next.
+- Devlog now runs as a three-step pipeline: collect history, generate markdown, attach artifact.
 
 ### M3: Shared Model Executor
 
-- llama-line-backed model steps.
-- Configurable model assignment.
-- Devlog uses shared executor.
+- llama-line/OCQ-backed model executor is available.
+- Configurable model assignment is available through `DEVLOG_MODEL` for Devlog.
+- Devlog uses shared executor for model-backed generation.
 
 ### M4: Shared OCQ Executor
 
@@ -327,14 +327,11 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Add `RunStep` schema and Store methods.
-2. Add step timeline to run detail API/UI.
-3. Convert Devlog into a step pipeline.
-4. Extract current Devlog LLM call into `model` executor.
-5. Add workflow model config and API override.
-6. Add OCQ executor for prompt/session steps.
-7. Prototype Open Pilot issue pipeline.
-8. Add worker pool and safe shutdown after long-running steps exist.
+1. Add workflow model config and API override beyond `DEVLOG_MODEL`.
+2. Add OCQ executor for prompt/session steps.
+3. Prototype Open Pilot issue pipeline.
+4. Add worker pool and safe shutdown after long-running steps exist.
+5. Add retry-from-step resume semantics for Devlog/Open Pilot.
 
 ## Non-goals for the next phase
 
