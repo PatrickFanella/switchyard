@@ -108,6 +108,10 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if actionRunID, action, ok := strings.Cut(id, "/"); ok {
+		if action == "steps" || strings.HasPrefix(action, "steps/") {
+			a.stepAction(w, r, actionRunID, strings.TrimPrefix(action, "steps"))
+			return
+		}
 		switch {
 		case r.Method == http.MethodPost && action == "retry":
 			a.retryRun(w, r, actionRunID)
@@ -131,7 +135,44 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 	}
 	detail.Events = eventsOrEmpty(detail.Events)
 	detail.Artifacts = artifactsOrEmpty(detail.Artifacts)
+	detail.Steps = stepsOrEmpty(detail.Steps)
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, path string) {
+	if path == "" || path == "/" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusNotFound, "step action not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string][]RunStep{"steps": stepsOrEmpty(a.store.ListRunSteps(runID))})
+		return
+	}
+	path = strings.TrimPrefix(path, "/")
+	stepID, action, ok := strings.Cut(path, "/")
+	if !ok || stepID == "" || r.Method != http.MethodPost {
+		writeError(w, http.StatusNotFound, "step action not found")
+		return
+	}
+	switch action {
+	case "retry":
+		step, err := a.store.RetryRunStep(stepID)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		detail, _ := a.store.RunDetail(runID)
+		writeJSON(w, http.StatusOK, map[string]any{"run": detail.Run, "step": step})
+	case "cancel":
+		step, err := a.store.CancelRunStep(stepID)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]RunStep{"step": step})
+	default:
+		writeError(w, http.StatusNotFound, "step action not found")
+	}
 }
 
 func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
@@ -204,6 +245,13 @@ func eventsOrEmpty(items []RunEvent) []RunEvent {
 func artifactsOrEmpty(items []Artifact) []Artifact {
 	if items == nil {
 		return []Artifact{}
+	}
+	return items
+}
+
+func stepsOrEmpty(items []RunStep) []RunStep {
+	if items == nil {
+		return []RunStep{}
 	}
 	return items
 }

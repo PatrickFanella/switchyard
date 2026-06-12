@@ -177,6 +177,75 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 	}
 }
 
+func TestAPIRunStepsListRetryAndCancel(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	failed, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "generate", Executor: "model"})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+	if _, err := store.StartRunStep(failed.ID); err != nil {
+		t.Fatalf("StartRunStep() error = %v", err)
+	}
+	if _, err := store.FinishRunStep(failed.ID, controlplane.StepFailed, "", "boom", nil); err != nil {
+		t.Fatalf("FinishRunStep() error = %v", err)
+	}
+	queued, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 2, Name: "attach", Executor: "internal"})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/runs/" + run.ID + "/steps")
+	if err != nil {
+		t.Fatalf("GET steps error = %v", err)
+	}
+	defer resp.Body.Close()
+	var listBody struct {
+		Steps []controlplane.RunStep `json:"steps"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listBody); err != nil {
+		t.Fatalf("decode steps: %v", err)
+	}
+	if len(listBody.Steps) != 2 || listBody.Steps[0].ID != failed.ID || listBody.Steps[1].ID != queued.ID {
+		t.Fatalf("steps = %+v", listBody.Steps)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/steps/"+failed.ID+"/retry", nil)
+	if err != nil {
+		t.Fatalf("new retry request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST retry error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("retry status = %d", resp.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/steps/"+queued.ID+"/cancel", nil)
+	if err != nil {
+		t.Fatalf("new cancel request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST cancel error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status = %d", resp.StatusCode)
+	}
+}
+
 func TestAPISchedulerStatusDisabledByDefault(t *testing.T) {
 	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
 	srv := httptest.NewServer(api.Handler())
