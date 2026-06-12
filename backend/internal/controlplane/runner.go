@@ -32,6 +32,16 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 	if executor == nil {
 		executor = WorkflowExecutorFunc(stubWorkflowExecution(run.WorkflowID, "Workflow execution adapter is not wired yet"))
 	}
+	step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
+	if err != nil {
+		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
+		return r.store.FinishRun(run.ID, RunFailed, err.Error())
+	}
+	step, err = r.store.StartRunStep(step.ID)
+	if err != nil {
+		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
+		return r.store.FinishRun(run.ID, RunFailed, err.Error())
+	}
 	execution, err := executor.Execute(ctx, run)
 	for _, event := range execution.Events {
 		_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
@@ -41,6 +51,7 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 		_, _ = r.store.AddArtifact(artifact)
 	}
 	if err != nil {
+		_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
 		return r.store.FinishRun(run.ID, RunFailed, err.Error())
 	}
@@ -48,6 +59,7 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 	if summary == "" {
 		summary = "Workflow dispatched"
 	}
+	_, _ = r.store.FinishRunStep(step.ID, StepSucceeded, summary, "", nil)
 	return r.store.FinishRun(run.ID, RunSucceeded, summary)
 }
 

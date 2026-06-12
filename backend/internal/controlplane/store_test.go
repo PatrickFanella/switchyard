@@ -51,8 +51,11 @@ func TestRunnerCreatesRunEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if len(detail.Events) != 4 {
-		t.Fatalf("len(events) = %d, want 4: %+v", len(detail.Events), detail.Events)
+	if len(detail.Steps) != 1 || detail.Steps[0].Status != controlplane.StepSucceeded || detail.Steps[0].Name != "open-pilot.execute" {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	if len(detail.Events) != 7 {
+		t.Fatalf("len(events) = %d, want 7: %+v", len(detail.Events), detail.Events)
 	}
 }
 
@@ -82,7 +85,10 @@ func TestRunnerDispatchesChangemakerExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if detail.Events[2].Type != "changemaker.accepted" {
+	if len(detail.Steps) != 1 || detail.Steps[0].Status != controlplane.StepSucceeded {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	if detail.Events[4].Type != "changemaker.accepted" {
 		t.Fatalf("events = %+v", detail.Events)
 	}
 }
