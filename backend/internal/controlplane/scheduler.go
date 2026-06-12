@@ -22,11 +22,16 @@ type Scheduler struct {
 	runner   *Runner
 	now      func() time.Time
 	interval time.Duration
+	async    bool
 
 	mu       sync.RWMutex
 	running  bool
 	lastTick time.Time
 	lastErr  string
+}
+
+func (s *Scheduler) SetAsyncDispatch(enabled bool) {
+	s.async = enabled
 }
 
 func NewScheduler(store Store, runner *Runner, interval time.Duration, now func() time.Time) *Scheduler {
@@ -94,7 +99,12 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if trigger.NextRunAt.After(now) {
 			continue
 		}
-		_, err := s.runner.RunTrigger(ctx, trigger.ID)
+		var err error
+		if s.async {
+			_, err = s.runner.EnqueueTrigger(trigger.ID)
+		} else {
+			_, err = s.runner.RunTrigger(ctx, trigger.ID)
+		}
 		last := now
 		next := nextScheduledTime(trigger.Schedule, now.Add(time.Minute))
 		lastErr := ""

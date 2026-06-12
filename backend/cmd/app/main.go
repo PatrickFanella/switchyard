@@ -40,6 +40,35 @@ func main() {
 	}
 	runner := controlplane.NewRunner(store)
 	api := controlplane.NewAPI(store, runner)
+	if os.Getenv("SWITCHYARD_WORKER_ENABLED") == "1" || os.Getenv("SWITCHYARD_WORKER_ENABLED") == "true" {
+		workers := 1
+		if raw := os.Getenv("SWITCHYARD_WORKER_COUNT"); raw != "" {
+			if _, err := fmt.Sscanf(raw, "%d", &workers); err != nil {
+				log.Fatalf("parse SWITCHYARD_WORKER_COUNT: %v", err)
+			}
+		}
+		lease := 5 * time.Minute
+		if raw := os.Getenv("SWITCHYARD_WORKER_LEASE"); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil {
+				log.Fatalf("parse SWITCHYARD_WORKER_LEASE: %v", err)
+			}
+			lease = parsed
+		}
+		poll := time.Second
+		if raw := os.Getenv("SWITCHYARD_WORKER_POLL_INTERVAL"); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil {
+				log.Fatalf("parse SWITCHYARD_WORKER_POLL_INTERVAL: %v", err)
+			}
+			poll = parsed
+		}
+		workersPool := controlplane.NewWorkerPool(store, runner, workers, lease, poll, nil)
+		api.SetWorkerPool(workersPool)
+		api.SetAsyncDispatch(true)
+		workersPool.Start(context.Background())
+		log.Printf("switchyard worker pool enabled workers=%d lease=%s poll=%s", workers, lease, poll)
+	}
 	if os.Getenv("SWITCHYARD_SCHEDULER_ENABLED") == "1" || os.Getenv("SWITCHYARD_SCHEDULER_ENABLED") == "true" {
 		interval := time.Minute
 		if raw := os.Getenv("SWITCHYARD_SCHEDULER_INTERVAL"); raw != "" {
@@ -50,6 +79,9 @@ func main() {
 			interval = parsed
 		}
 		scheduler := controlplane.NewScheduler(store, runner, interval, nil)
+		if os.Getenv("SWITCHYARD_WORKER_ENABLED") == "1" || os.Getenv("SWITCHYARD_WORKER_ENABLED") == "true" {
+			scheduler.SetAsyncDispatch(true)
+		}
 		api.SetScheduler(scheduler)
 		scheduler.Start(context.Background())
 		log.Printf("switchyard scheduler enabled interval=%s", interval)

@@ -10,11 +10,13 @@ import (
 )
 
 type API struct {
-	store        Store
-	runner       *Runner
-	adapterProbe AdapterProbe
-	canceler     CancelDispatcher
-	scheduler    *Scheduler
+	store         Store
+	runner        *Runner
+	adapterProbe  AdapterProbe
+	canceler      CancelDispatcher
+	scheduler     *Scheduler
+	workerPool    *WorkerPool
+	asyncDispatch bool
 }
 
 func NewAPI(store Store, runner *Runner) *API {
@@ -29,11 +31,20 @@ func (a *API) SetScheduler(scheduler *Scheduler) {
 	a.scheduler = scheduler
 }
 
+func (a *API) SetWorkerPool(workerPool *WorkerPool) {
+	a.workerPool = workerPool
+}
+
+func (a *API) SetAsyncDispatch(enabled bool) {
+	a.asyncDispatch = enabled
+}
+
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/adapters", a.adapters)
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
+	mux.HandleFunc("GET /api/workers", a.workerStatus)
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
@@ -66,18 +77,31 @@ func (a *API) schedulerStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.scheduler.Status())
 }
 
+func (a *API) workerStatus(w http.ResponseWriter, r *http.Request) {
+	if a.workerPool == nil {
+		writeJSON(w, http.StatusOK, WorkerPoolStatus{Enabled: false, Running: false})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.workerPool.Status())
+}
+
 func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 	var input CreateRunInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	run, err := a.runner.RunOnce(r.Context(), input)
+	run, err := a.dispatchRun(r.Context(), input)
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+	status := http.StatusCreated
+	if a.asyncDispatch {
+		w.Header().Set("Location", "/api/runs/"+run.ID)
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, map[string]Run{"run": run})
 }
 
 func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -93,12 +117,24 @@ func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repo and issue are required")
 		return
 	}
-	run, err := a.runner.RunOnce(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "manual-open-pilot", Inputs: map[string]string{"repo": input.Repo, "issue": input.Issue}})
+	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "manual-open-pilot", Inputs: map[string]string{"repo": input.Repo, "issue": input.Issue}})
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+	status := http.StatusCreated
+	if a.asyncDispatch {
+		w.Header().Set("Location", "/api/runs/"+run.ID)
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, map[string]Run{"run": run})
+}
+
+func (a *API) dispatchRun(ctx context.Context, input CreateRunInput) (Run, error) {
+	if a.asyncDispatch {
+		return a.runner.Enqueue(input)
+	}
+	return a.runner.RunOnce(ctx, input)
 }
 
 func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
@@ -181,13 +217,18 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
 		writeControlError(w, err)
 		return
 	}
-	run, err := a.runner.RunOnce(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: detail.Run.Inputs})
+	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: detail.Run.Inputs})
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
 	_, _ = a.store.AddEvent(run.ID, "run.retry", "Retried from "+id)
-	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+	status := http.StatusCreated
+	if a.asyncDispatch {
+		w.Header().Set("Location", "/api/runs/"+run.ID)
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, map[string]Run{"run": run})
 }
 
 func (a *API) cancelRun(w http.ResponseWriter, id string) {
@@ -451,12 +492,23 @@ func (a *API) triggerAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "trigger action not found")
 		return
 	}
-	run, err := a.runner.RunTrigger(r.Context(), triggerID)
+	var run Run
+	var err error
+	if a.asyncDispatch {
+		run, err = a.runner.EnqueueTrigger(triggerID)
+	} else {
+		run, err = a.runner.RunTrigger(r.Context(), triggerID)
+	}
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]Run{"run": run})
+	status := http.StatusCreated
+	if a.asyncDispatch {
+		w.Header().Set("Location", "/api/runs/"+run.ID)
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, map[string]Run{"run": run})
 }
 
 func (a *API) updateTrigger(w http.ResponseWriter, r *http.Request, triggerID string) {

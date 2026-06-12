@@ -265,6 +265,57 @@ func TestAPISchedulerStatusDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestAPIAsyncDispatchEnqueuesRun(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	api.SetAsyncDispatch(true)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/runs", "application/json", bytes.NewBufferString(`{"workflow_id":"devlog"}`))
+	if err != nil {
+		t.Fatalf("POST runs error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") == "" {
+		t.Fatal("Location header missing")
+	}
+	var body struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if body.Run.Status != controlplane.RunQueued || body.Run.StartedAt != nil {
+		t.Fatalf("run = %+v", body.Run)
+	}
+}
+
+func TestAPIWorkerStatusDisabledByDefault(t *testing.T) {
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/workers")
+	if err != nil {
+		t.Fatalf("GET workers error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body controlplane.WorkerPoolStatus
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode workers: %v", err)
+	}
+	if body.Enabled || body.Running {
+		t.Fatalf("workers = %+v", body)
+	}
+}
+
 func TestAPIAdaptersEndpointShape(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OCQ_BASE_URL", "")
