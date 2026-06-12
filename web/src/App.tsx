@@ -45,6 +45,24 @@ type RunEvent = {
   created_at: string;
 };
 
+type RunStep = {
+  id: string;
+  run_id: string;
+  position: number;
+  name: string;
+  executor: string;
+  model?: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out';
+  inputs?: Record<string, string>;
+  output_summary?: string;
+  error?: string;
+  attempt_count: number;
+  correlation_ids?: Record<string, string>;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+};
+
 type Artifact = {
   id: string;
   run_id: string;
@@ -56,6 +74,7 @@ type Artifact = {
 
 type RunDetail = {
   run: Run;
+  steps: RunStep[];
   events: RunEvent[];
   artifacts: Artifact[];
 };
@@ -323,6 +342,7 @@ function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
 function normalizeRunDetail(detail: RunDetail): RunDetail {
   return {
     ...detail,
+    steps: arrayOrEmpty(detail.steps),
     events: arrayOrEmpty(detail.events),
     artifacts: arrayOrEmpty(detail.artifacts),
   };
@@ -837,6 +857,20 @@ export default function App() {
     }
   }
 
+  async function stepAction(runID: string, stepID: string, action: 'retry' | 'cancel') {
+    setRunActionID(`${stepID}:step:${action}`);
+    setError('');
+    try {
+      await fetchJSON<{ step: RunStep } | { run: Run; step: RunStep }>(`/api/runs/${runID}/steps/${stepID}/${action}`, { method: 'POST' });
+      await loadRunDetail(runID);
+      await loadDashboard();
+    } catch (caught) {
+      setError(messageFrom(caught));
+    } finally {
+      setRunActionID('');
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[hsl(var(--void))] px-4 py-4 text-[hsl(var(--ink))] sm:px-6 sm:py-6 lg:px-8">
       <section className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-7xl flex-col gap-4 border-[3px] border-[hsl(var(--border))] bg-[hsl(var(--panel))] p-4 shadow-[8px_8px_0_hsl(var(--shadow))] sm:min-h-[calc(100vh-3rem)] sm:p-6 lg:p-8">
@@ -1131,6 +1165,71 @@ export default function App() {
                       >
                         {runActionID === `${runDetail.run.id}:cancel` ? 'Canceling…' : 'Cancel run'}
                       </button>
+                    </div>
+                  </div>
+
+                  <div className="hud-panel bg-[hsl(var(--panel-strong))] p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="hud-label text-[hsl(var(--faint))]">Step timeline</p>
+                        <h3 className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-[hsl(var(--ink))]">
+                          {runDetail.steps.length} recorded step{runDetail.steps.length === 1 ? '' : 's'}
+                        </h3>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3">
+                      {runDetail.steps.length === 0 ? (
+                        <p className="hud-panel bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
+                          No durable steps have been recorded for this run yet.
+                        </p>
+                      ) : (
+                        runDetail.steps.map((step) => (
+                          <article key={step.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="hud-label text-[hsl(var(--faint))]">Step {step.position} · {step.executor}</p>
+                                <h4 className="mt-2 text-sm font-semibold text-[hsl(var(--ink))]">{step.name}</h4>
+                                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+                                  Attempts: {step.attempt_count} · {formatTime(step.started_at)} → {formatTime(step.finished_at)}
+                                </p>
+                              </div>
+                              <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(step.status)}`}>{step.status}</span>
+                            </div>
+                            {step.model ? <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">Model: {step.model}</p> : null}
+                            {step.output_summary ? <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{step.output_summary}</p> : null}
+                            {step.error ? <p className="mt-3 text-sm leading-6 text-[hsl(var(--danger))]">{step.error}</p> : null}
+                            {step.correlation_ids && Object.keys(step.correlation_ids).length > 0 ? (
+                              <dl className="mt-3 grid gap-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+                                {Object.entries(step.correlation_ids).map(([key, value]) => (
+                                  <div key={key} className="flex justify-between gap-3 border-t border-[hsl(var(--border-faint))] pt-2">
+                                    <dt className="text-[hsl(var(--signal))]">{key}</dt>
+                                    <dd className="break-all text-right text-[hsl(var(--ink))]">{value}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            ) : null}
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              <button
+                                className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled={!['failed', 'canceled', 'timed_out'].includes(step.status) || runActionID === `${step.id}:step:retry`}
+                                onClick={() => void stepAction(runDetail.run.id, step.id, 'retry')}
+                                type="button"
+                              >
+                                {runActionID === `${step.id}:step:retry` ? 'Retrying…' : 'Retry step'}
+                              </button>
+                              <button
+                                className="hud-chip border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--danger))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled={!['queued', 'running'].includes(step.status) || runActionID === `${step.id}:step:cancel`}
+                                onClick={() => void stepAction(runDetail.run.id, step.id, 'cancel')}
+                                type="button"
+                              >
+                                {runActionID === `${step.id}:step:cancel` ? 'Canceling…' : 'Cancel step'}
+                              </button>
+                            </div>
+                          </article>
+                        ))
+                      )}
                     </div>
                   </div>
 
