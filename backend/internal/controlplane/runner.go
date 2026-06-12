@@ -32,6 +32,10 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 	if executor == nil {
 		executor = WorkflowExecutorFunc(stubWorkflowExecution(run.WorkflowID, "Workflow execution adapter is not wired yet"))
 	}
+	if stepwise, ok := executor.(StepwiseWorkflowExecutor); ok {
+		execution, err := stepwise.ExecuteSteps(ctx, run, r.store)
+		return r.finishExecution(run, execution, err)
+	}
 	step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
 	if err != nil {
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
@@ -43,6 +47,10 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 		return r.store.FinishRun(run.ID, RunFailed, err.Error())
 	}
 	execution, err := executor.Execute(ctx, run)
+	return r.finishSingleStepExecution(run, step, execution, err)
+}
+
+func (r *Runner) finishSingleStepExecution(run Run, step RunStep, execution WorkflowExecution, err error) (Run, error) {
 	for _, event := range execution.Events {
 		_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
 	}
@@ -60,6 +68,25 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 		summary = "Workflow dispatched"
 	}
 	_, _ = r.store.FinishRunStep(step.ID, StepSucceeded, summary, "", nil)
+	return r.store.FinishRun(run.ID, RunSucceeded, summary)
+}
+
+func (r *Runner) finishExecution(run Run, execution WorkflowExecution, err error) (Run, error) {
+	for _, event := range execution.Events {
+		_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
+	}
+	for _, artifact := range execution.Artifacts {
+		artifact.RunID = run.ID
+		_, _ = r.store.AddArtifact(artifact)
+	}
+	if err != nil {
+		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
+		return r.store.FinishRun(run.ID, RunFailed, err.Error())
+	}
+	summary := execution.Summary
+	if summary == "" {
+		summary = "Workflow dispatched"
+	}
 	return r.store.FinishRun(run.ID, RunSucceeded, summary)
 }
 

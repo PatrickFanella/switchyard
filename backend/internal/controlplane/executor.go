@@ -28,6 +28,11 @@ type WorkflowExecutor interface {
 	Execute(ctx context.Context, run Run) (WorkflowExecution, error)
 }
 
+type StepwiseWorkflowExecutor interface {
+	WorkflowExecutor
+	ExecuteSteps(ctx context.Context, run Run, store Store) (WorkflowExecution, error)
+}
+
 type WorkflowExecutorFunc func(context.Context, Run) (WorkflowExecution, error)
 
 func (f WorkflowExecutorFunc) Execute(ctx context.Context, run Run) (WorkflowExecution, error) {
@@ -83,10 +88,72 @@ func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	case string(WorkflowOpenPilot):
 		return WorkflowExecutorFunc(e.executeOpenPilot)
 	case string(WorkflowDevlog):
-		return WorkflowExecutorFunc(e.executeDevlog)
+		return devlogExecutor{env: e}
 	default:
 		return WorkflowExecutorFunc(stubWorkflowExecution(workflowID, "Workflow execution adapter is not wired yet"))
 	}
+}
+
+type devlogExecutor struct {
+	env *EnvWorkflowExecutors
+}
+
+func (d devlogExecutor) Execute(ctx context.Context, run Run) (WorkflowExecution, error) {
+	return d.env.executeDevlog(ctx, run)
+}
+
+func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) (WorkflowExecution, error) {
+	collect, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 1, Name: "devlog.collect-history", Executor: "internal"})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	seed := d.env.buildDevlogMarkdown(run)
+	if _, err := store.FinishRunStep(collect.ID, StepSucceeded, "Collected recent Switchyard run history", "", nil); err != nil {
+		return WorkflowExecution{}, err
+	}
+
+	generate, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "devlog.generate-markdown", Executor: "model", Model: d.env.devlogModel})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	markdown := seed
+	generated, genErr := d.env.generateDevlogWithLLM(ctx, seed)
+	if genErr == nil && strings.TrimSpace(generated) != "" {
+		markdown = generated
+		if _, err := store.FinishRunStep(generate.ID, StepSucceeded, "Generated Markdown with model", "", nil); err != nil {
+			return WorkflowExecution{}, err
+		}
+	} else {
+		if _, err := store.FinishRunStep(generate.ID, StepSucceeded, "Used deterministic Markdown fallback", "", nil); err != nil {
+			return WorkflowExecution{}, err
+		}
+		if genErr != nil {
+			_, _ = store.AddEvent(run.ID, "devlog.generate.fallback", genErr.Error())
+		}
+	}
+
+	attach, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 3, Name: "devlog.attach-artifact", Executor: "internal"})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	uri := "data:text/markdown;charset=utf-8," + url.QueryEscape(markdown)
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "devlog.md", Kind: "markdown", URI: uri}); err != nil {
+		_, _ = store.FinishRunStep(attach.ID, StepFailed, "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	if _, err := store.FinishRunStep(attach.ID, StepSucceeded, "Attached devlog.md artifact", "", nil); err != nil {
+		return WorkflowExecution{}, err
+	}
+
+	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}}}, nil
+}
+
+func createAndStartStep(store Store, input CreateRunStepInput) (RunStep, error) {
+	step, err := store.CreateRunStep(input)
+	if err != nil {
+		return RunStep{}, err
+	}
+	return store.StartRunStep(step.ID)
 }
 
 func stubWorkflowExecution(workflowID, message string) func(context.Context, Run) (WorkflowExecution, error) {
