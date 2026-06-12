@@ -59,6 +59,7 @@ type EnvWorkflowExecutors struct {
 	llamaLineBaseURL   string
 	llamaLineAPIKey    string
 	devlogModel        string
+	modelExecutor      ModelExecutor
 	client             *http.Client
 }
 
@@ -77,6 +78,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:    os.Getenv("LLAMA_LINE_API_KEY"),
 		devlogModel:        firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
+		modelExecutor:      NewEnvModelExecutor(),
 		client:             &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -117,10 +119,10 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 		return WorkflowExecution{}, err
 	}
 	markdown := seed
-	generated, genErr := d.env.generateDevlogWithLLM(ctx, seed)
-	if genErr == nil && strings.TrimSpace(generated) != "" {
-		markdown = generated
-		if _, err := store.FinishRunStep(generate.ID, StepSucceeded, "Generated Markdown with model", "", nil); err != nil {
+	generated, genErr := d.env.generateDevlogWithModel(ctx, seed)
+	if genErr == nil && strings.TrimSpace(generated.Content) != "" {
+		markdown = generated.Content
+		if _, err := store.FinishRunStep(generate.ID, StepSucceeded, "Generated Markdown with model", "", generated.CorrelationIDs); err != nil {
 			return WorkflowExecution{}, err
 		}
 	} else {
@@ -301,51 +303,10 @@ func (e *EnvWorkflowExecutors) buildDevlogMarkdown(current Run) string {
 }
 
 func (e *EnvWorkflowExecutors) generateDevlogWithLLM(ctx context.Context, seed string) (string, error) {
-	baseURL := e.llamaLineBaseURL
-	token := e.llamaLineAPIKey
-	if baseURL == "" {
-		baseURL = e.ocqBaseURL
-		token = e.ocqGatewayKey
-	}
-	if baseURL == "" {
-		return "", fmt.Errorf("no LLM base URL configured")
-	}
-	endpoint, err := url.JoinPath(baseURL, "/v1/chat/completions")
-	if err != nil {
-		return "", err
-	}
-	body, err := json.Marshal(map[string]any{"model": e.devlogModel, "stream": false, "messages": []map[string]string{{"role": "system", "content": "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."}, {"role": "user", "content": seed}}})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("devlog model request failed: %s", resp.Status)
-	}
-	var decoded struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return "", err
-	}
-	if len(decoded.Choices) == 0 {
-		return "", fmt.Errorf("devlog model response contained no choices")
-	}
-	return decoded.Choices[0].Message.Content, nil
+	response, err := e.generateDevlogWithModel(ctx, seed)
+	return response.Content, err
+}
+
+func (e *EnvWorkflowExecutors) generateDevlogWithModel(ctx context.Context, seed string) (ModelResponse, error) {
+	return e.modelExecutor.Generate(ctx, ModelRequest{Model: e.devlogModel, Messages: []ModelMessage{{Role: "system", Content: "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."}, {Role: "user", Content: seed}}})
 }
