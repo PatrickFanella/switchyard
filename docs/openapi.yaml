@@ -1,0 +1,504 @@
+openapi: 3.1.0
+info:
+  title: Switchyard Control Plane API
+  version: 0.1.0
+  description: Local control-plane API for workflows, runs, triggers, pipelines, workers, and adapter status.
+servers:
+  - url: http://127.0.0.1:28080
+    description: Local Docker Compose API
+  - url: http://127.0.0.1:18080
+    description: Local smoke-test API
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                required: [ok]
+  /api/adapters:
+    get:
+      summary: List adapter snapshots
+      responses:
+        "200": { $ref: "#/components/responses/AdapterPayload" }
+  /api/scheduler:
+    get:
+      summary: Get scheduler status
+      responses:
+        "200":
+          description: Scheduler status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SchedulerStatus" }
+  /api/workers:
+    get:
+      summary: Get worker pool status
+      responses:
+        "200":
+          description: Worker pool status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkerPoolStatus" }
+  /api/pipelines:
+    get:
+      summary: List pipeline definitions
+      responses:
+        "200":
+          description: Pipeline list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipelines:
+                    type: array
+                    items: { $ref: "#/components/schemas/Pipeline" }
+                required: [pipelines]
+  /api/agent-profiles:
+    get:
+      summary: List agent profiles
+      responses:
+        "200":
+          description: Agent profile list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentProfile" }
+                required: [profiles]
+  /api/workflows:
+    get:
+      summary: List workflows
+      responses:
+        "200":
+          description: Workflow list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflows:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workflow" }
+                required: [workflows]
+  /api/triggers:
+    get:
+      summary: List triggers
+      responses:
+        "200":
+          description: Trigger list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  triggers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Trigger" }
+                required: [triggers]
+  /api/triggers/{triggerId}:
+    patch:
+      summary: Update a trigger
+      parameters:
+        - $ref: "#/components/parameters/TriggerID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+              required: [enabled]
+      responses:
+        "200":
+          description: Updated trigger
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trigger: { $ref: "#/components/schemas/Trigger" }
+                required: [trigger]
+        default: { $ref: "#/components/responses/Error" }
+  /api/triggers/{triggerId}/run:
+    post:
+      summary: Run a trigger now
+      parameters:
+        - $ref: "#/components/parameters/TriggerID"
+      responses:
+        "201": { $ref: "#/components/responses/RunEnvelope" }
+        "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/runs:
+    get:
+      summary: List runs
+      responses:
+        "200":
+          description: Run list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Run" }
+                required: [runs]
+    post:
+      summary: Create and dispatch a run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRunInput" }
+      responses:
+        "201": { $ref: "#/components/responses/RunEnvelope" }
+        "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/runs/{runId}:
+    get:
+      summary: Get run detail
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Run detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunDetail" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/runs/{runId}/retry:
+    post:
+      summary: Retry a run as a new run
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "201": { $ref: "#/components/responses/RunEnvelope" }
+        "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/runs/{runId}/cancel:
+    post:
+      summary: Cancel a queued or running run
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200": { $ref: "#/components/responses/RunEnvelope" }
+        "400": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/runs/{runId}/steps:
+    get:
+      summary: List run steps
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Step list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  steps:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunStep" }
+                required: [steps]
+  /api/runs/{runId}/steps/{stepId}/retry:
+    post:
+      summary: Retry a step as a resume run
+      description: Creates a new run with retry_from_step metadata and resume.* inputs.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/StepID"
+      responses:
+        "201": { $ref: "#/components/responses/StepRetryEnvelope" }
+        "202": { $ref: "#/components/responses/AcceptedStepRetryEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/runs/{runId}/steps/{stepId}/cancel:
+    post:
+      summary: Cancel a queued or running step
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/StepID"
+      responses:
+        "200":
+          description: Canceled step
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  step: { $ref: "#/components/schemas/RunStep" }
+                required: [step]
+        default: { $ref: "#/components/responses/Error" }
+  /api/workflows/open-pilot/run:
+    post:
+      summary: Create an Open Pilot run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo: { type: string }
+                issue: { type: string }
+              required: [repo, issue]
+      responses:
+        "201": { $ref: "#/components/responses/RunEnvelope" }
+        "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    RunID:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string }
+    StepID:
+      name: stepId
+      in: path
+      required: true
+      schema: { type: string }
+    TriggerID:
+      name: triggerId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RunEnvelope:
+      description: Run envelope
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              run: { $ref: "#/components/schemas/Run" }
+            required: [run]
+    AcceptedRunEnvelope:
+      description: Accepted async run envelope
+      headers:
+        Location:
+          schema: { type: string }
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              run: { $ref: "#/components/schemas/Run" }
+            required: [run]
+    StepRetryEnvelope:
+      description: Step retry envelope
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              run: { $ref: "#/components/schemas/Run" }
+              step: { $ref: "#/components/schemas/RunStep" }
+            required: [run, step]
+    AcceptedStepRetryEnvelope:
+      description: Accepted async step retry envelope
+      headers:
+        Location:
+          schema: { type: string }
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              run: { $ref: "#/components/schemas/Run" }
+              step: { $ref: "#/components/schemas/RunStep" }
+            required: [run, step]
+    AdapterPayload:
+      description: Adapter payload
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+  schemas:
+    StringMap:
+      type: object
+      additionalProperties: { type: string }
+    Workflow:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        name: { type: string }
+        description: { type: string }
+        owns: { type: array, items: { type: string } }
+        uses: { type: array, items: { type: string } }
+        status: { type: string }
+      required: [id, kind, name, description, owns, uses, status]
+    Trigger:
+      type: object
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        type: { type: string }
+        name: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+        schedule: { type: string }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+        next_run_at: { type: string, format: date-time }
+        last_run_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        last_error: { type: string }
+      required: [id, workflow_id, type, name, description, enabled]
+    Run:
+      type: object
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        trigger_id: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+        created_at: { type: string, format: date-time }
+        queued_at: { type: string, format: date-time }
+        available_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        claimed_at: { type: string, format: date-time }
+        claimed_by: { type: string }
+        lease_expires_at: { type: string, format: date-time }
+        attempt_count: { type: integer }
+        max_attempts: { type: integer }
+        summary: { type: string }
+      required: [id, workflow_id, status, created_at, queued_at, available_at, attempt_count, max_attempts]
+    RunStep:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        position: { type: integer }
+        name: { type: string }
+        executor: { type: string }
+        model: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out] }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+        output_summary: { type: string }
+        error: { type: string }
+        attempt_count: { type: integer }
+        correlation_ids: { $ref: "#/components/schemas/StringMap" }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+      required: [id, run_id, position, name, executor, status, attempt_count, created_at]
+    RunEvent:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        type: { type: string }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, run_id, type, message, created_at]
+    Artifact:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        name: { type: string }
+        kind: { type: string }
+        uri: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, run_id, name, kind, uri, created_at]
+    RunDetail:
+      type: object
+      properties:
+        run: { $ref: "#/components/schemas/Run" }
+        steps: { type: array, items: { $ref: "#/components/schemas/RunStep" } }
+        events: { type: array, items: { $ref: "#/components/schemas/RunEvent" } }
+        artifacts: { type: array, items: { $ref: "#/components/schemas/Artifact" } }
+      required: [run, steps, events, artifacts]
+    CreateRunInput:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        trigger_id: { type: string }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+      required: [workflow_id]
+    Pipeline:
+      type: object
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/PipelineStep" }
+      required: [id, workflow_id, name, description, steps]
+    PipelineStep:
+      type: object
+      properties:
+        id: { type: string }
+        position: { type: integer }
+        name: { type: string }
+        executor: { type: string }
+        profile: { type: string }
+        model: { type: string }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+      required: [id, position, name, executor]
+    AgentProfile:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { type: string }
+        default_model: { type: string }
+        prompt_contract: { type: string }
+        allowed_executors: { type: array, items: { type: string } }
+      required: [id, name, role, default_model, prompt_contract, allowed_executors]
+    SchedulerStatus:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        running: { type: boolean }
+        interval: { type: string }
+        last_tick: { type: string, format: date-time }
+        last_error: { type: string }
+      required: [enabled, running]
+    WorkerPoolStatus:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        running: { type: boolean }
+        workers: { type: integer }
+        active: { type: integer }
+        lease: { type: string }
+        poll_interval: { type: string }
+        last_recover_at: { type: string, format: date-time }
+        recovered_runs: { type: integer }
+        failed_leases: { type: integer }
+        completed_runs: { type: integer }
+        failed_runs: { type: integer }
+        lease_renewals: { type: integer }
+        last_error: { type: string }
+      required: [enabled, running]
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+          required: [message]
+      required: [error]

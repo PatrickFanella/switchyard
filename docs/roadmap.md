@@ -331,7 +331,7 @@ Exit criteria:
 ## Near-term implementation backlog
 
 1. Expand Open Pilot worktree support with existing-branch detection for externally published heads and richer artifact rehydration.
-2. Add API docs/OpenAPI after the runtime API settles.
+2. Keep `docs/openapi.yaml` aligned as route shapes settle and decide whether to serve it from the API/UI.
 
 ## Non-goals for the next phase
 
