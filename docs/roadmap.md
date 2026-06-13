@@ -330,7 +330,7 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Expand Open Pilot worktree support with cleanup/status artifacts and stronger retry rehydration.
+1. Expand Open Pilot worktree support with cleanup policy and stronger retry rehydration.
 2. Add per-executor concurrency limits beyond the current worker pool.
 3. Add API docs/OpenAPI after the runtime API settles.
 

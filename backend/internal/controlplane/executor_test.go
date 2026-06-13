@@ -291,6 +291,15 @@ func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	if detail.Steps[4].CorrelationIDs["worktree_path"] != worktreePath || detail.Steps[4].Status != controlplane.StepSucceeded {
 		t.Fatalf("verify step = %+v", detail.Steps[4])
 	}
+	foundStatus := false
+	for _, artifact := range detail.Artifacts {
+		if artifact.Name == "open-pilot-git-status.txt" && strings.Contains(artifact.URI, "clean") {
+			foundStatus = true
+		}
+	}
+	if !foundStatus {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
 }
 
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {

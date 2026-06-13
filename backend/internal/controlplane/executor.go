@@ -479,6 +479,13 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			pushCorrelation["remote"] = pushPlan.Remote
 		}
 		out := PipelineStepExecution{Inputs: pushPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}}, CorrelationIDs: pushCorrelation}
+		if branchPlan.Executed && branchPlan.WorktreePath != "" {
+			status, err := o.env.openPilotWorktreeStatus(ctx, branchPlan.WorktreePath)
+			if err != nil {
+				return out, err
+			}
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(status)})
+		}
 		if err := o.env.executeOpenPilotPush(ctx, pushPlan); err != nil {
 			return out, err
 		}
@@ -576,6 +583,22 @@ func (e *EnvWorkflowExecutors) executeOpenPilotPush(ctx context.Context, plan Op
 	default:
 		return fmt.Errorf("unsupported OPEN_PILOT_GIT_PUSH_MODE %q", plan.Mode)
 	}
+}
+
+func (e *EnvWorkflowExecutors) openPilotWorktreeStatus(ctx context.Context, worktreePath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "status", "--porcelain=v1")
+	output, err := cmd.CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		if message == "" {
+			message = err.Error()
+		}
+		return "", errors.New(message)
+	}
+	if message == "" {
+		return "clean\n", nil
+	}
+	return message + "\n", nil
 }
 
 func slug(value string) string {
