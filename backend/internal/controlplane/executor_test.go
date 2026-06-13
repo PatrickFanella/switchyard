@@ -110,6 +110,13 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 	if len(detail.Artifacts) != 2 || detail.Artifacts[1].Name != "open-pilot-prompt.md" {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.Phase != controlplane.OpenPilotPhasePaused || state.LastStepName != "open-pilot.agent-work" || !strings.Contains(state.LastError, "not configured") || state.ResumeInputs["resume.open-pilot.prompt"] == "" {
+		t.Fatalf("state = %+v", state)
+	}
 }
 
 func TestRunnerFetchesOpenPilotIssueWhenGiteaConfigured(t *testing.T) {
@@ -250,6 +257,68 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotPersistOpenPilotPushedPhaseWhenPushIsDryRunOrDisabled(t *testing.T) {
+	for _, pushMode := range []string{"dry-run", "disabled"} {
+		pushMode := pushMode
+		t.Run(pushMode, func(t *testing.T) {
+			state := runOpenPilotNoPersistTest(t, pushMode, "disabled")
+			if state.Phase == controlplane.OpenPilotPhasePushed {
+				t.Fatalf("state = %+v", state)
+			}
+			if state.Phase != controlplane.OpenPilotPhaseVerified {
+				t.Fatalf("state = %+v", state)
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotPersistOpenPilotPRCreatedPhaseWhenPRIsDryRunOrDisabled(t *testing.T) {
+	for _, writeMode := range []string{"dry-run", "disabled"} {
+		writeMode := writeMode
+		t.Run(writeMode, func(t *testing.T) {
+			state := runOpenPilotNoPersistTest(t, "disabled", writeMode)
+			if state.Phase == controlplane.OpenPilotPhasePRCreated {
+				t.Fatalf("state = %+v", state)
+			}
+			if state.Phase != controlplane.OpenPilotPhaseVerified {
+				t.Fatalf("state = %+v", state)
+			}
+		})
+	}
+}
+
+func runOpenPilotNoPersistTest(t *testing.T, pushMode, writeMode string) controlplane.OpenPilotIssueState {
+	t.Helper()
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status,diff")
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", pushMode)
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", writeMode)
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "make verify"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded {
+		t.Fatalf("run = %+v", run)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	return state
+}
+
 func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
@@ -288,6 +357,271 @@ func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
 	}
 	if detail.Steps[1].Inputs["branch"] != "open-pilot/issue-123-fix-switchyard" || detail.Steps[2].Inputs["head"] != "open-pilot/issue-123-fix-switchyard" {
 		t.Fatalf("rehydrated inputs missing: %+v", detail.Steps)
+	}
+}
+
+func TestRunnerPersistsOpenPilotStateThroughAgentWork(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "disabled")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || state.Phase != controlplane.OpenPilotPhaseAgentCompleted {
+		t.Fatalf("run = %+v state = %+v", run, state)
+	}
+	if state.Branch == "" || state.ResumeInputs["resume.open-pilot.branch-plan.branch"] == "" || state.ResumeInputs["resume.open-pilot.prompt"] == "" || state.ResumeInputs["resume.open-pilot.agent-work.response"] != "implementation summary" {
+		t.Fatalf("state resume inputs missing: %+v", state)
+	}
+}
+
+func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	remotePath := filepath.Join(t.TempDir(), "remote.git")
+	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "origin", "main")
+	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/issues/123" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+		default:
+			t.Fatalf("unexpected PR request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || state.Phase != controlplane.OpenPilotPhasePRCreated {
+		t.Fatalf("run = %+v state = %+v", run, state)
+	}
+	if state.PullRequestURL != "https://git/OWNER/REPO/pulls/7" || state.PullRequestID != 99 || state.PullRequestNum != 7 {
+		t.Fatalf("PR fields not persisted: %+v", state)
+	}
+	if state.ResumeInputs["resume.open-pilot.pr-plan.pull_request_url"] != "https://git/OWNER/REPO/pulls/7" {
+		t.Fatalf("PR resume inputs not persisted: %+v", state.ResumeInputs)
+	}
+}
+
+func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/issues/123" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "make verify"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || state.Phase != controlplane.OpenPilotPhasePRCreated || state.PullRequestURL != "https://git/OWNER/REPO/pulls/7" {
+		t.Fatalf("run = %+v state = %+v", run, state)
+	}
+}
+
+func TestRunnerPersistsOpenPilotFailureState(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "deny")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "make verify"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if run.Status != controlplane.RunFailed || state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.verify-command" || !strings.Contains(state.LastError, "deny") {
+		t.Fatalf("run = %+v state = %+v", run, state)
+	}
+	if state.Branch == "" || state.Base == "" || state.ResumeInputs["resume.open-pilot.prompt"] == "" {
+		t.Fatalf("expected branch/base/prompt to persist: %+v", state)
+	}
+}
+
+func TestRunnerPrefersOpenPilotDBStateForHydration(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "123", controlplane.OpenPilotPhaseRequested); err != nil {
+		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
+		Repo:              "OWNER/REPO",
+		Issue:             "123",
+		Phase:             controlplane.OpenPilotPhaseFailed,
+		RunID:             "seed-run",
+		LastStepName:      "open-pilot.verify-command",
+		Branch:            "db-branch",
+		Base:              "main",
+		ResumeInputs:      map[string]string{"resume.open-pilot.validate-issue.summary": "db summary", "resume.open-pilot.prompt": "db prompt", "resume.open-pilot.agent-work.response": "db response", "resume.open-pilot.branch-plan.branch": "db-branch", "resume.open-pilot.branch-plan.base_branch": "main", "resume.open-pilot.push-branch.branch": "db-branch", "resume.open-pilot.push-branch.remote": "origin", "resume.open-pilot.push-branch.mode": "disabled"},
+		GateStatus:        controlplane.OpenPilotGateStatus{"local_verify": "passed"},
+		MaxRepairAttempts: 2,
+	}); err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
+	}
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{
+		"repo":                                  "OWNER/REPO",
+		"issue":                                 "123",
+		"test_command":                          "make verify",
+		"retry_from_step_position":              "5",
+		"retry_from_step":                       "open-pilot.verify-command",
+		"resume.open-pilot.branch-plan.branch":  "conflict-branch",
+		"resume.open-pilot.prompt":              "conflict prompt",
+		"resume.open-pilot.agent-work.response": "conflict response",
+		"resume.open-pilot.push-branch.branch":  "conflict-branch",
+	}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Steps) != 3 || detail.Steps[1].Inputs["branch"] != "db-branch" || detail.Steps[2].Inputs["head"] != "db-branch" {
+		t.Fatalf("hydrated steps = %+v", detail.Steps)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.ResumeInputs["resume.open-pilot.prompt"] != "db prompt" || state.ResumeInputs["resume.open-pilot.agent-work.response"] != "db response" {
+		t.Fatalf("DB resume inputs were not preferred: %+v", state.ResumeInputs)
+	}
+}
+
+func TestRunnerReusesKnownOpenPilotPullRequestOnResume(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "123", controlplane.OpenPilotPhaseRequested); err != nil {
+		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
+		Repo:              "OWNER/REPO",
+		Issue:             "123",
+		Phase:             controlplane.OpenPilotPhaseFailed,
+		RunID:             "seed-run",
+		LastStepName:      "open-pilot.pr-plan",
+		Branch:            "open-pilot/issue-123",
+		Base:              "main",
+		PullRequestURL:    "https://git/OWNER/REPO/pulls/7",
+		PullRequestID:     99,
+		PullRequestNum:    7,
+		ResumeInputs:      map[string]string{"resume.open-pilot.validate-issue.summary": "db summary", "resume.open-pilot.agent-work.response": "db response", "resume.open-pilot.branch-plan.branch": "open-pilot/issue-123", "resume.open-pilot.branch-plan.base_branch": "main"},
+		MaxRepairAttempts: 2,
+	}); err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
+	}
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost {
+			t.Fatalf("CreatePullRequest should not be called when DB state already records PR")
+		}
+		_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step_position": "7", "retry_from_step": "open-pilot.pr-plan"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 1 || detail.Steps[0].OutputSummary != "Using existing pull request" || detail.Steps[0].CorrelationIDs["pull_request"] != "https://git/OWNER/REPO/pulls/7" {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.Phase != controlplane.OpenPilotPhasePRCreated || state.PullRequestURL != "https://git/OWNER/REPO/pulls/7" {
+		t.Fatalf("state = %+v", state)
 	}
 }
 

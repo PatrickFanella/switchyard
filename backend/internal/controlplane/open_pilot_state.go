@@ -118,6 +118,15 @@ func ValidateOpenPilotTransition(from, to OpenPilotPhase) error {
 	if from == OpenPilotPhaseMerged && to == OpenPilotPhaseIssueClosed {
 		return nil
 	}
+	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePushed {
+		return nil
+	}
+	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePRCreated {
+		return nil
+	}
+	if from == OpenPilotPhaseVerified && to == OpenPilotPhasePRCreated {
+		return nil
+	}
 	if !isOpenPilotActivePhase(from) || !isOpenPilotActivePhase(to) {
 		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
 	}
@@ -183,7 +192,7 @@ func validateOpenPilotIssueStateForUpsert(input OpenPilotIssueState, existing *O
 		return OpenPilotIssueState{}, err
 	}
 	if existing == nil {
-		if state.Phase != OpenPilotPhaseRequested {
+		if state.Phase != OpenPilotPhaseRequested && state.Phase != OpenPilotPhaseValidated {
 			return OpenPilotIssueState{}, ErrInvalid
 		}
 		return state, nil

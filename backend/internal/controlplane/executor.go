@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -252,9 +253,13 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	}
 	response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: model, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
 	if err != nil {
+		fallbackExecution := WorkflowExecution{Summary: "Prepared Open Pilot prompt for issue " + issue, Events: []WorkflowExecutionEvent{{Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OCQ not configured; prompt prepared for operator handoff", "", nil)
 		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", err.Error())
-		return WorkflowExecution{Summary: "Prepared Open Pilot prompt for issue " + issue, Events: []WorkflowExecutionEvent{{Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}, nil
+		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", err.Error(), map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}); persistErr != nil {
+			return fallbackExecution, persistErr
+		}
+		return fallbackExecution, nil
 	}
 	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}); err != nil {
 		_, _ = store.FinishRunStep(agent.ID, StepFailed, "", err.Error(), response.CorrelationIDs)
@@ -380,28 +385,354 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 }
 
 func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state map[string]any) {
-	if strings.TrimSpace(run.Inputs["retry_from_step_position"]) == "" {
+	if o.env == nil || o.env.store == nil {
 		return
 	}
-	if summary := run.Inputs["resume.open-pilot.validate-issue.summary"]; summary != "" {
-		state["open-pilot.issue-summary"] = summary
+	repo := run.Inputs["repo"]
+	issue := run.Inputs["issue"]
+	if repo == "" || issue == "" {
+		return
+	}
+	saved, err := o.env.store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
+		return
+	}
+	if saved.Phase != OpenPilotPhaseFailed && saved.Phase != OpenPilotPhasePaused {
+		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
+		return
+	}
+	o.hydrateOpenPilotPipelineStateFromIssueState(run, saved, state)
+}
+
+func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, issueState OpenPilotIssueState, state map[string]any) {
+	mergedInputs := cloneMap(run.Inputs)
+	for k, v := range issueState.ResumeInputs {
+		mergedInputs[k] = v
+	}
+	if issueState.Repo != "" {
+		mergedInputs["repo"] = issueState.Repo
+	}
+	if issueState.Issue != "" {
+		mergedInputs["issue"] = issueState.Issue
+	}
+	if issueState.Base != "" {
+		mergedInputs["resume.open-pilot.branch-plan.base_branch"] = issueState.Base
+	}
+	if issueState.Branch != "" {
+		mergedInputs["resume.open-pilot.branch-plan.branch"] = issueState.Branch
+		mergedInputs["resume.open-pilot.branch-plan.correlation.branch"] = issueState.Branch
+	}
+	if issueState.WorktreePath != "" {
+		mergedInputs["resume.open-pilot.branch-plan.worktree_path"] = issueState.WorktreePath
+		mergedInputs["resume.open-pilot.branch-plan.correlation.worktree_path"] = issueState.WorktreePath
+		mergedInputs["resume.open-pilot.branch-plan.executed"] = "true"
+	}
+	if issueState.PullRequestURL != "" {
+		mergedInputs["resume.open-pilot.pr-plan.pull_request_url"] = issueState.PullRequestURL
+	}
+	if issueState.PullRequestID != 0 {
+		mergedInputs["resume.open-pilot.pr-plan.pull_request_id"] = fmt.Sprintf("%d", issueState.PullRequestID)
+	}
+	if issueState.PullRequestNum != 0 {
+		mergedInputs["resume.open-pilot.pr-plan.pull_request_number"] = fmt.Sprintf("%d", issueState.PullRequestNum)
+	}
+	if issueState.ResumeInputs != nil {
+		if prompt := issueState.ResumeInputs["resume.open-pilot.prompt"]; prompt != "" {
+			state["open-pilot.prompt"] = prompt
+		}
+		if summary := issueState.ResumeInputs["resume.open-pilot.validate-issue.summary"]; summary != "" {
+			state["open-pilot.issue-summary"] = summary
+		}
+		if response := issueState.ResumeInputs["resume.open-pilot.agent-work.response"]; response != "" {
+			state["open-pilot.response"] = response
+			state["open-pilot.agent-completed"] = true
+		}
+		if corr := mergeResumeCorrelation(issueState.ResumeInputs, "resume.open-pilot.agent-work.correlation."); len(corr) > 0 {
+			state["open-pilot.agent-correlation"] = corr
+		}
+		if corr := mergeResumeCorrelation(issueState.ResumeInputs, "resume.open-pilot.push-branch.correlation."); len(corr) > 0 {
+			state["open-pilot.push-correlation"] = corr
+		}
+	}
+	branchPlan := openPilotWorktreePlanFromResume(mergedInputs)
+	if branchPlan.Branch != "" {
+		state["open-pilot.branch-name"] = branchPlan.Branch
+		state["open-pilot.branch-plan"] = branchPlan
+		if _, ok := state["open-pilot.issue-summary"].(string); !ok {
+			state["open-pilot.issue-summary"] = "Retried Open Pilot issue " + issueState.Issue
+		}
+		if _, ok := state["open-pilot.prompt"].(string); !ok {
+			issueSummary, _ := state["open-pilot.issue-summary"].(string)
+			state["open-pilot.prompt"] = buildOpenPilotPrompt(issueState.Repo, issueState.Issue, issueSummary, nil, mergedInputs, branchPlan)
+		}
+	}
+	pushPlan := openPilotPushPlanFromResume(mergedInputs)
+	if pushPlan.Branch != "" {
+		state["open-pilot.push-plan"] = pushPlan
+	}
+	if issueState.PullRequestURL != "" || issueState.PullRequestID != 0 || issueState.PullRequestNum != 0 {
+		state["open-pilot.pull-request"] = GiteaPullRequest{ID: issueState.PullRequestID, Number: issueState.PullRequestNum, HTMLURL: issueState.PullRequestURL}
+	}
+}
+
+func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run, state map[string]any) {
+	issueSummary := run.Inputs["resume.open-pilot.validate-issue.summary"]
+	if issueSummary != "" {
+		state["open-pilot.issue-summary"] = issueSummary
 	}
 	branchPlan := openPilotWorktreePlanFromResume(run.Inputs)
 	if branchPlan.Branch != "" {
 		state["open-pilot.branch-name"] = branchPlan.Branch
 		state["open-pilot.branch-plan"] = branchPlan
-		if _, ok := state["open-pilot.issue-summary"].(string); !ok {
-			state["open-pilot.issue-summary"] = "Retried Open Pilot issue " + run.Inputs["issue"]
+		if issueSummary == "" {
+			issueSummary = "Retried Open Pilot issue " + run.Inputs["issue"]
 		}
-		prompt := buildOpenPilotPrompt(run.Inputs["repo"], run.Inputs["issue"], state["open-pilot.issue-summary"].(string), nil, run.Inputs, branchPlan)
-		state["open-pilot.prompt"] = prompt
+		state["open-pilot.prompt"] = buildOpenPilotPrompt(run.Inputs["repo"], run.Inputs["issue"], issueSummary, nil, run.Inputs, branchPlan)
 	}
 	if summary := run.Inputs["resume.open-pilot.agent-work.summary"]; summary != "" {
 		state["open-pilot.agent-completed"] = true
 		state["open-pilot.response"] = summary
 	}
+	if response := run.Inputs["resume.open-pilot.agent-work.response"]; response != "" {
+		state["open-pilot.agent-completed"] = true
+		state["open-pilot.response"] = response
+	}
 	if pushPlan := openPilotPushPlanFromResume(run.Inputs); pushPlan.Branch != "" {
 		state["open-pilot.push-plan"] = pushPlan
+	}
+	if prURL := run.Inputs["resume.open-pilot.pr-plan.pull_request_url"]; prURL != "" || run.Inputs["resume.open-pilot.pr-plan.pull_request_id"] != "" || run.Inputs["resume.open-pilot.pr-plan.pull_request_number"] != "" {
+		pr := GiteaPullRequest{HTMLURL: prURL}
+		if id, err := strconv.Atoi(run.Inputs["resume.open-pilot.pr-plan.pull_request_id"]); err == nil {
+			pr.ID = id
+		}
+		if num, err := strconv.Atoi(run.Inputs["resume.open-pilot.pr-plan.pull_request_number"]); err == nil {
+			pr.Number = num
+		}
+		state["open-pilot.pull-request"] = pr
+	}
+}
+
+func mergeResumeCorrelation(inputs map[string]string, prefix string) map[string]string {
+	out := map[string]string{}
+	for k, v := range inputs {
+		if strings.HasPrefix(k, prefix) {
+			out[strings.TrimPrefix(k, prefix)] = v
+		}
+	}
+	return out
+}
+
+func mergeOpenPilotResumeInputs(base map[string]string, overrides map[string]string) map[string]string {
+	out := cloneMap(base)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for k, v := range overrides {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func setOpenPilotResumeInput(inputs map[string]string, key, value string) {
+	if value == "" {
+		return
+	}
+	if inputs == nil {
+		return
+	}
+	inputs[key] = value
+}
+
+func setOpenPilotResumeBool(inputs map[string]string, key string, value bool) {
+	if !value || inputs == nil {
+		return
+	}
+	inputs[key] = "true"
+}
+
+func openPilotPullRequestKnown(pr GiteaPullRequest) bool {
+	return pr.HTMLURL != "" || pr.ID != 0 || pr.Number != 0
+}
+
+func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPhase, stepName, lastErr string, state map[string]any) error {
+	if o.env == nil || o.env.store == nil {
+		return nil
+	}
+	repo := run.Inputs["repo"]
+	issue := run.Inputs["issue"]
+	if repo == "" || issue == "" {
+		return nil
+	}
+	missing := false
+	saved, err := o.env.store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		missing = true
+		saved = OpenPilotIssueState{Repo: repo, Issue: issue}
+	}
+	saved.Phase = phase
+	saved.RunID = run.ID
+	saved.LastStepName = stepName
+	saved.LastError = lastErr
+	if saved.GateStatus == nil {
+		saved.GateStatus = OpenPilotGateStatus{}
+	}
+	if saved.ResumeInputs == nil {
+		saved.ResumeInputs = map[string]string{}
+	}
+	for k, v := range run.Inputs {
+		switch k {
+		case "retry_from_step_position", "retry_from_step":
+			continue
+		}
+		if v != "" {
+			saved.ResumeInputs[k] = v
+		}
+	}
+	if issueSummary, ok := state["open-pilot.issue-summary"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.validate-issue.summary", issueSummary)
+	}
+	if prompt, ok := state["open-pilot.prompt"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.prompt", prompt)
+	}
+	if response, ok := state["open-pilot.response"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.response", response)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.summary", response)
+	}
+	if branchPlan, ok := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan); ok {
+		saved.Branch = branchPlan.Branch
+		saved.Base = branchPlan.BaseBranch
+		saved.WorktreePath = branchPlan.WorktreePath
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.repo", branchPlan.Repo)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.repo_path", branchPlan.RepoPath)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.base_branch", branchPlan.BaseBranch)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.branch", branchPlan.Branch)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.mode", branchPlan.Mode)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.planned_worktree_path", branchPlan.PlannedWorktreePath)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.worktree_path", branchPlan.WorktreePath)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.branch-plan.executed", branchPlan.Executed)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.branch-plan.dry_run", branchPlan.DryRun)
+	}
+	if pushPlan, ok := state["open-pilot.push-plan"].(OpenPilotPushPlan); ok {
+		saved.Branch = firstNonEmpty(saved.Branch, pushPlan.Branch)
+		saved.WorktreePath = firstNonEmpty(saved.WorktreePath, pushPlan.WorktreePath)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.push-branch.mode", pushPlan.Mode)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.push-branch.remote", pushPlan.Remote)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.push-branch.branch", pushPlan.Branch)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.push-branch.worktree_path", pushPlan.WorktreePath)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.push-branch.executed", pushPlan.Executed)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.push-branch.dry_run", pushPlan.DryRun)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.push-branch.remote_head_exists", pushPlan.RemoteHeadExists)
+		if corr, ok := state["open-pilot.push-correlation"].(map[string]string); ok {
+			for k, v := range corr {
+				setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.push-branch.correlation."+k, v)
+			}
+		}
+	}
+	if corr, ok := state["open-pilot.agent-correlation"].(map[string]string); ok {
+		for k, v := range corr {
+			setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.correlation."+k, v)
+		}
+	}
+	if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok {
+		saved.PullRequestURL = pr.HTMLURL
+		saved.PullRequestID = pr.ID
+		saved.PullRequestNum = pr.Number
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_url", pr.HTMLURL)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_id", fmt.Sprintf("%d", pr.ID))
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_number", fmt.Sprintf("%d", pr.Number))
+	}
+	if phase == OpenPilotPhaseVerified {
+		saved.GateStatus["local_verify"] = "passed"
+	} else if phase == OpenPilotPhaseFailed && stepName == "open-pilot.verify-command" {
+		saved.GateStatus["local_verify"] = "failed"
+	}
+	if lastErr != "" {
+		saved.LastError = lastErr
+	}
+	if saved.MaxRepairAttempts == 0 {
+		saved.MaxRepairAttempts = openPilotDefaultMaxRepairAttempts
+	}
+	if missing {
+		if err := o.bootstrapOpenPilotIssueState(repo, issue, stepName, saved, phase); err != nil {
+			return err
+		}
+	}
+	_, err = o.env.store.UpsertOpenPilotIssueState(saved)
+	return err
+}
+
+func (o openPilotExecutor) bootstrapOpenPilotIssueState(repo, issue, stepName string, saved OpenPilotIssueState, target OpenPilotPhase) error {
+	if o.env == nil || o.env.store == nil {
+		return nil
+	}
+	seed := saved
+	seed.Phase = OpenPilotPhaseRequested
+	seed.LastStepName = stepName
+	seed.LastError = ""
+	if _, err := o.env.store.UpsertOpenPilotIssueState(seed); err != nil {
+		return err
+	}
+	if target == OpenPilotPhaseRequested {
+		return nil
+	}
+	if target == OpenPilotPhaseFailed || target == OpenPilotPhasePaused {
+		_, err := o.env.store.TransitionOpenPilotIssueState(repo, issue, target)
+		return err
+	}
+	if target == OpenPilotPhaseValidated {
+		_, err := o.env.store.TransitionOpenPilotIssueState(repo, issue, target)
+		return err
+	}
+	phaseIndex := -1
+	for i, phase := range openPilotPhaseChain {
+		if phase == target {
+			phaseIndex = i
+			break
+		}
+	}
+	if phaseIndex == -1 {
+		return ErrInvalid
+	}
+	for _, next := range openPilotPhaseChain[1 : phaseIndex+1] {
+		if _, err := o.env.store.TransitionOpenPilotIssueState(repo, issue, next); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Run, step PipelineStep, state map[string]any, err error) {
+	_ = ctx
+	if err == nil {
+		return
+	}
+	phase := OpenPilotPhaseFailed
+	switch step.ID {
+	case "validate-issue":
+		phase = OpenPilotPhaseFailed
+	case "branch-plan":
+		phase = OpenPilotPhaseFailed
+	case "prepare-prompt":
+		phase = OpenPilotPhaseFailed
+	case "agent-work":
+		phase = OpenPilotPhaseFailed
+	case "verify-command":
+		phase = OpenPilotPhaseFailed
+	case "push-branch":
+		phase = OpenPilotPhaseFailed
+	case "pr-plan":
+		phase = OpenPilotPhaseFailed
+	}
+	if persistErr := o.persistOpenPilotIssueState(run, phase, step.Name, err.Error(), state); persistErr != nil {
+		if o.env != nil && o.env.store != nil {
+			_, _ = o.env.store.AddEvent(run.ID, "open-pilot.lifecycle.failure.persistence.failed", step.Name+": "+persistErr.Error())
+		}
 	}
 }
 
@@ -415,22 +746,28 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		}
 		issueData, issueSummary, fetchedIssue, fetchErr := o.env.fetchOpenPilotIssue(ctx, repo, issue)
 		out := PipelineStepExecution{}
+		state["open-pilot.issue-summary"] = issueSummary
+		state["open-pilot.fetched-issue"] = fetchedIssue
 		if fetchErr != nil {
 			out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.issue.fetch.skipped", Message: fetchErr.Error()})
 		}
 		if fetchedIssue != nil {
 			if err := o.env.validateOpenPilotIssue(*fetchedIssue); err != nil {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+					return out, errors.Join(err, persistErr)
+				}
 				return out, err
 			}
 		}
 		if issueData != nil {
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))})
 		}
-		state["open-pilot.issue-summary"] = issueSummary
-		state["open-pilot.fetched-issue"] = fetchedIssue
 		out.Summary = "Validated Open Pilot run inputs"
 		if issueSummary != "" {
 			out.Summary = issueSummary
+		}
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseValidated, step.Name, "", state); err != nil {
+			return out, err
 		}
 		return out, nil
 	case "branch-plan":
@@ -443,6 +780,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		state["open-pilot.branch-plan"] = branchPlan
 		out := PipelineStepExecution{Inputs: branchPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-branch-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(branchBytes))}}}
 		if prepareWorktreeErr != nil {
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, prepareWorktreeErr.Error(), state); persistErr != nil {
+				return out, errors.Join(prepareWorktreeErr, persistErr)
+			}
 			return out, prepareWorktreeErr
 		}
 		out.Summary = "Planned branch " + branchName
@@ -457,6 +797,11 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		} else if branchPlan.PlannedWorktreePath != "" {
 			out.CorrelationIDs["planned_worktree_path"] = branchPlan.PlannedWorktreePath
 		}
+		issueSummary, _ := state["open-pilot.issue-summary"].(string)
+		state["open-pilot.prompt"] = buildOpenPilotPrompt(repo, issue, issueSummary, fetchedIssue, run.Inputs, branchPlan)
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseBranchPrepared, step.Name, "", state); err != nil {
+			return out, err
+		}
 		return out, nil
 	case "prepare-prompt":
 		issueSummary, _ := state["open-pilot.issue-summary"].(string)
@@ -467,15 +812,26 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		return PipelineStepExecution{Summary: "Prepared Open Pilot implementation prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}}}, nil
 	case "agent-work":
 		prompt, _ := state["open-pilot.prompt"].(string)
+		issueSummary, _ := state["open-pilot.issue-summary"].(string)
+		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		model := firstNonEmpty(step.Model, o.env.openPilotModel)
 		response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: model, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
 		if err != nil {
+			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), fallbackState); persistErr != nil {
+				return PipelineStepExecution{Summary: "OCQ not configured; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
+			}
 			return PipelineStepExecution{Summary: "OCQ not configured; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
 		}
 		state["open-pilot.agent-completed"] = true
 		state["open-pilot.response"] = response.Content
-		return PipelineStepExecution{Summary: "OCQ completed Open Pilot prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}}, CorrelationIDs: response.CorrelationIDs}, nil
+		state["open-pilot.agent-correlation"] = response.CorrelationIDs
+		stepResult := PipelineStepExecution{Summary: "OCQ completed Open Pilot prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}}, CorrelationIDs: response.CorrelationIDs}
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseAgentCompleted, step.Name, "", state); err != nil {
+			return stepResult, err
+		}
+		return stepResult, nil
 	case "verify-command":
 		command := strings.TrimSpace(run.Inputs["test_command"])
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
@@ -492,6 +848,10 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			correlation["policy_mode"] = string(CommandPolicyDryRun)
 		}
 		if err != nil {
+			state["open-pilot.verify-command.command"] = command
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{Summary: result.Output, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, errors.Join(err, persistErr)
+			}
 			return PipelineStepExecution{Summary: result.Output, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
 		}
 		summary := "Command allowed"
@@ -499,6 +859,11 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			summary = "Command allowed by policy in dry-run mode"
 		} else if result.Executed {
 			summary = "Command executed by policy runner"
+		}
+		state["open-pilot.verify-command.command"] = command
+		state["open-pilot.gate-status"] = map[string]string{"local_verify": "passed"}
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseVerified, step.Name, "", state); err != nil {
+			return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
 		}
 		return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, nil
 	case "push-branch":
@@ -513,6 +878,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			pushPlan.RemoteHeadExists = remoteHeadExists
 		}
 		state["open-pilot.push-plan"] = pushPlan
+		state["open-pilot.push-correlation"] = pushCorrelation
 		pushPlanBytes, _ := json.MarshalIndent(pushPlan, "", "  ")
 		if pushPlan.Executed {
 			pushCorrelation["branch"] = pushPlan.Branch
@@ -525,6 +891,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		if branchPlan.Executed && branchPlan.WorktreePath != "" {
 			status, err := o.env.openPilotWorktreeStatus(ctx, branchPlan.WorktreePath)
 			if err != nil {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+					return out, errors.Join(err, persistErr)
+				}
 				return out, err
 			}
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(status)})
@@ -542,6 +911,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 		}
 		if err := o.env.executeOpenPilotPush(ctx, pushPlan); err != nil {
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return out, errors.Join(err, persistErr)
+			}
 			return out, err
 		}
 		out.Summary = "Git push disabled; plan artifact attached"
@@ -550,6 +922,11 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		} else if pushPlan.Executed {
 			out.Summary = "Pushed branch " + pushPlan.Branch
 		}
+		if pushPlan.Executed || pushPlan.RemoteHeadExists {
+			if err := o.persistOpenPilotIssueState(run, OpenPilotPhasePushed, step.Name, "", state); err != nil {
+				return out, err
+			}
+		}
 		return out, nil
 	case "pr-plan":
 		issueSummary, _ := state["open-pilot.issue-summary"].(string)
@@ -557,20 +934,33 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		response, _ := state["open-pilot.response"].(string)
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		pushPlan, _ := state["open-pilot.push-plan"].(OpenPilotPushPlan)
+		existingPR, hasExistingPR := state["open-pilot.pull-request"].(GiteaPullRequest)
+		prKnown := hasExistingPR && openPilotPullRequestKnown(existingPR)
 		prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response, run.Inputs)
 		prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
 		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}}}
-		prCreated := false
 		switch o.env.openPilotWriteMode {
 		case "allow":
-			if branchPlan.Executed && !pushPlan.Executed && !pushPlan.RemoteHeadExists {
+			if branchPlan.Executed && !pushPlan.Executed && !pushPlan.RemoteHeadExists && !prKnown {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, "OPEN_PILOT_GITEA_WRITE_MODE=allow requires pushed worktree branch or externally published head", state); persistErr != nil {
+					return out, persistErr
+				}
 				return out, errors.New("OPEN_PILOT_GITEA_WRITE_MODE=allow requires pushed worktree branch or externally published head")
+			}
+			if prKnown {
+				out.Summary = "Using existing pull request"
+				out.CorrelationIDs = map[string]string{"pull_request": existingPR.HTMLURL}
+				break
 			}
 			created, err := o.env.giteaWriter.CreatePullRequest(ctx, prInput)
 			if err != nil {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+					return out, errors.Join(err, persistErr)
+				}
 				return out, err
 			}
-			prCreated = true
+			state["open-pilot.pull-request"] = created
+			prKnown = true
 			createdBytes, _ := json.MarshalIndent(created, "", "  ")
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-pr.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(createdBytes))})
 			out.Summary = "Created pull request"
@@ -581,10 +971,13 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			out.Summary = "PR creation disabled; plan artifact attached"
 		}
 		if branchPlan.Executed {
-			cleanupPlan, err := o.env.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || pushPlan.RemoteHeadExists || prCreated)
+			cleanupPlan, err := o.env.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || pushPlan.RemoteHeadExists || prKnown)
 			cleanupBytes, _ := json.MarshalIndent(cleanupPlan, "", "  ")
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-worktree-cleanup.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(cleanupBytes))})
 			if err != nil {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+					return out, errors.Join(err, persistErr)
+				}
 				return out, err
 			}
 			if out.CorrelationIDs == nil {
@@ -599,6 +992,11 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		}
 		state["summary"] = "Ran Open Pilot issue " + issue + " through OCQ"
 		out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.agent.completed", Message: repo + "#" + issue})
+		if prKnown {
+			if err := o.persistOpenPilotIssueState(run, OpenPilotPhasePRCreated, step.Name, "", state); err != nil {
+				return out, err
+			}
+		}
 		return out, nil
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)

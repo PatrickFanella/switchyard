@@ -81,6 +81,15 @@ func TestMemoryStoreOpenPilotIssueStateTransitionValidation(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreOpenPilotIssueStateRejectsDirectAdvancedCreation(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	for _, phase := range []OpenPilotPhase{OpenPilotPhasePushed, OpenPilotPhasePRCreated, OpenPilotPhaseMerged, OpenPilotPhaseIssueClosed} {
+		if _, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "direct-" + string(phase), Phase: phase}); err == nil {
+			t.Fatalf("expected direct creation of %s to be rejected", phase)
+		}
+	}
+}
+
 func TestMemoryStoreOpenPilotIssueStateUpsertValidation(t *testing.T) {
 	store := NewStore(func() time.Time { return time.Unix(100, 0) })
 	t.Run("default max repair attempts", func(t *testing.T) {

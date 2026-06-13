@@ -28,6 +28,10 @@ type PipelineStepDecider interface {
 	ShouldExecutePipelineStep(run Run, step PipelineStep, state map[string]any) bool
 }
 
+type PipelineStepFailureReporter interface {
+	HandlePipelineStepFailure(ctx context.Context, run Run, step PipelineStep, state map[string]any, err error)
+}
+
 type PipelineResumeHydrator interface {
 	HydratePipelineResumeState(run Run, pipeline Pipeline, state map[string]any)
 }
@@ -160,7 +164,13 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 				}
 				step, startErr := r.store.StartRunStep(step.ID)
 				if startErr != nil {
+					if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+						reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, startErr)
+					}
 					return execution, startErr
+				}
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
 				}
 				_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
 				return execution, err
@@ -177,12 +187,18 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				status = StepCanceled
 			}
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
+			}
 			_, _ = r.store.FinishRunStep(step.ID, status, "", err.Error(), nil)
 			return execution, err
 		}
 		step, err = r.store.StartRunStep(step.ID)
 		if err != nil {
 			release()
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
+			}
 			return execution, err
 		}
 		resolvedStep := pipelineStep
@@ -194,6 +210,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		}()
 		if stepResult.Inputs != nil {
 			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, inputErr)
+				}
 				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, inputErr.Error(), stepResult.CorrelationIDs)
 				return execution, inputErr
 			}
@@ -204,6 +223,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		for _, artifact := range stepResult.Artifacts {
 			artifact.RunID = run.ID
 			if _, artifactErr := r.store.AddArtifact(artifact); artifactErr != nil {
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, artifactErr)
+				}
 				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, artifactErr.Error(), stepResult.CorrelationIDs)
 				return execution, artifactErr
 			}
@@ -212,6 +234,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			status := StepFailed
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				status = StepCanceled
+			}
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, err)
 			}
 			_, _ = r.store.FinishRunStep(step.ID, status, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
 			return execution, err
