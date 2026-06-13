@@ -302,6 +302,107 @@ func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	}
 }
 
+func TestRunnerCleansOpenPilotWorktreeOnSuccessWhenConfigured(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/OWNER/REPO/issues/123":
+			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria\n\nTest: make verify","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		case "/api/v1/repos/OWNER/REPO/pulls":
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_WORKTREE_CLEANUP", "on-success")
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	worktreePath := detail.Steps[1].CorrelationIDs["worktree_path"]
+	if worktreePath == "" {
+		t.Fatalf("branch step = %+v", detail.Steps[1])
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree should have been removed, stat err = %v", err)
+	}
+	cleanupArtifact := false
+	for _, artifact := range detail.Artifacts {
+		if artifact.Name == "open-pilot-worktree-cleanup.json" && strings.Contains(artifact.URI, "%22executed%22") && strings.Contains(artifact.URI, "true") {
+			cleanupArtifact = true
+		}
+	}
+	if !cleanupArtifact || detail.Steps[len(detail.Steps)-1].CorrelationIDs["worktree_cleanup"] != "executed" {
+		t.Fatalf("cleanup artifact/step missing: artifacts=%+v step=%+v", detail.Artifacts, detail.Steps[len(detail.Steps)-1])
+	}
+}
+
+func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	last := detail.Steps[len(detail.Steps)-1]
+	if run.Status != controlplane.RunFailed || last.Name != "open-pilot.push-branch" || last.Status != controlplane.StepFailed || last.CorrelationIDs["commits_ahead"] != "0" {
+		t.Fatalf("run = %+v last = %+v", run, last)
+	}
+	foundAhead := false
+	for _, artifact := range detail.Artifacts {
+		if artifact.Name == "open-pilot-git-ahead.txt" && strings.Contains(artifact.URI, "0%0A") {
+			foundAhead = true
+		}
+	}
+	if !foundAhead {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))

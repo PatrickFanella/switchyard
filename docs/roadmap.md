@@ -322,7 +322,7 @@ Exit criteria:
 
 ### M6: Production-Ready Runtime
 
-- Worker pool.
+- Worker pool with leases, heartbeat renewal, claimed-run finish guards, and optional per-executor concurrency limits.
 - Resume/shutdown semantics.
 - Retry policies.
 - Artifact retention.
@@ -330,9 +330,8 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Expand Open Pilot worktree support with cleanup policy and stronger retry rehydration.
-2. Add per-executor concurrency limits beyond the current worker pool.
-3. Add API docs/OpenAPI after the runtime API settles.
+1. Expand Open Pilot worktree support with stronger retry rehydration and PR dependency checks for pushed/existing branches.
+2. Add API docs/OpenAPI after the runtime API settles.
 
 ## Non-goals for the next phase
 

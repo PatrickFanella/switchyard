@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -10,6 +11,77 @@ import (
 type recordingPipelineExecutor struct {
 	steps  []string
 	models []string
+}
+
+type throttledPipelineExecutor struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+}
+
+func (e *throttledPipelineExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {
+	return WorkflowExecution{Summary: "fallback should not run"}, nil
+}
+
+func (e *throttledPipelineExecutor) ExecutePipelineStep(ctx context.Context, _ Run, step PipelineStep, _ map[string]any) (PipelineStepExecution, error) {
+	if step.Executor != "model" {
+		return PipelineStepExecution{Summary: "ran " + step.ID}, nil
+	}
+	e.mu.Lock()
+	e.active++
+	if e.active > e.maxActive {
+		e.maxActive = e.active
+	}
+	e.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		e.mu.Lock()
+		e.active--
+		e.mu.Unlock()
+		return PipelineStepExecution{}, ctx.Err()
+	case <-time.After(20 * time.Millisecond):
+	}
+	e.mu.Lock()
+	e.active--
+	e.mu.Unlock()
+	return PipelineStepExecution{Summary: "ran " + step.ID}, nil
+}
+
+func TestRunnerLimitsPipelineExecutorConcurrency(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := store.UpsertWorkflow(Workflow{ID: "test-workflow", Kind: WorkflowKind("test-workflow"), Name: "Test Workflow"}); err != nil {
+		t.Fatalf("UpsertWorkflow() error = %v", err)
+	}
+	executor := &throttledPipelineExecutor{}
+	runner := NewRunner(store, MapExecutorRegistry{"test-workflow": executor})
+	runner.pipelines = StaticPipelineRegistry{
+		"test-workflow": {
+			ID:         "test-pipeline",
+			WorkflowID: "test-workflow",
+			Name:       "Test Pipeline",
+			Steps: []PipelineStep{
+				{ID: "collect", Position: 1, Name: "test.collect", Executor: "internal"},
+				{ID: "generate", Position: 2, Name: "test.generate", Executor: "model"},
+			},
+		},
+	}
+	runner.SetExecutorLimiter(NewSemaphoreExecutorLimiter(map[string]int{"model": 1}))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := runner.RunOnce(context.Background(), CreateRunInput{WorkflowID: "test-workflow"}); err != nil {
+				t.Errorf("RunOnce() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if executor.maxActive != 1 {
+		t.Fatalf("max active model steps = %d", executor.maxActive)
+	}
 }
 
 func (e *recordingPipelineExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {

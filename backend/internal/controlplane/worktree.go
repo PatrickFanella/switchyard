@@ -13,10 +13,15 @@ import (
 
 type OpenPilotWorktreeMode string
 
+type OpenPilotWorktreeCleanupMode string
+
 const (
 	OpenPilotWorktreeDisabled OpenPilotWorktreeMode = "disabled"
 	OpenPilotWorktreeDryRun   OpenPilotWorktreeMode = "dry-run"
 	OpenPilotWorktreeAllow    OpenPilotWorktreeMode = "allow"
+
+	OpenPilotWorktreeCleanupDisabled  OpenPilotWorktreeCleanupMode = "disabled"
+	OpenPilotWorktreeCleanupOnSuccess OpenPilotWorktreeCleanupMode = "on-success"
 )
 
 type OpenPilotWorktreePlan struct {
@@ -58,6 +63,15 @@ func (p OpenPilotWorktreePlan) StepInputs() map[string]string {
 
 type OpenPilotWorktreeManager interface {
 	Prepare(ctx context.Context, run Run, repo string, baseBranch string, branch string) (OpenPilotWorktreePlan, error)
+	Cleanup(ctx context.Context, plan OpenPilotWorktreePlan, durableHandoff bool) (OpenPilotWorktreeCleanupPlan, error)
+}
+
+type OpenPilotWorktreeCleanupPlan struct {
+	Mode         string `json:"mode"`
+	WorktreePath string `json:"worktree_path,omitempty"`
+	Executed     bool   `json:"executed"`
+	Skipped      bool   `json:"skipped,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type OpenPilotPushPlan struct {
@@ -84,10 +98,11 @@ func (p OpenPilotPushPlan) StepInputs() map[string]string {
 }
 
 type GitOpenPilotWorktreeManager struct {
-	mode     OpenPilotWorktreeMode
-	repoPath string
-	root     string
-	timeout  time.Duration
+	mode        OpenPilotWorktreeMode
+	cleanupMode OpenPilotWorktreeCleanupMode
+	repoPath    string
+	root        string
+	timeout     time.Duration
 }
 
 func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
@@ -103,10 +118,11 @@ func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
 		}
 	}
 	return &GitOpenPilotWorktreeManager{
-		mode:     OpenPilotWorktreeMode(firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeDisabled))),
-		repoPath: repoPath,
-		root:     root,
-		timeout:  timeout,
+		mode:        OpenPilotWorktreeMode(firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeDisabled))),
+		cleanupMode: OpenPilotWorktreeCleanupMode(firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_CLEANUP"), string(OpenPilotWorktreeCleanupDisabled))),
+		repoPath:    repoPath,
+		root:        root,
+		timeout:     timeout,
 	}
 }
 
@@ -114,7 +130,7 @@ func NewGitOpenPilotWorktreeManager(mode OpenPilotWorktreeMode, repoPath string,
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "switchyard-open-pilot-worktrees")
 	}
-	return &GitOpenPilotWorktreeManager{mode: mode, repoPath: repoPath, root: root, timeout: 120 * time.Second}
+	return &GitOpenPilotWorktreeManager{mode: mode, cleanupMode: OpenPilotWorktreeCleanupDisabled, repoPath: repoPath, root: root, timeout: 120 * time.Second}
 }
 
 func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo string, baseBranch string, branch string) (OpenPilotWorktreePlan, error) {
@@ -158,7 +174,58 @@ func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo
 	}
 }
 
+func (m *GitOpenPilotWorktreeManager) Cleanup(ctx context.Context, plan OpenPilotWorktreePlan, durableHandoff bool) (OpenPilotWorktreeCleanupPlan, error) {
+	mode := m.cleanupMode
+	if mode == "" {
+		mode = OpenPilotWorktreeCleanupDisabled
+	}
+	cleanup := OpenPilotWorktreeCleanupPlan{Mode: string(mode)}
+	if plan.WorktreePath != "" {
+		cleanup.WorktreePath = plan.WorktreePath
+	}
+	if mode == OpenPilotWorktreeCleanupDisabled {
+		cleanup.Skipped = true
+		cleanup.Reason = "OPEN_PILOT_WORKTREE_CLEANUP=disabled"
+		return cleanup, nil
+	}
+	if mode != OpenPilotWorktreeCleanupOnSuccess {
+		return cleanup, fmt.Errorf("unsupported OPEN_PILOT_WORKTREE_CLEANUP %q", mode)
+	}
+	if !plan.Executed || strings.TrimSpace(plan.WorktreePath) == "" {
+		cleanup.Skipped = true
+		cleanup.Reason = "no executed worktree"
+		return cleanup, nil
+	}
+	if !durableHandoff {
+		cleanup.Skipped = true
+		cleanup.Reason = "branch not pushed or published"
+		return cleanup, nil
+	}
+	status, err := m.runGitOutput(ctx, "-C", plan.WorktreePath, "status", "--porcelain=v1")
+	if err != nil {
+		return cleanup, fmt.Errorf("inspect worktree before cleanup: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		cleanup.Skipped = true
+		cleanup.Reason = "worktree has uncommitted changes"
+		return cleanup, nil
+	}
+	if strings.TrimSpace(m.repoPath) == "" {
+		return cleanup, errors.New("OPEN_PILOT_REPO_PATH or OPEN_PILOT_WORKDIR is required for worktree cleanup")
+	}
+	if err := m.runGit(ctx, "-C", m.repoPath, "worktree", "remove", plan.WorktreePath); err != nil {
+		return cleanup, fmt.Errorf("remove git worktree: %w", err)
+	}
+	cleanup.Executed = true
+	return cleanup, nil
+}
+
 func (m *GitOpenPilotWorktreeManager) runGit(ctx context.Context, args ...string) error {
+	_, err := m.runGitOutput(ctx, args...)
+	return err
+}
+
+func (m *GitOpenPilotWorktreeManager) runGitOutput(ctx context.Context, args ...string) (string, error) {
 	timeout := m.timeout
 	if timeout <= 0 {
 		timeout = 120 * time.Second
@@ -172,9 +239,9 @@ func (m *GitOpenPilotWorktreeManager) runGit(ctx context.Context, args ...string
 		if message == "" {
 			message = err.Error()
 		}
-		return errors.New(message)
+		return "", errors.New(message)
 	}
-	return nil
+	return string(output), nil
 }
 
 func safePathSegment(value string) string {

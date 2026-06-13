@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 )
@@ -32,6 +33,7 @@ type Runner struct {
 	executors ExecutorRegistry
 	pipelines PipelineRegistry
 	profiles  AgentProfileRegistry
+	limiter   ExecutorLimiter
 }
 
 func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
@@ -39,7 +41,14 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if len(executors) > 0 && executors[0] != nil {
 		registry = executors[0]
 	}
-	return &Runner{store: store, executors: registry, pipelines: DefaultPipelineRegistry(), profiles: DefaultAgentProfileRegistry()}
+	return &Runner{store: store, executors: registry, pipelines: DefaultPipelineRegistry(), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter()}
+}
+
+func (r *Runner) SetExecutorLimiter(limiter ExecutorLimiter) {
+	if limiter == nil {
+		limiter = NoopExecutorLimiter{}
+	}
+	r.limiter = limiter
 }
 
 func (r *Runner) Pipelines() []Pipeline {
@@ -155,13 +164,27 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		if err != nil {
 			return execution, err
 		}
+		release, err := r.acquireExecutorSlot(ctx, pipelineStep.Executor)
+		if err != nil {
+			status := StepFailed
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				status = StepCanceled
+			}
+			_, _ = r.store.FinishRunStep(step.ID, status, "", err.Error(), nil)
+			return execution, err
+		}
 		step, err = r.store.StartRunStep(step.ID)
 		if err != nil {
+			release()
 			return execution, err
 		}
 		resolvedStep := pipelineStep
 		resolvedStep.Model = model
-		stepResult, err := stepExecutor.ExecutePipelineStep(ctx, run, resolvedStep, state)
+		var stepResult PipelineStepExecution
+		func() {
+			defer release()
+			stepResult, err = stepExecutor.ExecutePipelineStep(ctx, run, resolvedStep, state)
+		}()
 		if stepResult.Inputs != nil {
 			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
 				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, inputErr.Error(), stepResult.CorrelationIDs)
@@ -179,7 +202,11 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			}
 		}
 		if err != nil {
-			_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
+			status := StepFailed
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				status = StepCanceled
+			}
+			_, _ = r.store.FinishRunStep(step.ID, status, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
 			return execution, err
 		}
 		if _, err := r.store.FinishRunStep(step.ID, StepSucceeded, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
@@ -193,6 +220,14 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		execution.Summary = summary
 	}
 	return execution, nil
+}
+
+func (r *Runner) acquireExecutorSlot(ctx context.Context, executor string) (func(), error) {
+	limiter := r.limiter
+	if limiter == nil {
+		limiter = NoopExecutorLimiter{}
+	}
+	return limiter.Acquire(ctx, executor)
 }
 
 func shouldSkipPipelineStepForResume(run Run, step PipelineStep) bool {
@@ -212,6 +247,11 @@ func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunSte
 		_, _ = r.store.AddArtifact(artifact)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			_, _ = r.store.FinishRunStep(step.ID, StepCanceled, "", err.Error(), nil)
+			_, _ = r.store.AddEvent(run.ID, "workflow.canceled", err.Error())
+			return r.finishRun(run.ID, workerID, RunCanceled, err.Error())
+		}
 		_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
 		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
@@ -233,6 +273,10 @@ func (r *Runner) finishExecution(run Run, workerID string, execution WorkflowExe
 		_, _ = r.store.AddArtifact(artifact)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			_, _ = r.store.AddEvent(run.ID, "workflow.canceled", err.Error())
+			return r.finishRun(run.ID, workerID, RunCanceled, err.Error())
+		}
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
 		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
 	}

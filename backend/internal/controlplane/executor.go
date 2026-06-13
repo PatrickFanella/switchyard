@@ -485,6 +485,15 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return out, err
 			}
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(status)})
+			ahead, err := o.env.openPilotWorktreeAheadCount(ctx, branchPlan)
+			if err != nil {
+				return out, err
+			}
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-ahead.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(fmt.Sprintf("%d\n", ahead))})
+			out.CorrelationIDs["commits_ahead"] = fmt.Sprintf("%d", ahead)
+			if pushPlan.Executed && ahead == 0 {
+				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires committed changes ahead of base branch")
+			}
 		}
 		if err := o.env.executeOpenPilotPush(ctx, pushPlan); err != nil {
 			return out, err
@@ -500,15 +509,19 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		issueSummary, _ := state["open-pilot.issue-summary"].(string)
 		branchName, _ := state["open-pilot.branch-name"].(string)
 		response, _ := state["open-pilot.response"].(string)
+		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+		pushPlan, _ := state["open-pilot.push-plan"].(OpenPilotPushPlan)
 		prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response, run.Inputs)
 		prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
 		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}}}
+		prCreated := false
 		switch o.env.openPilotWriteMode {
 		case "allow":
 			created, err := o.env.giteaWriter.CreatePullRequest(ctx, prInput)
 			if err != nil {
 				return out, err
 			}
+			prCreated = true
 			createdBytes, _ := json.MarshalIndent(created, "", "  ")
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-pr.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(createdBytes))})
 			out.Summary = "Created pull request"
@@ -517,6 +530,23 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			out.Summary = "PR creation dry-run; plan artifact attached"
 		default:
 			out.Summary = "PR creation disabled; plan artifact attached"
+		}
+		if branchPlan.Executed {
+			cleanupPlan, err := o.env.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || prCreated)
+			cleanupBytes, _ := json.MarshalIndent(cleanupPlan, "", "  ")
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-worktree-cleanup.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(cleanupBytes))})
+			if err != nil {
+				return out, err
+			}
+			if out.CorrelationIDs == nil {
+				out.CorrelationIDs = map[string]string{}
+			}
+			if cleanupPlan.Executed {
+				out.CorrelationIDs["worktree_cleanup"] = "executed"
+			} else if cleanupPlan.Skipped {
+				out.CorrelationIDs["worktree_cleanup"] = "skipped"
+				out.CorrelationIDs["worktree_cleanup_reason"] = cleanupPlan.Reason
+			}
 		}
 		state["summary"] = "Ran Open Pilot issue " + issue + " through OCQ"
 		out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.agent.completed", Message: repo + "#" + issue})
@@ -599,6 +629,30 @@ func (e *EnvWorkflowExecutors) openPilotWorktreeStatus(ctx context.Context, work
 		return "clean\n", nil
 	}
 	return message + "\n", nil
+}
+
+func (e *EnvWorkflowExecutors) openPilotWorktreeAheadCount(ctx context.Context, plan OpenPilotWorktreePlan) (int, error) {
+	if !plan.Executed || strings.TrimSpace(plan.WorktreePath) == "" {
+		return 0, nil
+	}
+	baseBranch := strings.TrimSpace(plan.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = e.openPilotBaseBranch
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", plan.WorktreePath, "rev-list", "--count", baseBranch+"..HEAD")
+	output, err := cmd.CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		if message == "" {
+			message = err.Error()
+		}
+		return 0, errors.New(message)
+	}
+	var ahead int
+	if _, err := fmt.Sscanf(message, "%d", &ahead); err != nil {
+		return 0, fmt.Errorf("parse git ahead count %q: %w", message, err)
+	}
+	return ahead, nil
 }
 
 func slug(value string) string {
