@@ -422,6 +422,62 @@ func TestRunnerRejectsOpenPilotPullRequestForUnpushedWorktreeBranch(t *testing.T
 	}
 }
 
+func TestRunnerCreatesOpenPilotPullRequestForExistingRemoteHead(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	remotePath := filepath.Join(t.TempDir(), "remote.git")
+	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "origin", "main")
+	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123")
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/issues/123" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+		default:
+			t.Fatalf("unexpected PR request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	pushStep := detail.Steps[len(detail.Steps)-2]
+	prStep := detail.Steps[len(detail.Steps)-1]
+	if pushStep.Name != "open-pilot.push-branch" || pushStep.Inputs["remote_head_exists"] != "true" || pushStep.CorrelationIDs["remote_head_exists"] != "true" {
+		t.Fatalf("push step = %+v", pushStep)
+	}
+	if prStep.Name != "open-pilot.pr-plan" || prStep.OutputSummary != "Created pull request" || prStep.CorrelationIDs["pull_request"] == "" {
+		t.Fatalf("pr step = %+v", prStep)
+	}
+}
+
 func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")

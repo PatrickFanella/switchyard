@@ -504,12 +504,22 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 	case "push-branch":
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		pushPlan := o.env.openPilotPushPlan(branchPlan)
+		pushCorrelation := map[string]string{"mode": pushPlan.Mode}
+		if branchPlan.Executed && branchPlan.WorktreePath != "" {
+			remoteHeadExists, err := o.env.openPilotRemoteBranchExists(ctx, branchPlan.WorktreePath, pushPlan.Remote, pushPlan.Branch)
+			if err != nil {
+				return PipelineStepExecution{Inputs: pushPlan.StepInputs(), CorrelationIDs: pushCorrelation}, err
+			}
+			pushPlan.RemoteHeadExists = remoteHeadExists
+		}
 		state["open-pilot.push-plan"] = pushPlan
 		pushPlanBytes, _ := json.MarshalIndent(pushPlan, "", "  ")
-		pushCorrelation := map[string]string{"mode": pushPlan.Mode}
 		if pushPlan.Executed {
 			pushCorrelation["branch"] = pushPlan.Branch
 			pushCorrelation["remote"] = pushPlan.Remote
+		}
+		if pushPlan.RemoteHeadExists {
+			pushCorrelation["remote_head_exists"] = "true"
 		}
 		out := PipelineStepExecution{Inputs: pushPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}}, CorrelationIDs: pushCorrelation}
 		if branchPlan.Executed && branchPlan.WorktreePath != "" {
@@ -553,7 +563,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		prCreated := false
 		switch o.env.openPilotWriteMode {
 		case "allow":
-			if branchPlan.Executed && !pushPlan.Executed {
+			if branchPlan.Executed && !pushPlan.Executed && !pushPlan.RemoteHeadExists {
 				return out, errors.New("OPEN_PILOT_GITEA_WRITE_MODE=allow requires pushed worktree branch or externally published head")
 			}
 			created, err := o.env.giteaWriter.CreatePullRequest(ctx, prInput)
@@ -571,7 +581,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			out.Summary = "PR creation disabled; plan artifact attached"
 		}
 		if branchPlan.Executed {
-			cleanupPlan, err := o.env.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || prCreated)
+			cleanupPlan, err := o.env.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || pushPlan.RemoteHeadExists || prCreated)
 			cleanupBytes, _ := json.MarshalIndent(cleanupPlan, "", "  ")
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-worktree-cleanup.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(cleanupBytes))})
 			if err != nil {
@@ -656,12 +666,13 @@ func openPilotWorktreePlanFromResume(inputs map[string]string) OpenPilotWorktree
 func openPilotPushPlanFromResume(inputs map[string]string) OpenPilotPushPlan {
 	prefix := "resume.open-pilot.push-branch."
 	return OpenPilotPushPlan{
-		Mode:         inputs[prefix+"mode"],
-		Remote:       firstNonEmpty(inputs[prefix+"remote"], inputs["resume.open-pilot.push-branch.correlation.remote"]),
-		Branch:       firstNonEmpty(inputs[prefix+"branch"], inputs["resume.open-pilot.push-branch.correlation.branch"]),
-		WorktreePath: inputs[prefix+"worktree_path"],
-		Executed:     strings.EqualFold(inputs[prefix+"executed"], "true"),
-		DryRun:       strings.EqualFold(inputs[prefix+"dry_run"], "true"),
+		Mode:             inputs[prefix+"mode"],
+		Remote:           firstNonEmpty(inputs[prefix+"remote"], inputs["resume.open-pilot.push-branch.correlation.remote"]),
+		Branch:           firstNonEmpty(inputs[prefix+"branch"], inputs["resume.open-pilot.push-branch.correlation.branch"]),
+		WorktreePath:     inputs[prefix+"worktree_path"],
+		Executed:         strings.EqualFold(inputs[prefix+"executed"], "true"),
+		DryRun:           strings.EqualFold(inputs[prefix+"dry_run"], "true"),
+		RemoteHeadExists: strings.EqualFold(firstNonEmpty(inputs[prefix+"remote_head_exists"], inputs["resume.open-pilot.push-branch.correlation.remote_head_exists"]), "true"),
 	}
 }
 
@@ -686,6 +697,28 @@ func (e *EnvWorkflowExecutors) executeOpenPilotPush(ctx context.Context, plan Op
 	default:
 		return fmt.Errorf("unsupported OPEN_PILOT_GIT_PUSH_MODE %q", plan.Mode)
 	}
+}
+
+func (e *EnvWorkflowExecutors) openPilotRemoteBranchExists(ctx context.Context, worktreePath string, remote string, branch string) (bool, error) {
+	if strings.TrimSpace(worktreePath) == "" || strings.TrimSpace(remote) == "" || strings.TrimSpace(branch) == "" {
+		return false, nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "ls-remote", "--exit-code", "--heads", remote, branch)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return strings.TrimSpace(string(output)) != "", nil
+	}
+	message := strings.TrimSpace(string(output))
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
+		return false, nil
+	}
+	if strings.Contains(message, "does not appear to be a git repository") || strings.Contains(message, "Could not read from remote repository") || strings.Contains(message, "No such remote") {
+		return false, nil
+	}
+	if message == "" {
+		message = err.Error()
+	}
+	return false, errors.New(message)
 }
 
 func (e *EnvWorkflowExecutors) openPilotWorktreeStatus(ctx context.Context, worktreePath string) (string, error) {

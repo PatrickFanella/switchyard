@@ -75,12 +75,13 @@ type OpenPilotWorktreeCleanupPlan struct {
 }
 
 type OpenPilotPushPlan struct {
-	Mode         string `json:"mode"`
-	Remote       string `json:"remote"`
-	Branch       string `json:"branch"`
-	WorktreePath string `json:"worktree_path,omitempty"`
-	Executed     bool   `json:"executed"`
-	DryRun       bool   `json:"dry_run,omitempty"`
+	Mode             string `json:"mode"`
+	Remote           string `json:"remote"`
+	Branch           string `json:"branch"`
+	WorktreePath     string `json:"worktree_path,omitempty"`
+	Executed         bool   `json:"executed"`
+	DryRun           bool   `json:"dry_run,omitempty"`
+	RemoteHeadExists bool   `json:"remote_head_exists,omitempty"`
 }
 
 func (p OpenPilotPushPlan) StepInputs() map[string]string {
@@ -93,6 +94,9 @@ func (p OpenPilotPushPlan) StepInputs() map[string]string {
 	}
 	if p.DryRun {
 		inputs["dry_run"] = "true"
+	}
+	if p.RemoteHeadExists {
+		inputs["remote_head_exists"] = "true"
 	}
 	return inputs
 }

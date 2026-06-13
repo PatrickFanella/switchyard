@@ -330,7 +330,7 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Harden full Open Pilot autonomy: existing-branch detection for externally published heads, richer artifact rehydration, and better agent commit diagnostics.
+1. Harden full Open Pilot autonomy: richer artifact rehydration and better agent commit diagnostics. Existing-branch detection for externally published heads is implemented by probing `origin/<branch>` during the push step and allowing PR publication when that remote head already exists.
 2. Keep `docs/openapi.yaml` aligned as route shapes settle and decide whether to serve it from the API/UI.
 
 ## Non-goals for the next phase
