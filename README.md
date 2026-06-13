@@ -59,10 +59,10 @@ Set `SWITCHYARD_WORKER_ENABLED=true` to enable async worker dispatch for long-ru
 Workflow execution adapters are opt-in:
 
 - Changemaker: `CHANGEMAKER_BASE_URL` dispatches `POST /api/runs`.
-- Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, enforce required labels from `OPEN_PILOT_REQUIRED_LABELS`, attach issue/prompt artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the model. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
+- Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, enforce required labels from `OPEN_PILOT_REQUIRED_LABELS`, attach issue/prompt/branch/PR artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the model. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_GITEA_WRITE_MODE=disabled|dry-run|allow` controls PR creation; disabled/dry-run only attach PR plans. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
 - Devlog: `manual-devlog` runs a three-step pipeline that collects recent Switchyard run history, generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the model.
 
-Open Pilot command execution is deny-by-default. If a run includes `test_command`, Switchyard evaluates it through `OPEN_PILOT_COMMAND_POLICY_MODE` (`deny`, `dry-run`, or `allow`), exact allowed command lists, allowed git verbs, denied commands, timeout, and optional workdir. Use `dry-run` before enabling `allow`.
+Open Pilot command execution is deny-by-default. If a run includes `test_command`, Switchyard evaluates it through `OPEN_PILOT_COMMAND_POLICY_MODE` (`deny`, `dry-run`, or `allow`), exact allowed command lists, allowed git verbs, denied commands, timeout, and optional workdir. Use `dry-run` before enabling `allow`. PR creation is independently gated by `OPEN_PILOT_GITEA_WRITE_MODE`; keep it `disabled` until branch/test behavior is proven.
 
 Switchyard also ships its own CLI contract:
 

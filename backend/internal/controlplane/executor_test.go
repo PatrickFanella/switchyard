@@ -103,10 +103,10 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 	if run.Status != controlplane.RunSucceeded || run.Summary != "Prepared Open Pilot prompt for issue 123" {
 		t.Fatalf("run = %+v", run)
 	}
-	if len(detail.Steps) != 3 || detail.Steps[2].Executor != "opencode" || detail.Steps[2].OutputSummary != "OCQ not configured; prompt prepared for operator handoff" {
+	if len(detail.Steps) != 4 || detail.Steps[1].Name != "open-pilot.branch-plan" || detail.Steps[3].Executor != "opencode" || detail.Steps[3].OutputSummary != "OCQ not configured; prompt prepared for operator handoff" {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
-	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Name != "open-pilot-prompt.md" {
+	if len(detail.Artifacts) != 2 || detail.Artifacts[1].Name != "open-pilot-prompt.md" {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
@@ -135,7 +135,7 @@ func TestRunnerFetchesOpenPilotIssueWhenGiteaConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if len(detail.Steps) != 3 || detail.Steps[0].OutputSummary != "Fetched issue: Fix switchyard (open)" {
+	if len(detail.Steps) != 4 || detail.Steps[0].OutputSummary != "Fetched issue: Fix switchyard (open)" || detail.Steps[1].OutputSummary != "Planned branch open-pilot/issue-123-fix-switchyard" {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
 	foundIssueArtifact := false
@@ -204,13 +204,13 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 3 {
+	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 5 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
-	if detail.Steps[2].Model != "opencode-open-pilot" || detail.Steps[2].CorrelationIDs["ocq_request_id"] != "req-1" || detail.Steps[2].CorrelationIDs["ocq_session_id"] != "ses-1" {
-		t.Fatalf("agent step = %+v", detail.Steps[2])
+	if detail.Steps[3].Model != "opencode-open-pilot" || detail.Steps[3].CorrelationIDs["ocq_request_id"] != "req-1" || detail.Steps[3].CorrelationIDs["ocq_session_id"] != "ses-1" {
+		t.Fatalf("agent step = %+v", detail.Steps[3])
 	}
-	if len(detail.Artifacts) != 2 || detail.Artifacts[1].Name != "open-pilot-response.md" {
+	if len(detail.Artifacts) != 4 || detail.Artifacts[2].Name != "open-pilot-response.md" || detail.Artifacts[3].Name != "open-pilot-pr-plan.json" {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
@@ -238,11 +238,60 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 4 || detail.Steps[3].Name != "open-pilot.verify-command" || detail.Steps[3].Status != controlplane.StepSucceeded {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 || detail.Steps[4].Name != "open-pilot.verify-command" || detail.Steps[4].Status != controlplane.StepSucceeded || detail.Steps[5].Name != "open-pilot.pr-plan" {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
-	if detail.Steps[3].CorrelationIDs["policy_mode"] != "dry-run" {
-		t.Fatalf("verify step = %+v", detail.Steps[3])
+	if detail.Steps[4].CorrelationIDs["policy_mode"] != "dry-run" {
+		t.Fatalf("verify step = %+v", detail.Steps[4])
+	}
+}
+
+func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/OWNER/REPO/issues/123":
+			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria\n\nTest: make verify","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		case "/api/v1/repos/OWNER/REPO/pulls":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s", r.Method)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode pr: %v", err)
+			}
+			if body["base"] != "main" || body["head"] != "open-pilot/issue-123-fix-switchyard" || body["draft"] != true {
+				t.Fatalf("pr body = %+v", body)
+			}
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(gitea.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC", "true")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 5 || detail.Steps[4].OutputSummary != "Created pull request" || detail.Steps[4].CorrelationIDs["pull_request"] == "" {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 }
 
@@ -267,7 +316,7 @@ func TestRunnerFailsOpenPilotDeniedVerifyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "deny") || len(detail.Steps) != 4 || detail.Steps[3].Status != controlplane.StepFailed {
+	if run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "deny") || len(detail.Steps) != 5 || detail.Steps[4].Status != controlplane.StepFailed {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 }

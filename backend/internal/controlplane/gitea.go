@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,28 @@ type GiteaIssue struct {
 
 type IssueFetcher interface {
 	FetchIssue(ctx context.Context, repo string, issue string) (GiteaIssue, error)
+}
+
+type GiteaPullRequest struct {
+	ID      int    `json:"id"`
+	Number  int    `json:"number"`
+	Title   string `json:"title"`
+	State   string `json:"state"`
+	URL     string `json:"url"`
+	HTMLURL string `json:"html_url"`
+}
+
+type GiteaPullRequestInput struct {
+	Repo  string
+	Base  string
+	Head  string
+	Title string
+	Body  string
+	Draft bool
+}
+
+type GiteaWriter interface {
+	CreatePullRequest(ctx context.Context, input GiteaPullRequestInput) (GiteaPullRequest, error)
 }
 
 type EnvGiteaClient struct {
@@ -90,4 +113,43 @@ func (c *EnvGiteaClient) FetchIssue(ctx context.Context, repo string, issue stri
 		}
 	}
 	return GiteaIssue{ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, URL: raw.URL, HTMLURL: raw.HTMLURL, Labels: labels}, nil
+}
+
+func (c *EnvGiteaClient) CreatePullRequest(ctx context.Context, input GiteaPullRequestInput) (GiteaPullRequest, error) {
+	if c.baseURL == "" {
+		return GiteaPullRequest{}, fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	owner, name, ok := strings.Cut(input.Repo, "/")
+	if !ok || owner == "" || name == "" {
+		return GiteaPullRequest{}, fmt.Errorf("repo must be OWNER/REPO")
+	}
+	body, err := json.Marshal(map[string]any{"base": input.Base, "head": input.Head, "title": input.Title, "body": input.Body, "draft": input.Draft})
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "pulls")
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "token "+c.token)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return GiteaPullRequest{}, fmt.Errorf("gitea pull request create failed: %s", resp.Status)
+	}
+	var raw GiteaPullRequest
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return GiteaPullRequest{}, err
+	}
+	return raw, nil
 }

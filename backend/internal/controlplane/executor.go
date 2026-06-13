@@ -51,23 +51,28 @@ func (r MapExecutorRegistry) ExecutorFor(workflowID string) WorkflowExecutor {
 }
 
 type EnvWorkflowExecutors struct {
-	store              Store
-	changemakerBaseURL string
-	changemakerToken   string
-	openPilotCommand   string
-	ocqBaseURL         string
-	ocqGatewayKey      string
-	llamaLineBaseURL   string
-	llamaLineAPIKey    string
-	devlogModel        string
-	openPilotModel     string
-	openPilotLabels    []string
-	requireIssueSpec   bool
-	modelExecutor      ModelExecutor
-	ocqExecutor        OCQExecutor
-	issueFetcher       IssueFetcher
-	commandRunner      CommandRunner
-	client             *http.Client
+	store                 Store
+	changemakerBaseURL    string
+	changemakerToken      string
+	openPilotCommand      string
+	ocqBaseURL            string
+	ocqGatewayKey         string
+	llamaLineBaseURL      string
+	llamaLineAPIKey       string
+	devlogModel           string
+	openPilotModel        string
+	openPilotLabels       []string
+	requireIssueSpec      bool
+	openPilotWriteMode    string
+	openPilotBaseBranch   string
+	openPilotBranchPrefix string
+	openPilotPRDraft      bool
+	modelExecutor         ModelExecutor
+	ocqExecutor           OCQExecutor
+	issueFetcher          IssueFetcher
+	giteaWriter           GiteaWriter
+	commandRunner         CommandRunner
+	client                *http.Client
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -76,23 +81,28 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		configuredStore = store[0]
 	}
 	return &EnvWorkflowExecutors{
-		store:              configuredStore,
-		changemakerBaseURL: strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
-		changemakerToken:   os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
-		openPilotCommand:   strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
-		ocqBaseURL:         strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
-		ocqGatewayKey:      os.Getenv("OCQ_GATEWAY_KEY"),
-		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
-		llamaLineAPIKey:    os.Getenv("LLAMA_LINE_API_KEY"),
-		devlogModel:        firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
-		openPilotModel:     firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
-		openPilotLabels:    splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
-		requireIssueSpec:   strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
-		modelExecutor:      NewEnvModelExecutor(),
-		ocqExecutor:        NewEnvOCQExecutor(),
-		issueFetcher:       NewEnvGiteaClient(),
-		commandRunner:      NewEnvCommandRunner(),
-		client:             &http.Client{Timeout: 10 * time.Second},
+		store:                 configuredStore,
+		changemakerBaseURL:    strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
+		changemakerToken:      os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
+		openPilotCommand:      strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
+		ocqBaseURL:            strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
+		ocqGatewayKey:         os.Getenv("OCQ_GATEWAY_KEY"),
+		llamaLineBaseURL:      strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		llamaLineAPIKey:       os.Getenv("LLAMA_LINE_API_KEY"),
+		devlogModel:           firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
+		openPilotModel:        firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
+		openPilotLabels:       splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
+		requireIssueSpec:      strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
+		openPilotWriteMode:    firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "disabled"),
+		openPilotBaseBranch:   firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
+		openPilotBranchPrefix: firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
+		openPilotPRDraft:      !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
+		modelExecutor:         NewEnvModelExecutor(),
+		ocqExecutor:           NewEnvOCQExecutor(),
+		issueFetcher:          NewEnvGiteaClient(),
+		giteaWriter:           NewEnvGiteaClient(),
+		commandRunner:         NewEnvCommandRunner(),
+		client:                &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -152,8 +162,22 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if _, err := store.FinishRunStep(validate.ID, StepSucceeded, validateSummary, "", nil); err != nil {
 		return WorkflowExecution{}, err
 	}
+	branchName := o.env.openPilotBranchName(repo, issue, fetchedIssue)
+	branchPlan := map[string]string{"repo": repo, "base_branch": firstNonEmpty(run.Inputs["base_branch"], o.env.openPilotBaseBranch), "branch": branchName, "mode": o.env.openPilotWriteMode}
+	branch, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "open-pilot.branch-plan", Executor: "internal", Inputs: branchPlan})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	branchBytes, _ := json.MarshalIndent(branchPlan, "", "  ")
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-branch-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(branchBytes))}); err != nil {
+		_, _ = store.FinishRunStep(branch.ID, StepFailed, "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	if _, err := store.FinishRunStep(branch.ID, StepSucceeded, "Planned branch "+branchName, "", nil); err != nil {
+		return WorkflowExecution{}, err
+	}
 
-	prepare, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "open-pilot.prepare-prompt", Executor: "internal"})
+	prepare, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 3, Name: "open-pilot.prepare-prompt", Executor: "internal"})
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
@@ -166,7 +190,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 
-	agent, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 3, Name: "open-pilot.agent-work", Executor: "opencode", Model: o.env.openPilotModel})
+	agent, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 4, Name: "open-pilot.agent-work", Executor: "opencode", Model: o.env.openPilotModel})
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
@@ -184,7 +208,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 	if command := strings.TrimSpace(run.Inputs["test_command"]); command != "" {
-		verify, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 4, Name: "open-pilot.verify-command", Executor: "command", Inputs: map[string]string{"command": command}})
+		verify, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 5, Name: "open-pilot.verify-command", Executor: "command", Inputs: map[string]string{"command": command}})
 		if err != nil {
 			return WorkflowExecution{}, err
 		}
@@ -207,7 +231,79 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 			return WorkflowExecution{}, err
 		}
 	}
+	prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response.Content, run.Inputs)
+	prStep, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 6, Name: "open-pilot.pr-plan", Executor: "gitea", Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}); err != nil {
+		_, _ = store.FinishRunStep(prStep.ID, StepFailed, "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	switch o.env.openPilotWriteMode {
+	case "allow":
+		created, err := o.env.giteaWriter.CreatePullRequest(ctx, prInput)
+		if err != nil {
+			_, _ = store.FinishRunStep(prStep.ID, StepFailed, "", err.Error(), nil)
+			return WorkflowExecution{}, err
+		}
+		createdBytes, _ := json.MarshalIndent(created, "", "  ")
+		_, _ = store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-pr.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(createdBytes))})
+		if _, err := store.FinishRunStep(prStep.ID, StepSucceeded, "Created pull request", "", map[string]string{"pull_request": created.HTMLURL}); err != nil {
+			return WorkflowExecution{}, err
+		}
+	case "dry-run":
+		if _, err := store.FinishRunStep(prStep.ID, StepSucceeded, "PR creation dry-run; plan artifact attached", "", nil); err != nil {
+			return WorkflowExecution{}, err
+		}
+	default:
+		if _, err := store.FinishRunStep(prStep.ID, StepSucceeded, "PR creation disabled; plan artifact attached", "", nil); err != nil {
+			return WorkflowExecution{}, err
+		}
+	}
 	return WorkflowExecution{Summary: "Ran Open Pilot issue " + issue + " through OCQ", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.completed", Message: repo + "#" + issue}}}, nil
+}
+
+func (e *EnvWorkflowExecutors) openPilotBranchName(repo string, issue string, fetched *GiteaIssue) string {
+	base := "issue-" + issue
+	if fetched != nil && fetched.Title != "" {
+		base += "-" + slug(fetched.Title)
+	}
+	return e.openPilotBranchPrefix + base
+}
+
+func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue string, branchName string, issueSummary string, response string, inputs map[string]string) GiteaPullRequestInput {
+	base := firstNonEmpty(inputs["base_branch"], e.openPilotBaseBranch)
+	title := firstNonEmpty(inputs["pr_title"], "Open Pilot: issue "+issue)
+	var body strings.Builder
+	body.WriteString("Automated Open Pilot run for `" + repo + "#" + issue + "`.\n\n")
+	if issueSummary != "" {
+		body.WriteString("Issue: " + issueSummary + "\n\n")
+	}
+	if response != "" {
+		body.WriteString("## Agent summary\n\n" + response + "\n")
+	}
+	return GiteaPullRequestInput{Repo: repo, Base: base, Head: branchName, Title: title, Body: body.String(), Draft: e.openPilotPRDraft}
+}
+
+func slug(value string) string {
+	value = strings.ToLower(value)
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		isWord := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isWord {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && builder.Len() > 0 {
+			builder.WriteRune('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
 func (e *EnvWorkflowExecutors) fetchOpenPilotIssue(ctx context.Context, repo string, issue string) ([]byte, string, *GiteaIssue, error) {
