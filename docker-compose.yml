@@ -50,6 +50,10 @@ services:
       OPEN_PILOT_DENIED_COMMANDS: ${OPEN_PILOT_DENIED_COMMANDS:-rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish}
       OPEN_PILOT_COMMAND_TIMEOUT: ${OPEN_PILOT_COMMAND_TIMEOUT:-120s}
       OPEN_PILOT_WORKDIR: ${OPEN_PILOT_WORKDIR:-}
+      OPEN_PILOT_WORKTREE_MODE: ${OPEN_PILOT_WORKTREE_MODE:-disabled}
+      OPEN_PILOT_REPO_PATH: ${OPEN_PILOT_REPO_PATH:-}
+      OPEN_PILOT_WORKTREE_ROOT: ${OPEN_PILOT_WORKTREE_ROOT:-}
+      OPEN_PILOT_WORKTREE_TIMEOUT: ${OPEN_PILOT_WORKTREE_TIMEOUT:-120s}
     depends_on:
       postgres:
         condition: service_healthy

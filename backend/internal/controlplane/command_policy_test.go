@@ -1,6 +1,7 @@
 package controlplane_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,25 @@ func TestCommandPolicyDeniesByDefault(t *testing.T) {
 	_, err := runner.Run(t.Context(), "git status")
 	if err == nil || !strings.Contains(err.Error(), "deny") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCommandPolicyUsesPerRunWorkdirOverride(t *testing.T) {
+	dir := t.TempDir()
+	runner := controlplane.NewPolicyCommandRunner(controlplane.CommandPolicy{
+		Mode:            controlplane.CommandPolicyAllow,
+		AllowedCommands: map[string]bool{"pwd": true},
+		AllowedGitVerbs: map[string]bool{},
+		DeniedCommands:  map[string]bool{},
+		Workdir:         os.TempDir(),
+		Timeout:         time.Second,
+	})
+	result, err := runner.Run(t.Context(), "pwd", dir)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.TrimSpace(result.Output) != dir {
+		t.Fatalf("output = %q want %q", result.Output, dir)
 	}
 }
 

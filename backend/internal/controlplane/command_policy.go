@@ -40,7 +40,7 @@ type CommandResult struct {
 }
 
 type CommandRunner interface {
-	Run(ctx context.Context, command string) (CommandResult, error)
+	Run(ctx context.Context, command string, workdir ...string) (CommandResult, error)
 }
 
 type PolicyCommandRunner struct {
@@ -72,7 +72,7 @@ func NewPolicyCommandRunner(policy CommandPolicy) *PolicyCommandRunner {
 	return &PolicyCommandRunner{policy: policy}
 }
 
-func (r *PolicyCommandRunner) Run(ctx context.Context, command string) (CommandResult, error) {
+func (r *PolicyCommandRunner) Run(ctx context.Context, command string, workdir ...string) (CommandResult, error) {
 	decision := r.Decide(command)
 	result := CommandResult{Decision: decision}
 	if !decision.Allowed {
@@ -85,8 +85,12 @@ func (r *PolicyCommandRunner) Run(ctx context.Context, command string) (CommandR
 	runCtx, cancel := context.WithTimeout(ctx, r.policy.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, decision.Command[0], decision.Command[1:]...)
-	if r.policy.Workdir != "" {
-		cmd.Dir = r.policy.Workdir
+	cmdDir := r.policy.Workdir
+	if len(workdir) > 0 && strings.TrimSpace(workdir[0]) != "" {
+		cmdDir = strings.TrimSpace(workdir[0])
+	}
+	if cmdDir != "" {
+		cmd.Dir = cmdDir
 	}
 	output, err := cmd.CombinedOutput()
 	result.Executed = true

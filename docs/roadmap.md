@@ -315,7 +315,7 @@ Exit criteria:
 
 ### M5: Native Open Pilot Prototype
 
-- One issue to one visible multi-step run is prototyped, including branch plan, command-policy verification, and PR plan steps.
+- One issue to one visible multi-step run is prototyped, including branch plan/worktree creation, command-policy verification, and PR plan steps.
 - Gitea policy remains workflow-owned.
 - No external Blacktower requirement.
 
@@ -330,7 +330,7 @@ Exit criteria:
 ## Near-term implementation backlog
 
 1. Add workflow model config and API override beyond `DEVLOG_MODEL`/`OPEN_PILOT_MODEL`.
-2. Expand Open Pilot from branch/PR planning to safe branch creation and isolated worktree execution.
+2. Expand Open Pilot worktree support with cleanup/push behavior and safer retry-from-step semantics.
 3. Add retry-from-step resume semantics for Devlog/Open Pilot.
 4. Add per-executor concurrency limits beyond the current worker pool.
 

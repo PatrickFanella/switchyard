@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -246,6 +247,49 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "git status"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	worktreePath := detail.Steps[1].CorrelationIDs["worktree_path"]
+	if worktreePath == "" || !strings.Contains(detail.Steps[1].OutputSummary, "Created worktree") {
+		t.Fatalf("branch step = %+v", detail.Steps[1])
+	}
+	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err != nil {
+		t.Fatalf("worktree .git missing: %v", err)
+	}
+	if detail.Steps[4].CorrelationIDs["worktree_path"] != worktreePath || detail.Steps[4].Status != controlplane.StepSucceeded {
+		t.Fatalf("verify step = %+v", detail.Steps[4])
+	}
+}
+
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
@@ -361,6 +405,34 @@ func TestRunnerGeneratesDevlogArtifact(t *testing.T) {
 	}
 	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Kind != "markdown" || detail.Artifacts[0].Name != "devlog.md" {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
+func initTestGitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for worktree test")
+	}
+	dir := t.TempDir()
+	runGitForTest(t, dir, "init")
+	runGitForTest(t, dir, "config", "user.email", "switchyard@example.test")
+	runGitForTest(t, dir, "config", "user.name", "Switchyard Test")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGitForTest(t, dir, "add", "README.md")
+	runGitForTest(t, dir, "commit", "-m", "initial")
+	runGitForTest(t, dir, "branch", "-M", "main")
+	return dir
+}
+
+func runGitForTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 }
 

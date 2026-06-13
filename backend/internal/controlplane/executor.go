@@ -72,6 +72,7 @@ type EnvWorkflowExecutors struct {
 	issueFetcher          IssueFetcher
 	giteaWriter           GiteaWriter
 	commandRunner         CommandRunner
+	worktreeManager       OpenPilotWorktreeManager
 	client                *http.Client
 }
 
@@ -102,6 +103,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		issueFetcher:          NewEnvGiteaClient(),
 		giteaWriter:           NewEnvGiteaClient(),
 		commandRunner:         NewEnvCommandRunner(),
+		worktreeManager:       NewEnvOpenPilotWorktreeManager(),
 		client:                &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -163,8 +165,9 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 	branchName := o.env.openPilotBranchName(repo, issue, fetchedIssue)
-	branchPlan := map[string]string{"repo": repo, "base_branch": firstNonEmpty(run.Inputs["base_branch"], o.env.openPilotBaseBranch), "branch": branchName, "mode": o.env.openPilotWriteMode}
-	branch, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "open-pilot.branch-plan", Executor: "internal", Inputs: branchPlan})
+	baseBranch := firstNonEmpty(run.Inputs["base_branch"], o.env.openPilotBaseBranch)
+	branchPlan, prepareWorktreeErr := o.env.worktreeManager.Prepare(ctx, run, repo, baseBranch, branchName)
+	branch, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "open-pilot.branch-plan", Executor: "internal", Inputs: branchPlan.StepInputs()})
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
@@ -173,7 +176,23 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		_, _ = store.FinishRunStep(branch.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
 	}
-	if _, err := store.FinishRunStep(branch.ID, StepSucceeded, "Planned branch "+branchName, "", nil); err != nil {
+	if prepareWorktreeErr != nil {
+		_, _ = store.FinishRunStep(branch.ID, StepFailed, "", prepareWorktreeErr.Error(), nil)
+		return WorkflowExecution{}, prepareWorktreeErr
+	}
+	branchSummary := "Planned branch " + branchName
+	if branchPlan.Executed {
+		branchSummary = "Created worktree " + branchPlan.WorktreePath
+	} else if branchPlan.DryRun {
+		branchSummary = "Worktree dry-run; planned branch " + branchName
+	}
+	branchCorrelation := map[string]string{"branch": branchName}
+	if branchPlan.Executed && branchPlan.WorktreePath != "" {
+		branchCorrelation["worktree_path"] = branchPlan.WorktreePath
+	} else if branchPlan.PlannedWorktreePath != "" {
+		branchCorrelation["planned_worktree_path"] = branchPlan.PlannedWorktreePath
+	}
+	if _, err := store.FinishRunStep(branch.ID, StepSucceeded, branchSummary, "", branchCorrelation); err != nil {
 		return WorkflowExecution{}, err
 	}
 
@@ -181,7 +200,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	prompt := buildOpenPilotPrompt(repo, issue, issueSummary)
+	prompt := buildOpenPilotPrompt(repo, issue, issueSummary, branchPlan)
 	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}); err != nil {
 		_, _ = store.FinishRunStep(prepare.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
@@ -212,8 +231,15 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		if err != nil {
 			return WorkflowExecution{}, err
 		}
-		result, err := o.env.commandRunner.Run(ctx, command)
+		workdir := ""
+		if branchPlan.Executed {
+			workdir = branchPlan.WorktreePath
+		}
+		result, err := o.env.commandRunner.Run(ctx, command, workdir)
 		correlation := map[string]string{"policy_reason": result.Decision.Reason}
+		if workdir != "" {
+			correlation["worktree_path"] = branchPlan.WorktreePath
+		}
 		if result.Decision.DryRun {
 			correlation["policy_mode"] = string(CommandPolicyDryRun)
 		}
@@ -351,13 +377,19 @@ func (e *EnvWorkflowExecutors) validateOpenPilotIssue(issue GiteaIssue) error {
 	return nil
 }
 
-func buildOpenPilotPrompt(repo string, issue string, issueSummary string) string {
+func buildOpenPilotPrompt(repo string, issue string, issueSummary string, branchPlan ...OpenPilotWorktreePlan) string {
 	var builder strings.Builder
 	builder.WriteString("# Open Pilot Task\n\n")
 	builder.WriteString("Repository: " + repo + "\n")
 	builder.WriteString("Issue: " + issue + "\n")
 	if issueSummary != "" {
 		builder.WriteString("Issue summary: " + issueSummary + "\n")
+	}
+	if len(branchPlan) > 0 {
+		builder.WriteString("Branch: " + branchPlan[0].Branch + "\n")
+		if branchPlan[0].Executed && branchPlan[0].WorktreePath != "" {
+			builder.WriteString("Worktree: " + branchPlan[0].WorktreePath + "\n")
+		}
 	}
 	builder.WriteString("\nInspect the issue, preserve repository conventions, make the smallest safe change, run the requested verification, and summarize results with file references.\n")
 	return builder.String()
