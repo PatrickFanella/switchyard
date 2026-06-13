@@ -517,6 +517,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		prCreated := false
 		switch o.env.openPilotWriteMode {
 		case "allow":
+			if branchPlan.Executed && !pushPlan.Executed {
+				return out, errors.New("OPEN_PILOT_GITEA_WRITE_MODE=allow requires pushed worktree branch or externally published head")
+			}
 			created, err := o.env.giteaWriter.CreatePullRequest(ctx, prInput)
 			if err != nil {
 				return out, err

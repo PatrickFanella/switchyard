@@ -330,7 +330,7 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Expand Open Pilot worktree support with stronger retry rehydration and PR dependency checks for pushed/existing branches.
+1. Expand Open Pilot worktree support with stronger retry rehydration and existing-branch detection for externally published heads.
 2. Add API docs/OpenAPI after the runtime API settles.
 
 ## Non-goals for the next phase
