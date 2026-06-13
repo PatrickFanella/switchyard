@@ -72,6 +72,165 @@ func (s *PostgresStore) UpsertTrigger(t Trigger) error {
 	return mapPgErr(err)
 }
 
+func (s *PostgresStore) OpenPilotIssueState(repo, issue string) (OpenPilotIssueState, error) {
+	row := s.db.QueryRowContext(context.Background(), `select id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at from open_pilot_issue_states where repo=$1 and issue=$2`, repo, issue)
+	state, err := scanOpenPilotIssueStateRow(row)
+	return state, mapScanErr(err)
+}
+
+func (s *PostgresStore) UpsertOpenPilotIssueState(input OpenPilotIssueState) (OpenPilotIssueState, error) {
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	row := tx.QueryRowContext(context.Background(), `select id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at from open_pilot_issue_states where repo=$1 and issue=$2 for update`, input.Repo, input.Issue)
+	existing, err := scanOpenPilotIssueStateRow(row)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	var existingPtr *OpenPilotIssueState
+	if err == nil {
+		existingPtr = &existing
+	}
+	state, err := validateOpenPilotIssueStateForUpsert(input, existingPtr)
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	if existingPtr == nil {
+		if state.ID == "" {
+			state.ID = newID("opi")
+		}
+		if state.CreatedAt.IsZero() {
+			state.CreatedAt = now
+		}
+	} else {
+		state.ID = existing.ID
+		state.CreatedAt = existing.CreatedAt
+	}
+	state.UpdatedAt = now
+	gateStatus, err := marshalOpenPilotJSONMap(map[string]string(state.GateStatus))
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	resumeInputs, err := marshalOpenPilotJSONMap(state.ResumeInputs)
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	if existingPtr == nil {
+		row = tx.QueryRowContext(context.Background(), `
+			insert into open_pilot_issue_states(id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at)
+			values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18,$19,$20,$21)
+			returning id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at`,
+			state.ID, state.Repo, state.Issue, state.Phase, state.RunID, state.LastStepName, state.Branch, state.Base, state.WorktreePath, state.PullRequestURL, nullInt64(state.PullRequestID), nullInt64(state.PullRequestNum), state.MergeCommitSHA, state.IssueClosed, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, state.LastError, state.CreatedAt, state.UpdatedAt)
+	} else {
+		row = tx.QueryRowContext(context.Background(), `
+			update open_pilot_issue_states set phase=$3, run_id=$4, last_step_name=$5, branch=$6, base=$7, worktree_path=$8, pull_request_url=$9, pull_request_id=$10, pull_request_number=$11, merge_commit_sha=$12, issue_closed=$13, gate_status=$14::jsonb, resume_inputs=$15::jsonb, repair_attempts=$16, max_repair_attempts=$17, last_error=$18, updated_at=$19
+			where repo=$1 and issue=$2
+			returning id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at`,
+			state.Repo, state.Issue, state.Phase, state.RunID, state.LastStepName, state.Branch, state.Base, state.WorktreePath, state.PullRequestURL, nullInt64(state.PullRequestID), nullInt64(state.PullRequestNum), state.MergeCommitSHA, state.IssueClosed, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, state.LastError, state.UpdatedAt)
+	}
+	saved, err := scanOpenPilotIssueStateRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, mapScanErr(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	return saved, nil
+}
+
+func (s *PostgresStore) TransitionOpenPilotIssueState(repo, issue string, next OpenPilotPhase) (OpenPilotIssueState, error) {
+	if repo == "" || issue == "" || next == "" {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	row := tx.QueryRowContext(context.Background(), `select id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at from open_pilot_issue_states where repo=$1 and issue=$2 for update`, repo, issue)
+	existing, err := scanOpenPilotIssueStateRow(row)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
+		if err := ValidateOpenPilotTransition("", next); err != nil {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
+		state := OpenPilotIssueState{
+			ID:                newID("opi"),
+			Repo:              repo,
+			Issue:             issue,
+			Phase:             next,
+			RepairAttempts:    0,
+			MaxRepairAttempts: 2,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		}
+		gateStatus, err := marshalOpenPilotJSONMap(map[string]string(state.GateStatus))
+		if err != nil {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
+		resumeInputs, err := marshalOpenPilotJSONMap(state.ResumeInputs)
+		if err != nil {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
+		row = tx.QueryRowContext(context.Background(), `insert into open_pilot_issue_states(id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18,$19,$20,$21) returning id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at`, state.ID, state.Repo, state.Issue, state.Phase, "", "", "", "", "", "", nil, nil, "", false, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, "", state.CreatedAt, state.UpdatedAt)
+		saved, err := scanOpenPilotIssueStateRow(row)
+		if err != nil {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return OpenPilotIssueState{}, err
+		}
+		return saved, nil
+	}
+	if err := normalizeOpenPilotRepairCounts(&existing); err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	if err := ValidateOpenPilotTransition(existing.Phase, next); err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	row = tx.QueryRowContext(context.Background(), `update open_pilot_issue_states set phase=$3, max_repair_attempts=$4, updated_at=$5 where repo=$1 and issue=$2 returning id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at`, repo, issue, next, existing.MaxRepairAttempts, now)
+	saved, err := scanOpenPilotIssueStateRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	return saved, nil
+}
+
+func (s *PostgresStore) ListOpenPilotIssueStates() []OpenPilotIssueState {
+	rows, err := s.db.QueryContext(context.Background(), `select id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at from open_pilot_issue_states order by repo, issue`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []OpenPilotIssueState{}
+	for rows.Next() {
+		if state, ok := scanOpenPilotIssueState(rows); ok {
+			out = append(out, state)
+		}
+	}
+	return out
+}
+
 func (s *PostgresStore) ListWorkflows() []Workflow {
 	rows, err := s.db.QueryContext(context.Background(), `select id, kind, name, description, owns, uses, status from workflows order by id`)
 	if err != nil {
@@ -104,6 +263,20 @@ func (s *PostgresStore) ListTriggers() []Trigger {
 		}
 	}
 	return out
+}
+
+func nullInt64(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return int64(v)
+}
+
+func marshalOpenPilotJSONMap(in map[string]string) ([]byte, error) {
+	if len(in) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(in)
 }
 
 func (s *PostgresStore) Trigger(id string) (Trigger, bool) {
@@ -645,6 +818,59 @@ func scanRunStepRow(row scanner) (RunStep, error) {
 	_ = json.Unmarshal(inputs, &step.Inputs)
 	_ = json.Unmarshal(correlationIDs, &step.CorrelationIDs)
 	return step, nil
+}
+
+func scanOpenPilotIssueState(rows *sql.Rows) (OpenPilotIssueState, bool) {
+	state, err := scanOpenPilotIssueStateRow(rows)
+	return state, err == nil
+}
+
+func scanOpenPilotIssueStateRow(row scanner) (OpenPilotIssueState, error) {
+	var state OpenPilotIssueState
+	var gateStatusBytes []byte
+	var resumeInputsBytes []byte
+	var pullRequestID, pullRequestNum sql.NullInt64
+	var runID, lastStepName, branch, base, worktreePath, pullRequestURL, mergeCommitSHA, lastError sql.NullString
+	if err := row.Scan(&state.ID, &state.Repo, &state.Issue, &state.Phase, &runID, &lastStepName, &branch, &base, &worktreePath, &pullRequestURL, &pullRequestID, &pullRequestNum, &mergeCommitSHA, &state.IssueClosed, &gateStatusBytes, &resumeInputsBytes, &state.RepairAttempts, &state.MaxRepairAttempts, &lastError, &state.CreatedAt, &state.UpdatedAt); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	if runID.Valid {
+		state.RunID = runID.String
+	}
+	if lastStepName.Valid {
+		state.LastStepName = lastStepName.String
+	}
+	if branch.Valid {
+		state.Branch = branch.String
+	}
+	if base.Valid {
+		state.Base = base.String
+	}
+	if worktreePath.Valid {
+		state.WorktreePath = worktreePath.String
+	}
+	if pullRequestURL.Valid {
+		state.PullRequestURL = pullRequestURL.String
+	}
+	if pullRequestID.Valid {
+		state.PullRequestID = int(pullRequestID.Int64)
+	}
+	if pullRequestNum.Valid {
+		state.PullRequestNum = int(pullRequestNum.Int64)
+	}
+	if mergeCommitSHA.Valid {
+		state.MergeCommitSHA = mergeCommitSHA.String
+	}
+	if lastError.Valid {
+		state.LastError = lastError.String
+	}
+	if err := json.Unmarshal(gateStatusBytes, &state.GateStatus); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	if err := json.Unmarshal(resumeInputsBytes, &state.ResumeInputs); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	return state, nil
 }
 
 func mapScanErr(err error) error {

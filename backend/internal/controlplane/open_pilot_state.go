@@ -1,0 +1,202 @@
+package controlplane
+
+import (
+	"fmt"
+	"time"
+)
+
+const openPilotDefaultMaxRepairAttempts = 2
+
+type OpenPilotPhase string
+
+const (
+	OpenPilotPhaseRequested      OpenPilotPhase = "requested"
+	OpenPilotPhaseValidated      OpenPilotPhase = "validated"
+	OpenPilotPhaseBranchPrepared OpenPilotPhase = "branch_prepared"
+	OpenPilotPhaseAgentCompleted OpenPilotPhase = "agent_completed"
+	OpenPilotPhaseVerified       OpenPilotPhase = "verified"
+	OpenPilotPhasePushed         OpenPilotPhase = "pushed"
+	OpenPilotPhasePRCreated      OpenPilotPhase = "pr_created"
+	OpenPilotPhaseAIReviewed     OpenPilotPhase = "ai_reviewed"
+	OpenPilotPhaseCIPassed       OpenPilotPhase = "ci_passed"
+	OpenPilotPhaseMergeReady     OpenPilotPhase = "merge_ready"
+	OpenPilotPhaseMerged         OpenPilotPhase = "merged"
+	OpenPilotPhaseIssueClosed    OpenPilotPhase = "issue_closed"
+	OpenPilotPhaseFailed         OpenPilotPhase = "failed"
+	OpenPilotPhasePaused         OpenPilotPhase = "paused"
+)
+
+type OpenPilotGateStatus map[string]string
+
+type OpenPilotIssueState struct {
+	ID                string              `json:"id"`
+	Repo              string              `json:"repo"`
+	Issue             string              `json:"issue"`
+	Phase             OpenPilotPhase      `json:"phase"`
+	RunID             string              `json:"run_id,omitempty"`
+	LastStepName      string              `json:"last_step_name,omitempty"`
+	Branch            string              `json:"branch,omitempty"`
+	Base              string              `json:"base,omitempty"`
+	WorktreePath      string              `json:"worktree_path,omitempty"`
+	PullRequestURL    string              `json:"pull_request_url,omitempty"`
+	PullRequestID     int                 `json:"pull_request_id,omitempty"`
+	PullRequestNum    int                 `json:"pull_request_number,omitempty"`
+	MergeCommitSHA    string              `json:"merge_commit_sha,omitempty"`
+	IssueClosed       bool                `json:"issue_closed"`
+	GateStatus        OpenPilotGateStatus `json:"gate_status,omitempty"`
+	ResumeInputs      map[string]string   `json:"resume_inputs,omitempty"`
+	RepairAttempts    int                 `json:"repair_attempts"`
+	MaxRepairAttempts int                 `json:"max_repair_attempts"`
+	LastError         string              `json:"last_error,omitempty"`
+	UpdatedAt         time.Time           `json:"updated_at"`
+	CreatedAt         time.Time           `json:"created_at"`
+}
+
+var openPilotPhaseChain = []OpenPilotPhase{
+	OpenPilotPhaseRequested,
+	OpenPilotPhaseValidated,
+	OpenPilotPhaseBranchPrepared,
+	OpenPilotPhaseAgentCompleted,
+	OpenPilotPhaseVerified,
+	OpenPilotPhasePushed,
+	OpenPilotPhasePRCreated,
+	OpenPilotPhaseAIReviewed,
+	OpenPilotPhaseCIPassed,
+	OpenPilotPhaseMergeReady,
+	OpenPilotPhaseMerged,
+	OpenPilotPhaseIssueClosed,
+}
+
+var openPilotKnownPhases = map[OpenPilotPhase]struct{}{
+	OpenPilotPhaseRequested:      {},
+	OpenPilotPhaseValidated:      {},
+	OpenPilotPhaseBranchPrepared: {},
+	OpenPilotPhaseAgentCompleted: {},
+	OpenPilotPhaseVerified:       {},
+	OpenPilotPhasePushed:         {},
+	OpenPilotPhasePRCreated:      {},
+	OpenPilotPhaseAIReviewed:     {},
+	OpenPilotPhaseCIPassed:       {},
+	OpenPilotPhaseMergeReady:     {},
+	OpenPilotPhaseMerged:         {},
+	OpenPilotPhaseIssueClosed:    {},
+	OpenPilotPhaseFailed:         {},
+	OpenPilotPhasePaused:         {},
+}
+
+func ValidateOpenPilotTransition(from, to OpenPilotPhase) error {
+	if !isOpenPilotKnownPhase(to) {
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if from == "" {
+		if to == OpenPilotPhaseRequested || to == OpenPilotPhaseValidated {
+			return nil
+		}
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if !isOpenPilotKnownPhase(from) {
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if from == to {
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if from == OpenPilotPhaseIssueClosed {
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if from == OpenPilotPhaseFailed || from == OpenPilotPhasePaused {
+		if isOpenPilotActivePhase(to) {
+			return nil
+		}
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if to == OpenPilotPhaseFailed || to == OpenPilotPhasePaused {
+		if isOpenPilotActivePhase(from) {
+			return nil
+		}
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	if from == OpenPilotPhaseMerged && to == OpenPilotPhaseIssueClosed {
+		return nil
+	}
+	if !isOpenPilotActivePhase(from) || !isOpenPilotActivePhase(to) {
+		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+	}
+	for i := 0; i < len(openPilotPhaseChain)-1; i++ {
+		if openPilotPhaseChain[i] == from && openPilotPhaseChain[i+1] == to {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
+}
+
+func isOpenPilotKnownPhase(phase OpenPilotPhase) bool {
+	_, ok := openPilotKnownPhases[phase]
+	return ok
+}
+
+func isOpenPilotActivePhase(phase OpenPilotPhase) bool {
+	for _, active := range openPilotPhaseChain[:len(openPilotPhaseChain)-1] {
+		if active == phase {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneOpenPilotGateStatus(in OpenPilotGateStatus) OpenPilotGateStatus {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(OpenPilotGateStatus, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneOpenPilotIssueState(in OpenPilotIssueState) OpenPilotIssueState {
+	out := in
+	out.GateStatus = cloneOpenPilotGateStatus(in.GateStatus)
+	out.ResumeInputs = cloneMap(in.ResumeInputs)
+	return out
+}
+
+func normalizeOpenPilotRepairCounts(state *OpenPilotIssueState) error {
+	if state.MaxRepairAttempts == 0 {
+		state.MaxRepairAttempts = openPilotDefaultMaxRepairAttempts
+	}
+	if state.RepairAttempts < 0 || state.MaxRepairAttempts < 0 || state.RepairAttempts > state.MaxRepairAttempts {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validateOpenPilotIssueStateForUpsert(input OpenPilotIssueState, existing *OpenPilotIssueState) (OpenPilotIssueState, error) {
+	if input.Repo == "" || input.Issue == "" || input.Phase == "" {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	if !isOpenPilotKnownPhase(input.Phase) {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	state := cloneOpenPilotIssueState(input)
+	if err := normalizeOpenPilotRepairCounts(&state); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	if existing == nil {
+		if state.Phase != OpenPilotPhaseRequested {
+			return OpenPilotIssueState{}, ErrInvalid
+		}
+		return state, nil
+	}
+	if existing.Phase != "" && !isOpenPilotKnownPhase(existing.Phase) {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	if existing.Phase != state.Phase {
+		if err := ValidateOpenPilotTransition(existing.Phase, state.Phase); err != nil {
+			return OpenPilotIssueState{}, err
+		}
+	}
+	state.ID = existing.ID
+	state.CreatedAt = existing.CreatedAt
+	return state, nil
+}

@@ -60,6 +60,81 @@ func TestRunQueueMigrationDeclaresLeaseFields(t *testing.T) {
 	}
 }
 
+func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/006_open_pilot_state.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"create table if not exists open_pilot_issue_states", "unique(repo, issue)", "open_pilot_issue_states_phase_idx", "open_pilot_issue_states_run_id_idx", "run_id text not null default ''", "last_error text not null default ''", "repair_attempts integer not null default 0", "max_repair_attempts integer not null default 2", "constraint open_pilot_issue_states_gate_status_check", "constraint open_pilot_issue_states_resume_inputs_check", "constraint open_pilot_issue_states_phase_check", "constraint open_pilot_issue_states_repair_attempts_check"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("open pilot migration missing %q", field)
+		}
+	}
+}
+
+func TestPostgresStoreOpenPilotIssueStateIntegration(t *testing.T) {
+	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set SWITCHYARD_TEST_DATABASE_URL to run Postgres open pilot state integration test")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	db, err := OpenPostgres(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	store := NewPostgresStore(db, func() time.Time { return time.Unix(100, 0) })
+	repo := "OWNER/POSTGRES-OPEN-PILOT"
+	issue := "1"
+	saved, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, GateStatus: OpenPilotGateStatus{"ai_review": "pending"}, ResumeInputs: map[string]string{"branch": "open-pilot/issue-1"}, MaxRepairAttempts: 0})
+	if err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
+	}
+	if saved.MaxRepairAttempts != openPilotDefaultMaxRepairAttempts {
+		t.Fatalf("saved.MaxRepairAttempts = %d, want %d", saved.MaxRepairAttempts, openPilotDefaultMaxRepairAttempts)
+	}
+	fetched, err := store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if fetched.ID != saved.ID || fetched.GateStatus["ai_review"] != "pending" || fetched.ResumeInputs["branch"] != "open-pilot/issue-1" {
+		t.Fatalf("fetched = %+v", fetched)
+	}
+	listed := store.ListOpenPilotIssueStates()
+	found := false
+	for _, state := range listed {
+		if state.ID == saved.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("listed = %+v", listed)
+	}
+	transitioned, err := store.TransitionOpenPilotIssueState(repo, issue, OpenPilotPhaseValidated)
+	if err != nil {
+		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
+	}
+	if transitioned.Phase != OpenPilotPhaseValidated || transitioned.MaxRepairAttempts != openPilotDefaultMaxRepairAttempts {
+		t.Fatalf("transitioned = %+v", transitioned)
+	}
+	updated, err := store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() after transition error = %v", err)
+	}
+	if updated.Phase != OpenPilotPhaseValidated {
+		t.Fatalf("updated = %+v", updated)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: repo, Issue: issue, Phase: OpenPilotPhaseIssueClosed}); err == nil {
+		t.Fatal("expected requested/validated -> issue_closed upsert to be rejected")
+	}
+}
+
 func TestPostgresStoreIntegration(t *testing.T) {
 	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
 	if databaseURL == "" {
