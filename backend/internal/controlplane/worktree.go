@@ -117,9 +117,15 @@ func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
 			timeout = parsed
 		}
 	}
+	mode := firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeDisabled))
+	cleanupMode := firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_CLEANUP"), string(OpenPilotWorktreeCleanupDisabled))
+	if openPilotAutonomyFullEnabled() {
+		mode = firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeAllow))
+		cleanupMode = firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_CLEANUP"), string(OpenPilotWorktreeCleanupOnSuccess))
+	}
 	return &GitOpenPilotWorktreeManager{
-		mode:        OpenPilotWorktreeMode(firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeDisabled))),
-		cleanupMode: OpenPilotWorktreeCleanupMode(firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_CLEANUP"), string(OpenPilotWorktreeCleanupDisabled))),
+		mode:        OpenPilotWorktreeMode(mode),
+		cleanupMode: OpenPilotWorktreeCleanupMode(cleanupMode),
 		repoPath:    repoPath,
 		root:        root,
 		timeout:     timeout,

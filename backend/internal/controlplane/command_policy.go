@@ -49,6 +49,15 @@ type PolicyCommandRunner struct {
 
 func NewEnvCommandRunner() *PolicyCommandRunner {
 	mode := CommandPolicyMode(firstNonEmpty(os.Getenv("OPEN_PILOT_COMMAND_POLICY_MODE"), string(CommandPolicyDeny)))
+	allowedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), "git,go,make,pnpm,npm,cargo"))
+	allowedGitVerbs := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), "status,diff,checkout,switch,branch,add,commit"))
+	deniedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"))
+	if openPilotAutonomyFullEnabled() {
+		mode = CommandPolicyMode(firstNonEmpty(os.Getenv("OPEN_PILOT_COMMAND_POLICY_MODE"), string(CommandPolicyAllow)))
+		allowedCommands = setFromCSV(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"))
+		allowedGitVerbs = setFromCSV(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"))
+		deniedCommands = setFromCSV(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"))
+	}
 	timeout := 120 * time.Second
 	if raw := os.Getenv("OPEN_PILOT_COMMAND_TIMEOUT"); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil {
@@ -57,9 +66,9 @@ func NewEnvCommandRunner() *PolicyCommandRunner {
 	}
 	return &PolicyCommandRunner{policy: CommandPolicy{
 		Mode:            mode,
-		AllowedCommands: setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), "git,go,make,pnpm,npm,cargo")),
-		AllowedGitVerbs: setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), "status,diff,checkout,switch,branch,add,commit")),
-		DeniedCommands:  setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish")),
+		AllowedCommands: allowedCommands,
+		AllowedGitVerbs: allowedGitVerbs,
+		DeniedCommands:  deniedCommands,
 		Workdir:         os.Getenv("OPEN_PILOT_WORKDIR"),
 		Timeout:         timeout,
 	}}
@@ -116,7 +125,7 @@ func (r *PolicyCommandRunner) Decide(command string) CommandDecision {
 	if r.policy.DeniedCommands[exe] {
 		return CommandDecision{Allowed: false, Reason: "command is explicitly denied: " + exe, Command: parts}
 	}
-	if !r.policy.AllowedCommands[exe] {
+	if len(r.policy.AllowedCommands) > 0 && !r.policy.AllowedCommands[exe] {
 		return CommandDecision{Allowed: false, Reason: "command is not allowed: " + exe, Command: parts}
 	}
 	if exe == "git" {
@@ -124,7 +133,7 @@ func (r *PolicyCommandRunner) Decide(command string) CommandDecision {
 			return CommandDecision{Allowed: false, Reason: "git subcommand is required", Command: parts}
 		}
 		verb := parts[1]
-		if !r.policy.AllowedGitVerbs[verb] {
+		if len(r.policy.AllowedGitVerbs) > 0 && !r.policy.AllowedGitVerbs[verb] {
 			return CommandDecision{Allowed: false, Reason: "git subcommand is not allowed: " + verb, Command: parts}
 		}
 	}

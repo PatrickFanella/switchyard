@@ -84,6 +84,13 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 	if len(store) > 0 {
 		configuredStore = store[0]
 	}
+	autonomyFull := openPilotAutonomyFullEnabled()
+	openPilotWriteMode := firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "disabled")
+	openPilotGitPushMode := firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "disabled")
+	if autonomyFull {
+		openPilotWriteMode = firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "allow")
+		openPilotGitPushMode = firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "allow")
+	}
 	return &EnvWorkflowExecutors{
 		store:                  configuredStore,
 		changemakerBaseURL:     strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
@@ -99,8 +106,8 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotAllowedModels: setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"))),
 		openPilotLabels:        splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
 		requireIssueSpec:       strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
-		openPilotWriteMode:     firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "disabled"),
-		openPilotGitPushMode:   firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "disabled"),
+		openPilotWriteMode:     openPilotWriteMode,
+		openPilotGitPushMode:   openPilotGitPushMode,
 		openPilotBaseBranch:    firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
 		openPilotBranchPrefix:  firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
 		openPilotPRDraft:       !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
@@ -810,7 +817,12 @@ func buildOpenPilotPrompt(repo string, issue string, issueSummary string, fetche
 			builder.WriteString("\n## Issue body\n\n" + strings.TrimSpace(fetchedIssue.Body) + "\n")
 		}
 	}
-	builder.WriteString("\n## Instructions\n\nInspect the issue, preserve repository conventions, and make the smallest safe change. Do not run shell/test commands or push changes yourself; Switchyard will run verification and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
+	builder.WriteString("\n## Instructions\n\nInspect the issue, preserve repository conventions, and make the smallest safe change. ")
+	if openPilotAutonomyFullEnabled() {
+		builder.WriteString("You may run implementation, inspection, formatting, and test commands inside the assigned worktree. Commit your completed changes on the assigned branch before finishing; Switchyard will verify that the branch is ahead of base, inspect worktree status, push the branch, and create the PR through audited follow-up steps. Do not push or create the PR yourself. Summarize commits, files changed, and verification results with file references.\n")
+	} else {
+		builder.WriteString("Do not run shell/test commands or push changes yourself; Switchyard will run verification and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
+	}
 	return builder.String()
 }
 

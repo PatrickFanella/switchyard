@@ -38,6 +38,9 @@ func main() {
 	if err := controlplane.SeedDefaults(store); err != nil {
 		log.Fatalf("seed control plane: %v", err)
 	}
+	for _, warning := range controlplane.NewEnvOperatorSafetyStatus().Warnings {
+		log.Printf("switchyard operator safety warning: %s", warning)
+	}
 	runner := controlplane.NewRunner(store)
 	api := controlplane.NewAPI(store, runner)
 	if os.Getenv("SWITCHYARD_WORKER_ENABLED") == "1" || os.Getenv("SWITCHYARD_WORKER_ENABLED") == "true" {

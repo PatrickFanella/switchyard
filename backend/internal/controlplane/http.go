@@ -46,6 +46,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/adapters", a.adapters)
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workers", a.workerStatus)
+	mux.HandleFunc("GET /api/operator-safety", a.operatorSafety)
 	mux.HandleFunc("GET /api/pipelines", a.pipelines)
 	mux.HandleFunc("GET /api/agent-profiles", a.agentProfiles)
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +65,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/triggers/", a.triggerAction)
 	mux.HandleFunc("PATCH /api/triggers/", a.triggerAction)
 	return withCORS(mux)
+}
+
+func (a *API) operatorSafety(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, NewEnvOperatorSafetyStatus())
 }
 
 func (a *API) pipelines(w http.ResponseWriter, r *http.Request) {

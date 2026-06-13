@@ -67,3 +67,12 @@ func TestCommandPolicyDeniesUnsafeCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenPilotAutonomyFullAllowsUnlistedCommands(t *testing.T) {
+	t.Setenv("OPEN_PILOT_AUTONOMY_MODE", "full")
+	runner := controlplane.NewEnvCommandRunner()
+	decision := runner.Decide("python -m pytest")
+	if !decision.Allowed || decision.DryRun {
+		t.Fatalf("decision = %+v", decision)
+	}
+}

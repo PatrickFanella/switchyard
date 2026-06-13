@@ -45,6 +45,15 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WorkerPoolStatus" }
+  /api/operator-safety:
+    get:
+      summary: Get operator safety status
+      responses:
+        "200":
+          description: Operator safety status and warnings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
   /api/pipelines:
     get:
       summary: List pipeline definitions
@@ -493,6 +502,14 @@ components:
         lease_renewals: { type: integer }
         last_error: { type: string }
       required: [enabled, running]
+    OperatorSafetyStatus:
+      type: object
+      properties:
+        public_url: { type: string }
+        reverse_proxy_auth: { type: boolean }
+        open_pilot_autonomy_mode: { type: string }
+        warnings: { type: array, items: { type: string } }
+      required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
     ErrorEnvelope:
       type: object
       properties:
