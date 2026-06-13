@@ -524,3 +524,35 @@ func TestEnvWorkflowExecutorsStubsChangemakerWhenUnconfigured(t *testing.T) {
 		t.Fatalf("execution = %+v", execution)
 	}
 }
+
+func TestRunnerExecutesChangemakerPipeline(t *testing.T) {
+	t.Setenv("CHANGEMAKER_BASE_URL", "")
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "changemaker", Inputs: map[string]string{"kind": "daily"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || run.Summary != "Recorded Switchyard run envelope for changemaker" {
+		t.Fatalf("run = %+v", run)
+	}
+	if len(detail.Steps) != 1 || detail.Steps[0].Name != "changemaker.dispatch" || detail.Steps[0].Executor != "http" || detail.Steps[0].Status != controlplane.StepSucceeded {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	foundStub := false
+	for _, event := range detail.Events {
+		if event.Type == "workflow.stub" {
+			foundStub = true
+		}
+	}
+	if !foundStub {
+		t.Fatalf("events = %+v", detail.Events)
+	}
+}

@@ -117,7 +117,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	switch workflowID {
 	case string(WorkflowChangemaker):
-		return WorkflowExecutorFunc(e.executeChangemaker)
+		return changemakerExecutor{env: e}
 	case string(WorkflowOpenPilot):
 		return openPilotExecutor{env: e}
 	case string(WorkflowDevlog):
@@ -125,6 +125,25 @@ func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	default:
 		return WorkflowExecutorFunc(stubWorkflowExecution(workflowID, "Workflow execution adapter is not wired yet"))
 	}
+}
+
+type changemakerExecutor struct {
+	env *EnvWorkflowExecutors
+}
+
+func (c changemakerExecutor) Execute(ctx context.Context, run Run) (WorkflowExecution, error) {
+	return c.env.executeChangemaker(ctx, run)
+}
+
+func (c changemakerExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
+	if step.ID != "dispatch" {
+		return PipelineStepExecution{}, fmt.Errorf("unsupported changemaker pipeline step %q", step.ID)
+	}
+	execution, err := c.env.executeChangemaker(ctx, run)
+	if execution.Summary != "" {
+		state["summary"] = execution.Summary
+	}
+	return PipelineStepExecution{Summary: execution.Summary, Events: execution.Events, Artifacts: execution.Artifacts}, err
 }
 
 type openPilotExecutor struct {
@@ -556,6 +575,61 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 	}
 
 	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}}}, nil
+}
+
+func (d devlogExecutor) ResolvePipelineStepModel(workflowID string, step PipelineStep, inputs map[string]string) (string, error) {
+	if step.Model == "" {
+		return "", nil
+	}
+	if step.Model == "${model}" {
+		return d.env.resolveWorkflowModel(workflowID, inputs)
+	}
+	return step.Model, nil
+}
+
+func (d devlogExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
+	switch step.ID {
+	case "collect-history":
+		seed := d.env.buildDevlogMarkdown(run)
+		state["devlog.markdown"] = seed
+		return PipelineStepExecution{Summary: "Collected recent Switchyard run history"}, nil
+	case "generate-markdown":
+		seed, _ := state["devlog.markdown"].(string)
+		if seed == "" {
+			seed = d.env.buildDevlogMarkdown(run)
+		}
+		markdown := seed
+		model := firstNonEmpty(step.Model, d.env.devlogModel)
+		generated, genErr := d.env.generateDevlogWithModel(ctx, seed, model)
+		if genErr == nil && strings.TrimSpace(generated.Content) != "" {
+			markdown = generated.Content
+			state["devlog.markdown"] = markdown
+			return PipelineStepExecution{Summary: "Generated Markdown with model", CorrelationIDs: generated.CorrelationIDs}, nil
+		}
+		state["devlog.markdown"] = markdown
+		out := PipelineStepExecution{Summary: "Used deterministic Markdown fallback"}
+		if genErr != nil {
+			out.Events = append(out.Events, WorkflowExecutionEvent{Type: "devlog.generate.fallback", Message: genErr.Error()})
+		}
+		return out, nil
+	case "attach-artifact":
+		markdown, _ := state["devlog.markdown"].(string)
+		if markdown == "" {
+			markdown = d.env.buildDevlogMarkdown(run)
+		}
+		state["summary"] = "Generated Devlog markdown artifact"
+		return PipelineStepExecution{
+			Summary: "Attached devlog.md artifact",
+			Events:  []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}},
+			Artifacts: []CreateArtifactInput{{
+				Name: "devlog.md",
+				Kind: "markdown",
+				URI:  "data:text/markdown;charset=utf-8," + url.QueryEscape(markdown),
+			}},
+		}, nil
+	default:
+		return PipelineStepExecution{}, fmt.Errorf("unsupported devlog pipeline step %q", step.ID)
+	}
 }
 
 func createAndStartStep(store Store, input CreateRunStepInput) (RunStep, error) {

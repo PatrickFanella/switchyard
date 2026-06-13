@@ -194,8 +194,8 @@ steps:
 
 Build:
 
-- Pipeline registry.
-- Linear pipeline runner.
+- Pipeline registry. Current: static Go registry exposed through `GET /api/pipelines`.
+- Linear pipeline runner. Current: registry-backed ordered runner is active for Devlog and Changemaker; Open Pilot still uses its workflow-specific executor until migrated.
 - Workflow-level defaults for model, timeout, retry policy, and artifact retention.
 - Step input/output interpolation.
 - UI surface for pipeline definition and current step.
@@ -208,7 +208,7 @@ Migration order:
 
 Exit criteria:
 
-- At least Devlog and Changemaker run as pipelines.
+- At least Devlog and Changemaker run as pipelines. Current: complete.
 - Open Pilot has a visible prototype pipeline with branch and PR planning artifacts, even if mutation remains policy-gated.
 
 ## Phase 5 — Open Pilot v1
@@ -300,7 +300,7 @@ Exit criteria:
 
 - `RunStep` persisted. Initial generic workflow execution step is complete.
 - Step timeline in HUD is complete.
-- Devlog now runs as a three-step pipeline: collect history, generate markdown, attach artifact.
+- Devlog now runs through the registry-backed three-step pipeline: collect history, generate markdown, attach artifact.
 
 ### M3: Shared Model Executor
 
@@ -330,10 +330,11 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Expand Open Pilot worktree support with cleanup/push behavior and safer retry-from-step semantics.
-2. Add retry-from-step resume semantics for Devlog/Open Pilot.
-3. Add per-executor concurrency limits beyond the current worker pool.
-4. Add API docs/OpenAPI after the runtime API settles.
+1. Migrate Open Pilot to the linear pipeline runner.
+2. Expand Open Pilot worktree support with cleanup/push behavior and safer retry-from-step semantics.
+3. Add retry-from-step resume semantics for Devlog/Open Pilot.
+4. Add per-executor concurrency limits beyond the current worker pool.
+5. Add API docs/OpenAPI after the runtime API settles.
 
 ## Non-goals for the next phase
 

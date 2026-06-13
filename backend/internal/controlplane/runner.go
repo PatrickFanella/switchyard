@@ -1,6 +1,24 @@
 package controlplane
 
-import "context"
+import (
+	"context"
+	"sort"
+)
+
+type PipelineStepExecution struct {
+	Summary        string
+	Events         []WorkflowExecutionEvent
+	Artifacts      []CreateArtifactInput
+	CorrelationIDs map[string]string
+}
+
+type PipelineStepExecutor interface {
+	ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error)
+}
+
+type PipelineStepModelResolver interface {
+	ResolvePipelineStepModel(workflowID string, step PipelineStep, inputs map[string]string) (string, error)
+}
 
 type Runner struct {
 	store     Store
@@ -65,6 +83,14 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	if executor == nil {
 		executor = WorkflowExecutorFunc(stubWorkflowExecution(run.WorkflowID, "Workflow execution adapter is not wired yet"))
 	}
+	if r.pipelines != nil {
+		if pipeline, ok := r.pipelines.PipelineForWorkflow(run.WorkflowID); ok {
+			if stepExecutor, ok := executor.(PipelineStepExecutor); ok {
+				execution, err := r.executePipeline(ctx, run, pipeline, stepExecutor, executor)
+				return r.finishExecution(run, workerID, execution, err)
+			}
+		}
+	}
 	if stepwise, ok := executor.(StepwiseWorkflowExecutor); ok {
 		execution, err := stepwise.ExecuteSteps(ctx, run, r.store)
 		return r.finishExecution(run, workerID, execution, err)
@@ -81,6 +107,70 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	}
 	execution, err := executor.Execute(ctx, run)
 	return r.finishSingleStepExecution(run, workerID, step, execution, err)
+}
+
+func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline, stepExecutor PipelineStepExecutor, executor WorkflowExecutor) (WorkflowExecution, error) {
+	steps := append([]PipelineStep(nil), pipeline.Steps...)
+	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
+	state := map[string]any{}
+	var execution WorkflowExecution
+	for _, pipelineStep := range steps {
+		select {
+		case <-ctx.Done():
+			return execution, ctx.Err()
+		default:
+		}
+		model := pipelineStep.Model
+		if resolver, ok := executor.(PipelineStepModelResolver); ok {
+			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, pipelineStep, run.Inputs)
+			if err != nil {
+				model = ""
+				step, createErr := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+				if createErr != nil {
+					return execution, createErr
+				}
+				step, startErr := r.store.StartRunStep(step.ID)
+				if startErr != nil {
+					return execution, startErr
+				}
+				_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
+				return execution, err
+			}
+			model = resolved
+		}
+		step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+		if err != nil {
+			return execution, err
+		}
+		step, err = r.store.StartRunStep(step.ID)
+		if err != nil {
+			return execution, err
+		}
+		resolvedStep := pipelineStep
+		resolvedStep.Model = model
+		stepResult, err := stepExecutor.ExecutePipelineStep(ctx, run, resolvedStep, state)
+		for _, event := range stepResult.Events {
+			_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
+		}
+		for _, artifact := range stepResult.Artifacts {
+			artifact.RunID = run.ID
+			if _, artifactErr := r.store.AddArtifact(artifact); artifactErr != nil {
+				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, artifactErr.Error(), stepResult.CorrelationIDs)
+				return execution, artifactErr
+			}
+		}
+		if err != nil {
+			_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
+			return execution, err
+		}
+		if _, err := r.store.FinishRunStep(step.ID, StepSucceeded, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
+			return execution, err
+		}
+	}
+	if summary, ok := state["summary"].(string); ok && summary != "" {
+		execution.Summary = summary
+	}
+	return execution, nil
 }
 
 func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunStep, execution WorkflowExecution, err error) (Run, error) {
