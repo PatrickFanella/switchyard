@@ -31,6 +31,7 @@ type Store interface {
 	FinishClaimedRun(string, string, RunStatus, string) (Run, error)
 	CreateRunStep(CreateRunStepInput) (RunStep, error)
 	StartRunStep(string) (RunStep, error)
+	UpdateRunStep(string, UpdateRunStepInput) (RunStep, error)
 	FinishRunStep(string, RunStepStatus, string, string, map[string]string) (RunStep, error)
 	RetryRunStep(string) (RunStep, error)
 	CancelRunStep(string) (RunStep, error)
@@ -365,6 +366,20 @@ func (s *MemoryStore) StartRunStep(id string) (RunStep, error) {
 	step.OutputSummary = ""
 	s.steps[id] = step
 	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.started", Message: step.Name, CreatedAt: now})
+	return step, nil
+}
+
+func (s *MemoryStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunStep, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	step, ok := s.steps[id]
+	if !ok {
+		return RunStep{}, ErrNotFound
+	}
+	if input.Inputs != nil {
+		step.Inputs = cloneMap(input.Inputs)
+	}
+	s.steps[id] = step
 	return step, nil
 }
 

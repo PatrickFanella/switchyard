@@ -350,6 +350,175 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	return WorkflowExecution{Summary: "Ran Open Pilot issue " + issue + " through OCQ", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.completed", Message: repo + "#" + issue}}}, nil
 }
 
+func (o openPilotExecutor) ResolvePipelineStepModel(workflowID string, step PipelineStep, inputs map[string]string) (string, error) {
+	if step.Model == "" {
+		return "", nil
+	}
+	if step.Model == "${model}" {
+		return o.env.resolveWorkflowModel(workflowID, inputs)
+	}
+	return step.Model, nil
+}
+
+func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep, state map[string]any) bool {
+	switch step.ID {
+	case "verify-command":
+		return strings.TrimSpace(run.Inputs["test_command"]) != ""
+	case "push-branch", "pr-plan":
+		completed, _ := state["open-pilot.agent-completed"].(bool)
+		return completed
+	default:
+		return true
+	}
+}
+
+func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
+	repo := run.Inputs["repo"]
+	issue := run.Inputs["issue"]
+	switch step.ID {
+	case "validate-issue":
+		if repo == "" || issue == "" {
+			return PipelineStepExecution{}, errors.New("open-pilot requires run inputs repo and issue")
+		}
+		issueData, issueSummary, fetchedIssue, fetchErr := o.env.fetchOpenPilotIssue(ctx, repo, issue)
+		out := PipelineStepExecution{}
+		if fetchErr != nil {
+			out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.issue.fetch.skipped", Message: fetchErr.Error()})
+		}
+		if fetchedIssue != nil {
+			if err := o.env.validateOpenPilotIssue(*fetchedIssue); err != nil {
+				return out, err
+			}
+		}
+		if issueData != nil {
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))})
+		}
+		state["open-pilot.issue-summary"] = issueSummary
+		state["open-pilot.fetched-issue"] = fetchedIssue
+		out.Summary = "Validated Open Pilot run inputs"
+		if issueSummary != "" {
+			out.Summary = issueSummary
+		}
+		return out, nil
+	case "branch-plan":
+		fetchedIssue, _ := state["open-pilot.fetched-issue"].(*GiteaIssue)
+		branchName := o.env.openPilotBranchName(repo, issue, fetchedIssue)
+		baseBranch := firstNonEmpty(run.Inputs["base_branch"], o.env.openPilotBaseBranch)
+		branchPlan, prepareWorktreeErr := o.env.worktreeManager.Prepare(ctx, run, repo, baseBranch, branchName)
+		branchBytes, _ := json.MarshalIndent(branchPlan, "", "  ")
+		state["open-pilot.branch-name"] = branchName
+		state["open-pilot.branch-plan"] = branchPlan
+		out := PipelineStepExecution{Inputs: branchPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-branch-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(branchBytes))}}}
+		if prepareWorktreeErr != nil {
+			return out, prepareWorktreeErr
+		}
+		out.Summary = "Planned branch " + branchName
+		if branchPlan.Executed {
+			out.Summary = "Created worktree " + branchPlan.WorktreePath
+		} else if branchPlan.DryRun {
+			out.Summary = "Worktree dry-run; planned branch " + branchName
+		}
+		out.CorrelationIDs = map[string]string{"branch": branchName}
+		if branchPlan.Executed && branchPlan.WorktreePath != "" {
+			out.CorrelationIDs["worktree_path"] = branchPlan.WorktreePath
+		} else if branchPlan.PlannedWorktreePath != "" {
+			out.CorrelationIDs["planned_worktree_path"] = branchPlan.PlannedWorktreePath
+		}
+		return out, nil
+	case "prepare-prompt":
+		issueSummary, _ := state["open-pilot.issue-summary"].(string)
+		fetchedIssue, _ := state["open-pilot.fetched-issue"].(*GiteaIssue)
+		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+		prompt := buildOpenPilotPrompt(repo, issue, issueSummary, fetchedIssue, run.Inputs, branchPlan)
+		state["open-pilot.prompt"] = prompt
+		return PipelineStepExecution{Summary: "Prepared Open Pilot implementation prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}}}, nil
+	case "agent-work":
+		prompt, _ := state["open-pilot.prompt"].(string)
+		model := firstNonEmpty(step.Model, o.env.openPilotModel)
+		response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: model, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
+		if err != nil {
+			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
+			return PipelineStepExecution{Summary: "OCQ not configured; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
+		}
+		state["open-pilot.agent-completed"] = true
+		state["open-pilot.response"] = response.Content
+		return PipelineStepExecution{Summary: "OCQ completed Open Pilot prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}}, CorrelationIDs: response.CorrelationIDs}, nil
+	case "verify-command":
+		command := strings.TrimSpace(run.Inputs["test_command"])
+		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+		workdir := ""
+		if branchPlan.Executed {
+			workdir = branchPlan.WorktreePath
+		}
+		result, err := o.env.commandRunner.Run(ctx, command, workdir)
+		correlation := map[string]string{"policy_reason": result.Decision.Reason}
+		if workdir != "" {
+			correlation["worktree_path"] = branchPlan.WorktreePath
+		}
+		if result.Decision.DryRun {
+			correlation["policy_mode"] = string(CommandPolicyDryRun)
+		}
+		if err != nil {
+			return PipelineStepExecution{Summary: result.Output, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
+		}
+		summary := "Command allowed"
+		if result.Decision.DryRun {
+			summary = "Command allowed by policy in dry-run mode"
+		} else if result.Executed {
+			summary = "Command executed by policy runner"
+		}
+		return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, nil
+	case "push-branch":
+		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+		pushPlan := o.env.openPilotPushPlan(branchPlan)
+		state["open-pilot.push-plan"] = pushPlan
+		pushPlanBytes, _ := json.MarshalIndent(pushPlan, "", "  ")
+		pushCorrelation := map[string]string{"mode": pushPlan.Mode}
+		if pushPlan.Executed {
+			pushCorrelation["branch"] = pushPlan.Branch
+			pushCorrelation["remote"] = pushPlan.Remote
+		}
+		out := PipelineStepExecution{Inputs: pushPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}}, CorrelationIDs: pushCorrelation}
+		if err := o.env.executeOpenPilotPush(ctx, pushPlan); err != nil {
+			return out, err
+		}
+		out.Summary = "Git push disabled; plan artifact attached"
+		if pushPlan.DryRun {
+			out.Summary = "Git push dry-run; plan artifact attached"
+		} else if pushPlan.Executed {
+			out.Summary = "Pushed branch " + pushPlan.Branch
+		}
+		return out, nil
+	case "pr-plan":
+		issueSummary, _ := state["open-pilot.issue-summary"].(string)
+		branchName, _ := state["open-pilot.branch-name"].(string)
+		response, _ := state["open-pilot.response"].(string)
+		prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response, run.Inputs)
+		prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
+		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}}}
+		switch o.env.openPilotWriteMode {
+		case "allow":
+			created, err := o.env.giteaWriter.CreatePullRequest(ctx, prInput)
+			if err != nil {
+				return out, err
+			}
+			createdBytes, _ := json.MarshalIndent(created, "", "  ")
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-pr.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(createdBytes))})
+			out.Summary = "Created pull request"
+			out.CorrelationIDs = map[string]string{"pull_request": created.HTMLURL}
+		case "dry-run":
+			out.Summary = "PR creation dry-run; plan artifact attached"
+		default:
+			out.Summary = "PR creation disabled; plan artifact attached"
+		}
+		state["summary"] = "Ran Open Pilot issue " + issue + " through OCQ"
+		out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.agent.completed", Message: repo + "#" + issue})
+		return out, nil
+	default:
+		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)
+	}
+}
+
 func (e *EnvWorkflowExecutors) openPilotBranchName(repo string, issue string, fetched *GiteaIssue) string {
 	base := "issue-" + issue
 	if fetched != nil && fetched.Title != "" {

@@ -245,6 +245,9 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	if detail.Steps[4].CorrelationIDs["policy_mode"] != "dry-run" {
 		t.Fatalf("verify step = %+v", detail.Steps[4])
 	}
+	if detail.Steps[1].Inputs["branch"] == "" || detail.Steps[4].Inputs["command"] != "make verify" || detail.Steps[5].Inputs["mode"] == "" || detail.Steps[6].Inputs["head"] == "" {
+		t.Fatalf("dynamic inputs not persisted: %+v", detail.Steps)
+	}
 }
 
 func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {

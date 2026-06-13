@@ -383,6 +383,19 @@ func (s *PostgresStore) StartRunStep(id string) (RunStep, error) {
 	return step, nil
 }
 
+func (s *PostgresStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunStep, error) {
+	inputs, err := json.Marshal(input.Inputs)
+	if err != nil {
+		return RunStep{}, err
+	}
+	row := s.db.QueryRowContext(context.Background(), `update run_steps set inputs=$2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(inputs))
+	step, err := scanRunStepRow(row)
+	if err != nil {
+		return RunStep{}, mapScanErr(err)
+	}
+	return step, nil
+}
+
 func (s *PostgresStore) FinishRunStep(id string, status RunStepStatus, outputSummary string, errText string, correlationIDs map[string]string) (RunStep, error) {
 	if !isTerminalStepStatus(status) {
 		return RunStep{}, ErrInvalid

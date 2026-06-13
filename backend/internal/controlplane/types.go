@@ -112,6 +112,10 @@ type CreateRunStepInput struct {
 	CorrelationIDs map[string]string `json:"correlation_ids,omitempty"`
 }
 
+type UpdateRunStepInput struct {
+	Inputs map[string]string `json:"inputs,omitempty"`
+}
+
 type RunEvent struct {
 	ID        string    `json:"id"`
 	RunID     string    `json:"run_id"`

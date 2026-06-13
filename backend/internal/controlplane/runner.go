@@ -9,7 +9,9 @@ type PipelineStepExecution struct {
 	Summary        string
 	Events         []WorkflowExecutionEvent
 	Artifacts      []CreateArtifactInput
+	Inputs         map[string]string
 	CorrelationIDs map[string]string
+	Halt           bool
 }
 
 type PipelineStepExecutor interface {
@@ -18,6 +20,10 @@ type PipelineStepExecutor interface {
 
 type PipelineStepModelResolver interface {
 	ResolvePipelineStepModel(workflowID string, step PipelineStep, inputs map[string]string) (string, error)
+}
+
+type PipelineStepDecider interface {
+	ShouldExecutePipelineStep(run Run, step PipelineStep, state map[string]any) bool
 }
 
 type Runner struct {
@@ -120,6 +126,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			return execution, ctx.Err()
 		default:
 		}
+		if decider, ok := executor.(PipelineStepDecider); ok && !decider.ShouldExecutePipelineStep(run, pipelineStep, state) {
+			continue
+		}
 		model := pipelineStep.Model
 		if resolver, ok := executor.(PipelineStepModelResolver); ok {
 			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, pipelineStep, run.Inputs)
@@ -149,6 +158,12 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		resolvedStep := pipelineStep
 		resolvedStep.Model = model
 		stepResult, err := stepExecutor.ExecutePipelineStep(ctx, run, resolvedStep, state)
+		if stepResult.Inputs != nil {
+			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
+				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, inputErr.Error(), stepResult.CorrelationIDs)
+				return execution, inputErr
+			}
+		}
 		for _, event := range stepResult.Events {
 			_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
 		}
@@ -165,6 +180,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		}
 		if _, err := r.store.FinishRunStep(step.ID, StepSucceeded, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
 			return execution, err
+		}
+		if stepResult.Halt {
+			break
 		}
 	}
 	if summary, ok := state["summary"].(string); ok && summary != "" {
