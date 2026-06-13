@@ -74,3 +74,42 @@ func TestRunnerExecutesRegisteredLinearPipeline(t *testing.T) {
 		}
 	}
 }
+
+func TestRunnerSkipsEarlierStepsForResumeRun(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := store.UpsertWorkflow(Workflow{ID: "test-workflow", Kind: WorkflowKind("test-workflow"), Name: "Test Workflow"}); err != nil {
+		t.Fatalf("UpsertWorkflow() error = %v", err)
+	}
+	executor := &recordingPipelineExecutor{}
+	runner := NewRunner(store, MapExecutorRegistry{"test-workflow": executor})
+	runner.pipelines = StaticPipelineRegistry{
+		"test-workflow": {
+			ID:         "test-pipeline",
+			WorkflowID: "test-workflow",
+			Name:       "Test Pipeline",
+			Steps: []PipelineStep{
+				{ID: "first", Position: 1, Name: "test.first", Executor: "internal"},
+				{ID: "second", Position: 2, Name: "test.second", Executor: "internal"},
+				{ID: "third", Position: 3, Name: "test.third", Executor: "internal"},
+			},
+		},
+	}
+
+	run, err := runner.RunOnce(context.Background(), CreateRunInput{WorkflowID: "test-workflow", Inputs: map[string]string{"retry_from_step_position": "2", "retry_from_step": "test.second"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if run.Status != RunSucceeded {
+		t.Fatalf("run = %+v", run)
+	}
+	if !reflect.DeepEqual(executor.steps, []string{"second", "third"}) {
+		t.Fatalf("executed steps = %+v", executor.steps)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Steps) != 2 || detail.Steps[0].Name != "test.second" || detail.Steps[1].Name != "test.third" {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+}

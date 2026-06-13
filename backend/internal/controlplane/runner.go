@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"sort"
+	"strconv"
 )
 
 type PipelineStepExecution struct {
@@ -121,6 +122,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 	state := map[string]any{}
 	var execution WorkflowExecution
 	for _, pipelineStep := range steps {
+		if shouldSkipPipelineStepForResume(run, pipelineStep) {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return execution, ctx.Err()
@@ -189,6 +193,14 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		execution.Summary = summary
 	}
 	return execution, nil
+}
+
+func shouldSkipPipelineStepForResume(run Run, step PipelineStep) bool {
+	position, err := strconv.Atoi(run.Inputs["retry_from_step_position"])
+	if err == nil && position > 0 {
+		return step.Position < position
+	}
+	return false
 }
 
 func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunStep, execution WorkflowExecution, err error) (Run, error) {

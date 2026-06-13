@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -202,13 +203,29 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 	}
 	switch action {
 	case "retry":
-		step, err := a.store.RetryRunStep(stepID)
+		step, err := a.store.RunStep(stepID)
 		if err != nil {
 			writeControlError(w, err)
 			return
 		}
-		detail, _ := a.store.RunDetail(runID)
-		writeJSON(w, http.StatusOK, map[string]any{"run": detail.Run, "step": step})
+		detail, err := a.store.RunDetail(runID)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		inputs := retryRunInputsFromStep(detail, step)
+		run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: inputs})
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		_, _ = a.store.AddEvent(run.ID, "run.step.retry", "Retried "+step.Name+" from "+runID)
+		status := http.StatusCreated
+		if a.asyncDispatch {
+			w.Header().Set("Location", "/api/runs/"+run.ID)
+			status = http.StatusAccepted
+		}
+		writeJSON(w, status, map[string]any{"run": run, "step": step})
 	case "cancel":
 		step, err := a.store.CancelRunStep(stepID)
 		if err != nil {
@@ -219,6 +236,30 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 	default:
 		writeError(w, http.StatusNotFound, "step action not found")
 	}
+}
+
+func retryRunInputsFromStep(detail RunDetail, step RunStep) map[string]string {
+	inputs := cloneMap(detail.Run.Inputs)
+	if inputs == nil {
+		inputs = map[string]string{}
+	}
+	inputs["retry_from_run"] = detail.Run.ID
+	inputs["retry_from_step_id"] = step.ID
+	inputs["retry_from_step"] = step.Name
+	inputs["retry_from_step_position"] = strconv.Itoa(step.Position)
+	for _, existing := range detail.Steps {
+		prefix := "resume." + existing.Name + "."
+		for key, value := range existing.Inputs {
+			inputs[prefix+key] = value
+		}
+		if existing.OutputSummary != "" {
+			inputs[prefix+"summary"] = existing.OutputSummary
+		}
+		for key, value := range existing.CorrelationIDs {
+			inputs[prefix+"correlation."+key] = value
+		}
+	}
+	return inputs
 }
 
 func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {

@@ -115,7 +115,7 @@ Exit criteria:
 
 - Devlog runs through `RunStep` records.
 - Step events and artifacts are visible in the HUD.
-- Failed step retry works without retrying the whole run.
+- Failed step retry creates a resume run that starts registry-backed pipelines at the selected step.
 
 ## Phase 2 — model executor through llama-line
 
@@ -330,10 +330,9 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Expand Open Pilot worktree support with cleanup/status artifacts and safer retry-from-step semantics.
-2. Add retry-from-step resume semantics for Devlog/Open Pilot.
-3. Add per-executor concurrency limits beyond the current worker pool.
-4. Add API docs/OpenAPI after the runtime API settles.
+1. Expand Open Pilot worktree support with cleanup/status artifacts and stronger retry rehydration.
+2. Add per-executor concurrency limits beyond the current worker pool.
+3. Add API docs/OpenAPI after the runtime API settles.
 
 ## Non-goals for the next phase
 

@@ -278,8 +278,18 @@ func TestAPIRunStepsListRetryAndCancel(t *testing.T) {
 		t.Fatalf("POST retry error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("retry status = %d", resp.StatusCode)
+	}
+	var retryBody struct {
+		Run  controlplane.Run     `json:"run"`
+		Step controlplane.RunStep `json:"step"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&retryBody); err != nil {
+		t.Fatalf("decode retry step: %v", err)
+	}
+	if retryBody.Run.ID == run.ID || retryBody.Run.Inputs["retry_from_step"] != failed.Name || retryBody.Run.Inputs["retry_from_step_position"] != "1" {
+		t.Fatalf("retry body = %+v", retryBody)
 	}
 
 	req, err = http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/steps/"+queued.ID+"/cancel", nil)

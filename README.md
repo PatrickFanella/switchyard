@@ -106,6 +106,8 @@ The backend exposes a workflow/run API:
 - `POST /api/triggers/{id}/run`
 - `PATCH /api/triggers/{id}`
 
+Run retry creates a new run with the same workflow inputs. Step retry creates a new run with `retry_from_step*` metadata and starts registry-backed pipelines at the requested step, preserving prior step inputs under `resume.<step-name>.*` for operator/audit context.
+
 The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module shells for queues, sessions, logs/search, prompts, config, agents, and skills so the imported `llama-line`, OCQ, Changemaker, and planned Blacktower agent surfaces have Switchyard homes. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.
