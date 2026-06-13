@@ -32,6 +32,14 @@ func TestEnvGiteaClientFetchesIssue(t *testing.T) {
 	}
 }
 
+func TestEnvGiteaClientRejectsInvalidRepo(t *testing.T) {
+	t.Setenv("GITEA_BASE_URL", "http://example.invalid")
+	_, err := controlplane.NewEnvGiteaClient().FetchIssue(t.Context(), "OWNER/REPO/extra", "123")
+	if err == nil {
+		t.Fatal("FetchIssue() error = nil")
+	}
+}
+
 func TestEnvGiteaClientCreatesPullRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls" || r.Method != http.MethodPost {
@@ -59,5 +67,191 @@ func TestEnvGiteaClientCreatesPullRequest(t *testing.T) {
 	}
 	if pr.Number != 7 || pr.HTMLURL == "" {
 		t.Fatalf("pr = %+v", pr)
+	}
+}
+
+func TestEnvGiteaClientFindPullRequestByHead(t *testing.T) {
+	tests := []struct {
+		name       string
+		head       string
+		wantNumber int
+		wantRef    string
+		wantLabel  string
+	}{
+		{name: "branch", head: "feature-123", wantNumber: 8, wantRef: "feature-123", wantLabel: "OWNER:feature-123"},
+		{name: "prefixed", head: "OWNER:feature-123", wantNumber: 8, wantRef: "feature-123", wantLabel: "OWNER:feature-123"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls" || r.Method != http.MethodGet {
+					t.Fatalf("request = %s %s", r.Method, r.URL.String())
+				}
+				if got := r.Header.Get("Authorization"); got != "token gitea-token" {
+					t.Fatalf("Authorization = %q", got)
+				}
+				if got := r.URL.Query().Get("state"); got != "open" {
+					t.Fatalf("state = %q", got)
+				}
+				if got := r.URL.Query().Get("limit"); got != "50" {
+					t.Fatalf("limit = %q", got)
+				}
+				if got := r.URL.Query().Get("page"); got != "1" {
+					t.Fatalf("page = %q", got)
+				}
+				_, _ = w.Write([]byte(`[{"id":1,"number":7,"title":"Unrelated","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"unrelated","label":"OWNER:unrelated","sha":"abc123"}},{"id":2,"number":8,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/8","head":{"ref":"feature-123","label":"OWNER:feature-123","sha":"def456"}}]`))
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("GITEA_BASE_URL", server.URL)
+			t.Setenv("GITEA_TOKEN", "gitea-token")
+
+			pr, found, err := controlplane.NewEnvGiteaClient().FindPullRequestByHead(t.Context(), "OWNER/REPO", tt.head)
+			if err != nil {
+				t.Fatalf("FindPullRequestByHead() error = %v", err)
+			}
+			if !found {
+				t.Fatalf("found = false")
+			}
+			if pr.Number != tt.wantNumber || pr.Head.Ref != tt.wantRef || pr.Head.Label != tt.wantLabel {
+				t.Fatalf("pr = %+v", pr)
+			}
+		})
+	}
+}
+
+func TestEnvGiteaClientFindPullRequestByHeadNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls" || r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if got := r.URL.Query().Get("state"); got != "open" {
+			t.Fatalf("state = %q", got)
+		}
+		if got := r.URL.Query().Get("limit"); got != "50" {
+			t.Fatalf("limit = %q", got)
+		}
+		_, _ = w.Write([]byte(`[{"id":1,"number":7,"title":"Wrong branch","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"other-branch","label":"OWNER:other-branch","sha":"abc123","repo":{"name":"missing-branch","full_name":"OWNER/missing-branch"}}},{"id":2,"number":8,"title":"Fork branch","state":"open","html_url":"https://git/OWNER/REPO/pulls/8","head":{"ref":"missing-branch","label":"FORK:missing-branch","sha":"def456"}}]`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "gitea-token")
+
+	_, found, err := controlplane.NewEnvGiteaClient().FindPullRequestByHead(t.Context(), "OWNER/REPO", "missing-branch")
+	if err != nil {
+		t.Fatalf("FindPullRequestByHead() error = %v", err)
+	}
+	if found {
+		t.Fatalf("found = true")
+	}
+}
+
+func TestEnvGiteaClientPullRequestChecks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/commits/abc123/status" || r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"state":"success","sha":"abc123","total_count":2,"statuses":[{"context":"verify","status":"success","description":"passed"}],"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "gitea-token")
+
+	summary, err := controlplane.NewEnvGiteaClient().PullRequestChecks(t.Context(), "OWNER/REPO", controlplane.GiteaPullRequest{Head: controlplane.GiteaPullRequestRef{SHA: "abc123"}})
+	if err != nil {
+		t.Fatalf("PullRequestChecks() error = %v", err)
+	}
+	if summary.State != "success" || summary.SHA != "abc123" || len(summary.Statuses) != 1 || summary.Statuses[0].Status != "success" || len(summary.Checks) != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
+func TestEnvGiteaClientMergePullRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["Do"] != "merge" {
+			t.Fatalf("body = %+v", body)
+		}
+		_, _ = w.Write([]byte(`{"merged":true,"sha":"deadbeef","message":"Merged PR #7"}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "gitea-token")
+
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	if err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
+	if !result.Merged || result.SHA != "deadbeef" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestEnvGiteaClientMergePullRequestEmptyBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["Do"] != "merge" {
+			t.Fatalf("body = %+v", body)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "gitea-token")
+
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	if err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
+	if !result.Merged {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestEnvGiteaClientClosesIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/issues/123" || r.Method != http.MethodPatch {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["state"] != "closed" {
+			t.Fatalf("body = %+v", body)
+		}
+		_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","state":"closed","html_url":"https://git/OWNER/REPO/issues/123"}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "gitea-token")
+
+	issue, err := controlplane.NewEnvGiteaClient().CloseIssue(t.Context(), "OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("CloseIssue() error = %v", err)
+	}
+	if issue.State != "closed" || issue.Number != 123 {
+		t.Fatalf("issue = %+v", issue)
 	}
 }
