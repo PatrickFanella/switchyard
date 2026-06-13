@@ -123,6 +123,56 @@ func TestAPIUpdatesTriggerEnabled(t *testing.T) {
 	}
 }
 
+func TestAPIPipelinesListsStaticPipelines(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/pipelines")
+	if err != nil {
+		t.Fatalf("GET pipelines error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Pipelines []controlplane.Pipeline `json:"pipelines"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode pipelines: %v", err)
+	}
+	if len(body.Pipelines) != 3 || body.Pipelines[0].ID == "" || len(body.Pipelines[0].Steps) == 0 {
+		t.Fatalf("pipelines = %+v", body.Pipelines)
+	}
+}
+
+func TestAPIAgentProfilesListsNativeProfiles(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/agent-profiles")
+	if err != nil {
+		t.Fatalf("GET agent profiles error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Profiles []controlplane.AgentProfile `json:"profiles"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode profiles: %v", err)
+	}
+	if len(body.Profiles) != 3 || body.Profiles[0].ID == "" || len(body.Profiles[0].AllowedExecutors) == 0 {
+		t.Fatalf("profiles = %+v", body.Profiles)
+	}
+}
+
 func TestAPIRetryAndCancelRun(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {

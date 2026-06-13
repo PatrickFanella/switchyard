@@ -20,6 +20,10 @@ type CancelDispatcher interface {
 	Cancel(ctx context.Context, run Run) CancelResult
 }
 
+type RunDetailCancelDispatcher interface {
+	CancelRunDetail(ctx context.Context, detail RunDetail) CancelResult
+}
+
 type EnvCancelDispatcher struct {
 	changemakerBaseURL string
 	changemakerToken   string
@@ -45,6 +49,11 @@ func NewEnvCancelDispatcher() *EnvCancelDispatcher {
 }
 
 func (d *EnvCancelDispatcher) Cancel(ctx context.Context, run Run) CancelResult {
+	return d.CancelRunDetail(ctx, RunDetail{Run: run})
+}
+
+func (d *EnvCancelDispatcher) CancelRunDetail(ctx context.Context, detail RunDetail) CancelResult {
+	run := detail.Run
 	result := CancelResult{}
 	switch run.WorkflowID {
 	case string(WorkflowChangemaker):
@@ -52,16 +61,42 @@ func (d *EnvCancelDispatcher) Cancel(ctx context.Context, run Run) CancelResult 
 	case string(WorkflowOpenPilot):
 		result.Events = append(result.Events, d.cancelOpenPilot(ctx, run)...)
 	}
-	if requestID := run.Inputs["ocq_request_id"]; requestID != "" {
-		result.Events = append(result.Events, d.abortOCQRequest(ctx, requestID, run.Inputs["ocq_session_id"])...)
+	correlation := cancelCorrelationIDs(detail)
+	if requestID := correlation["ocq_request_id"]; requestID != "" {
+		result.Events = append(result.Events, d.abortOCQRequest(ctx, requestID, correlation["ocq_session_id"])...)
 	}
-	if requestID := run.Inputs["llama_line_request_id"]; requestID != "" {
+	if requestID := correlation["llama_line_request_id"]; requestID != "" {
 		result.Events = append(result.Events, d.dropLlamaLineRequest(ctx, requestID)...)
 	}
 	if len(result.Events) == 0 {
 		result.Events = append(result.Events, WorkflowExecutionEvent{Type: "cancel.noop", Message: "No upstream cancellation adapter matched this run"})
 	}
 	return result
+}
+
+func cancelRunDetail(ctx context.Context, dispatcher CancelDispatcher, detail RunDetail) CancelResult {
+	if detailed, ok := dispatcher.(RunDetailCancelDispatcher); ok {
+		return detailed.CancelRunDetail(ctx, detail)
+	}
+	return dispatcher.Cancel(ctx, detail.Run)
+}
+
+func cancelCorrelationIDs(detail RunDetail) map[string]string {
+	out := cloneMap(detail.Run.Inputs)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for _, step := range detail.Steps {
+		if step.Status != StepRunning && step.Status != StepQueued {
+			continue
+		}
+		for key, value := range step.CorrelationIDs {
+			if value != "" {
+				out[key] = value
+			}
+		}
+	}
+	return out
 }
 
 func (d *EnvCancelDispatcher) cancelChangemaker(ctx context.Context) []WorkflowExecutionEvent {

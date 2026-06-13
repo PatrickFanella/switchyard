@@ -51,29 +51,32 @@ func (r MapExecutorRegistry) ExecutorFor(workflowID string) WorkflowExecutor {
 }
 
 type EnvWorkflowExecutors struct {
-	store                 Store
-	changemakerBaseURL    string
-	changemakerToken      string
-	openPilotCommand      string
-	ocqBaseURL            string
-	ocqGatewayKey         string
-	llamaLineBaseURL      string
-	llamaLineAPIKey       string
-	devlogModel           string
-	openPilotModel        string
-	openPilotLabels       []string
-	requireIssueSpec      bool
-	openPilotWriteMode    string
-	openPilotBaseBranch   string
-	openPilotBranchPrefix string
-	openPilotPRDraft      bool
-	modelExecutor         ModelExecutor
-	ocqExecutor           OCQExecutor
-	issueFetcher          IssueFetcher
-	giteaWriter           GiteaWriter
-	commandRunner         CommandRunner
-	worktreeManager       OpenPilotWorktreeManager
-	client                *http.Client
+	store                  Store
+	changemakerBaseURL     string
+	changemakerToken       string
+	openPilotCommand       string
+	ocqBaseURL             string
+	ocqGatewayKey          string
+	llamaLineBaseURL       string
+	llamaLineAPIKey        string
+	devlogModel            string
+	openPilotModel         string
+	devlogAllowedModels    map[string]bool
+	openPilotAllowedModels map[string]bool
+	openPilotLabels        []string
+	requireIssueSpec       bool
+	openPilotWriteMode     string
+	openPilotGitPushMode   string
+	openPilotBaseBranch    string
+	openPilotBranchPrefix  string
+	openPilotPRDraft       bool
+	modelExecutor          ModelExecutor
+	ocqExecutor            OCQExecutor
+	issueFetcher           IssueFetcher
+	giteaWriter            GiteaWriter
+	commandRunner          CommandRunner
+	worktreeManager        OpenPilotWorktreeManager
+	client                 *http.Client
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -82,29 +85,32 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		configuredStore = store[0]
 	}
 	return &EnvWorkflowExecutors{
-		store:                 configuredStore,
-		changemakerBaseURL:    strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
-		changemakerToken:      os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
-		openPilotCommand:      strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
-		ocqBaseURL:            strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
-		ocqGatewayKey:         os.Getenv("OCQ_GATEWAY_KEY"),
-		llamaLineBaseURL:      strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
-		llamaLineAPIKey:       os.Getenv("LLAMA_LINE_API_KEY"),
-		devlogModel:           firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
-		openPilotModel:        firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
-		openPilotLabels:       splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
-		requireIssueSpec:      strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
-		openPilotWriteMode:    firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "disabled"),
-		openPilotBaseBranch:   firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
-		openPilotBranchPrefix: firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
-		openPilotPRDraft:      !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
-		modelExecutor:         NewEnvModelExecutor(),
-		ocqExecutor:           NewEnvOCQExecutor(),
-		issueFetcher:          NewEnvGiteaClient(),
-		giteaWriter:           NewEnvGiteaClient(),
-		commandRunner:         NewEnvCommandRunner(),
-		worktreeManager:       NewEnvOpenPilotWorktreeManager(),
-		client:                &http.Client{Timeout: 10 * time.Second},
+		store:                  configuredStore,
+		changemakerBaseURL:     strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
+		changemakerToken:       os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
+		openPilotCommand:       strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
+		ocqBaseURL:             strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
+		ocqGatewayKey:          os.Getenv("OCQ_GATEWAY_KEY"),
+		llamaLineBaseURL:       strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		llamaLineAPIKey:        os.Getenv("LLAMA_LINE_API_KEY"),
+		devlogModel:            firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
+		openPilotModel:         firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
+		devlogAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"))),
+		openPilotAllowedModels: setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"))),
+		openPilotLabels:        splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
+		requireIssueSpec:       strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
+		openPilotWriteMode:     firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "disabled"),
+		openPilotGitPushMode:   firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "disabled"),
+		openPilotBaseBranch:    firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
+		openPilotBranchPrefix:  firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
+		openPilotPRDraft:       !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
+		modelExecutor:          NewEnvModelExecutor(),
+		ocqExecutor:            NewEnvOCQExecutor(),
+		issueFetcher:           NewEnvGiteaClient(),
+		giteaWriter:            NewEnvGiteaClient(),
+		commandRunner:          NewEnvCommandRunner(),
+		worktreeManager:        NewEnvOpenPilotWorktreeManager(),
+		client:                 &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -200,7 +206,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	prompt := buildOpenPilotPrompt(repo, issue, issueSummary, branchPlan)
+	prompt := buildOpenPilotPrompt(repo, issue, issueSummary, fetchedIssue, run.Inputs, branchPlan)
 	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}); err != nil {
 		_, _ = store.FinishRunStep(prepare.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
@@ -209,11 +215,16 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 
-	agent, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 4, Name: "open-pilot.agent-work", Executor: "opencode", Model: o.env.openPilotModel})
+	model, err := o.env.resolveWorkflowModel(string(WorkflowOpenPilot), run.Inputs)
+	if err != nil {
+		_, _ = store.FinishRunStep(prepare.ID, StepFailed, "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	agent, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 4, Name: "open-pilot.agent-work", Executor: "opencode", Model: model})
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: o.env.openPilotModel, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
+	response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: model, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
 	if err != nil {
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OCQ not configured; prompt prepared for operator handoff", "", nil)
 		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", err.Error())
@@ -257,8 +268,37 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 			return WorkflowExecution{}, err
 		}
 	}
+	pushPlan := o.env.openPilotPushPlan(branchPlan)
+	pushStep, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 6, Name: "open-pilot.push-branch", Executor: "git", Inputs: pushPlan.StepInputs()})
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	pushPlanBytes, _ := json.MarshalIndent(pushPlan, "", "  ")
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}); err != nil {
+		_, _ = store.FinishRunStep(pushStep.ID, StepFailed, "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	pushCorrelation := map[string]string{"mode": pushPlan.Mode}
+	if pushPlan.Executed {
+		pushCorrelation["branch"] = pushPlan.Branch
+		pushCorrelation["remote"] = pushPlan.Remote
+	}
+	if err := o.env.executeOpenPilotPush(ctx, pushPlan); err != nil {
+		_, _ = store.FinishRunStep(pushStep.ID, StepFailed, "", err.Error(), pushCorrelation)
+		return WorkflowExecution{}, err
+	}
+	pushSummary := "Git push disabled; plan artifact attached"
+	if pushPlan.DryRun {
+		pushSummary = "Git push dry-run; plan artifact attached"
+	} else if pushPlan.Executed {
+		pushSummary = "Pushed branch " + pushPlan.Branch
+	}
+	if _, err := store.FinishRunStep(pushStep.ID, StepSucceeded, pushSummary, "", pushCorrelation); err != nil {
+		return WorkflowExecution{}, err
+	}
+
 	prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response.Content, run.Inputs)
-	prStep, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 6, Name: "open-pilot.pr-plan", Executor: "gitea", Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}})
+	prStep, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 7, Name: "open-pilot.pr-plan", Executor: "gitea", Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}})
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
@@ -311,6 +351,43 @@ func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue stri
 		body.WriteString("## Agent summary\n\n" + response + "\n")
 	}
 	return GiteaPullRequestInput{Repo: repo, Base: base, Head: branchName, Title: title, Body: body.String(), Draft: e.openPilotPRDraft}
+}
+
+func (e *EnvWorkflowExecutors) openPilotPushPlan(branchPlan OpenPilotWorktreePlan) OpenPilotPushPlan {
+	plan := OpenPilotPushPlan{Mode: e.openPilotGitPushMode, Remote: "origin", Branch: branchPlan.Branch}
+	if branchPlan.Executed {
+		plan.WorktreePath = branchPlan.WorktreePath
+	}
+	if e.openPilotGitPushMode == "dry-run" {
+		plan.DryRun = true
+	}
+	if e.openPilotGitPushMode == "allow" && branchPlan.Executed {
+		plan.Executed = true
+	}
+	return plan
+}
+
+func (e *EnvWorkflowExecutors) executeOpenPilotPush(ctx context.Context, plan OpenPilotPushPlan) error {
+	switch plan.Mode {
+	case "", "disabled", "dry-run":
+		return nil
+	case "allow":
+		if plan.WorktreePath == "" {
+			return errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires an executed worktree")
+		}
+		cmd := exec.CommandContext(ctx, "git", "-C", plan.WorktreePath, "push", plan.Remote, "HEAD:"+plan.Branch)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			message := strings.TrimSpace(string(output))
+			if message == "" {
+				message = err.Error()
+			}
+			return errors.New(message)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported OPEN_PILOT_GIT_PUSH_MODE %q", plan.Mode)
+	}
 }
 
 func slug(value string) string {
@@ -377,7 +454,7 @@ func (e *EnvWorkflowExecutors) validateOpenPilotIssue(issue GiteaIssue) error {
 	return nil
 }
 
-func buildOpenPilotPrompt(repo string, issue string, issueSummary string, branchPlan ...OpenPilotWorktreePlan) string {
+func buildOpenPilotPrompt(repo string, issue string, issueSummary string, fetchedIssue *GiteaIssue, inputs map[string]string, branchPlan ...OpenPilotWorktreePlan) string {
 	var builder strings.Builder
 	builder.WriteString("# Open Pilot Task\n\n")
 	builder.WriteString("Repository: " + repo + "\n")
@@ -385,13 +462,27 @@ func buildOpenPilotPrompt(repo string, issue string, issueSummary string, branch
 	if issueSummary != "" {
 		builder.WriteString("Issue summary: " + issueSummary + "\n")
 	}
+	if command := strings.TrimSpace(inputs["test_command"]); command != "" {
+		builder.WriteString("Switchyard verification command: " + command + "\n")
+	}
 	if len(branchPlan) > 0 {
 		builder.WriteString("Branch: " + branchPlan[0].Branch + "\n")
 		if branchPlan[0].Executed && branchPlan[0].WorktreePath != "" {
 			builder.WriteString("Worktree: " + branchPlan[0].WorktreePath + "\n")
 		}
 	}
-	builder.WriteString("\nInspect the issue, preserve repository conventions, make the smallest safe change, run the requested verification, and summarize results with file references.\n")
+	if fetchedIssue != nil {
+		if fetchedIssue.Title != "" {
+			builder.WriteString("\n## Issue title\n\n" + fetchedIssue.Title + "\n")
+		}
+		if len(fetchedIssue.Labels) > 0 {
+			builder.WriteString("\n## Labels\n\n" + strings.Join(fetchedIssue.Labels, ", ") + "\n")
+		}
+		if strings.TrimSpace(fetchedIssue.Body) != "" {
+			builder.WriteString("\n## Issue body\n\n" + strings.TrimSpace(fetchedIssue.Body) + "\n")
+		}
+	}
+	builder.WriteString("\n## Instructions\n\nInspect the issue, preserve repository conventions, and make the smallest safe change. Do not run shell/test commands or push changes yourself; Switchyard will run verification and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
 	return builder.String()
 }
 
@@ -427,12 +518,16 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 		return WorkflowExecution{}, err
 	}
 
-	generate, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "devlog.generate-markdown", Executor: "model", Model: d.env.devlogModel})
+	model, err := d.env.resolveWorkflowModel(string(WorkflowDevlog), run.Inputs)
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	generate, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "devlog.generate-markdown", Executor: "model", Model: model})
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
 	markdown := seed
-	generated, genErr := d.env.generateDevlogWithModel(ctx, seed)
+	generated, genErr := d.env.generateDevlogWithModel(ctx, seed, model)
 	if genErr == nil && strings.TrimSpace(generated.Content) != "" {
 		markdown = generated.Content
 		if _, err := store.FinishRunStep(generate.ID, StepSucceeded, "Generated Markdown with model", "", generated.CorrelationIDs); err != nil {
@@ -620,6 +715,31 @@ func (e *EnvWorkflowExecutors) generateDevlogWithLLM(ctx context.Context, seed s
 	return response.Content, err
 }
 
-func (e *EnvWorkflowExecutors) generateDevlogWithModel(ctx context.Context, seed string) (ModelResponse, error) {
-	return e.modelExecutor.Generate(ctx, ModelRequest{Model: e.devlogModel, Messages: []ModelMessage{{Role: "system", Content: "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."}, {Role: "user", Content: seed}}})
+func (e *EnvWorkflowExecutors) generateDevlogWithModel(ctx context.Context, seed string, modelOverride ...string) (ModelResponse, error) {
+	model := e.devlogModel
+	if len(modelOverride) > 0 && strings.TrimSpace(modelOverride[0]) != "" {
+		model = strings.TrimSpace(modelOverride[0])
+	}
+	return e.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "system", Content: "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."}, {Role: "user", Content: seed}}})
+}
+
+func (e *EnvWorkflowExecutors) resolveWorkflowModel(workflowID string, inputs map[string]string) (string, error) {
+	if model := strings.TrimSpace(inputs["model"]); model != "" {
+		allowed := e.devlogAllowedModels
+		if workflowID == string(WorkflowOpenPilot) {
+			allowed = e.openPilotAllowedModels
+		}
+		if !allowed[model] {
+			return "", fmt.Errorf("model %q is not allowed for workflow %s", model, workflowID)
+		}
+		return model, nil
+	}
+	switch workflowID {
+	case string(WorkflowOpenPilot):
+		return e.openPilotModel, nil
+	case string(WorkflowDevlog):
+		return e.devlogModel, nil
+	default:
+		return firstNonEmpty(e.devlogModel, e.openPilotModel), nil
+	}
 }

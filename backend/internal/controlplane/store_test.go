@@ -216,6 +216,57 @@ func TestStoreClaimsQueuedRuns(t *testing.T) {
 	}
 }
 
+func TestStoreExtendsRunLease(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	claimed, err := store.ClaimNextRun("worker-1", time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimNextRun() error = %v", err)
+	}
+	now = now.Add(30 * time.Second)
+	extended, err := store.ExtendRunLease(run.ID, "worker-1", 2*time.Minute)
+	if err != nil {
+		t.Fatalf("ExtendRunLease() error = %v", err)
+	}
+	if !extended.LeaseExpiresAt.After(*claimed.LeaseExpiresAt) || extended.ClaimedBy != "worker-1" {
+		t.Fatalf("extended = %+v claimed = %+v", extended, claimed)
+	}
+	if _, err := store.ExtendRunLease(run.ID, "worker-2", time.Minute); err == nil {
+		t.Fatal("ExtendRunLease() succeeded for wrong worker")
+	}
+}
+
+func TestStoreFinishClaimedRunRequiresOwner(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if _, err := store.ClaimNextRun("worker-1", time.Minute); err != nil {
+		t.Fatalf("ClaimNextRun() error = %v", err)
+	}
+	if _, err := store.FinishClaimedRun(run.ID, "worker-2", controlplane.RunSucceeded, "done"); err == nil {
+		t.Fatal("FinishClaimedRun() succeeded for wrong worker")
+	}
+	finished, err := store.FinishClaimedRun(run.ID, "worker-1", controlplane.RunSucceeded, "done")
+	if err != nil {
+		t.Fatalf("FinishClaimedRun() error = %v", err)
+	}
+	if finished.Status != controlplane.RunSucceeded || finished.ClaimedBy != "" || finished.LeaseExpiresAt != nil {
+		t.Fatalf("finished = %+v", finished)
+	}
+}
+
 func TestStoreRecoversExpiredLeases(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := controlplane.NewStore(func() time.Time { return now })

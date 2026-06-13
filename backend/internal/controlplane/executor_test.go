@@ -205,13 +205,13 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 5 {
+	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 6 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	if detail.Steps[3].Model != "opencode-open-pilot" || detail.Steps[3].CorrelationIDs["ocq_request_id"] != "req-1" || detail.Steps[3].CorrelationIDs["ocq_session_id"] != "ses-1" {
 		t.Fatalf("agent step = %+v", detail.Steps[3])
 	}
-	if len(detail.Artifacts) != 4 || detail.Artifacts[2].Name != "open-pilot-response.md" || detail.Artifacts[3].Name != "open-pilot-pr-plan.json" {
+	if len(detail.Artifacts) != 5 || detail.Artifacts[2].Name != "open-pilot-response.md" || detail.Artifacts[3].Name != "open-pilot-push-plan.json" || detail.Artifacts[4].Name != "open-pilot-pr-plan.json" {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
@@ -239,7 +239,7 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 || detail.Steps[4].Name != "open-pilot.verify-command" || detail.Steps[4].Status != controlplane.StepSucceeded || detail.Steps[5].Name != "open-pilot.pr-plan" {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 7 || detail.Steps[4].Name != "open-pilot.verify-command" || detail.Steps[4].Status != controlplane.StepSucceeded || detail.Steps[5].Name != "open-pilot.push-branch" || detail.Steps[6].Name != "open-pilot.pr-plan" {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	if detail.Steps[4].CorrelationIDs["policy_mode"] != "dry-run" {
@@ -275,7 +275,7 @@ func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 7 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	worktreePath := detail.Steps[1].CorrelationIDs["worktree_path"]
@@ -334,7 +334,7 @@ func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 5 || detail.Steps[4].OutputSummary != "Created pull request" || detail.Steps[4].CorrelationIDs["pull_request"] == "" {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 || detail.Steps[5].OutputSummary != "Created pull request" || detail.Steps[5].CorrelationIDs["pull_request"] == "" {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 }
@@ -474,6 +474,42 @@ func TestRunnerGeneratesDevlogWithModel(t *testing.T) {
 	}
 	if len(detail.Artifacts) != 1 || !strings.Contains(detail.Artifacts[0].URI, "Generated+by+model") {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
+func TestRunnerAllowsDevlogModelOverride(t *testing.T) {
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode model request: %v", err)
+		}
+		if body.Model != "override-model" {
+			t.Fatalf("model = %s", body.Model)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"# Override"}}]}`))
+	}))
+	t.Cleanup(modelServer.Close)
+	t.Setenv("LLAMA_LINE_BASE_URL", modelServer.URL)
+	t.Setenv("DEVLOG_MODEL", "default-model")
+	t.Setenv("DEVLOG_ALLOWED_MODELS", "default-model,override-model")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "devlog", Inputs: map[string]string{"model": "override-model"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Steps) != 3 || detail.Steps[1].Model != "override-model" {
+		t.Fatalf("steps = %+v", detail.Steps)
 	}
 }
 

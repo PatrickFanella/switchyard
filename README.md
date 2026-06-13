@@ -59,8 +59,8 @@ Set `SWITCHYARD_WORKER_ENABLED=true` to enable async worker dispatch for long-ru
 Workflow execution adapters are opt-in:
 
 - Changemaker: `CHANGEMAKER_BASE_URL` dispatches `POST /api/runs`.
-- Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, enforce required labels from `OPEN_PILOT_REQUIRED_LABELS`, attach issue/prompt/branch/PR artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the model. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_WORKTREE_MODE=disabled|dry-run|allow` controls isolated git worktree creation from `OPEN_PILOT_REPO_PATH` into `OPEN_PILOT_WORKTREE_ROOT`. `OPEN_PILOT_GITEA_WRITE_MODE=disabled|dry-run|allow` controls PR creation; disabled/dry-run only attach PR plans. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
-- Devlog: `manual-devlog` runs a three-step pipeline that collects recent Switchyard run history, generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the model.
+- Open Pilot: runs validate `repo`/`issue`, optionally fetch the issue from Gitea when `GITEA_BASE_URL` is configured, enforce required labels from `OPEN_PILOT_REQUIRED_LABELS`, attach issue/prompt/branch/push/PR artifacts, and call OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the default model; run input `model` can override it only when present in `OPEN_PILOT_ALLOWED_MODELS`. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_WORKTREE_MODE=disabled|dry-run|allow` controls isolated git worktree creation from `OPEN_PILOT_REPO_PATH` into `OPEN_PILOT_WORKTREE_ROOT`. `OPEN_PILOT_GIT_PUSH_MODE=disabled|dry-run|allow` controls pushing the worktree branch to `origin`. `OPEN_PILOT_GITEA_WRITE_MODE=disabled|dry-run|allow` controls PR creation; disabled/dry-run only attach PR plans. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
+- Devlog: `manual-devlog` runs a three-step pipeline that collects recent Switchyard run history, generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the default model; run input `model` can override it for a single run only when present in `DEVLOG_ALLOWED_MODELS`.
 
 Open Pilot command execution is deny-by-default. If a run includes `test_command`, Switchyard evaluates it through `OPEN_PILOT_COMMAND_POLICY_MODE` (`deny`, `dry-run`, or `allow`), exact allowed command lists, allowed git verbs, denied commands, timeout, and optional workdir. When worktree mode is `allow`, verification runs in the created per-run worktree. Use `dry-run` before enabling `allow`. PR creation is independently gated by `OPEN_PILOT_GITEA_WRITE_MODE`; keep it `disabled` until branch/test behavior is proven.
 
@@ -94,6 +94,8 @@ The backend exposes a workflow/run API:
 - `GET /api/runs/{id}`
 - `GET /api/runs/{id}/steps`
 - `GET /api/adapters`
+- `GET /api/pipelines`
+- `GET /api/agent-profiles`
 - `GET /api/scheduler`
 - `GET /api/workers`
 - `POST /api/runs`

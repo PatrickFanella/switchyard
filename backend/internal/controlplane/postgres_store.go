@@ -213,6 +213,32 @@ func (s *PostgresStore) ClaimNextRun(workerID string, lease time.Duration) (Run,
 	return r, nil
 }
 
+func (s *PostgresStore) ExtendRunLease(id string, workerID string, lease time.Duration) (Run, error) {
+	if id == "" || workerID == "" || lease <= 0 {
+		return Run{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	expires := now.Add(lease).UTC()
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return Run{}, err
+	}
+	row := tx.QueryRowContext(context.Background(), `update runs set claimed_at=$3, lease_expires_at=$4 where id=$1 and status=$5 and claimed_by=$2 returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary`, id, workerID, now, expires, RunRunning)
+	r, err := scanRunRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return Run{}, mapScanErr(err)
+	}
+	if _, err := tx.ExecContext(context.Background(), `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, newID("evt"), id, "run.lease.extended", "Lease extended by "+workerID, now); err != nil {
+		_ = tx.Rollback()
+		return Run{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	return r, nil
+}
+
 func (s *PostgresStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 	now := at.UTC()
 	tx, err := s.db.BeginTx(context.Background(), nil)
@@ -264,12 +290,30 @@ func (s *PostgresStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 }
 
 func (s *PostgresStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
+	return s.finishRun(id, "", status, summary)
+}
+
+func (s *PostgresStore) FinishClaimedRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
+	if workerID == "" {
+		return Run{}, ErrInvalid
+	}
+	return s.finishRun(id, workerID, status, summary)
+}
+
+func (s *PostgresStore) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return Run{}, err
 	}
-	row := tx.QueryRowContext(context.Background(), `update runs set status=$2, finished_at=$3, summary=$4, claimed_at=null, claimed_by='', lease_expires_at=null where id=$1 returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary`, id, status, now, summary)
+	query := `update runs set status=$2, finished_at=$3, summary=$4, claimed_at=null, claimed_by='', lease_expires_at=null where id=$1`
+	args := []any{id, status, now, summary}
+	if workerID != "" {
+		query += ` and status=$5 and claimed_by=$6`
+		args = append(args, RunRunning, workerID)
+	}
+	query += ` returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary`
+	row := tx.QueryRowContext(context.Background(), query, args...)
 	r, err := scanRunRow(row)
 	if err != nil {
 		_ = tx.Rollback()

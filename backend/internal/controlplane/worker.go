@@ -20,6 +20,7 @@ type WorkerPoolStatus struct {
 	FailedLeases  int       `json:"failed_leases"`
 	CompletedRuns int       `json:"completed_runs"`
 	FailedRuns    int       `json:"failed_runs"`
+	LeaseRenewals int       `json:"lease_renewals"`
 	LastError     string    `json:"last_error,omitempty"`
 }
 
@@ -39,6 +40,7 @@ type WorkerPool struct {
 	failedLeases  int
 	completedRuns int
 	failedRuns    int
+	leaseRenewals int
 	lastErr       string
 }
 
@@ -61,7 +63,7 @@ func NewWorkerPool(store Store, runner *Runner, workers int, lease time.Duration
 func (p *WorkerPool) Status() WorkerPoolStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return WorkerPoolStatus{Enabled: true, Running: p.running, Workers: p.workers, Active: p.active, Lease: p.lease.String(), PollInterval: p.pollInterval.String(), LastRecoverAt: p.lastRecoverAt, RecoveredRuns: p.recoveredRuns, FailedLeases: p.failedLeases, CompletedRuns: p.completedRuns, FailedRuns: p.failedRuns, LastError: p.lastErr}
+	return WorkerPoolStatus{Enabled: true, Running: p.running, Workers: p.workers, Active: p.active, Lease: p.lease.String(), PollInterval: p.pollInterval.String(), LastRecoverAt: p.lastRecoverAt, RecoveredRuns: p.recoveredRuns, FailedLeases: p.failedLeases, CompletedRuns: p.completedRuns, FailedRuns: p.failedRuns, LeaseRenewals: p.leaseRenewals, LastError: p.lastErr}
 }
 
 func (p *WorkerPool) Start(ctx context.Context) {
@@ -105,7 +107,7 @@ func (p *WorkerPool) loop(ctx context.Context, workerID string) {
 		}
 		claimed, err := p.store.ClaimNextRun(workerID, p.lease)
 		if err == nil {
-			p.execute(ctx, claimed)
+			p.execute(ctx, workerID, claimed)
 			continue
 		}
 		if err != ErrNotFound {
@@ -120,13 +122,17 @@ func (p *WorkerPool) loop(ctx context.Context, workerID string) {
 	}
 }
 
-func (p *WorkerPool) execute(ctx context.Context, run Run) {
+func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 	p.mu.Lock()
 	p.active++
 	p.mu.Unlock()
+	execCtx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	stopHeartbeat := p.startHeartbeat(execCtx, workerID, run.ID, cancelExecution)
+	defer stopHeartbeat()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			_, _ = p.store.FinishRun(run.ID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
+			_, _ = p.store.FinishClaimedRun(run.ID, workerID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
 			p.mu.Lock()
 			p.failedRuns++
 			p.active--
@@ -137,7 +143,7 @@ func (p *WorkerPool) execute(ctx context.Context, run Run) {
 		p.active--
 		p.mu.Unlock()
 	}()
-	finished, err := p.runner.ExecuteRun(ctx, run)
+	finished, err := p.runner.ExecuteClaimedRun(execCtx, run, workerID)
 	p.mu.Lock()
 	if err != nil || finished.Status == RunFailed || finished.Status == RunCanceled {
 		p.failedRuns++
@@ -147,6 +153,39 @@ func (p *WorkerPool) execute(ctx context.Context, run Run) {
 	p.mu.Unlock()
 	if err != nil {
 		p.recordError(err)
+	}
+}
+
+func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID string, cancelExecution context.CancelFunc) func() {
+	interval := p.lease / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := p.store.ExtendRunLease(runID, workerID, p.lease); err != nil {
+					p.recordError(err)
+					cancelExecution()
+					return
+				}
+				p.mu.Lock()
+				p.leaseRenewals++
+				p.mu.Unlock()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
 	}
 }
 

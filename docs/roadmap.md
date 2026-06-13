@@ -222,7 +222,7 @@ Build:
 - Prompt builder from issue body, acceptance criteria, and test command.
 - OCQ/OpenCode step for implementation.
 - Verification step that runs allowed test command.
-- PR/artifact summary step.
+- Push/PR/artifact summary steps.
 - Safe abort/cleanup behavior.
 
 Initial sequence:
@@ -233,6 +233,7 @@ issue.validate
 prompt.prepare
 agent.implement
 tests.run
+branch.push
 pr.prepare
 summary.attach
 ```
@@ -282,7 +283,7 @@ Build after Switchyard Runtime has durable steps and executors:
 
 Exit criteria:
 
-- Blacktower profiles are stored in Switchyard config/database.
+- Blacktower profiles are available from the native profile registry.
 - Open Pilot and Devlog can select Blacktower profiles without external files.
 - External Blacktower compatibility is best-effort and not part of the core runtime contract.
 
@@ -329,10 +330,10 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Add workflow model config and API override beyond `DEVLOG_MODEL`/`OPEN_PILOT_MODEL`.
-2. Expand Open Pilot worktree support with cleanup/push behavior and safer retry-from-step semantics.
-3. Add retry-from-step resume semantics for Devlog/Open Pilot.
-4. Add per-executor concurrency limits beyond the current worker pool.
+1. Expand Open Pilot worktree support with cleanup/push behavior and safer retry-from-step semantics.
+2. Add retry-from-step resume semantics for Devlog/Open Pilot.
+3. Add per-executor concurrency limits beyond the current worker pool.
+4. Add API docs/OpenAPI after the runtime API settles.
 
 ## Non-goals for the next phase
 

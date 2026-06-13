@@ -60,6 +60,29 @@ type OpenPilotWorktreeManager interface {
 	Prepare(ctx context.Context, run Run, repo string, baseBranch string, branch string) (OpenPilotWorktreePlan, error)
 }
 
+type OpenPilotPushPlan struct {
+	Mode         string `json:"mode"`
+	Remote       string `json:"remote"`
+	Branch       string `json:"branch"`
+	WorktreePath string `json:"worktree_path,omitempty"`
+	Executed     bool   `json:"executed"`
+	DryRun       bool   `json:"dry_run,omitempty"`
+}
+
+func (p OpenPilotPushPlan) StepInputs() map[string]string {
+	inputs := map[string]string{"mode": p.Mode, "remote": p.Remote, "branch": p.Branch}
+	if p.WorktreePath != "" {
+		inputs["worktree_path"] = p.WorktreePath
+	}
+	if p.Executed {
+		inputs["executed"] = "true"
+	}
+	if p.DryRun {
+		inputs["dry_run"] = "true"
+	}
+	return inputs
+}
+
 type GitOpenPilotWorktreeManager struct {
 	mode     OpenPilotWorktreeMode
 	repoPath string

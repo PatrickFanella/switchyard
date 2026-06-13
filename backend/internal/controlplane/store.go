@@ -25,8 +25,10 @@ type Store interface {
 	CreateRun(CreateRunInput) (Run, error)
 	StartRun(string) (Run, error)
 	ClaimNextRun(string, time.Duration) (Run, error)
+	ExtendRunLease(string, string, time.Duration) (Run, error)
 	RecoverLeasedRuns(time.Time) (int, int, error)
 	FinishRun(string, RunStatus, string) (Run, error)
+	FinishClaimedRun(string, string, RunStatus, string) (Run, error)
 	CreateRunStep(CreateRunStepInput) (RunStep, error)
 	StartRunStep(string) (RunStep, error)
 	FinishRunStep(string, RunStepStatus, string, string, map[string]string) (RunStep, error)
@@ -238,6 +240,28 @@ func (s *MemoryStore) ClaimNextRun(workerID string, lease time.Duration) (Run, e
 	return r, nil
 }
 
+func (s *MemoryStore) ExtendRunLease(id string, workerID string, lease time.Duration) (Run, error) {
+	if id == "" || workerID == "" || lease <= 0 {
+		return Run{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.runs[id]
+	if !ok {
+		return Run{}, ErrNotFound
+	}
+	if r.Status != RunRunning || r.ClaimedBy != workerID {
+		return Run{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	expires := now.Add(lease).UTC()
+	r.ClaimedAt = &now
+	r.LeaseExpiresAt = &expires
+	s.runs[id] = r
+	s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run.lease.extended", Message: "Lease extended by " + workerID, CreatedAt: now})
+	return r, nil
+}
+
 func (s *MemoryStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -269,11 +293,25 @@ func (s *MemoryStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 }
 
 func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
+	return s.finishRun(id, "", status, summary)
+}
+
+func (s *MemoryStore) FinishClaimedRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
+	if workerID == "" {
+		return Run{}, ErrInvalid
+	}
+	return s.finishRun(id, workerID, status, summary)
+}
+
+func (s *MemoryStore) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.runs[id]
 	if !ok {
 		return Run{}, ErrNotFound
+	}
+	if workerID != "" && (r.Status != RunRunning || r.ClaimedBy != workerID) {
+		return Run{}, ErrInvalid
 	}
 	now := s.now().UTC()
 	r.Status = status

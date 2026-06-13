@@ -51,3 +51,26 @@ func TestEnvCancelDispatcherCallsOCQAndLlamaLine(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestEnvCancelDispatcherUsesRunningStepCorrelationIDs(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ocq/sessions/ses-1/messages/ocq-step/abort" || r.Method != http.MethodPost {
+			t.Fatalf("ocq request = %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+
+	detail := controlplane.RunDetail{
+		Run: controlplane.Run{WorkflowID: "devlog", Inputs: map[string]string{"ocq_request_id": "stale"}},
+		Steps: []controlplane.RunStep{{
+			Status:         controlplane.StepRunning,
+			CorrelationIDs: map[string]string{"ocq_request_id": "ocq-step", "ocq_session_id": "ses-1"},
+		}},
+	}
+	result := controlplane.NewEnvCancelDispatcher().CancelRunDetail(t.Context(), detail)
+	if len(result.Events) != 1 || result.Events[0].Type != "ocq.abort.accepted" {
+		t.Fatalf("result = %+v", result)
+	}
+}

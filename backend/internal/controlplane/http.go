@@ -45,6 +45,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/adapters", a.adapters)
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workers", a.workerStatus)
+	mux.HandleFunc("GET /api/pipelines", a.pipelines)
+	mux.HandleFunc("GET /api/agent-profiles", a.agentProfiles)
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
@@ -61,6 +63,14 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/triggers/", a.triggerAction)
 	mux.HandleFunc("PATCH /api/triggers/", a.triggerAction)
 	return withCORS(mux)
+}
+
+func (a *API) pipelines(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"pipelines": pipelinesOrEmpty(a.runner.Pipelines())})
+}
+
+func (a *API) agentProfiles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": agentProfilesOrEmpty(a.runner.AgentProfiles())})
 }
 
 func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
@@ -243,7 +253,7 @@ func (a *API) cancelRun(w http.ResponseWriter, id string) {
 	}
 	_, _ = a.store.AddEvent(id, "run.cancel.requested", "Operator requested cancellation")
 	if a.canceler != nil {
-		for _, event := range a.canceler.Cancel(context.Background(), detail.Run).Events {
+		for _, event := range cancelRunDetail(context.Background(), a.canceler, detail).Events {
 			_, _ = a.store.AddEvent(id, event.Type, event.Message)
 		}
 	}
@@ -258,6 +268,20 @@ func (a *API) cancelRun(w http.ResponseWriter, id string) {
 func workflowsOrEmpty(items []Workflow) []Workflow {
 	if items == nil {
 		return []Workflow{}
+	}
+	return items
+}
+
+func pipelinesOrEmpty(items []Pipeline) []Pipeline {
+	if items == nil {
+		return []Pipeline{}
+	}
+	return items
+}
+
+func agentProfilesOrEmpty(items []AgentProfile) []AgentProfile {
+	if items == nil {
+		return []AgentProfile{}
 	}
 	return items
 }
