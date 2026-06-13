@@ -372,6 +372,32 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 	}
 }
 
+func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state map[string]any) {
+	if strings.TrimSpace(run.Inputs["retry_from_step_position"]) == "" {
+		return
+	}
+	if summary := run.Inputs["resume.open-pilot.validate-issue.summary"]; summary != "" {
+		state["open-pilot.issue-summary"] = summary
+	}
+	branchPlan := openPilotWorktreePlanFromResume(run.Inputs)
+	if branchPlan.Branch != "" {
+		state["open-pilot.branch-name"] = branchPlan.Branch
+		state["open-pilot.branch-plan"] = branchPlan
+		if _, ok := state["open-pilot.issue-summary"].(string); !ok {
+			state["open-pilot.issue-summary"] = "Retried Open Pilot issue " + run.Inputs["issue"]
+		}
+		prompt := buildOpenPilotPrompt(run.Inputs["repo"], run.Inputs["issue"], state["open-pilot.issue-summary"].(string), nil, run.Inputs, branchPlan)
+		state["open-pilot.prompt"] = prompt
+	}
+	if summary := run.Inputs["resume.open-pilot.agent-work.summary"]; summary != "" {
+		state["open-pilot.agent-completed"] = true
+		state["open-pilot.response"] = summary
+	}
+	if pushPlan := openPilotPushPlanFromResume(run.Inputs); pushPlan.Branch != "" {
+		state["open-pilot.push-plan"] = pushPlan
+	}
+}
+
 func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
@@ -593,6 +619,40 @@ func (e *EnvWorkflowExecutors) openPilotPushPlan(branchPlan OpenPilotWorktreePla
 		plan.Executed = true
 	}
 	return plan
+}
+
+func openPilotWorktreePlanFromResume(inputs map[string]string) OpenPilotWorktreePlan {
+	prefix := "resume.open-pilot.branch-plan."
+	plan := OpenPilotWorktreePlan{
+		Repo:                inputs[prefix+"repo"],
+		RepoPath:            inputs[prefix+"repo_path"],
+		BaseBranch:          inputs[prefix+"base_branch"],
+		Branch:              firstNonEmpty(inputs[prefix+"branch"], inputs["resume.open-pilot.branch-plan.correlation.branch"]),
+		Mode:                inputs[prefix+"mode"],
+		PlannedWorktreePath: inputs[prefix+"planned_worktree_path"],
+		WorktreePath:        firstNonEmpty(inputs[prefix+"worktree_path"], inputs["resume.open-pilot.branch-plan.correlation.worktree_path"]),
+		Executed:            strings.EqualFold(inputs[prefix+"executed"], "true"),
+		DryRun:              strings.EqualFold(inputs[prefix+"dry_run"], "true"),
+	}
+	if plan.PlannedWorktreePath == "" {
+		plan.PlannedWorktreePath = inputs["resume.open-pilot.branch-plan.correlation.planned_worktree_path"]
+	}
+	if plan.WorktreePath != "" {
+		plan.Executed = true
+	}
+	return plan
+}
+
+func openPilotPushPlanFromResume(inputs map[string]string) OpenPilotPushPlan {
+	prefix := "resume.open-pilot.push-branch."
+	return OpenPilotPushPlan{
+		Mode:         inputs[prefix+"mode"],
+		Remote:       firstNonEmpty(inputs[prefix+"remote"], inputs["resume.open-pilot.push-branch.correlation.remote"]),
+		Branch:       firstNonEmpty(inputs[prefix+"branch"], inputs["resume.open-pilot.push-branch.correlation.branch"]),
+		WorktreePath: inputs[prefix+"worktree_path"],
+		Executed:     strings.EqualFold(inputs[prefix+"executed"], "true"),
+		DryRun:       strings.EqualFold(inputs[prefix+"dry_run"], "true"),
+	}
 }
 
 func (e *EnvWorkflowExecutors) executeOpenPilotPush(ctx context.Context, plan OpenPilotPushPlan) error {

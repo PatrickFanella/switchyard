@@ -115,7 +115,7 @@ Exit criteria:
 
 - Devlog runs through `RunStep` records.
 - Step events and artifacts are visible in the HUD.
-- Failed step retry creates a resume run that starts registry-backed pipelines at the selected step.
+- Failed step retry creates a resume run that starts registry-backed pipelines at the selected step; Open Pilot rehydrates branch/agent/push state from preserved resume metadata for downstream retries.
 
 ## Phase 2 — model executor through llama-line
 
@@ -330,7 +330,7 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Expand Open Pilot worktree support with stronger retry rehydration and existing-branch detection for externally published heads.
+1. Expand Open Pilot worktree support with existing-branch detection for externally published heads and richer artifact rehydration.
 2. Add API docs/OpenAPI after the runtime API settles.
 
 ## Non-goals for the next phase

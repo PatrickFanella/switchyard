@@ -28,6 +28,10 @@ type PipelineStepDecider interface {
 	ShouldExecutePipelineStep(run Run, step PipelineStep, state map[string]any) bool
 }
 
+type PipelineResumeHydrator interface {
+	HydratePipelineResumeState(run Run, pipeline Pipeline, state map[string]any)
+}
+
 type Runner struct {
 	store     Store
 	executors ExecutorRegistry
@@ -129,6 +133,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 	steps := append([]PipelineStep(nil), pipeline.Steps...)
 	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
 	state := map[string]any{}
+	if hydrator, ok := executor.(PipelineResumeHydrator); ok {
+		hydrator.HydratePipelineResumeState(run, pipeline, state)
+	}
 	var execution WorkflowExecution
 	for _, pipelineStep := range steps {
 		if shouldSkipPipelineStepForResume(run, pipelineStep) {

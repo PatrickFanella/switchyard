@@ -250,6 +250,47 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{
+		"repo":                     "OWNER/REPO",
+		"issue":                    "123",
+		"test_command":             "make verify",
+		"retry_from_step_position": "5",
+		"retry_from_step":          "open-pilot.verify-command",
+		"resume.open-pilot.validate-issue.summary":         "Fetched issue: Fix switchyard (open)",
+		"resume.open-pilot.branch-plan.repo":               "OWNER/REPO",
+		"resume.open-pilot.branch-plan.base_branch":        "main",
+		"resume.open-pilot.branch-plan.branch":             "open-pilot/issue-123-fix-switchyard",
+		"resume.open-pilot.branch-plan.mode":               "dry-run",
+		"resume.open-pilot.branch-plan.dry_run":            "true",
+		"resume.open-pilot.agent-work.summary":             "implementation summary",
+		"resume.open-pilot.agent-work.correlation.request": "ocq-1",
+	}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 3 {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	if detail.Steps[0].Name != "open-pilot.verify-command" || detail.Steps[1].Name != "open-pilot.push-branch" || detail.Steps[2].Name != "open-pilot.pr-plan" {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	if detail.Steps[1].Inputs["branch"] != "open-pilot/issue-123-fix-switchyard" || detail.Steps[2].Inputs["head"] != "open-pilot/issue-123-fix-switchyard" {
+		t.Fatalf("rehydrated inputs missing: %+v", detail.Steps)
+	}
+}
+
 func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")

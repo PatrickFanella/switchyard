@@ -106,7 +106,7 @@ The backend exposes a workflow/run API:
 - `POST /api/triggers/{id}/run`
 - `PATCH /api/triggers/{id}`
 
-Run retry creates a new run with the same workflow inputs. Step retry creates a new run with `retry_from_step*` metadata and starts registry-backed pipelines at the requested step, preserving prior step inputs under `resume.<step-name>.*` for operator/audit context.
+Run retry creates a new run with the same workflow inputs. Step retry creates a new run with `retry_from_step*` metadata and starts registry-backed pipelines at the requested step, preserving prior step inputs under `resume.<step-name>.*` for operator/audit context. Open Pilot rehydrates its branch plan, issue summary, agent completion, and push plan from that resume metadata so retries from verify/push/PR steps do not recreate earlier work.
 
 The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module shells for queues, sessions, logs/search, prompts, config, agents, and skills so the imported `llama-line`, OCQ, Changemaker, and planned Blacktower agent surfaces have Switchyard homes. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
