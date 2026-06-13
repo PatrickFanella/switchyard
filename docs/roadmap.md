@@ -330,7 +330,7 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Harden full Open Pilot autonomy: agent commit contract, existing-branch detection for externally published heads, and richer artifact rehydration.
+1. Harden full Open Pilot autonomy: existing-branch detection for externally published heads, richer artifact rehydration, and better agent commit diagnostics.
 2. Keep `docs/openapi.yaml` aligned as route shapes settle and decide whether to serve it from the API/UI.
 
 ## Non-goals for the next phase

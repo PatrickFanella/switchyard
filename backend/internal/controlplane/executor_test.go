@@ -463,6 +463,49 @@ func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "touch")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "touch dirty.txt"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	last := detail.Steps[len(detail.Steps)-1]
+	if run.Status != controlplane.RunFailed || last.Name != "open-pilot.push-branch" || last.Status != controlplane.StepFailed || !strings.Contains(last.Error, "requires a clean worktree") {
+		t.Fatalf("run = %+v last = %+v", run, last)
+	}
+	foundDirtyStatus := false
+	for _, artifact := range detail.Artifacts {
+		if artifact.Name == "open-pilot-git-status.txt" && strings.Contains(artifact.URI, "dirty.txt") {
+			foundDirtyStatus = true
+		}
+	}
+	if !foundDirtyStatus {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
+}
+
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))

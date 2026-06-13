@@ -518,6 +518,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return out, err
 			}
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(status)})
+			if pushPlan.Executed && strings.TrimSpace(status) != "clean" {
+				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires a clean worktree; commit or discard uncommitted changes")
+			}
 			ahead, err := o.env.openPilotWorktreeAheadCount(ctx, branchPlan)
 			if err != nil {
 				return out, err
