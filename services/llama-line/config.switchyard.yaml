@@ -1,0 +1,62 @@
+listen_addr: "0.0.0.0:11434"
+
+max_queue_depth: 20
+request_timeout_secs: 300
+queue_wait_timeout_secs: 600
+heartbeat_interval_secs: 5
+ollama_retry_max_secs: 60
+upstream_health_probe_interval_secs: 15
+upstream_health_probe_timeout_secs: 2
+log_level: info
+
+admin_key: switchyard-local-admin-key
+
+metrics_enabled: false
+metrics_path: /metrics
+
+alert_webhook_url: ""
+alert_queue_full_threshold: 0
+cache_max_entries: 0
+
+upstreams:
+  - name: ocq-switchyard
+    url: http://ocq:8088
+    health_path: /healthz
+    models:
+      - "opencode:*"
+      - "openai/*"
+      - "github-copilot/*"
+    auth:
+      type: bearer
+      token_env: OCQ_GATEWAY_KEY
+
+phoenix:
+  enabled: false
+  otlp_endpoint: "http://phoenix:6006/v1/traces"
+  project_name: "llama-line"
+  project_mode: "static"
+
+database:
+  enabled: false
+  url: "postgres://llama:line@postgres:5432/llama_line?sslmode=disable"
+  max_conns: 4
+  run_migrations: false
+  persist_app_logs: false
+  persist_request_bodies: false
+  body_read_enabled: false
+  retention_days: 30
+
+embeddings:
+  enabled: false
+  model: qwen3-embedding:0.6b
+  dimension: 768
+  worker_count: 1
+  max_chunk_chars: 4000
+
+keys:
+  - name: switchyard
+    key: switchyard-local-llama-line-key
+    priority: 10
+    deduplicate: false
+    cache_ttl_secs: 0
+    cache_max_entries: 0

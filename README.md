@@ -47,8 +47,8 @@ The Docker Compose stack sets `DATABASE_URL` for the API service using libpq key
 
 Set optional adapter probe variables to replace placeholder HUD data with live external state:
 
-- `LLAMA_LINE_BASE_URL` reads llama-line `/broker/status`.
-- `OCQ_BASE_URL` and optional `OCQ_GATEWAY_KEY` read OCQ `/healthz` and `/ocq/sessions`.
+- The root Docker stack now includes local `llama-line` and OCQ gateway services. By default the API uses `LLAMA_LINE_BASE_URL=http://llama-line:11434` and `OCQ_BASE_URL=http://ocq:8088`; host ports default to `LLAMA_LINE_PORT=21434` and `OCQ_PORT=8088`.
+- OCQ forwards prompts to an OpenCode server through `OPENCODE_SERVER_URL` (default `http://host.docker.internal:4096`). Start OpenCode server on the host before expecting Open Pilot agent work to execute; otherwise OCQ health is up but model/agent requests will fail at the upstream boundary.
 - `BLACKTOWER_BASE_URL` reads Blacktower control-center `/api/snapshot`.
 - `CHANGEMAKER_BASE_URL` and optional `CHANGEMAKER_ADMIN_TOKEN` read Changemaker `/health`, `/api/posts`, and `/api/runs/status`.
 
