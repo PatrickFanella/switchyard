@@ -78,6 +78,8 @@ func DefaultPipelineRegistry() StaticPipelineRegistry {
 				{ID: "pr-plan", Position: 7, Name: "open-pilot.pr-plan", Executor: "gitea"},
 				{ID: "ai-review", Position: 8, Name: "open-pilot.ai-review", Executor: "model", Profile: "operator-reviewer", Model: "${model}"},
 				{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"},
+				{ID: "merge-pr", Position: 10, Name: "open-pilot.merge-pr", Executor: "gitea"},
+				{ID: "close-issue", Position: 11, Name: "open-pilot.close-issue", Executor: "gitea"},
 			},
 		},
 	}

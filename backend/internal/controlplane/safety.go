@@ -44,8 +44,8 @@ func NewEnvOperatorSafetyStatus() OperatorSafetyStatus {
 	if openPilotAutonomyFullEnabled() && !status.ReverseProxyAuth {
 		status.Warnings = append(status.Warnings, "OPEN_PILOT_AUTONOMY_MODE=full requires reverse-proxy authentication before exposing Switchyard publicly; set SWITCHYARD_REVERSE_PROXY_AUTH=true after configuring the proxy")
 	}
-	if openPilotAutonomyFullEnabled() && strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_MODE")) != "disabled" && strings.TrimSpace(os.Getenv("GITEA_BASE_URL")) == "" {
-		status.Warnings = append(status.Warnings, "OPEN_PILOT_AUTONOMY_MODE=full enables OPEN_PILOT_CI_CHECK_MODE=require-pass by default; configure GITEA_BASE_URL or explicitly set OPEN_PILOT_CI_CHECK_MODE=disabled")
+	if openPilotAutonomyFullEnabled() && strings.TrimSpace(os.Getenv("GITEA_BASE_URL")) == "" {
+		status.Warnings = append(status.Warnings, "OPEN_PILOT_AUTONOMY_MODE=full enables Open Pilot Gitea gates by default (PR creation, merge, issue close, and CI checks); configure GITEA_BASE_URL or explicitly disable the Gitea-backed modes")
 	}
 	if status.PublicURL != "" && !status.ReverseProxyAuth {
 		status.Warnings = append(status.Warnings, "SWITCHYARD_PUBLIC_URL is set but SWITCHYARD_REVERSE_PROXY_AUTH is not enabled")

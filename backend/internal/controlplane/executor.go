@@ -67,6 +67,8 @@ type EnvWorkflowExecutors struct {
 	openPilotAllowedModels    map[string]bool
 	openPilotLabels           []string
 	openPilotCICheckMode      string
+	openPilotMergeMode        string
+	openPilotCloseIssueMode   string
 	openPilotCIRequiredChecks []string
 	openPilotCICheckTimeout   time.Duration
 	openPilotCICheckInterval  time.Duration
@@ -80,6 +82,7 @@ type EnvWorkflowExecutors struct {
 	ocqExecutor               OCQExecutor
 	issueFetcher              IssueFetcher
 	giteaReader               GiteaPullRequestReader
+	giteaMerger               GiteaPullRequestMerger
 	giteaWriter               GiteaWriter
 	commandRunner             CommandRunner
 	worktreeManager           OpenPilotWorktreeManager
@@ -101,6 +104,14 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 	ciCheckMode := firstNonEmpty(os.Getenv("OPEN_PILOT_CI_CHECK_MODE"), "disabled")
 	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_MODE")) == "" {
 		ciCheckMode = "require-pass"
+	}
+	mergeMode := firstNonEmpty(os.Getenv("OPEN_PILOT_MERGE_MODE"), "disabled")
+	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_MERGE_MODE")) == "" {
+		mergeMode = "allow"
+	}
+	closeIssueMode := firstNonEmpty(os.Getenv("OPEN_PILOT_CLOSE_ISSUE_MODE"), "disabled")
+	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_CLOSE_ISSUE_MODE")) == "" {
+		closeIssueMode = "allow"
 	}
 	requiredChecksRaw := strings.TrimSpace(os.Getenv("OPEN_PILOT_REQUIRED_CHECKS"))
 	requiredChecks := splitCSV(requiredChecksRaw)
@@ -135,6 +146,8 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"))),
 		openPilotLabels:           splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
 		openPilotCICheckMode:      ciCheckMode,
+		openPilotMergeMode:        mergeMode,
+		openPilotCloseIssueMode:   closeIssueMode,
 		openPilotCIRequiredChecks: requiredChecks,
 		openPilotCICheckTimeout:   ciCheckTimeout,
 		openPilotCICheckInterval:  ciCheckInterval,
@@ -148,6 +161,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		ocqExecutor:               NewEnvOCQExecutor(),
 		issueFetcher:              giteaClient,
 		giteaReader:               giteaClient,
+		giteaMerger:               giteaClient,
 		giteaWriter:               giteaClient,
 		commandRunner:             NewEnvCommandRunner(),
 		worktreeManager:           NewEnvOpenPilotWorktreeManager(),
@@ -426,6 +440,10 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 			return true
 		}
 		return false
+	case "merge-pr":
+		return openPilotMergeStepReady(run, state)
+	case "close-issue":
+		return openPilotCloseIssueStepReady(run, state)
 	default:
 		return true
 	}
@@ -478,7 +496,7 @@ func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state
 		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
 		return
 	}
-	if saved.Phase != OpenPilotPhaseFailed && saved.Phase != OpenPilotPhasePaused {
+	if saved.Phase != OpenPilotPhaseFailed && saved.Phase != OpenPilotPhasePaused && saved.Phase != OpenPilotPhaseMerged && saved.Phase != OpenPilotPhaseIssueClosed {
 		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
 		return
 	}
@@ -554,6 +572,12 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 	if issueState.PullRequestURL != "" || issueState.PullRequestID != 0 || issueState.PullRequestNum != 0 {
 		state["open-pilot.pull-request"] = GiteaPullRequest{ID: issueState.PullRequestID, Number: issueState.PullRequestNum, HTMLURL: issueState.PullRequestURL}
 	}
+	if issueState.MergeCommitSHA != "" {
+		state["open-pilot.merge-commit-sha"] = issueState.MergeCommitSHA
+	}
+	if issueState.IssueClosed {
+		state["open-pilot.issue-closed"] = true
+	}
 	if len(issueState.GateStatus) > 0 {
 		state["open-pilot.gate-status"] = cloneOpenPilotGateStatus(issueState.GateStatus)
 	}
@@ -593,6 +617,12 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run
 			pr.Number = num
 		}
 		state["open-pilot.pull-request"] = pr
+	}
+	if sha := run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"]; sha != "" {
+		state["open-pilot.merge-commit-sha"] = sha
+	}
+	if strings.EqualFold(run.Inputs["resume.open-pilot.close-issue.issue_closed"], "true") {
+		state["open-pilot.issue-closed"] = true
 	}
 }
 
@@ -638,6 +668,53 @@ func setOpenPilotResumeBool(inputs map[string]string, key string, value bool) {
 
 func openPilotPullRequestKnown(pr GiteaPullRequest) bool {
 	return pr.HTMLURL != "" || pr.ID != 0 || pr.Number != 0
+}
+
+func openPilotMergeCommitSHAFromState(state map[string]any) string {
+	if sha, ok := state["open-pilot.merge-commit-sha"].(string); ok {
+		return sha
+	}
+	if mergeResult, ok := state["open-pilot.merge-result"].(GiteaMergeResult); ok {
+		return mergeResult.SHA
+	}
+	return ""
+}
+
+func openPilotIssueClosedFromState(state map[string]any) bool {
+	if closed, ok := state["open-pilot.issue-closed"].(bool); ok {
+		return closed
+	}
+	return false
+}
+
+func openPilotMergeStepReady(run Run, state map[string]any) bool {
+	gateStatus := openPilotGateStatusFromState(state)
+	if gateStatus["merge"] == "merged" || openPilotMergeCommitSHAFromState(state) != "" {
+		return false
+	}
+	if !openPilotHasKnownPullRequest(state, run.Inputs) {
+		return false
+	}
+	if gateStatus["ai_review"] != "approved" || gateStatus["ci_checks"] != "passed" {
+		return false
+	}
+	if strings.TrimSpace(run.Inputs["test_command"]) != "" && gateStatus["local_verify"] != "passed" {
+		return false
+	}
+	return true
+}
+
+func openPilotCloseIssueStepReady(run Run, state map[string]any) bool {
+	if openPilotIssueClosedFromState(state) {
+		return false
+	}
+	if openPilotMergeCommitSHAFromState(state) == "" {
+		gateStatus := openPilotGateStatusFromState(state)
+		if gateStatus["merge"] != "merged" {
+			return false
+		}
+	}
+	return run.Inputs["repo"] != "" && run.Inputs["issue"] != ""
 }
 
 func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPhase, stepName, lastErr string, state map[string]any) error {
@@ -741,6 +818,24 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_url", pr.HTMLURL)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_id", fmt.Sprintf("%d", pr.ID))
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_number", fmt.Sprintf("%d", pr.Number))
+	}
+	if mergeResult, ok := state["open-pilot.merge-result"].(GiteaMergeResult); ok && mergeResult.Merged {
+		saved.MergeCommitSHA = mergeResult.SHA
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.merge-pr.merge_commit_sha", mergeResult.SHA)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.merge-pr.merged", fmt.Sprintf("%t", mergeResult.Merged))
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.merge-pr.message", mergeResult.Message)
+	} else if sha, ok := state["open-pilot.merge-commit-sha"].(string); ok {
+		saved.MergeCommitSHA = sha
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.merge-pr.merge_commit_sha", sha)
+	}
+	if issueClosed, ok := state["open-pilot.issue-closed"].(bool); ok && issueClosed {
+		saved.IssueClosed = true
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.close-issue.issue_closed", "true")
+	}
+	if issueCloseResult, ok := state["open-pilot.issue-close-result"].(GiteaIssue); ok {
+		saved.IssueClosed = issueCloseResult.State == "closed"
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.close-issue.issue_closed", fmt.Sprintf("%t", saved.IssueClosed))
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.close-issue.state", issueCloseResult.State)
 	}
 	if feedback, ok := state["ai_review.feedback"].(string); ok {
 		setOpenPilotResumeInput(saved.ResumeInputs, "ai_review.feedback", feedback)
@@ -851,6 +946,10 @@ func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Ru
 		phase = OpenPilotPhaseFailed
 	case "ai-review":
 		return
+	case "merge-pr":
+		phase = OpenPilotPhaseFailed
+	case "close-issue":
+		phase = OpenPilotPhaseFailed
 	}
 	if persistErr := o.persistOpenPilotIssueState(run, phase, step.Name, err.Error(), state); persistErr != nil {
 		if o.env != nil && o.env.store != nil {
@@ -1195,6 +1294,10 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, nil
 	case "ci-checks":
 		return o.executeOpenPilotCIChecks(ctx, run, state)
+	case "merge-pr":
+		return o.executeOpenPilotMerge(ctx, run, state)
+	case "close-issue":
+		return o.executeOpenPilotCloseIssue(ctx, run, state)
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)
 	}
@@ -1298,6 +1401,249 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 		case <-timer.C:
 		}
 	}
+}
+
+func openPilotPullRequestNumberFromState(state map[string]any, inputs map[string]string) int {
+	if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok && pr.Number > 0 {
+		return pr.Number
+	}
+	for _, raw := range []string{inputs["resume.open-pilot.pr-plan.pull_request_number"], inputs["pull_request_number"]} {
+		if num, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && num > 0 {
+			return num
+		}
+	}
+	for _, raw := range []string{inputs["resume.open-pilot.pr-plan.pull_request_url"], inputs["pull_request_url"]} {
+		if num := openPilotPullRequestNumberFromURL(raw); num > 0 {
+			return num
+		}
+	}
+	return 0
+}
+
+func openPilotPullRequestNumberFromURL(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	parts := strings.Split(strings.TrimRight(raw, "/"), "/")
+	if len(parts) == 0 {
+		return 0
+	}
+	num, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || num < 1 {
+		return 0
+	}
+	return num
+}
+
+func mergeOpenPilotGateStatus(state map[string]any) map[string]string {
+	gateStatus := map[string]string{}
+	if existing := openPilotGateStatusFromState(state); len(existing) > 0 {
+		gateStatus = cloneMap(existing)
+	}
+	if gateStatus == nil {
+		gateStatus = map[string]string{}
+	}
+	return gateStatus
+}
+
+func (o openPilotExecutor) executeOpenPilotMerge(ctx context.Context, run Run, state map[string]any) (PipelineStepExecution, error) {
+	gateStatus := mergeOpenPilotGateStatus(state)
+	if !openPilotMergeStepReady(run, state) {
+		gateStatus["merge"] = "failed"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.merge-pr", "merge prerequisites not met", state); err != nil {
+			return PipelineStepExecution{}, err
+		}
+		return PipelineStepExecution{}, errors.New("merge prerequisites not met")
+	}
+	pr, _ := state["open-pilot.pull-request"].(GiteaPullRequest)
+	if pr.Number == 0 {
+		pr.Number = openPilotPullRequestNumberFromState(state, run.Inputs)
+	}
+	if pr.Number == 0 {
+		gateStatus["merge"] = "failed"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.merge-pr", "pull request number is required", state); err != nil {
+			return PipelineStepExecution{}, err
+		}
+		return PipelineStepExecution{}, errors.New("pull request number is required")
+	}
+	mode := strings.TrimSpace(o.env.openPilotMergeMode)
+	if mode == "" {
+		mode = "disabled"
+	}
+	switch mode {
+	case "disabled":
+		gateStatus["merge"] = "skipped"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseCIPassed, "open-pilot.merge-pr", "", state); err != nil {
+			return PipelineStepExecution{Summary: "Merge skipped"}, err
+		}
+		return PipelineStepExecution{Summary: "Merge skipped"}, nil
+	case "dry-run":
+		gateStatus["merge"] = "dry-run"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseCIPassed, "open-pilot.merge-pr", "", state); err != nil {
+			return PipelineStepExecution{Summary: "Merge dry-run"}, err
+		}
+		return PipelineStepExecution{Summary: "Merge dry-run"}, nil
+	case "allow":
+		if o.env == nil || o.env.giteaMerger == nil {
+			return PipelineStepExecution{}, errors.New("gitea pull request merger not configured")
+		}
+		gateStatus["merge"] = "merge_ready"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseMergeReady, "open-pilot.merge-pr", "", state); err != nil {
+			return PipelineStepExecution{}, err
+		}
+		result, err := o.env.giteaMerger.MergePullRequest(ctx, run.Inputs["repo"], pr.Number)
+		if err != nil {
+			gateStatus["merge"] = "failed"
+			state["open-pilot.gate-status"] = gateStatus
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.merge-pr", err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{}, err
+		}
+		if !result.Merged {
+			err := errors.New("gitea merge response did not confirm merged=true")
+			gateStatus["merge"] = "failed"
+			state["open-pilot.gate-status"] = gateStatus
+			state["open-pilot.merge-result"] = result
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.merge-pr", err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{}, err
+		}
+		gateStatus["merge"] = "merged"
+		state["open-pilot.gate-status"] = gateStatus
+		state["open-pilot.merge-result"] = result
+		state["open-pilot.merge-commit-sha"] = result.SHA
+		artifactBody, artifact := buildOpenPilotMergeArtifact(run.Inputs["repo"], pr, result, gateStatus)
+		_ = artifactBody
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseMerged, "open-pilot.merge-pr", "", state); err != nil {
+			return PipelineStepExecution{Summary: "Merged pull request", Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: mergeCorrelationIDs(pr, result)}, err
+		}
+		return PipelineStepExecution{Summary: "Merged pull request", Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: mergeCorrelationIDs(pr, result)}, nil
+	default:
+		return PipelineStepExecution{}, fmt.Errorf("unsupported OPEN_PILOT_MERGE_MODE %q", mode)
+	}
+}
+
+func (o openPilotExecutor) executeOpenPilotCloseIssue(ctx context.Context, run Run, state map[string]any) (PipelineStepExecution, error) {
+	gateStatus := mergeOpenPilotGateStatus(state)
+	if !openPilotCloseIssueStepReady(run, state) {
+		gateStatus["issue_close"] = "failed"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.close-issue", "merge prerequisites not met", state); err != nil {
+			return PipelineStepExecution{}, err
+		}
+		return PipelineStepExecution{}, errors.New("merge prerequisites not met")
+	}
+	mode := strings.TrimSpace(o.env.openPilotCloseIssueMode)
+	if mode == "" {
+		mode = "disabled"
+	}
+	switch mode {
+	case "disabled":
+		gateStatus["issue_close"] = "skipped"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseMerged, "open-pilot.close-issue", "", state); err != nil {
+			return PipelineStepExecution{Summary: "Issue close skipped"}, err
+		}
+		return PipelineStepExecution{Summary: "Issue close skipped"}, nil
+	case "dry-run":
+		gateStatus["issue_close"] = "dry-run"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseMerged, "open-pilot.close-issue", "", state); err != nil {
+			return PipelineStepExecution{Summary: "Issue close dry-run"}, err
+		}
+		return PipelineStepExecution{Summary: "Issue close dry-run"}, nil
+	case "allow":
+		if o.env == nil || o.env.giteaMerger == nil {
+			return PipelineStepExecution{}, errors.New("gitea issue closer not configured")
+		}
+		closed, err := o.env.giteaMerger.CloseIssue(ctx, run.Inputs["repo"], run.Inputs["issue"])
+		if err != nil {
+			gateStatus["issue_close"] = "failed"
+			state["open-pilot.gate-status"] = gateStatus
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.close-issue", err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{}, err
+		}
+		if closed.State != "closed" {
+			err := fmt.Errorf("gitea issue close response state is %q", closed.State)
+			gateStatus["issue_close"] = "failed"
+			state["open-pilot.gate-status"] = gateStatus
+			state["open-pilot.issue-close-result"] = closed
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.close-issue", err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{}, err
+		}
+		gateStatus["issue_close"] = "closed"
+		state["open-pilot.gate-status"] = gateStatus
+		state["open-pilot.issue-close-result"] = closed
+		state["open-pilot.issue-closed"] = true
+		artifactBody, artifact := buildOpenPilotIssueCloseArtifact(run.Inputs["repo"], run.Inputs["issue"], closed, gateStatus)
+		_ = artifactBody
+		state["summary"] = fmt.Sprintf("Open Pilot completed %s#%s: PR merged and issue closed", run.Inputs["repo"], run.Inputs["issue"])
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseIssueClosed, "open-pilot.close-issue", "", state); err != nil {
+			return PipelineStepExecution{Summary: state["summary"].(string), Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: issueCloseCorrelationIDs(closed)}, err
+		}
+		return PipelineStepExecution{Summary: state["summary"].(string), Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: issueCloseCorrelationIDs(closed)}, nil
+	default:
+		return PipelineStepExecution{}, fmt.Errorf("unsupported OPEN_PILOT_CLOSE_ISSUE_MODE %q", mode)
+	}
+}
+
+func mergeCorrelationIDs(pr GiteaPullRequest, result GiteaMergeResult) map[string]string {
+	out := prCorrelationIDs(pr)
+	if result.SHA != "" {
+		out["merge_commit_sha"] = result.SHA
+	}
+	if result.Message != "" {
+		out["merge_message"] = result.Message
+	}
+	return out
+}
+
+func issueCloseCorrelationIDs(issue GiteaIssue) map[string]string {
+	out := map[string]string{}
+	if issue.HTMLURL != "" {
+		out["issue"] = issue.HTMLURL
+	}
+	if issue.State != "" {
+		out["issue_state"] = issue.State
+	}
+	if issue.Number != 0 {
+		out["issue_number"] = fmt.Sprintf("%d", issue.Number)
+	}
+	return out
+}
+
+func buildOpenPilotMergeArtifact(repo string, pr GiteaPullRequest, result GiteaMergeResult, gateStatus map[string]string) (string, CreateArtifactInput) {
+	body := map[string]any{
+		"repo":         repo,
+		"pull_request": pr,
+		"result":       result,
+		"gate_status":  gateStatus,
+	}
+	encoded, _ := json.MarshalIndent(body, "", "  ")
+	return string(encoded), CreateArtifactInput{Name: "open-pilot-merge.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}
+}
+
+func buildOpenPilotIssueCloseArtifact(repo, issue string, closed GiteaIssue, gateStatus map[string]string) (string, CreateArtifactInput) {
+	body := map[string]any{
+		"repo":        repo,
+		"issue":       issue,
+		"result":      closed,
+		"gate_status": gateStatus,
+	}
+	encoded, _ := json.MarshalIndent(body, "", "  ")
+	return string(encoded), CreateArtifactInput{Name: "open-pilot-issue-close.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}
 }
 
 func (o openPilotExecutor) resolveOpenPilotCIPullRequest(ctx context.Context, run Run, state map[string]any, allowMissing bool) (GiteaPullRequest, bool, error) {

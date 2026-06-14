@@ -349,8 +349,13 @@ func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, numb
 	if err != nil {
 		return GiteaMergeResult{}, err
 	}
-	var raw GiteaMergeResult
-	resp, err := c.doJSON(ctx, http.MethodPost, endpoint, body, &raw)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return GiteaMergeResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return GiteaMergeResult{}, err
 	}
@@ -358,8 +363,17 @@ func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, numb
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return GiteaMergeResult{}, fmt.Errorf("gitea pull request merge failed: %s", resp.Status)
 	}
-	if !raw.Merged {
-		raw.Merged = true
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return GiteaMergeResult{}, err
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return GiteaMergeResult{Merged: true, Message: "merged"}, nil
+	}
+	var raw GiteaMergeResult
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return GiteaMergeResult{}, err
 	}
 	if raw.Message == "" {
 		raw.Message = "merged"

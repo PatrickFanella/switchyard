@@ -26,7 +26,7 @@ func TestOperatorSafetyWarnsWhenAutonomyFullRequiresCIWithoutGitea(t *testing.T)
 
 	status := controlplane.NewEnvOperatorSafetyStatus()
 	joined := strings.Join(status.Warnings, "\n")
-	if !strings.Contains(joined, "OPEN_PILOT_CI_CHECK_MODE=require-pass") {
+	if !strings.Contains(joined, "merge, issue close, and CI checks") {
 		t.Fatalf("warnings = %+v", status.Warnings)
 	}
 }

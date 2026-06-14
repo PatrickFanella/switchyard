@@ -226,6 +226,25 @@ func TestEnvGiteaClientMergePullRequestEmptyBody(t *testing.T) {
 	}
 }
 
+func TestEnvGiteaClientMergePullRequestPreservesFalseResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"merged":false,"message":"not merged"}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	if err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
+	if result.Merged || result.Message != "not merged" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestEnvGiteaClientClosesIssue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/OWNER/REPO/issues/123" || r.Method != http.MethodPatch {
