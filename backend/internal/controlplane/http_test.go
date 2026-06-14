@@ -303,6 +303,161 @@ func TestAPIModelBrokerStatusReportsUnconfigured(t *testing.T) {
 	}
 }
 
+func TestAPIOpenCodeExecutorStatusReportsNativeExecutor(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-gateway-key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/healthz":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/ocq/sessions":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]any{
+				{"id": "sess-1", "title": "Issue 123", "status": "active", "user": "operator", "createdAt": "2026-06-14T12:00:00Z", "updatedAt": "2026-06-14T12:03:00Z"},
+				{"id": "sess-2", "name": "Review", "status": "completed", "createdAt": "bad-timestamp"},
+			}}); err != nil {
+				t.Fatalf("encode sessions: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OCQ_GATEWAY_KEY", "test-gateway-key")
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/opencode-executor/status")
+	if err != nil {
+		t.Fatalf("GET opencode executor status error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		OpenCodeExecutor controlplane.OpenCodeExecutorStatus `json:"opencode_executor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	status := body.OpenCodeExecutor
+	if status.ID != "switchyard-opencode-executor" || status.Status != "healthy" || !status.Configured || !status.Healthy {
+		t.Fatalf("opencode executor = %+v", status)
+	}
+	if status.Backend != "switchyard-opencode-executor" || status.TransitionalBackend != "ocq" || status.BaseURL != ocq.URL {
+		t.Fatalf("opencode executor backend = %+v", status)
+	}
+	if status.SessionCount != 2 || status.ActiveSessionCount != 1 || len(status.Sessions) != 2 {
+		t.Fatalf("session counts = %+v", status)
+	}
+	if status.Sessions[0].ID != "sess-1" || status.Sessions[0].Title != "Issue 123" || status.Sessions[0].CreatedAt == nil || status.Sessions[0].UpdatedAt == nil {
+		t.Fatalf("first session = %+v", status.Sessions[0])
+	}
+	if status.Sessions[1].Title != "Review" || status.Sessions[1].CreatedAt != nil || status.Sessions[1].Status != "completed" {
+		t.Fatalf("second session = %+v", status.Sessions[1])
+	}
+}
+
+func TestAPIOpenCodeExecutorStatusFailsWhenSessionsFail(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/ocq/sessions":
+			http.Error(w, "sessions failed", http.StatusBadGateway)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/opencode-executor/status")
+	if err != nil {
+		t.Fatalf("GET opencode executor status error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OpenCodeExecutor controlplane.OpenCodeExecutorStatus `json:"opencode_executor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.OpenCodeExecutor.Status != "failed" || body.OpenCodeExecutor.Healthy || body.OpenCodeExecutor.Error == "" {
+		t.Fatalf("opencode executor = %+v", body.OpenCodeExecutor)
+	}
+}
+
+func TestAPIOpenCodeExecutorStatusFailsWhenOCQAuthFails(t *testing.T) {
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/ocq/sessions":
+			http.Error(w, "forbidden", http.StatusForbidden)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OCQ_GATEWAY_KEY", "wrong-key")
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/opencode-executor/status")
+	if err != nil {
+		t.Fatalf("GET opencode executor status error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OpenCodeExecutor controlplane.OpenCodeExecutorStatus `json:"opencode_executor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.OpenCodeExecutor.Status != "failed" || body.OpenCodeExecutor.Healthy || !body.OpenCodeExecutor.Configured || body.OpenCodeExecutor.Error == "" {
+		t.Fatalf("opencode executor = %+v", body.OpenCodeExecutor)
+	}
+}
+
+func TestAPIOpenCodeExecutorStatusReportsUnconfigured(t *testing.T) {
+	t.Setenv("OCQ_BASE_URL", "")
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/opencode-executor/status")
+	if err != nil {
+		t.Fatalf("GET opencode executor status error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OpenCodeExecutor controlplane.OpenCodeExecutorStatus `json:"opencode_executor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.OpenCodeExecutor.Configured || body.OpenCodeExecutor.Status != "not_configured" || body.OpenCodeExecutor.Error == "" {
+		t.Fatalf("opencode executor = %+v", body.OpenCodeExecutor)
+	}
+}
+
 func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {

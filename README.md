@@ -99,6 +99,7 @@ The backend exposes a workflow/run API:
 - `GET /api/runs/{id}/steps`
 - `GET /api/adapters`
 - `GET /api/model-broker/status`
+- `GET /api/opencode-executor/status`
 - `GET /api/pipelines`
 - `GET /api/agent-profiles`
 - `GET /api/scheduler`

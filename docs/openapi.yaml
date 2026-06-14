@@ -33,6 +33,12 @@ paths:
       description: Reports Switchyard's native model-broker surface while llama-line remains the transitional backend.
       responses:
         "200": { $ref: "#/components/responses/ModelBrokerStatusResponse" }
+  /api/opencode-executor/status:
+    get:
+      summary: Get native OpenCodeExecutor status
+      description: Reports Switchyard's native OpenCode executor surface while OCQ remains the transitional backend.
+      responses:
+        "200": { $ref: "#/components/responses/OpenCodeExecutorStatusResponse" }
   /api/scheduler:
     get:
       summary: Get scheduler status
@@ -398,6 +404,15 @@ components:
             properties:
               model_broker: { $ref: "#/components/schemas/ModelBrokerStatus" }
             required: [model_broker]
+    OpenCodeExecutorStatusResponse:
+      description: Native OpenCodeExecutor status response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              opencode_executor: { $ref: "#/components/schemas/OpenCodeExecutorStatus" }
+            required: [opencode_executor]
     OpenPilotStatesResponse:
       description: Open Pilot issue state list
       content:
@@ -512,6 +527,34 @@ components:
         in_flight_id: { type: string }
         last_probe_at: { type: string, format: date-time }
       required: [name, url, status, queue_depth, max_depth]
+    OpenCodeExecutorStatus:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [healthy, degraded, unreachable, failed, not_configured] }
+        configured: { type: boolean }
+        backend: { type: string }
+        transitional_backend: { type: string }
+        base_url: { type: string }
+        healthy: { type: boolean }
+        session_count: { type: integer }
+        active_session_count: { type: integer }
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/OpenCodeExecutorStatusSession" }
+        checked_at: { type: string, format: date-time }
+        error: { type: string }
+      required: [id, status, configured, backend, healthy, session_count, active_session_count, sessions, checked_at]
+    OpenCodeExecutorStatusSession:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        status: { type: string }
+        user: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, title, status]
     Workflow:
       type: object
       properties:

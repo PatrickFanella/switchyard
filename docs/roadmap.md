@@ -178,6 +178,12 @@ Exit criteria:
 - HUD shows OCQ session/request correlation.
 - Cancel aborts the active OCQ request when possible.
 
+Current status:
+
+- `backend/internal/controlplane/ocq_executor.go` is the current native call seam for OpenCode prompt/session execution while OCQ remains the transitional gateway backend.
+- Open Pilot `agent-work` runs through the `opencode` pipeline step and persists OCQ request/session correlation IDs on run steps.
+- `GET /api/opencode-executor/status` exposes a native Switchyard OpenCode executor status surface backed by transitional OCQ health/session data.
+
 ## Phase 4 — workflow pipelines
 
 Goal: move first-party workflows from ad hoc executors into declarative or typed linear pipelines.
