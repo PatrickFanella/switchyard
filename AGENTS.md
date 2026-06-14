@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScript, Postgres, Docker, Open Pilot conventions, imported service modules, and first-party workflows.
+This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScript, Postgres, Docker, Open Pilot conventions, transitional reference service modules, and first-party workflows.
 
 ## Priorities
 
@@ -11,16 +11,16 @@ This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScri
 
 ## Architecture Direction
 
-Switchyard is a one-repo control-plane suite. Preserve hard boundaries even when code lives in one Git repository:
+Switchyard is one cohesive automation runtime. Imported apps under `services/` and `workflows/` are reference implementations and transitional scaffolding, not permanent product boundaries. Preserve domain boundaries while moving useful behavior behind native Switchyard contracts:
 
-- Switchyard owns triggers, workflow runs, events, artifacts, and UI/API.
-- `services/llama-line` owns model routing, queueing, upstream health, and observability.
-- `services/ocq` owns OpenCode session and tmux adapter behavior.
-- `workflows/changemaker` owns Changemaker content/workflow policy.
-- Blacktower is planned as a Switchyard-native set of agent profiles/personas for workflow execution, not as a required external checkout.
-- Open Pilot, Changemaker, and Devlog are first-party workflows that should not own generic scheduling.
+- Switchyard owns triggers, workflow runs, steps, events, artifacts, logs, leases, retries, cancellation, UI/API, and operator summaries.
+- The native model broker module should absorb llama-line ideas: model routing, queueing, upstream health, request IDs, cancellation/drop semantics, and observability.
+- The native OpenCode executor module should absorb OCQ ideas: session reuse, request/session correlation, aborts, and adapter behavior.
+- Changemaker-style behavior should become first-party workflow policy, prompts, and artifacts on top of Switchyard runtime, not a separate scheduler/runtime.
+- Blacktower means Switchyard-native agent profiles/personas, prompt contracts, roles, and default model assignments; do not introduce a separate Blacktower app boundary.
+- Open Pilot, Changemaker, and Devlog are first-party workflows that own domain policy only; they should not own generic scheduling or runtime mechanics.
 
-Future direction: Switchyard should grow a small built-in orchestrator/subagent runtime with assignable models from config or API input. The Blacktower name can refer to the first curated agent/profile set inside that runtime.
+Transitional Compose sidecars for OCQ/llama-line are acceptable while native parity is built. New code should prefer Switchyard-native interfaces over direct service-specific coupling. See `docs/adr/0003-native-switchyard-modules.md`.
 
 ## Verification
 

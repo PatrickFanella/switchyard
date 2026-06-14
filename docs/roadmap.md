@@ -1,12 +1,12 @@
 # Switchyard Roadmap
 
-Switchyard is now the monorepo for the control plane, imported services, first-party workflows, and the future Blacktower agent/profile layer.
+Switchyard is the monorepo for one cohesive automation runtime. Imported services are transitional reference implementations whose useful ideas should be rebuilt as native Switchyard modules.
 
-The next major phase is to build **Switchyard Runtime**: a small, durable workflow orchestrator with curated Blacktower agent profiles, scoped to Switchyard workflows instead of cloning a broad plugin/skill/operator system.
+The next major phase is to build **Switchyard Runtime**: a small, durable workflow orchestrator with native model brokering, native OpenCode execution, curated profiles, and first-party workflow modules instead of a pile of taped-together apps.
 
 ## North star
 
-Switchyard should run first-party automation with its own built-in agents/subagents and model assignment, without depending on an external Blacktower checkout.
+Switchyard should run first-party automation with its own built-in runtime, agents/subagents, model assignment, model broker, and OpenCode executor. It should learn from OCQ, llama-line, Blacktower, and Changemaker without preserving them as separate product boundaries.
 
 ```txt
 Switchyard
@@ -14,21 +14,17 @@ Switchyard
   scheduler
   durable runs
   step/pipeline runtime
-  model executor -> services/llama-line
-  opencode executor -> services/ocq
-  workflows -> Open Pilot / Devlog / Changemaker
-
-Blacktower profiles
-  curated agents/subagents
-  model assignments
-  workflow roles and prompt contracts
+  native model broker module
+  native opencode executor module
+  native profiles/personas
+  workflow modules -> Open Pilot / Devlog / Changemaker-style policy
 ```
 
 ## Product principles
 
-1. **Blacktower becomes native profiles.** The name can refer to the curated built-in agent/subagent set inside Switchyard Runtime.
-2. **Runtime is workflow-scoped.** Switchyard gets durable runs, steps, executors, artifacts, model assignment, retry, and cancellation. It does not need a full skill/plugin marketplace in the next phase.
-3. **Imported services keep their ownership.** `services/llama-line` owns model routing and queues. `services/ocq` owns OpenCode session mechanics. `workflows/changemaker` owns Changemaker content policy.
+1. **Switchyard owns the runtime.** Runs, steps, queues, retries, cancellation, logs, artifacts, and operator summaries belong to Switchyard.
+2. **Reference apps become native modules.** llama-line ideas become the model broker module; OCQ ideas become the OpenCode executor module; Blacktower ideas become native profiles; Changemaker ideas become workflow policy.
+3. **Workflows own domain policy only.** Open Pilot owns issue/PR policy; Changemaker-style workflows own content policy; generic scheduling and execution stay in Switchyard.
 4. **UI talks to Switchyard only.** The dashboard should not become a pile of direct service consoles.
 5. **Linear first, DAG later.** Start with ordered step pipelines. Add branching only after real workflow pressure demands it.
 
@@ -42,8 +38,8 @@ Included:
 - linear pipeline definitions
 - executor interface
 - model assignment per workflow/step
-- OCQ/OpenCode executor
-- llama-line model executor
+- native OpenCode executor inspired by OCQ
+- native model broker inspired by llama-line
 - HTTP executor for service workflows
 - artifact and log capture
 - retry and cancellation propagation
@@ -62,7 +58,7 @@ Excluded:
 - arbitrary plugin hooks
 - generalized autonomous daemon swarms
 - complex DAG engine in v1
-- direct model provider routing that bypasses llama-line
+- standalone OCQ/llama-line/Changemaker/Blacktower product boundaries
 
 ## Phase 0 — stabilize the current control plane
 
@@ -73,8 +69,8 @@ Already done:
 - Postgres-backed runs, triggers, events, artifacts.
 - Scheduler with enabled cron/poll triggers.
 - API-backed HUD dashboard.
-- Imported `services/ocq`, `services/llama-line`, and `workflows/changemaker`.
-- Probes for llama-line, OCQ, external/reference Blacktower when configured, and Changemaker.
+- Imported `services/ocq`, `services/llama-line`, and `workflows/changemaker` as transitional reference implementations.
+- Probes for transitional llama-line/OCQ sidecars, external/reference Blacktower when configured, and Changemaker.
 - Open Pilot CLI/API contract.
 - Devlog Markdown artifact workflow.
 - Best-effort cancellation adapters.

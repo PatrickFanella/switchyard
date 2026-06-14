@@ -1,17 +1,17 @@
 # Switchyard
 
-Switchyard is a Go backend and Vite React TypeScript monorepo control-plane workspace for OpenCode workflows, `llama-line` model routing, OCQ session execution, built-in Blacktower agent profiles, and first-party workflows such as Open Pilot, Changemaker, and Devlog.
+Switchyard is a Go backend and Vite React TypeScript monorepo for a cohesive automation runtime: workflow orchestration, model routing, OpenCode execution, built-in agent profiles, operator HUD/API, and first-party workflows such as Open Pilot, Changemaker-style content generation, and Devlog.
 
-The product direction is one monorepo with hard runtime boundaries: Switchyard owns triggers, workflow runs, events, artifacts, runtime orchestration, agent profiles, and UI; `services/llama-line` remains the model broker; `services/ocq` remains the OpenCode/session adapter; workflow modules such as `workflows/changemaker` own domain policy. Blacktower is now planned as a Switchyard-native set of agents/profiles rather than an external dependency.
+The product direction is not to tape together the old OCQ, llama-line, Blacktower, and Changemaker apps. Those codebases are references and transitional scaffolding. Switchyard should rebuild their useful ideas as native modules: model broker, OpenCode executor, profiles/personas, workflow policy, logs, artifacts, and operator controls.
 
 ## Monorepo layout
 
 ```txt
-backend/              Switchyard API, scheduler, runs, triggers, adapters
+backend/              Switchyard API, scheduler, runs, triggers, native runtime
 web/                  Switchyard HUD dashboard
-services/ocq/         OpenCode session gateway
-services/llama-line/  model broker, queueing, upstream health
-workflows/changemaker/ first-party Changemaker workflow
+services/ocq/         transitional/reference OpenCode gateway implementation
+services/llama-line/  transitional/reference model broker implementation
+workflows/changemaker/ transitional/reference content workflow policy
 blacktower/           legacy/reference checkout only, ignored when present
 ```
 
@@ -45,12 +45,11 @@ The API uses Postgres when `DATABASE_URL` is set and runs embedded migrations on
 
 The Docker Compose stack sets `DATABASE_URL` for the API service using libpq keyword syntax so generated passwords with URL-significant characters do not need escaping.
 
-Set optional adapter probe variables to replace placeholder HUD data with live external state:
+The local stack currently runs transitional OCQ and llama-line sidecars while their behavior is rebuilt as native Switchyard modules:
 
 - The root Docker stack now includes local `llama-line` and OCQ gateway services. By default the API uses `LLAMA_LINE_BASE_URL=http://llama-line:11434` and `OCQ_BASE_URL=http://ocq:8088`; host ports default to `LLAMA_LINE_PORT=21434` and `OCQ_PORT=8088`.
 - OCQ forwards prompts to an OpenCode server through `OPENCODE_SERVER_URL` (default `http://host.docker.internal:4096`). Start OpenCode server on the host before expecting Open Pilot agent work to execute; otherwise OCQ health is up but model/agent requests will fail at the upstream boundary.
-- `BLACKTOWER_BASE_URL` reads Blacktower control-center `/api/snapshot`.
-- `CHANGEMAKER_BASE_URL` and optional `CHANGEMAKER_ADMIN_TOKEN` read Changemaker `/health`, `/api/posts`, and `/api/runs/status`.
+- External `BLACKTOWER_BASE_URL` and `CHANGEMAKER_BASE_URL` probes are legacy/reference-only while those concepts are absorbed into native profiles and workflow modules.
 
 Set `SWITCHYARD_SCHEDULER_ENABLED=true` to enable the in-process trigger scheduler. `SWITCHYARD_SCHEDULER_INTERVAL` defaults to `1m`.
 
@@ -58,9 +57,9 @@ Set `SWITCHYARD_WORKER_ENABLED=true` to enable async worker dispatch for long-ru
 
 For public access, put Switchyard behind reverse-proxy authentication such as Caddy + Authelia or Cloudflare Access. Set `SWITCHYARD_PUBLIC_URL` for operator metadata and set `SWITCHYARD_REVERSE_PROXY_AUTH=true` only after the proxy protects the public URL. `GET /api/operator-safety` reports this assumption and warns when full Open Pilot autonomy is enabled without the reverse-proxy auth flag.
 
-Workflow execution adapters are opt-in:
+Workflow execution modules are opt-in while native module parity is built:
 
-- Changemaker: the `changemaker-wrapper` pipeline dispatches `POST /api/runs` when `CHANGEMAKER_BASE_URL` is configured.
+- Changemaker: the `changemaker-wrapper` pipeline can still dispatch a transitional external service when `CHANGEMAKER_BASE_URL` is configured; the target direction is Switchyard-native content workflow policy.
 - Open Pilot: the `open-pilot-prototype` pipeline validates `repo`/`issue`, optionally fetches the issue from Gitea when `GITEA_BASE_URL` is configured, enforces required labels from `OPEN_PILOT_REQUIRED_LABELS`, attaches issue/prompt/branch/push/PR/CI/merge/issue-close artifacts, and calls OCQ through the OpenCode executor when `OCQ_BASE_URL` is configured. `OPEN_PILOT_MODEL` controls the default model; run input `model` can override it only when present in `OPEN_PILOT_ALLOWED_MODELS`. Set `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require issue text with acceptance/test instructions. `OPEN_PILOT_WORKTREE_MODE=disabled|dry-run|allow` controls isolated git worktree creation from `OPEN_PILOT_REPO_PATH` into `OPEN_PILOT_WORKTREE_ROOT`; `OPEN_PILOT_WORKTREE_CLEANUP=disabled|on-success` can remove a clean successful worktree after PR planning and records `open-pilot-worktree-cleanup.json`. `OPEN_PILOT_GIT_PUSH_MODE=disabled|dry-run|allow` controls pushing the worktree branch to `origin`. `OPEN_PILOT_GITEA_WRITE_MODE=disabled|dry-run|allow` controls PR creation; disabled/dry-run only attach PR plans. `OPEN_PILOT_CI_CHECK_MODE=disabled|poll|require-pass` controls the CI gate after AI review. `OPEN_PILOT_MERGE_MODE=disabled|dry-run|allow` controls the policy-gated merge step and `OPEN_PILOT_CLOSE_ISSUE_MODE=disabled|dry-run|allow` controls the final issue-close step. `OPEN_PILOT_REQUIRED_CHECKS` defaults to `verify,lint,test` when CI checks are enabled and may be empty only when CI checks are disabled. `OPEN_PILOT_CI_CHECK_TIMEOUT` defaults to `10m` and `OPEN_PILOT_CI_CHECK_INTERVAL` defaults to `15s`. `OPEN_PILOT_COMMAND` remains available for CLI compatibility/cancel hooks.
 - Devlog: `manual-devlog` runs through the registry-backed three-step pipeline (`collect-history`, `generate-markdown`, `attach-artifact`), generates Markdown through the shared model executor when `LLAMA_LINE_BASE_URL` or `OCQ_BASE_URL` is configured, and attaches `devlog.md` as an artifact. `DEVLOG_MODEL` controls the default model; run input `model` can override it for a single run only when present in `DEVLOG_ALLOWED_MODELS`.
 
@@ -114,7 +113,7 @@ Run retry creates a new run with the same workflow inputs. Step retry creates a 
 
 API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintained OpenAPI 3.1 snapshot of the stable local control-plane API; update it when route shapes or response envelopes change.
 
-The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module shells for queues, sessions, logs/search, prompts, config, agents, and skills so the imported `llama-line`, OCQ, Changemaker, and planned Blacktower agent surfaces have Switchyard homes. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
+The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module surfaces for queues, sessions, logs/search, prompts, config, agents, and skills so model brokering, OpenCode execution, content workflows, and profiles feel native to Switchyard instead of separate consoles. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.
 

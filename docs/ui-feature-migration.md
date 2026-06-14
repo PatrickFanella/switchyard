@@ -1,6 +1,6 @@
 # Switchyard UI Feature Migration
 
-Switchyard is absorbing the operator-facing UI surfaces from the four reference repos without collapsing their runtime boundaries.
+Switchyard is absorbing the operator-facing UI ideas from the reference repos into one native HUD. The goal is not separate service consoles; it is native module surfaces backed by Switchyard APIs.
 
 ## Implemented Switchyard homes
 
@@ -15,12 +15,12 @@ Switchyard is absorbing the operator-facing UI surfaces from the four reference 
 
 - The web app uses the neubrutal HUD token system from `web/tailwind.config.js` and CSS variables emitted into `web/src/styles.css`.
 - The dashboard has module navigation for Overview, Queues, Sessions, Logs/Search, Prompts, Config, Agents, and Skills.
-- `GET /api/adapters` returns typed placeholder contracts for all imported UI surfaces.
-- Pages are wired to those contracts so real adapters can replace static data without changing page layout.
+- `GET /api/adapters` still returns typed transitional contracts for imported/reference surfaces.
+- Pages are wired so those contracts can evolve into native module state without changing the overall HUD layout.
 
 ## Next adapter work
 
-1. Replace llama-line queue/request/upstream placeholders with calls to llama-line admin/status APIs.
-2. Replace OCQ requests/logs/sessions/settings placeholders with OCQ admin APIs.
-3. Replace Blacktower tasks/reports/scheduler placeholders with control-center snapshots or API calls.
-4. Replace Changemaker posts/prompts/config/service placeholders with its admin API.
+1. Replace llama-line queue/request/upstream placeholders with native model broker state.
+2. Replace OCQ requests/logs/sessions/settings placeholders with native OpenCode executor state.
+3. Replace Blacktower placeholders with native profile/persona and workflow-role state.
+4. Replace Changemaker placeholders with native content workflow policy, prompts, artifacts, and run state.

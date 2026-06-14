@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-06-11
+Accepted — 2026-06-11. Superseded for long-term architecture by [ADR 0003](0003-native-switchyard-modules.md).
 
 ## Context
 
@@ -20,7 +20,9 @@ Do not import the external Blacktower checkout. A local `blacktower/` checkout r
 
 The imports are copy-based rather than subtree-based. This keeps the migration simple and reviewable while the original repositories remain available for full history if needed.
 
-## Boundaries
+## Original Boundaries Superseded by ADR 0003
+
+These boundaries describe the copy/import phase only. They should not be treated as the long-term product architecture.
 
 - Switchyard core owns workflow runs, triggers, events, artifacts, API, UI, scheduler, and adapter contracts.
 - `services/llama-line` owns model routing, queueing, upstream health, and observability.
@@ -31,6 +33,8 @@ The imports are copy-based rather than subtree-based. This keeps the migration s
 ## Future direction
 
 Switchyard may add a small built-in orchestrator/subagent workflow runtime with assignable models from config or API calls. Blacktower can become the first curated profile set for that runtime.
+
+Update: ADR 0003 clarifies that OCQ, llama-line, Changemaker, and Blacktower are sources of proven ideas and transitional scaffolding, not permanent separate product boundaries. Their useful behavior should be rebuilt as native Switchyard modules over time.
 
 ## Consequences
 
