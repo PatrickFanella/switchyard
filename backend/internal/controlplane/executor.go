@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -379,9 +380,18 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 	case "push-branch", "pr-plan":
 		completed, _ := state["open-pilot.agent-completed"].(bool)
 		return completed
+	case "ai-review":
+		return o.env != nil && o.env.modelExecutor != nil && o.env.llamaLineBaseURL != "" && openPilotHasKnownPullRequest(state, run.Inputs)
 	default:
 		return true
 	}
+}
+
+func openPilotHasKnownPullRequest(state map[string]any, inputs map[string]string) bool {
+	if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok && openPilotPullRequestKnown(pr) {
+		return true
+	}
+	return firstNonEmpty(inputs["resume.open-pilot.pr-plan.pull_request_url"], inputs["pull_request_url"], inputs["resume.open-pilot.pr-plan.pull_request_id"], inputs["resume.open-pilot.pr-plan.pull_request_number"]) != ""
 }
 
 func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state map[string]any) {
@@ -473,6 +483,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 	}
 	if issueState.PullRequestURL != "" || issueState.PullRequestID != 0 || issueState.PullRequestNum != 0 {
 		state["open-pilot.pull-request"] = GiteaPullRequest{ID: issueState.PullRequestID, Number: issueState.PullRequestNum, HTMLURL: issueState.PullRequestURL}
+	}
+	if len(issueState.GateStatus) > 0 {
+		state["open-pilot.gate-status"] = cloneOpenPilotGateStatus(issueState.GateStatus)
 	}
 }
 
@@ -594,15 +607,27 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 			saved.ResumeInputs[k] = v
 		}
 	}
+	if retryStep, ok := state["retry_from_step"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "retry_from_step", retryStep)
+	}
+	if retryPos, ok := state["retry_from_step_position"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "retry_from_step_position", retryPos)
+	}
 	if issueSummary, ok := state["open-pilot.issue-summary"].(string); ok {
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.validate-issue.summary", issueSummary)
 	}
 	if prompt, ok := state["open-pilot.prompt"].(string); ok {
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.prompt", prompt)
 	}
+	if verifySummary, ok := state["open-pilot.verify-summary"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.verify-command.summary", verifySummary)
+	}
 	if response, ok := state["open-pilot.response"].(string); ok {
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.response", response)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.summary", response)
+	}
+	if agentSummary, ok := state["open-pilot.agent-summary"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.summary", agentSummary)
 	}
 	if branchPlan, ok := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan); ok {
 		saved.Branch = branchPlan.Branch
@@ -646,6 +671,32 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_url", pr.HTMLURL)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_id", fmt.Sprintf("%d", pr.ID))
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_number", fmt.Sprintf("%d", pr.Number))
+	}
+	if feedback, ok := state["ai_review.feedback"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "ai_review.feedback", feedback)
+	}
+	if clearRepair, ok := state["open-pilot.ai-review.clear-repair"].(bool); ok && clearRepair {
+		delete(saved.ResumeInputs, "ai_review.feedback")
+		delete(saved.ResumeInputs, "retry_from_step")
+		delete(saved.ResumeInputs, "retry_from_step_position")
+		saved.RepairAttempts = 0
+	}
+	if retryStep, ok := state["retry_from_step"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "retry_from_step", retryStep)
+	}
+	if retryPosition, ok := state["retry_from_step_position"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "retry_from_step_position", retryPosition)
+	}
+	if gateStatus, ok := state["open-pilot.gate-status"].(map[string]string); ok {
+		if saved.GateStatus == nil {
+			saved.GateStatus = OpenPilotGateStatus{}
+		}
+		for k, v := range gateStatus {
+			saved.GateStatus[k] = v
+		}
+	}
+	if attempts, ok := state["open-pilot.repair-attempts"].(int); ok {
+		saved.RepairAttempts = attempts
 	}
 	if phase == OpenPilotPhaseVerified {
 		saved.GateStatus["local_verify"] = "passed"
@@ -728,6 +779,8 @@ func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Ru
 		phase = OpenPilotPhaseFailed
 	case "pr-plan":
 		phase = OpenPilotPhaseFailed
+	case "ai-review":
+		return
 	}
 	if persistErr := o.persistOpenPilotIssueState(run, phase, step.Name, err.Error(), state); persistErr != nil {
 		if o.env != nil && o.env.store != nil {
@@ -825,6 +878,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			return PipelineStepExecution{Summary: "OCQ not configured; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
 		}
 		state["open-pilot.agent-completed"] = true
+		state["open-pilot.agent-summary"] = response.Content
 		state["open-pilot.response"] = response.Content
 		state["open-pilot.agent-correlation"] = response.CorrelationIDs
 		stepResult := PipelineStepExecution{Summary: "OCQ completed Open Pilot prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}}, CorrelationIDs: response.CorrelationIDs}
@@ -861,6 +915,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			summary = "Command executed by policy runner"
 		}
 		state["open-pilot.verify-command.command"] = command
+		state["open-pilot.verify-summary"] = summary
 		state["open-pilot.gate-status"] = map[string]string{"local_verify": "passed"}
 		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseVerified, step.Name, "", state); err != nil {
 			return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
@@ -998,6 +1053,76 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 		}
 		return out, nil
+	case "ai-review":
+		model := firstNonEmpty(step.Model, o.env.openPilotModel)
+		reviewPrompt := buildOpenPilotAIReviewPrompt(repo, issue, run.Inputs, state)
+		if o.env == nil || o.env.modelExecutor == nil {
+			return PipelineStepExecution{}, errors.New("model executor not configured")
+		}
+		response, err := o.env.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "system", Content: "You are the Open Pilot operator reviewer. Review the completed work against the issue, branch, local verification, and agent output. Reply with exactly one paragraph using the required verdict contract."}, {Role: "user", Content: reviewPrompt}}})
+		if err != nil {
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{}, err
+		}
+		verdict, feedback, parseErr := parseOpenPilotAIReviewResponse(response.Content)
+		if parseErr != nil {
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, parseErr.Error(), state); persistErr != nil {
+				return PipelineStepExecution{CorrelationIDs: response.CorrelationIDs}, errors.Join(parseErr, persistErr)
+			}
+			return PipelineStepExecution{CorrelationIDs: response.CorrelationIDs}, parseErr
+		}
+		gateStatus := map[string]string{}
+		var existing OpenPilotIssueState
+		var existingErr error
+		if o.env != nil && o.env.store != nil {
+			existing, existingErr = o.env.store.OpenPilotIssueState(repo, issue)
+			if existingErr == nil {
+				gateStatus = cloneOpenPilotGateStatus(existing.GateStatus)
+			}
+		}
+		if gateStatus == nil {
+			gateStatus = map[string]string{}
+		}
+		artifactBody := buildOpenPilotAIReviewArtifact(repo, issue, run.Inputs, state, verdict, feedback, response.Content)
+		artifact := CreateArtifactInput{RunID: run.ID, Name: "open-pilot-ai-review.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(artifactBody)}
+		state["open-pilot.gate-status"] = gateStatus
+		state["open-pilot.ai-review.body"] = response.Content
+		summary := "AI review approved"
+		if verdict == "changes_requested" {
+			state["ai_review.feedback"] = feedback
+			state["retry_from_step"] = "open-pilot.agent-work"
+			state["retry_from_step_position"] = strconv.Itoa(4)
+			attempts := 1
+			maxAttempts := openPilotDefaultMaxRepairAttempts
+			if existingErr == nil {
+				if existing.RepairAttempts > 0 {
+					attempts = existing.RepairAttempts + 1
+				}
+				if existing.MaxRepairAttempts > 0 {
+					maxAttempts = existing.MaxRepairAttempts
+				}
+			}
+			state["open-pilot.repair-attempts"] = attempts
+			gateStatus["ai_review"] = "changes_requested"
+			state["open-pilot.gate-status"] = gateStatus
+			phase := OpenPilotPhaseFailed
+			if attempts >= maxAttempts {
+				phase = OpenPilotPhasePaused
+			}
+			if err := o.persistOpenPilotIssueState(run, phase, step.Name, feedback, state); err != nil {
+				return PipelineStepExecution{Summary: "AI review requested changes", Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, err
+			}
+			return PipelineStepExecution{Summary: "AI review requested changes", Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, errors.New("ai review requested changes")
+		}
+		gateStatus["ai_review"] = "approved"
+		state["open-pilot.gate-status"] = gateStatus
+		state["open-pilot.ai-review.clear-repair"] = true
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseAIReviewed, step.Name, "", state); err != nil {
+			return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, err
+		}
+		return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, nil
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)
 	}
@@ -1257,6 +1382,146 @@ func buildOpenPilotPrompt(repo string, issue string, issueSummary string, fetche
 	} else {
 		builder.WriteString("Do not run shell/test commands or push changes yourself; Switchyard will run verification and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
 	}
+	if feedback := firstNonEmpty(inputs["ai_review.feedback"], inputs["resume.open-pilot.ai-review.feedback"]); feedback != "" {
+		builder.WriteString("\n## Prior AI review feedback\n\n" + feedback + "\n")
+	}
+	return builder.String()
+}
+
+func buildOpenPilotAIReviewPrompt(repo, issue string, inputs map[string]string, state map[string]any) string {
+	var builder strings.Builder
+	builder.WriteString("# Open Pilot AI Review\n\n")
+	builder.WriteString("Repository: " + repo + "\n")
+	builder.WriteString("Issue: " + issue + "\n")
+	branch := firstNonEmpty(inputs["resume.open-pilot.branch-plan.branch"], inputs["branch"], inputs["open-pilot.branch-name"])
+	if branch == "" {
+		if branchPlan, ok := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan); ok {
+			branch = branchPlan.Branch
+		}
+	}
+	if branch != "" {
+		builder.WriteString("Branch: " + branch + "\n")
+	}
+	prURL := firstNonEmpty(inputs["resume.open-pilot.pr-plan.pull_request_url"], inputs["pull_request_url"])
+	if prURL == "" {
+		if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok {
+			prURL = pr.HTMLURL
+		}
+	}
+	if prURL != "" {
+		builder.WriteString("Pull request URL: " + prURL + "\n")
+	} else {
+		builder.WriteString("Pull request URL: not available\n")
+	}
+	verifySummary := firstNonEmpty(inputs["resume.open-pilot.verify-command.summary"], inputs["open-pilot.verify-summary"])
+	if verifySummary == "" {
+		if summary, ok := state["open-pilot.verify-summary"].(string); ok {
+			verifySummary = summary
+		}
+	}
+	if verifySummary != "" {
+		builder.WriteString("Local verify summary: " + verifySummary + "\n")
+	}
+	agentSummary := firstNonEmpty(inputs["resume.open-pilot.agent-work.summary"], inputs["open-pilot.agent-summary"])
+	if agentSummary == "" {
+		if summary, ok := state["open-pilot.agent-summary"].(string); ok {
+			agentSummary = summary
+		}
+	}
+	if agentSummary != "" {
+		builder.WriteString("Agent summary: " + agentSummary + "\n")
+	}
+	agentResponse := firstNonEmpty(inputs["resume.open-pilot.agent-work.response"], inputs["open-pilot.response"])
+	if agentResponse == "" {
+		if response, ok := state["open-pilot.response"].(string); ok {
+			agentResponse = response
+		}
+	}
+	if agentResponse != "" {
+		builder.WriteString("Agent response: " + agentResponse + "\n")
+	}
+	if feedback := firstNonEmpty(inputs["ai_review.feedback"], inputs["resume.open-pilot.ai-review.feedback"]); feedback != "" {
+		builder.WriteString("\n## Prior AI review feedback\n\n" + feedback + "\n")
+	}
+	if gateStatus, ok := state["open-pilot.gate-status"].(map[string]string); ok && len(gateStatus) > 0 {
+		builder.WriteString("\n## Gate status\n\n")
+		keys := make([]string, 0, len(gateStatus))
+		for k := range gateStatus {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			builder.WriteString("- " + k + ": " + gateStatus[k] + "\n")
+		}
+	}
+	builder.WriteString("\n## Output contract\n\nReply with exactly one paragraph using one of these formats:\n\nAPPROVED: <one paragraph>\nCHANGES_REQUESTED: <one paragraph>\n")
+	return builder.String()
+}
+
+func parseOpenPilotAIReviewResponse(content string) (string, string, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return "", "", errors.New("open pilot ai review returned empty output")
+	}
+	normalizedNewlines := strings.ReplaceAll(strings.ReplaceAll(trimmed, "\r\n", "\n"), "\r", "\n")
+	upper := strings.ToUpper(trimmed)
+	if strings.Count(upper, "APPROVED:")+strings.Count(upper, "CHANGES_REQUESTED:") != 1 {
+		return "", "", errors.New("open pilot ai review output must contain exactly one verdict")
+	}
+	if strings.Contains(normalizedNewlines, "\n\n") {
+		return "", "", errors.New("open pilot ai review output must be exactly one paragraph")
+	}
+	if strings.HasPrefix(upper, "APPROVED:") {
+		feedback := normalizeOpenPilotParagraph(strings.TrimSpace(trimmed[len("APPROVED:"):]))
+		if feedback == "" {
+			return "", "", errors.New("open pilot ai review approved without rationale")
+		}
+		return "approved", feedback, nil
+	}
+	if strings.HasPrefix(upper, "CHANGES_REQUESTED:") {
+		feedback := normalizeOpenPilotParagraph(strings.TrimSpace(trimmed[len("CHANGES_REQUESTED:"):]))
+		if feedback == "" {
+			return "", "", errors.New("open pilot ai review requested changes without feedback")
+		}
+		return "changes_requested", feedback, nil
+	}
+	return "", "", fmt.Errorf("open pilot ai review output must start with APPROVED: or CHANGES_REQUESTED:")
+}
+
+func normalizeOpenPilotParagraph(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func buildOpenPilotAIReviewArtifact(repo, issue string, inputs map[string]string, state map[string]any, verdict, feedback, raw string) string {
+	var builder strings.Builder
+	builder.WriteString("# Open Pilot AI Review\n\n")
+	builder.WriteString("Repository: " + repo + "\n")
+	builder.WriteString("Issue: " + issue + "\n")
+	branch := firstNonEmpty(inputs["resume.open-pilot.branch-plan.branch"], inputs["branch"], inputs["open-pilot.branch-name"])
+	if branch == "" {
+		if branchPlan, ok := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan); ok {
+			branch = branchPlan.Branch
+		}
+	}
+	if branch != "" {
+		builder.WriteString("Branch: " + branch + "\n")
+	}
+	prURL := firstNonEmpty(inputs["resume.open-pilot.pr-plan.pull_request_url"], inputs["pull_request_url"])
+	if prURL == "" {
+		if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok {
+			prURL = pr.HTMLURL
+		}
+	}
+	if prURL != "" {
+		builder.WriteString("Pull request URL: " + prURL + "\n")
+	}
+	if verdict != "" {
+		builder.WriteString("Verdict: " + strings.ToUpper(verdict) + "\n")
+	}
+	if feedback != "" {
+		builder.WriteString("\n## Feedback\n\n" + feedback + "\n")
+	}
+	builder.WriteString("\n## Raw model output\n\n" + raw + "\n")
 	return builder.String()
 }
 

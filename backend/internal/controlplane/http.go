@@ -219,6 +219,7 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			return
 		}
 		inputs := retryRunInputsFromStep(detail, step)
+		applyOpenPilotRetryInputsFromState(a.store, detail, step, inputs)
 		run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: inputs})
 		if err != nil {
 			writeControlError(w, err)
@@ -265,6 +266,32 @@ func retryRunInputsFromStep(detail RunDetail, step RunStep) map[string]string {
 		}
 	}
 	return inputs
+}
+
+func applyOpenPilotRetryInputsFromState(store Store, detail RunDetail, step RunStep, inputs map[string]string) {
+	if store == nil || detail.Run.WorkflowID != string(WorkflowOpenPilot) || step.Name != "open-pilot.ai-review" || inputs == nil {
+		return
+	}
+	repo := detail.Run.Inputs["repo"]
+	issue := detail.Run.Inputs["issue"]
+	if repo == "" || issue == "" {
+		return
+	}
+	state, err := store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		return
+	}
+	for key, value := range state.ResumeInputs {
+		if value != "" {
+			inputs[key] = value
+		}
+	}
+	if retryStep := state.ResumeInputs["retry_from_step"]; retryStep != "" {
+		inputs["retry_from_step"] = retryStep
+	}
+	if retryPosition := state.ResumeInputs["retry_from_step_position"]; retryPosition != "" {
+		inputs["retry_from_step_position"] = retryPosition
+	}
 }
 
 func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {

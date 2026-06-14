@@ -306,6 +306,59 @@ func TestAPIRunStepsListRetryAndCancel(t *testing.T) {
 	}
 }
 
+func TestAPIRetryOpenPilotAIReviewUsesRepairCursor(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 8, Name: "open-pilot.ai-review", Executor: "model"})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+	if _, err := store.StartRunStep(step.ID); err != nil {
+		t.Fatalf("StartRunStep() error = %v", err)
+	}
+	if _, err := store.FinishRunStep(step.ID, controlplane.StepFailed, "AI review requested changes", "ai review requested changes", nil); err != nil {
+		t.Fatalf("FinishRunStep() error = %v", err)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", Phase: controlplane.OpenPilotPhaseValidated, ResumeInputs: map[string]string{
+		"retry_from_step":          "open-pilot.agent-work",
+		"retry_from_step_position": "4",
+		"ai_review.feedback":       "tighten validation",
+	}}); err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/steps/"+step.ID+"/retry", nil)
+	if err != nil {
+		t.Fatalf("new retry request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST retry error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("retry status = %d", resp.StatusCode)
+	}
+	var retryBody struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&retryBody); err != nil {
+		t.Fatalf("decode retry step: %v", err)
+	}
+	if retryBody.Run.Inputs["retry_from_step"] != "open-pilot.agent-work" || retryBody.Run.Inputs["retry_from_step_position"] != "4" || retryBody.Run.Inputs["ai_review.feedback"] != "tighten validation" {
+		t.Fatalf("retry inputs = %+v", retryBody.Run.Inputs)
+	}
+}
+
 func TestAPISchedulerStatusDisabledByDefault(t *testing.T) {
 	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
 	srv := httptest.NewServer(api.Handler())

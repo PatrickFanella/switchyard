@@ -55,7 +55,7 @@ func DefaultAgentProfileRegistry() StaticAgentProfileRegistry {
 			Name:             "Operator Reviewer",
 			Role:             "reviewer",
 			DefaultModel:     "opencode:gpt-5.5",
-			PromptContract:   "Review workflow output for safety, completeness, and operator handoff clarity.",
+			PromptContract:   "Review the completed Open Pilot work for safety, completeness, and operator handoff clarity. Reply exactly with APPROVED: <one paragraph> or CHANGES_REQUESTED: <one paragraph>.",
 			AllowedExecutors: []string{"model", "opencode"},
 		},
 	}
