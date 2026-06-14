@@ -22,17 +22,17 @@ func (c *captureModelExecutor) Generate(ctx context.Context, request ModelReques
 	return c.response, nil
 }
 
-type captureOCQExecutor struct {
-	requests []OCQRequest
-	response OCQResponse
+type captureOpenCodeExecutor struct {
+	requests []OpenCodeRequest
+	response OpenCodeResponse
 	err      error
 }
 
-func (c *captureOCQExecutor) SendPrompt(ctx context.Context, request OCQRequest) (OCQResponse, error) {
+func (c *captureOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
 	_ = ctx
 	c.requests = append(c.requests, request)
 	if c.err != nil {
-		return OCQResponse{}, c.err
+		return OpenCodeResponse{}, c.err
 	}
 	return c.response, nil
 }
@@ -43,7 +43,7 @@ func newOpenPilotAIReviewTestEnv(store Store) *EnvWorkflowExecutors {
 		llamaLineBaseURL:      "http://mock-review-backend",
 		openPilotModel:        "review-model",
 		modelExecutor:         &captureModelExecutor{},
-		ocqExecutor:           &captureOCQExecutor{response: OCQResponse{Content: "agent output"}},
+		openCodeExecutor:      &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "agent output"}},
 		openPilotBaseBranch:   "main",
 		openPilotBranchPrefix: "open-pilot/",
 	}
@@ -208,9 +208,9 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 		"resume.open-pilot.branch-plan.base_branch": "main",
 		"ai_review.feedback":                        "Please tighten validation and add tests",
 	}, OpenPilotGateStatus{"ai_review": "changes_requested", "local_verify": "passed"}))
-	ocq := &captureOCQExecutor{response: OCQResponse{Content: "agent output"}}
+	ocq := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "agent output"}}
 	env := newOpenPilotAIReviewTestEnv(store)
-	env.ocqExecutor = ocq
+	env.openCodeExecutor = ocq
 	runner := &Runner{store: store}
 	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{
 		"repo":                     "OWNER/REPO",

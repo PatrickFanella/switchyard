@@ -65,3 +65,22 @@ func TestHandlePipelineStepFailureLogsPersistenceFailure(t *testing.T) {
 		t.Fatalf("events = %+v", detail.Events)
 	}
 }
+
+func TestOpenPilotAgentWorkCorrelationProvidesAbortHandle(t *testing.T) {
+	run := Run{ID: "run-123", Inputs: map[string]string{"opencode_session_id": "ses-native"}}
+	step := PipelineStep{ID: "agent-work", Name: "open-pilot.agent-work", Executor: "opencode"}
+	correlation := (openPilotExecutor{}).PipelineStepCorrelationIDs(run, step, map[string]any{})
+	if correlation["opencode_executor"] != "switchyard" || correlation["opencode_executor_backend"] != "ocq" {
+		t.Fatalf("correlation = %+v", correlation)
+	}
+	if correlation["ocq_request_id"] == "" || correlation["ocq_session_id"] != "ses-native" {
+		t.Fatalf("correlation = %+v", correlation)
+	}
+}
+
+func TestOpenCodeSessionIDPrefersNativeKey(t *testing.T) {
+	inputs := map[string]string{"opencode_session_id": "native-session", "ocq_session_id": "legacy-session"}
+	if got := openCodeSessionID(inputs); got != "native-session" {
+		t.Fatalf("openCodeSessionID() = %q", got)
+	}
+}

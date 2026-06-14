@@ -79,7 +79,7 @@ type EnvWorkflowExecutors struct {
 	openPilotBranchPrefix     string
 	openPilotPRDraft          bool
 	modelExecutor             ModelBroker
-	ocqExecutor               OCQExecutor
+	openCodeExecutor          OpenCodeExecutor
 	issueFetcher              IssueFetcher
 	giteaReader               GiteaPullRequestReader
 	giteaMerger               GiteaPullRequestMerger
@@ -158,7 +158,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotBranchPrefix:     firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
 		openPilotPRDraft:          !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
 		modelExecutor:             NewEnvModelBroker(),
-		ocqExecutor:               NewEnvOCQExecutor(),
+		openCodeExecutor:          NewEnvOpenCodeExecutor(),
 		issueFetcher:              giteaClient,
 		giteaReader:               giteaClient,
 		giteaMerger:               giteaClient,
@@ -298,7 +298,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: model, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
+	response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work")})
 	if err != nil {
 		fallbackExecution := WorkflowExecution{Summary: "Prepared Open Pilot prompt for issue " + issue, Events: []WorkflowExecutionEvent{{Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OCQ not configured; prompt prepared for operator handoff", "", nil)
@@ -989,6 +989,26 @@ func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Ru
 	}
 }
 
+func (o openPilotExecutor) PipelineStepCorrelationIDs(run Run, step PipelineStep, state map[string]any) map[string]string {
+	_ = o
+	_ = state
+	if step.ID != "agent-work" {
+		return nil
+	}
+	requestID := openPilotOpenCodeRequestID(run, step.Name)
+	correlation := map[string]string{
+		"opencode_executor":         "switchyard",
+		"opencode_executor_backend": "ocq",
+		"ocq_request_id":            requestID,
+	}
+	if sessionID := strings.TrimSpace(run.Inputs["opencode_session_id"]); sessionID != "" {
+		correlation["ocq_session_id"] = sessionID
+	} else if sessionID := strings.TrimSpace(run.Inputs["ocq_session_id"]); sessionID != "" {
+		correlation["ocq_session_id"] = sessionID
+	}
+	return correlation
+}
+
 func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
@@ -1068,7 +1088,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		issueSummary, _ := state["open-pilot.issue-summary"].(string)
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		model := firstNonEmpty(step.Model, o.env.openPilotModel)
-		response, err := o.env.ocqExecutor.SendPrompt(ctx, OCQRequest{Model: model, Prompt: prompt, SessionID: run.Inputs["ocq_session_id"]})
+		response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, step.Name)})
 		if err != nil {
 			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
@@ -1838,6 +1858,18 @@ func (e *EnvWorkflowExecutors) openPilotBranchName(repo string, issue string, fe
 		base += "-" + slug(fetched.Title)
 	}
 	return e.openPilotBranchPrefix + base
+}
+
+func openCodeSessionID(inputs map[string]string) string {
+	return firstNonEmpty(inputs["opencode_session_id"], inputs["ocq_session_id"])
+}
+
+func openPilotOpenCodeRequestID(run Run, stepName string) string {
+	suffix := slug(firstNonEmpty(stepName, "opencode"))
+	if suffix == "" {
+		suffix = "opencode"
+	}
+	return run.ID + "-" + suffix
 }
 
 func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue string, branchName string, issueSummary string, response string, inputs map[string]string) GiteaPullRequestInput {

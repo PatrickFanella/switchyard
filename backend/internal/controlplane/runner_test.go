@@ -19,6 +19,11 @@ type throttledPipelineExecutor struct {
 	maxActive int
 }
 
+type blockingCorrelatedPipelineExecutor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
 func (e *throttledPipelineExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {
 	return WorkflowExecution{Summary: "fallback should not run"}, nil
 }
@@ -45,6 +50,66 @@ func (e *throttledPipelineExecutor) ExecutePipelineStep(ctx context.Context, _ R
 	e.active--
 	e.mu.Unlock()
 	return PipelineStepExecution{Summary: "ran " + step.ID}, nil
+}
+
+func (e *blockingCorrelatedPipelineExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {
+	return WorkflowExecution{Summary: "fallback should not run"}, nil
+}
+
+func (e *blockingCorrelatedPipelineExecutor) PipelineStepCorrelationIDs(run Run, step PipelineStep, _ map[string]any) map[string]string {
+	return map[string]string{"ocq_request_id": run.ID + "-" + step.ID, "opencode_executor": "switchyard"}
+}
+
+func (e *blockingCorrelatedPipelineExecutor) ExecutePipelineStep(ctx context.Context, _ Run, step PipelineStep, _ map[string]any) (PipelineStepExecution, error) {
+	close(e.started)
+	select {
+	case <-ctx.Done():
+		return PipelineStepExecution{}, ctx.Err()
+	case <-e.release:
+	}
+	return PipelineStepExecution{Summary: "ran " + step.ID, CorrelationIDs: map[string]string{"ocq_request_id": "finished"}}, nil
+}
+
+func TestRunnerPersistsPipelineStepCorrelationBeforeExecutionCompletes(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := store.UpsertWorkflow(Workflow{ID: "test-workflow", Kind: WorkflowKind("test-workflow"), Name: "Test Workflow"}); err != nil {
+		t.Fatalf("UpsertWorkflow() error = %v", err)
+	}
+	executor := &blockingCorrelatedPipelineExecutor{started: make(chan struct{}), release: make(chan struct{})}
+	runner := NewRunner(store, MapExecutorRegistry{"test-workflow": executor})
+	runner.pipelines = StaticPipelineRegistry{
+		"test-workflow": {
+			ID:         "test-pipeline",
+			WorkflowID: "test-workflow",
+			Name:       "Test Pipeline",
+			Steps:      []PipelineStep{{ID: "agent-work", Position: 1, Name: "test.agent-work", Executor: "opencode"}},
+		},
+	}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: "test-workflow"})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.ExecuteRun(context.Background(), run)
+		done <- err
+	}()
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("pipeline step did not start")
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if len(detail.Steps) != 1 || detail.Steps[0].Status != StepRunning || detail.Steps[0].CorrelationIDs["ocq_request_id"] != run.ID+"-agent-work" {
+		t.Fatalf("steps = %+v", detail.Steps)
+	}
+	close(executor.release)
+	if err := <-done; err != nil {
+		t.Fatalf("ExecuteRun() error = %v", err)
+	}
 }
 
 func TestRunnerLimitsPipelineExecutorConcurrency(t *testing.T) {

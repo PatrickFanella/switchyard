@@ -28,6 +28,10 @@ type PipelineStepDecider interface {
 	ShouldExecutePipelineStep(run Run, step PipelineStep, state map[string]any) bool
 }
 
+type PipelineStepCorrelationProvider interface {
+	PipelineStepCorrelationIDs(run Run, step PipelineStep, state map[string]any) map[string]string
+}
+
 type PipelineStepFailureReporter interface {
 	HandlePipelineStepFailure(ctx context.Context, run Run, step PipelineStep, state map[string]any, err error)
 }
@@ -177,7 +181,11 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			}
 			model = resolved
 		}
-		step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+		correlationIDs := map[string]string(nil)
+		if provider, ok := executor.(PipelineStepCorrelationProvider); ok {
+			correlationIDs = provider.PipelineStepCorrelationIDs(run, pipelineStep, state)
+		}
+		step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
 		if err != nil {
 			return execution, err
 		}

@@ -180,8 +180,9 @@ Exit criteria:
 
 Current status:
 
-- `backend/internal/controlplane/ocq_executor.go` is the current native call seam for OpenCode prompt/session execution while OCQ remains the transitional gateway backend.
-- Open Pilot `agent-work` runs through the `opencode` pipeline step and persists OCQ request/session correlation IDs on run steps.
+- `backend/internal/controlplane/ocq_executor.go` defines the native `OpenCodeExecutor` contract while OCQ remains the transitional gateway backend.
+- `EnvOpenCodeExecutor` routes prompt/session execution through OCQ and marks responses with `opencode_executor=switchyard` and `opencode_executor_backend=ocq` correlation metadata while preserving OCQ request/session IDs for cancellation compatibility.
+- Open Pilot `agent-work` runs through the `opencode` pipeline step and persists OpenCode/OCQ request/session correlation IDs on run steps.
 - `GET /api/opencode-executor/status` exposes a native Switchyard OpenCode executor status surface backed by transitional OCQ health/session data.
 
 ## Phase 4 — workflow pipelines
