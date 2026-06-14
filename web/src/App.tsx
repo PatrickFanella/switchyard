@@ -79,6 +79,36 @@ type RunDetail = {
   artifacts: Artifact[];
 };
 
+type OpenPilotIssueState = {
+  id: string;
+  repo: string;
+  issue: string;
+  phase: string;
+  run_id?: string;
+  last_step_name?: string;
+  branch?: string;
+  base?: string;
+  worktree_path?: string;
+  pull_request_url?: string;
+  pull_request_id?: number;
+  pull_request_number?: number;
+  merge_commit_sha?: string;
+  issue_closed: boolean;
+  gate_status?: Record<string, string>;
+  resume_inputs?: Record<string, string>;
+  repair_attempts: number;
+  max_repair_attempts: number;
+  last_error?: string;
+  updated_at: string;
+  created_at: string;
+};
+
+type OpenPilotStateResponse = {
+  state: OpenPilotIssueState;
+  next_action: string;
+  run?: Run;
+};
+
 type DashboardState = {
   workflows: Workflow[];
   triggers: Trigger[];
@@ -234,6 +264,8 @@ type DashboardResponse<T> = {
 
 const apiBase = (import.meta.env.VITE_SWITCHYARD_API_URL ?? '').replace(/\/$/, '');
 
+export const openPilotStateFields = ['Phase', 'Next action', 'Gate status', 'Pull request URL', 'Merge SHA', 'Issue closed', 'Repair attempts', 'Last error'] as const;
+
 const starterWorkflows: Workflow[] = [
   {
     id: 'open-pilot',
@@ -299,6 +331,15 @@ function apiPath(path: string) {
   return `${apiBase}${path}`;
 }
 
+class APIError extends Error {
+  status: number;
+
+  constructor(status: number) {
+    super(`Switchyard API returned ${status}`);
+    this.status = status;
+  }
+}
+
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiPath(path), {
     headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
@@ -306,7 +347,7 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Switchyard API returned ${response.status}`);
+    throw new APIError(response.status);
   }
 
   return (await response.json()) as T;
@@ -363,6 +404,34 @@ function normalizeRunDetail(detail: RunDetail): RunDetail {
     events: arrayOrEmpty(detail.events),
     artifacts: arrayOrEmpty(detail.artifacts),
   };
+}
+
+function normalizeOpenPilotState(response: OpenPilotStateResponse): OpenPilotStateResponse {
+  return {
+    ...response,
+    state: {
+      ...response.state,
+      gate_status: response.state.gate_status ?? {},
+      resume_inputs: response.state.resume_inputs ?? {},
+    },
+  };
+}
+
+function openPilotRunInputs(detail: RunDetail) {
+  const inputs = detail.run.inputs ?? {};
+  const repo = inputs.repo?.trim();
+  const issue = inputs.issue?.trim();
+
+  if (!repo || !issue) {
+    return null;
+  }
+
+  return { repo, issue };
+}
+
+function formatOpenPilotGateStatus(gateStatus?: Record<string, string>) {
+  const entries = Object.entries(gateStatus ?? {});
+  return entries.length > 0 ? entries.map(([key, value]) => `${key}: ${value}`).join(' · ') : 'None';
 }
 
 function normalizeAdapters(adapters: AdapterPayload): AdapterPayload {
@@ -742,6 +811,7 @@ export default function App() {
   const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters, scheduler: emptyScheduler, workers: emptyWorkers });
   const [selectedRunID, setSelectedRunID] = useState<string>('');
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
+  const [openPilotState, setOpenPilotState] = useState<OpenPilotStateResponse | null>(null);
   const [activeView, setActiveView] = useState<ViewID>('overview');
   const [loading, setLoading] = useState(true);
   const [runningTriggerID, setRunningTriggerID] = useState<string>('');
@@ -782,13 +852,31 @@ export default function App() {
   const loadRunDetail = useCallback(async (runID: string) => {
     if (!runID) {
       setRunDetail(null);
+      setOpenPilotState(null);
       return;
     }
 
+    setOpenPilotState(null);
     setError('');
     try {
       const detail = await fetchJSON<RunDetail>(`/api/runs/${runID}`);
-      setRunDetail(normalizeRunDetail(detail));
+      const normalized = normalizeRunDetail(detail);
+      setRunDetail(normalized);
+      const openPilotInputs = normalized.run.workflow_id === 'open-pilot' ? openPilotRunInputs(normalized) : null;
+      if (!openPilotInputs) {
+        setOpenPilotState(null);
+        return;
+      }
+      try {
+        const state = await fetchJSON<OpenPilotStateResponse>(`/api/open-pilot/state?repo=${encodeURIComponent(openPilotInputs.repo)}&issue=${encodeURIComponent(openPilotInputs.issue)}`);
+        setOpenPilotState(normalizeOpenPilotState(state));
+      } catch (caught) {
+        if (caught instanceof APIError && caught.status === 404) {
+          setOpenPilotState(null);
+          return;
+        }
+        throw caught;
+      }
     } catch (caught) {
       setError(messageFrom(caught));
     }
@@ -1190,6 +1278,53 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  {openPilotState && runDetail.run.workflow_id === 'open-pilot' ? (
+                    <div className="hud-panel bg-[hsl(var(--panel-strong))] p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="hud-label text-[hsl(var(--faint))]">Open Pilot lifecycle state</p>
+                          <h3 className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-[hsl(var(--ink))]">
+                            {openPilotState.state.repo}#{openPilotState.state.issue}
+                          </h3>
+                        </div>
+                        <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(openPilotState.state.phase)}`}>
+                          {openPilotState.state.phase}
+                        </span>
+                      </div>
+
+                      <dl className="mt-4 grid gap-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))] sm:grid-cols-2">
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <dt className="text-[hsl(var(--signal))]">Next action</dt>
+                          <dd className="mt-1 break-words text-[hsl(var(--ink))]">{openPilotState.next_action}</dd>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <dt className="text-[hsl(var(--signal))]">Gate status</dt>
+                          <dd className="mt-1 break-words text-[hsl(var(--ink))]">{formatOpenPilotGateStatus(openPilotState.state.gate_status)}</dd>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <dt className="text-[hsl(var(--signal))]">Pull request URL</dt>
+                          <dd className="mt-1 break-words text-[hsl(var(--ink))]">{openPilotState.state.pull_request_url || '—'}</dd>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <dt className="text-[hsl(var(--signal))]">Merge SHA</dt>
+                          <dd className="mt-1 break-words text-[hsl(var(--ink))]">{openPilotState.state.merge_commit_sha || '—'}</dd>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <dt className="text-[hsl(var(--signal))]">Issue closed</dt>
+                          <dd className="mt-1 text-[hsl(var(--ink))]">{openPilotState.state.issue_closed ? 'yes' : 'no'}</dd>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
+                          <dt className="text-[hsl(var(--signal))]">Repair attempts</dt>
+                          <dd className="mt-1 text-[hsl(var(--ink))]">{openPilotState.state.repair_attempts} / {openPilotState.state.max_repair_attempts}</dd>
+                        </div>
+                        <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 sm:col-span-2">
+                          <dt className="text-[hsl(var(--signal))]">Last error</dt>
+                          <dd className="mt-1 break-words text-[hsl(var(--ink))]">{openPilotState.state.last_error || '—'}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : null}
 
                   <div className="hud-panel bg-[hsl(var(--panel-strong))] p-4">
                     <div className="flex items-center justify-between gap-3">

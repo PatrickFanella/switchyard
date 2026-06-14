@@ -173,6 +173,195 @@ func TestAPIAgentProfilesListsNativeProfiles(t *testing.T) {
 	}
 }
 
+func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetAsyncDispatch(true)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	seed, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
+		Repo:              "OWNER/REPO",
+		Issue:             "123",
+		Phase:             controlplane.OpenPilotPhaseRequested,
+		GateStatus:        controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"},
+		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "8", "resume.open-pilot.prompt": "prompt"},
+		RepairAttempts:    1,
+		MaxRepairAttempts: 2,
+	})
+	if err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
+	}
+	if _, err := store.TransitionOpenPilotIssueState(seed.Repo, seed.Issue, controlplane.OpenPilotPhasePaused); err != nil {
+		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "124", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() other error = %v", err)
+	}
+	active, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
+	if err != nil {
+		t.Fatalf("CreateRun active error = %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/open-pilot/states")
+	if err != nil {
+		t.Fatalf("GET open-pilot states error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var statesBody struct {
+		States []controlplane.OpenPilotIssueState `json:"states"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&statesBody); err != nil {
+		t.Fatalf("decode states: %v", err)
+	}
+	if len(statesBody.States) != 2 {
+		t.Fatalf("states = %+v", statesBody.States)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/open-pilot/state?repo=OWNER/REPO&issue=123")
+	if err != nil {
+		t.Fatalf("GET open-pilot state error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var stateBody struct {
+		State      controlplane.OpenPilotIssueState `json:"state"`
+		NextAction string                           `json:"next_action"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stateBody); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if stateBody.State.Phase != controlplane.OpenPilotPhasePaused || stateBody.NextAction != "Resume" {
+		t.Fatalf("state body = %+v", stateBody)
+	}
+
+	pauseReq, err := http.NewRequest(http.MethodPost, srv.URL+"/api/open-pilot/state/pause?repo=OWNER/REPO&issue=124", nil)
+	if err != nil {
+		t.Fatalf("new pause request: %v", err)
+	}
+	pauseResp, err := http.DefaultClient.Do(pauseReq)
+	if err != nil {
+		t.Fatalf("POST pause error = %v", err)
+	}
+	defer pauseResp.Body.Close()
+	if pauseResp.StatusCode != http.StatusOK {
+		t.Fatalf("pause status = %d", pauseResp.StatusCode)
+	}
+	pausedRun, err := store.RunDetail(active.ID)
+	if err != nil {
+		t.Fatalf("RunDetail active error = %v", err)
+	}
+	if pausedRun.Run.Status != controlplane.RunCanceled {
+		t.Fatalf("active run was not canceled on pause: %+v", pausedRun.Run)
+	}
+	pausedState, err := store.OpenPilotIssueState("OWNER/REPO", "124")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState paused error = %v", err)
+	}
+	if pausedState.ResumeInputs["retry_from_step"] == "" || pausedState.ResumeInputs["retry_from_step_position"] == "" {
+		t.Fatalf("pause did not establish resume cursor: %+v", pausedState.ResumeInputs)
+	}
+
+	resumeReq, err := http.NewRequest(http.MethodPost, srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=123", nil)
+	if err != nil {
+		t.Fatalf("new resume request: %v", err)
+	}
+	resumeResp, err := http.DefaultClient.Do(resumeReq)
+	if err != nil {
+		t.Fatalf("POST resume error = %v", err)
+	}
+	defer resumeResp.Body.Close()
+	if resumeResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("resume status = %d", resumeResp.StatusCode)
+	}
+	if resumeResp.Header.Get("Location") == "" {
+		t.Fatal("resume Location header missing")
+	}
+	var resumeBody struct {
+		State      controlplane.OpenPilotIssueState `json:"state"`
+		Run        controlplane.Run                 `json:"run"`
+		NextAction string                           `json:"next_action"`
+	}
+	if err := json.NewDecoder(resumeResp.Body).Decode(&resumeBody); err != nil {
+		t.Fatalf("decode resume: %v", err)
+	}
+	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "8" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
+		t.Fatalf("resume body = %+v", resumeBody)
+	}
+	if resumeBody.State.Phase != controlplane.OpenPilotPhaseRequested || resumeBody.NextAction != "Validate issue" {
+		t.Fatalf("resume state = %+v", resumeBody)
+	}
+	_, err = store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
+	if err != nil {
+		t.Fatalf("CreateRun conflict error = %v", err)
+	}
+	conflictReq, err := http.NewRequest(http.MethodPost, srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=124", nil)
+	if err != nil {
+		t.Fatalf("new conflict resume request: %v", err)
+	}
+	conflictResp, err := http.DefaultClient.Do(conflictReq)
+	if err != nil {
+		t.Fatalf("POST conflict resume error = %v", err)
+	}
+	defer conflictResp.Body.Close()
+	if conflictResp.StatusCode != http.StatusConflict {
+		t.Fatalf("conflict resume status = %d", conflictResp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/open-pilot/state?issue=123")
+	if err != nil {
+		t.Fatalf("GET open-pilot state missing repo error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing repo status = %d", resp.StatusCode)
+	}
+}
+
+func TestAPIOpenPilotStateMissingQueryReturnsBadRequest(t *testing.T) {
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/open-pilot/state")
+	if err != nil {
+		t.Fatalf("GET open-pilot state error = %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET open-pilot state status = %d", resp.StatusCode)
+	}
+
+	for _, req := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/api/open-pilot/state/pause?repo=OWNER/REPO"},
+		{method: http.MethodPost, path: "/api/open-pilot/state/resume?issue=123"},
+	} {
+		request, err := http.NewRequest(req.method, srv.URL+req.path, nil)
+		if err != nil {
+			t.Fatalf("new request %s %s: %v", req.method, req.path, err)
+		}
+		resp, err = http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s %s error = %v", req.method, req.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s %s status = %d", req.method, req.path, resp.StatusCode)
+		}
+	}
+}
+
 func TestAPIRetryAndCancelRun(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {

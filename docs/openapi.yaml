@@ -84,6 +84,39 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/AgentProfile" }
                 required: [profiles]
+  /api/open-pilot/states:
+    get:
+      summary: List Open Pilot issue states
+      responses:
+        "200": { $ref: "#/components/responses/OpenPilotStatesResponse" }
+  /api/open-pilot/state:
+    get:
+      summary: Get Open Pilot issue state
+      parameters:
+        - $ref: "#/components/parameters/Repo"
+        - $ref: "#/components/parameters/Issue"
+      responses:
+        "200": { $ref: "#/components/responses/OpenPilotStateResponse" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/open-pilot/state/pause:
+    post:
+      summary: Pause Open Pilot issue state
+      parameters:
+        - $ref: "#/components/parameters/Repo"
+        - $ref: "#/components/parameters/Issue"
+      responses:
+        "200": { $ref: "#/components/responses/OpenPilotStateResponse" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/open-pilot/state/resume:
+    post:
+      summary: Resume Open Pilot issue state
+      parameters:
+        - $ref: "#/components/parameters/Repo"
+        - $ref: "#/components/parameters/Issue"
+      responses:
+        "201": { $ref: "#/components/responses/OpenPilotResumeResponse" }
+        "202": { $ref: "#/components/responses/OpenPilotAcceptedResumeResponse" }
+        default: { $ref: "#/components/responses/Error" }
   /api/workflows:
     get:
       summary: List workflows
@@ -283,6 +316,16 @@ components:
       in: path
       required: true
       schema: { type: string }
+    Repo:
+      name: repo
+      in: query
+      required: true
+      schema: { type: string }
+    Issue:
+      name: issue
+      in: query
+      required: true
+      schema: { type: string }
   responses:
     Error:
       description: Error response
@@ -340,10 +383,84 @@ components:
           schema:
             type: object
             additionalProperties: true
+    OpenPilotStatesResponse:
+      description: Open Pilot issue state list
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              states:
+                type: array
+                items: { $ref: "#/components/schemas/OpenPilotIssueState" }
+            required: [states]
+    OpenPilotStateResponse:
+      description: Open Pilot issue state response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              state: { $ref: "#/components/schemas/OpenPilotIssueState" }
+              next_action: { type: string }
+            required: [state, next_action]
+    OpenPilotResumeResponse:
+      description: Open Pilot resume response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              state: { $ref: "#/components/schemas/OpenPilotIssueState" }
+              run: { $ref: "#/components/schemas/Run" }
+              next_action: { type: string }
+            required: [state, run, next_action]
+    OpenPilotAcceptedResumeResponse:
+      description: Accepted async Open Pilot resume response
+      headers:
+        Location:
+          schema: { type: string }
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              state: { $ref: "#/components/schemas/OpenPilotIssueState" }
+              run: { $ref: "#/components/schemas/Run" }
+              next_action: { type: string }
+            required: [state, run, next_action]
   schemas:
     StringMap:
       type: object
       additionalProperties: { type: string }
+    OpenPilotGateStatus:
+      type: object
+      additionalProperties: { type: string }
+    OpenPilotIssueState:
+      type: object
+      properties:
+        id: { type: string }
+        repo: { type: string }
+        issue: { type: string }
+        phase: { type: string }
+        run_id: { type: string }
+        last_step_name: { type: string }
+        branch: { type: string }
+        base: { type: string }
+        worktree_path: { type: string }
+        pull_request_url: { type: string }
+        pull_request_id: { type: integer }
+        pull_request_number: { type: integer }
+        merge_commit_sha: { type: string }
+        issue_closed: { type: boolean }
+        gate_status: { $ref: "#/components/schemas/OpenPilotGateStatus" }
+        resume_inputs: { $ref: "#/components/schemas/StringMap" }
+        repair_attempts: { type: integer }
+        max_repair_attempts: { type: integer }
+        last_error: { type: string }
+        updated_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+      required: [id, repo, issue, phase, issue_closed, repair_attempts, max_repair_attempts, updated_at, created_at]
     Workflow:
       type: object
       properties:

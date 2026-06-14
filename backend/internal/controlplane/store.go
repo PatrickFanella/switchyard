@@ -20,6 +20,7 @@ type Store interface {
 	OpenPilotIssueState(repo, issue string) (OpenPilotIssueState, error)
 	UpsertOpenPilotIssueState(OpenPilotIssueState) (OpenPilotIssueState, error)
 	TransitionOpenPilotIssueState(repo, issue string, next OpenPilotPhase) (OpenPilotIssueState, error)
+	ClaimOpenPilotIssueStateForResume(repo, issue string, resumeInputs map[string]string) (OpenPilotIssueState, error)
 	ListOpenPilotIssueStates() []OpenPilotIssueState
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger
@@ -208,6 +209,34 @@ func (s *MemoryStore) TransitionOpenPilotIssueState(repo, issue string, next Ope
 	}
 	s.openPilotIssueStates[key] = state
 	return cloneOpenPilotIssueState(state), nil
+}
+
+func (s *MemoryStore) ClaimOpenPilotIssueStateForResume(repo, issue string, resumeInputs map[string]string) (OpenPilotIssueState, error) {
+	if repo == "" || issue == "" {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := openPilotIssueStateKey(repo, issue)
+	existing, ok := s.openPilotIssueStates[key]
+	if !ok {
+		return OpenPilotIssueState{}, ErrNotFound
+	}
+	if existing.Phase != OpenPilotPhaseFailed && existing.Phase != OpenPilotPhasePaused {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	if err := normalizeOpenPilotRepairCounts(&existing); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	if err := ValidateOpenPilotTransition(existing.Phase, OpenPilotPhaseRequested); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	existing.Phase = OpenPilotPhaseRequested
+	existing.ResumeInputs = cloneMap(resumeInputs)
+	existing.LastError = ""
+	existing.UpdatedAt = s.now().UTC()
+	s.openPilotIssueStates[key] = existing
+	return cloneOpenPilotIssueState(existing), nil
 }
 
 func (s *MemoryStore) ListOpenPilotIssueStates() []OpenPilotIssueState {

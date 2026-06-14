@@ -216,6 +216,49 @@ func (s *PostgresStore) TransitionOpenPilotIssueState(repo, issue string, next O
 	return saved, nil
 }
 
+func (s *PostgresStore) ClaimOpenPilotIssueStateForResume(repo, issue string, resumeInputs map[string]string) (OpenPilotIssueState, error) {
+	if repo == "" || issue == "" {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	resumeJSON, err := marshalOpenPilotJSONMap(resumeInputs)
+	if err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	row := tx.QueryRowContext(context.Background(), `select id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at from open_pilot_issue_states where repo=$1 and issue=$2 for update`, repo, issue)
+	existing, err := scanOpenPilotIssueStateRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, mapScanErr(err)
+	}
+	if existing.Phase != OpenPilotPhaseFailed && existing.Phase != OpenPilotPhasePaused {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	if err := normalizeOpenPilotRepairCounts(&existing); err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	if err := ValidateOpenPilotTransition(existing.Phase, OpenPilotPhaseRequested); err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, err
+	}
+	row = tx.QueryRowContext(context.Background(), `update open_pilot_issue_states set phase=$3, resume_inputs=$4::jsonb, last_error='', max_repair_attempts=$5, updated_at=$6 where repo=$1 and issue=$2 and phase in ('failed','paused') returning id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at`, repo, issue, OpenPilotPhaseRequested, string(resumeJSON), existing.MaxRepairAttempts, now)
+	saved, err := scanOpenPilotIssueStateRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, mapScanErr(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	return saved, nil
+}
+
 func (s *PostgresStore) ListOpenPilotIssueStates() []OpenPilotIssueState {
 	rows, err := s.db.QueryContext(context.Background(), `select id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, created_at, updated_at from open_pilot_issue_states order by repo, issue`)
 	if err != nil {

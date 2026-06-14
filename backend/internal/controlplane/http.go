@@ -44,6 +44,10 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/adapters", a.adapters)
+	mux.HandleFunc("GET /api/open-pilot/states", a.openPilotStates)
+	mux.HandleFunc("GET /api/open-pilot/state", a.openPilotState)
+	mux.HandleFunc("POST /api/open-pilot/state/pause", a.pauseOpenPilotState)
+	mux.HandleFunc("POST /api/open-pilot/state/resume", a.resumeOpenPilotState)
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workers", a.workerStatus)
 	mux.HandleFunc("GET /api/operator-safety", a.operatorSafety)
@@ -83,6 +87,123 @@ func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	writeJSON(w, http.StatusOK, a.adapterProbe.Payload(ctx))
+}
+
+func (a *API) openPilotStates(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"states": openPilotStatesOrEmpty(a.store.ListOpenPilotIssueStates())})
+}
+
+func (a *API) openPilotState(w http.ResponseWriter, r *http.Request) {
+	repo, issue, ok := openPilotRepoIssueFromQuery(w, r)
+	if !ok {
+		return
+	}
+	state, err := a.store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, openPilotStateResponse{State: state, NextAction: openPilotNextAction(state)})
+}
+
+func (a *API) pauseOpenPilotState(w http.ResponseWriter, r *http.Request) {
+	repo, issue, ok := openPilotRepoIssueFromQuery(w, r)
+	if !ok {
+		return
+	}
+	state, err := a.store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	state.ResumeInputs = mergeOpenPilotResumeStateInputs(state)
+	state.Phase = OpenPilotPhasePaused
+	state.LastError = firstNonEmpty(state.LastError, "paused by operator")
+	state, err = a.store.UpsertOpenPilotIssueState(state)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	a.cancelOpenPilotRuns(repo, issue, "Paused Open Pilot issue "+repo+"#"+issue)
+	writeJSON(w, http.StatusOK, openPilotStateResponse{State: state, NextAction: openPilotNextAction(state)})
+}
+
+func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
+	repo, issue, ok := openPilotRepoIssueFromQuery(w, r)
+	if !ok {
+		return
+	}
+	state, err := a.store.OpenPilotIssueState(repo, issue)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	if state.Phase != OpenPilotPhaseFailed && state.Phase != OpenPilotPhasePaused {
+		writeError(w, http.StatusBadRequest, "state is not resumable")
+		return
+	}
+	originalPhase := state.Phase
+	if openPilotHasActiveRun(a.store, repo, issue) {
+		writeError(w, http.StatusConflict, "open-pilot issue already has an active run")
+		return
+	}
+	inputs := mergeOpenPilotResumeStateInputs(state)
+	if inputs == nil {
+		inputs = map[string]string{}
+	}
+	inputs["repo"] = repo
+	inputs["issue"] = issue
+	state, err = a.store.ClaimOpenPilotIssueStateForResume(repo, issue, inputs)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
+	if err != nil {
+		state.Phase = originalPhase
+		state.LastError = err.Error()
+		_, _ = a.store.UpsertOpenPilotIssueState(state)
+		writeControlError(w, err)
+		return
+	}
+	if fresh, err := a.store.OpenPilotIssueState(repo, issue); err == nil {
+		state = fresh
+	}
+	status := http.StatusCreated
+	if a.asyncDispatch {
+		w.Header().Set("Location", "/api/runs/"+run.ID)
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, openPilotStateResponse{State: state, Run: &run, NextAction: openPilotNextAction(state)})
+}
+
+func openPilotHasActiveRun(store Store, repo, issue string) bool {
+	for _, run := range store.ListRuns() {
+		if run.WorkflowID == string(WorkflowOpenPilot) && run.Inputs["repo"] == repo && run.Inputs["issue"] == issue && (run.Status == RunQueued || run.Status == RunRunning) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *API) cancelOpenPilotRuns(repo, issue, message string) {
+	for _, run := range a.store.ListRuns() {
+		if run.WorkflowID != string(WorkflowOpenPilot) || run.Inputs["repo"] != repo || run.Inputs["issue"] != issue {
+			continue
+		}
+		if run.Status != RunQueued && run.Status != RunRunning {
+			continue
+		}
+		_, _ = a.store.AddEvent(run.ID, "open-pilot.pause", message)
+		if a.canceler != nil {
+			if detail, err := a.store.RunDetail(run.ID); err == nil {
+				for _, event := range cancelRunDetail(context.Background(), a.canceler, detail).Events {
+					_, _ = a.store.AddEvent(run.ID, event.Type, event.Message)
+				}
+			}
+		}
+		_, _ = a.store.FinishRun(run.ID, RunCanceled, message)
+	}
 }
 
 func (a *API) schedulerStatus(w http.ResponseWriter, r *http.Request) {
@@ -647,6 +768,180 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]map[string]string{"error": {"message": message}})
+}
+
+type openPilotStateResponse struct {
+	State      OpenPilotIssueState `json:"state"`
+	Run        *Run                `json:"run,omitempty"`
+	NextAction string              `json:"next_action"`
+}
+
+func openPilotRepoIssueFromQuery(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+	issue := strings.TrimSpace(r.URL.Query().Get("issue"))
+	if repo == "" || issue == "" {
+		writeError(w, http.StatusBadRequest, "repo and issue are required")
+		return "", "", false
+	}
+	return repo, issue, true
+}
+
+func openPilotStatesOrEmpty(items []OpenPilotIssueState) []OpenPilotIssueState {
+	if items == nil {
+		return []OpenPilotIssueState{}
+	}
+	return items
+}
+
+func mergeOpenPilotResumeStateInputs(state OpenPilotIssueState) map[string]string {
+	inputs := cloneMap(state.ResumeInputs)
+	if inputs == nil {
+		inputs = map[string]string{}
+	}
+	inputs["repo"] = state.Repo
+	inputs["issue"] = state.Issue
+	if state.Branch != "" {
+		inputs["resume.open-pilot.branch-plan.branch"] = state.Branch
+		inputs["resume.open-pilot.branch-plan.correlation.branch"] = state.Branch
+	}
+	if state.Base != "" {
+		inputs["resume.open-pilot.branch-plan.base_branch"] = state.Base
+	}
+	if state.WorktreePath != "" {
+		inputs["resume.open-pilot.branch-plan.worktree_path"] = state.WorktreePath
+		inputs["resume.open-pilot.branch-plan.correlation.worktree_path"] = state.WorktreePath
+	}
+	if state.PullRequestURL != "" {
+		inputs["resume.open-pilot.pr-plan.correlation.pull_request"] = state.PullRequestURL
+	}
+	if state.PullRequestNum > 0 {
+		inputs["resume.open-pilot.pr-plan.pull_request_number"] = strconv.Itoa(state.PullRequestNum)
+	}
+	if state.MergeCommitSHA != "" {
+		inputs["resume.open-pilot.merge-pr.merge_commit_sha"] = state.MergeCommitSHA
+	}
+	if state.IssueClosed {
+		inputs["resume.open-pilot.close-issue.issue_closed"] = "true"
+	}
+	step, position := openPilotResumeCursorForState(state)
+	if step != "" && inputs["retry_from_step"] == "" {
+		inputs["retry_from_step"] = step
+	}
+	if position != "" && inputs["retry_from_step_position"] == "" {
+		inputs["retry_from_step_position"] = position
+	}
+	return inputs
+}
+
+func openPilotResumeCursorForState(state OpenPilotIssueState) (string, string) {
+	if state.ResumeInputs != nil {
+		if step, pos := state.ResumeInputs["retry_from_step"], state.ResumeInputs["retry_from_step_position"]; step != "" && pos != "" {
+			return step, pos
+		}
+	}
+	if state.LastStepName != "" {
+		if pos := openPilotStepPosition(state.LastStepName); pos != "" {
+			return state.LastStepName, pos
+		}
+	}
+	switch state.Phase {
+	case OpenPilotPhaseRequested:
+		return "open-pilot.validate-issue", "1"
+	case OpenPilotPhaseValidated:
+		return "open-pilot.branch-plan", "2"
+	case OpenPilotPhaseBranchPrepared:
+		return "open-pilot.prepare-prompt", "3"
+	case OpenPilotPhaseAgentCompleted:
+		return "open-pilot.verify-command", "5"
+	case OpenPilotPhaseVerified:
+		return "open-pilot.push-branch", "6"
+	case OpenPilotPhasePushed:
+		return "open-pilot.pr-plan", "7"
+	case OpenPilotPhasePRCreated:
+		return "open-pilot.ai-review", "8"
+	case OpenPilotPhaseAIReviewed:
+		return "open-pilot.ci-checks", "9"
+	case OpenPilotPhaseCIPassed, OpenPilotPhaseMergeReady:
+		return "open-pilot.merge-pr", "10"
+	case OpenPilotPhaseMerged:
+		return "open-pilot.close-issue", "11"
+	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
+		return "open-pilot.agent-work", "4"
+	default:
+		return "", ""
+	}
+}
+
+func openPilotStepPosition(name string) string {
+	switch name {
+	case "open-pilot.validate-issue":
+		return "1"
+	case "open-pilot.branch-plan":
+		return "2"
+	case "open-pilot.prepare-prompt":
+		return "3"
+	case "open-pilot.agent-work":
+		return "4"
+	case "open-pilot.verify-command":
+		return "5"
+	case "open-pilot.push-branch":
+		return "6"
+	case "open-pilot.pr-plan":
+		return "7"
+	case "open-pilot.ai-review":
+		return "8"
+	case "open-pilot.ci-checks":
+		return "9"
+	case "open-pilot.merge-pr":
+		return "10"
+	case "open-pilot.close-issue":
+		return "11"
+	default:
+		return ""
+	}
+}
+
+func openPilotNextAction(state OpenPilotIssueState) string {
+	switch state.Phase {
+	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
+		return "Resume"
+	case OpenPilotPhaseIssueClosed:
+		return "Complete"
+	case OpenPilotPhaseMerged:
+		if state.IssueClosed {
+			return "Complete"
+		}
+		return "Close issue"
+	case OpenPilotPhaseMergeReady, OpenPilotPhaseCIPassed:
+		return "Merge PR"
+	case OpenPilotPhaseAIReviewed:
+		if state.GateStatus["ci_checks"] == "passed" {
+			return "Merge PR"
+		}
+		return "Wait for CI"
+	case OpenPilotPhasePRCreated:
+		if state.GateStatus["ai_review"] == "approved" {
+			if state.GateStatus["ci_checks"] == "passed" {
+				return "Merge PR"
+			}
+			return "Wait for CI"
+		}
+		return "AI review"
+	case OpenPilotPhasePushed:
+		return "Create PR"
+	case OpenPilotPhaseVerified:
+		return "Push branch"
+	case OpenPilotPhaseAgentCompleted:
+		return "Verify"
+	case OpenPilotPhaseBranchPrepared:
+		return "Run agent"
+	case OpenPilotPhaseValidated:
+		return "Prepare branch"
+	case OpenPilotPhaseRequested:
+		return "Validate issue"
+	default:
+		return "Continue"
+	}
 }
 
 func withCORS(next http.Handler) http.Handler {

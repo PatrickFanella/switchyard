@@ -735,6 +735,9 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 		missing = true
 		saved = OpenPilotIssueState{Repo: repo, Issue: issue}
 	}
+	if !missing && saved.Phase == OpenPilotPhasePaused && run.Inputs["retry_from_step"] == "" && phase != OpenPilotPhasePaused && phase != OpenPilotPhaseFailed {
+		return errors.New("open-pilot issue is paused by operator")
+	}
 	saved.Phase = phase
 	saved.RunID = run.ID
 	saved.LastStepName = stepName
