@@ -1,7 +1,6 @@
 package controlplane_test
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,46 +24,30 @@ func TestEnvModelExecutorUsesLlamaLine(t *testing.T) {
 	t.Setenv("LLAMA_LINE_API_KEY", "llama-key")
 	t.Setenv("OCQ_BASE_URL", "")
 
-	response, err := controlplane.NewEnvModelExecutor().Generate(t.Context(), controlplane.ModelRequest{Model: "model-a", Messages: []controlplane.ModelMessage{{Role: "user", Content: "hello"}}})
+	response, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "model-a", Messages: []controlplane.ModelMessage{{Role: "user", Content: "hello"}}})
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if response.Content != "model output" || response.CorrelationIDs["model_source"] != "llama-line" || response.CorrelationIDs["llama_line_request_id"] != "llama-request-1" {
+	if response.Content != "model output" || response.CorrelationIDs["model_broker"] != "switchyard" || response.CorrelationIDs["model_source"] != "llama-line" || response.CorrelationIDs["llama_line_request_id"] != "llama-request-1" {
 		t.Fatalf("response = %+v", response)
 	}
 }
 
-func TestEnvModelExecutorFallsBackToOCQ(t *testing.T) {
+func TestNewEnvModelExecutorUsesNativeBrokerCompatibility(t *testing.T) {
+	var _ controlplane.ModelBroker = controlplane.NewEnvModelExecutor()
+}
+
+func TestEnvModelBrokerDoesNotCallOCQDirectly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer ocq-key" {
-			t.Fatalf("Authorization = %q", got)
-		}
-		var body struct {
-			Model string `json:"model"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body.Model != "ocq-model" {
-			t.Fatalf("model = %s", body.Model)
-		}
-		w.Header().Set("X-OCQ-Request-ID", "ocq-request-1")
-		w.Header().Set("X-OCQ-Session", "ocq-session-1")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ocq output"}}]}`))
+		t.Fatalf("OCQ should not be called directly by the native model broker: %s", r.URL.Path)
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OCQ_BASE_URL", server.URL)
 	t.Setenv("OCQ_GATEWAY_KEY", "ocq-key")
 
-	response, err := controlplane.NewEnvModelExecutor().Generate(t.Context(), controlplane.ModelRequest{Model: "ocq-model", Messages: []controlplane.ModelMessage{{Role: "user", Content: "hello"}}})
-	if err != nil {
+	_, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "ocq-model", Messages: []controlplane.ModelMessage{{Role: "user", Content: "hello"}}})
+	if err == nil || err.Error() != "no model broker base URL configured" {
 		t.Fatalf("Generate() error = %v", err)
-	}
-	if response.Content != "ocq output" || response.CorrelationIDs["model_source"] != "ocq" || response.CorrelationIDs["ocq_request_id"] != "ocq-request-1" || response.CorrelationIDs["ocq_session_id"] != "ocq-session-1" {
-		t.Fatalf("response = %+v", response)
 	}
 }

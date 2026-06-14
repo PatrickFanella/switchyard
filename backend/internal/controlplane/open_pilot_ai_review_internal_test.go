@@ -73,6 +73,17 @@ func seedOpenPilotIssueState(t *testing.T, store Store, state OpenPilotIssueStat
 	}
 }
 
+func TestOpenPilotAIReviewUsesNativeModelBrokerAvailability(t *testing.T) {
+	run := Run{Inputs: map[string]string{"resume.open-pilot.pr-plan.pull_request_url": "https://git/OWNER/REPO/pulls/7"}}
+	step := PipelineStep{ID: "ai-review", Name: "open-pilot.ai-review", Executor: "model"}
+	if !(openPilotExecutor{env: &EnvWorkflowExecutors{modelExecutor: &EnvModelBroker{llamaLineBaseURL: "http://llama-line"}}}).ShouldExecutePipelineStep(run, step, map[string]any{}) {
+		t.Fatalf("ai-review should run when the native model broker has a configured model-broker backend")
+	}
+	if (openPilotExecutor{env: &EnvWorkflowExecutors{modelExecutor: &EnvModelBroker{}}}).ShouldExecutePipelineStep(run, step, map[string]any{}) {
+		t.Fatalf("ai-review should skip when the native model broker has no configured backend")
+	}
+}
+
 func TestOpenPilotAIReviewApprovesAfterPRCreation(t *testing.T) {
 	store := NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := SeedDefaults(store); err != nil {

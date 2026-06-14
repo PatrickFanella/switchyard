@@ -113,16 +113,17 @@ Exit criteria:
 - Step events and artifacts are visible in the HUD.
 - Failed step retry creates a resume run that starts registry-backed pipelines at the selected step; Open Pilot rehydrates branch/agent/push state from preserved resume metadata for downstream retries.
 
-## Phase 2 — model executor through llama-line
+## Phase 2 — native model broker contract
 
-Goal: remove one-off LLM plumbing from workflow code and route model work through a shared executor.
+Goal: remove one-off LLM plumbing from workflow code and route model work through a Switchyard-native `ModelBroker` contract while llama-line remains a transitional backend.
 
 Build:
 
-- `model` executor type.
+- `ModelBroker` interface as the native model-generation seam.
+- `model` executor type backed by the broker.
 - Configurable model per workflow and per step.
 - Safe API override for model selection.
-- llama-line request ID capture.
+- llama-line request ID capture through the transitional backend.
 - Response artifact capture.
 - Timeout/retry policy.
 - Cancellation via llama-line queue drop where possible.
@@ -133,14 +134,19 @@ First target:
 devlog.generate
   executor: model
   model: DEVLOG_MODEL or workflow config
-  route: services/llama-line /v1/chat/completions
+  route: ModelBroker -> transitional llama-line /v1/chat/completions
 ```
 
 Exit criteria:
 
-- Devlog uses model executor instead of bespoke code in `executor.go`.
+- Devlog uses the native `ModelBroker` path instead of bespoke code in `executor.go`.
 - Model choice is visible in run-step detail.
 - Request IDs are stored for cancellation/search.
+
+Current status:
+
+- `backend/internal/controlplane/model_executor.go` defines the native `ModelBroker` contract.
+- `EnvModelBroker` routes to transitional llama-line and marks responses with `model_broker=switchyard` correlation metadata. OCQ remains the transitional OpenCode executor path and should be reached through llama-line routing when model-broker traffic targets OpenCode-backed models.
 
 ## Phase 3 — OCQ/OpenCode executor
 
@@ -299,11 +305,11 @@ Exit criteria:
 - Step timeline in HUD is complete.
 - Devlog now runs through the registry-backed three-step pipeline: collect history, generate markdown, attach artifact.
 
-### M3: Shared Model Executor
+### M3: Native ModelBroker
 
-- llama-line/OCQ-backed model executor is available.
+- Switchyard-native `ModelBroker` contract is available with env-backed llama-line transport.
 - Configurable model assignment is available through `DEVLOG_MODEL` for Devlog.
-- Devlog uses shared executor for model-backed generation.
+- Devlog uses the shared broker path for model-backed generation.
 
 ### M4: Shared OCQ Executor
 

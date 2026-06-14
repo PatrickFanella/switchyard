@@ -27,39 +27,52 @@ type ModelResponse struct {
 	CorrelationIDs map[string]string
 }
 
-type ModelExecutor interface {
+// ModelBroker is the Switchyard-native model generation contract.
+//
+// It is intentionally small while llama-line remains the transitional
+// model-broker backend. OCQ remains the transitional OpenCode executor path.
+// Workflow code should depend on this interface instead of calling a
+// service-specific model client directly. Future broker features such as queue
+// state, routing policy, upstream health, and cancellation handles should grow
+// from this contract rather than from imported service boundaries.
+type ModelBroker interface {
 	Generate(ctx context.Context, request ModelRequest) (ModelResponse, error)
 }
 
-type EnvModelExecutor struct {
+type ModelBrokerConfiguration interface {
+	Configured() bool
+}
+
+// ModelExecutor is kept as a compatibility alias for existing workflow tests and
+// call sites. New code should use ModelBroker terminology.
+type ModelExecutor = ModelBroker
+
+type EnvModelBroker struct {
 	llamaLineBaseURL string
 	llamaLineAPIKey  string
-	ocqBaseURL       string
-	ocqGatewayKey    string
 	client           *http.Client
 }
 
-func NewEnvModelExecutor() *EnvModelExecutor {
-	return &EnvModelExecutor{
+func NewEnvModelBroker() *EnvModelBroker {
+	return &EnvModelBroker{
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:  os.Getenv("LLAMA_LINE_API_KEY"),
-		ocqBaseURL:       strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
-		ocqGatewayKey:    os.Getenv("OCQ_GATEWAY_KEY"),
 		client:           &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-func (e *EnvModelExecutor) Generate(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+// NewEnvModelExecutor preserves the previous constructor name while returning
+// the native broker implementation.
+func NewEnvModelExecutor() *EnvModelBroker {
+	return NewEnvModelBroker()
+}
+
+func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 	baseURL := e.llamaLineBaseURL
 	token := e.llamaLineAPIKey
 	source := "llama-line"
 	if baseURL == "" {
-		baseURL = e.ocqBaseURL
-		token = e.ocqGatewayKey
-		source = "ocq"
-	}
-	if baseURL == "" {
-		return ModelResponse{}, fmt.Errorf("no model executor base URL configured")
+		return ModelResponse{}, fmt.Errorf("no model broker base URL configured")
 	}
 	endpoint, err := url.JoinPath(baseURL, "/v1/chat/completions")
 	if err != nil {
@@ -98,7 +111,7 @@ func (e *EnvModelExecutor) Generate(ctx context.Context, request ModelRequest) (
 	if len(decoded.Choices) == 0 {
 		return ModelResponse{}, fmt.Errorf("model response contained no choices")
 	}
-	correlation := map[string]string{"model_source": source}
+	correlation := map[string]string{"model_broker": "switchyard", "model_source": source}
 	if requestID := resp.Header.Get("X-Llama-Line-Request-ID"); requestID != "" {
 		correlation["llama_line_request_id"] = requestID
 	}
@@ -109,4 +122,8 @@ func (e *EnvModelExecutor) Generate(ctx context.Context, request ModelRequest) (
 		correlation["ocq_session_id"] = sessionID
 	}
 	return ModelResponse{Content: decoded.Choices[0].Message.Content, CorrelationIDs: correlation}, nil
+}
+
+func (e *EnvModelBroker) Configured() bool {
+	return strings.TrimSpace(e.llamaLineBaseURL) != ""
 }

@@ -78,7 +78,7 @@ type EnvWorkflowExecutors struct {
 	openPilotBaseBranch       string
 	openPilotBranchPrefix     string
 	openPilotPRDraft          bool
-	modelExecutor             ModelExecutor
+	modelExecutor             ModelBroker
 	ocqExecutor               OCQExecutor
 	issueFetcher              IssueFetcher
 	giteaReader               GiteaPullRequestReader
@@ -157,7 +157,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotBaseBranch:       firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
 		openPilotBranchPrefix:     firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
 		openPilotPRDraft:          !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
-		modelExecutor:             NewEnvModelExecutor(),
+		modelExecutor:             NewEnvModelBroker(),
 		ocqExecutor:               NewEnvOCQExecutor(),
 		issueFetcher:              giteaClient,
 		giteaReader:               giteaClient,
@@ -427,7 +427,7 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 		completed, _ := state["open-pilot.agent-completed"].(bool)
 		return completed
 	case "ai-review":
-		return o.env != nil && o.env.modelExecutor != nil && o.env.llamaLineBaseURL != "" && openPilotHasKnownPullRequest(state, run.Inputs)
+		return o.env != nil && o.env.modelBrokerConfigured() && openPilotHasKnownPullRequest(state, run.Inputs)
 	case "ci-checks":
 		gateStatus := openPilotGateStatusFromState(state)
 		if gateStatus["ai_review"] != "approved" {
@@ -447,6 +447,16 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 	default:
 		return true
 	}
+}
+
+func (e *EnvWorkflowExecutors) modelBrokerConfigured() bool {
+	if e == nil || e.modelExecutor == nil {
+		return false
+	}
+	if configured, ok := e.modelExecutor.(ModelBrokerConfiguration); ok {
+		return configured.Configured()
+	}
+	return strings.TrimSpace(e.llamaLineBaseURL) != ""
 }
 
 func openPilotGateStatusFromState(state map[string]any) map[string]string {
