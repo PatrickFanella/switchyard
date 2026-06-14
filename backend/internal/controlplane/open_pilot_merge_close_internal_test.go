@@ -160,7 +160,7 @@ func TestOpenPilotMergeBlockedWhenPrerequisitesMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" {
+	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" || saved.FailingGate != "merge" || saved.RecommendedNextAction == "" || saved.OperatorSummary == "" {
 		t.Fatalf("saved = %+v", saved)
 	}
 	if merger.mergeCalls != 0 {
@@ -178,7 +178,7 @@ func TestOpenPilotMergeBlockedWhenPrerequisitesMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" {
+	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" || saved.FailingGate != "merge" || saved.RecommendedNextAction == "" || saved.OperatorSummary == "" {
 		t.Fatalf("saved = %+v", saved)
 	}
 }
@@ -238,7 +238,7 @@ func TestOpenPilotMergeRejectsUnconfirmedMergeResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" || saved.MergeCommitSHA != "" {
+	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" || saved.MergeCommitSHA != "" || saved.FailingGate != "merge" || saved.RecommendedNextAction == "" || saved.OperatorSummary == "" {
 		t.Fatalf("saved = %+v", saved)
 	}
 }
@@ -298,7 +298,7 @@ func TestOpenPilotCloseRejectsNonClosedIssueResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["issue_close"] != "failed" || saved.IssueClosed {
+	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["issue_close"] != "failed" || saved.IssueClosed || saved.FailingGate != "issue_close" || saved.RecommendedNextAction == "" || saved.OperatorSummary == "" {
 		t.Fatalf("saved = %+v", saved)
 	}
 }

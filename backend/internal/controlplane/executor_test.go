@@ -507,7 +507,7 @@ func TestRunnerPersistsOpenPilotFailureState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if run.Status != controlplane.RunFailed || state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.verify-command" || !strings.Contains(state.LastError, "deny") {
+	if run.Status != controlplane.RunFailed || state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.verify-command" || !strings.Contains(state.LastError, "deny") || state.FailingGate != "local_verify" || state.RecommendedNextAction != "rerun_verify" || state.OperatorSummary == "" {
 		t.Fatalf("run = %+v state = %+v", run, state)
 	}
 	if state.Branch == "" || state.Base == "" || state.ResumeInputs["resume.open-pilot.prompt"] == "" {

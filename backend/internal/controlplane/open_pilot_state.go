@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -29,27 +30,30 @@ const (
 type OpenPilotGateStatus map[string]string
 
 type OpenPilotIssueState struct {
-	ID                string              `json:"id"`
-	Repo              string              `json:"repo"`
-	Issue             string              `json:"issue"`
-	Phase             OpenPilotPhase      `json:"phase"`
-	RunID             string              `json:"run_id,omitempty"`
-	LastStepName      string              `json:"last_step_name,omitempty"`
-	Branch            string              `json:"branch,omitempty"`
-	Base              string              `json:"base,omitempty"`
-	WorktreePath      string              `json:"worktree_path,omitempty"`
-	PullRequestURL    string              `json:"pull_request_url,omitempty"`
-	PullRequestID     int                 `json:"pull_request_id,omitempty"`
-	PullRequestNum    int                 `json:"pull_request_number,omitempty"`
-	MergeCommitSHA    string              `json:"merge_commit_sha,omitempty"`
-	IssueClosed       bool                `json:"issue_closed"`
-	GateStatus        OpenPilotGateStatus `json:"gate_status,omitempty"`
-	ResumeInputs      map[string]string   `json:"resume_inputs,omitempty"`
-	RepairAttempts    int                 `json:"repair_attempts"`
-	MaxRepairAttempts int                 `json:"max_repair_attempts"`
-	LastError         string              `json:"last_error,omitempty"`
-	UpdatedAt         time.Time           `json:"updated_at"`
-	CreatedAt         time.Time           `json:"created_at"`
+	ID                    string              `json:"id"`
+	Repo                  string              `json:"repo"`
+	Issue                 string              `json:"issue"`
+	Phase                 OpenPilotPhase      `json:"phase"`
+	RunID                 string              `json:"run_id,omitempty"`
+	LastStepName          string              `json:"last_step_name,omitempty"`
+	Branch                string              `json:"branch,omitempty"`
+	Base                  string              `json:"base,omitempty"`
+	WorktreePath          string              `json:"worktree_path,omitempty"`
+	PullRequestURL        string              `json:"pull_request_url,omitempty"`
+	PullRequestID         int                 `json:"pull_request_id,omitempty"`
+	PullRequestNum        int                 `json:"pull_request_number,omitempty"`
+	MergeCommitSHA        string              `json:"merge_commit_sha,omitempty"`
+	IssueClosed           bool                `json:"issue_closed"`
+	GateStatus            OpenPilotGateStatus `json:"gate_status,omitempty"`
+	ResumeInputs          map[string]string   `json:"resume_inputs,omitempty"`
+	RepairAttempts        int                 `json:"repair_attempts"`
+	MaxRepairAttempts     int                 `json:"max_repair_attempts"`
+	LastError             string              `json:"last_error,omitempty"`
+	FailingGate           string              `json:"failing_gate,omitempty"`
+	OperatorSummary       string              `json:"operator_summary,omitempty"`
+	RecommendedNextAction string              `json:"recommended_next_action,omitempty"`
+	UpdatedAt             time.Time           `json:"updated_at"`
+	CreatedAt             time.Time           `json:"created_at"`
 }
 
 var openPilotPhaseChain = []OpenPilotPhase{
@@ -152,6 +156,15 @@ func isOpenPilotActivePhase(phase OpenPilotPhase) bool {
 	return false
 }
 
+func isOpenPilotResumablePhase(phase OpenPilotPhase) bool {
+	switch phase {
+	case OpenPilotPhaseAgentCompleted, OpenPilotPhaseFailed, OpenPilotPhasePaused:
+		return true
+	default:
+		return false
+	}
+}
+
 func cloneOpenPilotGateStatus(in OpenPilotGateStatus) OpenPilotGateStatus {
 	if len(in) == 0 {
 		return nil
@@ -168,6 +181,167 @@ func cloneOpenPilotIssueState(in OpenPilotIssueState) OpenPilotIssueState {
 	out.GateStatus = cloneOpenPilotGateStatus(in.GateStatus)
 	out.ResumeInputs = cloneMap(in.ResumeInputs)
 	return out
+}
+
+type openPilotFailureDiagnostics struct {
+	failingGate           string
+	operatorSummary       string
+	recommendedNextAction string
+}
+
+func openPilotFailureDiagnosticsForState(saved OpenPilotIssueState, phase OpenPilotPhase, stepName, lastErr string, state map[string]any) openPilotFailureDiagnostics {
+	if phase != OpenPilotPhaseFailed && phase != OpenPilotPhasePaused {
+		return openPilotFailureDiagnostics{}
+	}
+	gateStatus := openPilotGateStatusFromState(state)
+	status := gateStatus[strings.TrimPrefix(stepName, "open-pilot.")]
+	if status == "" {
+		status = gateStatusForOpenPilotStep(stepName, gateStatus)
+	}
+	repairAttempts := saved.RepairAttempts
+	if attempts, ok := state["open-pilot.repair-attempts"].(int); ok && attempts > 0 {
+		repairAttempts = attempts
+	}
+	maxAttempts := saved.MaxRepairAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = openPilotDefaultMaxRepairAttempts
+	}
+	feedback, _ := state["ai_review.feedback"].(string)
+	changesRequested, _ := state["open-pilot.ai-review.changes-requested"].(bool)
+	if feedback == "" && changesRequested && saved.ResumeInputs != nil {
+		feedback = saved.ResumeInputs["ai_review.feedback"]
+	}
+	if feedback == "" {
+		feedback = strings.TrimSpace(lastErr)
+	}
+	switch stepName {
+	case "open-pilot.validate-issue":
+		return openPilotFailureDiagnostics{failingGate: "issue_validation", operatorSummary: summarizeOpenPilotFailure("Issue validation failed", lastErr), recommendedNextAction: "manual_review"}
+	case "open-pilot.branch-plan":
+		return openPilotFailureDiagnostics{failingGate: "branch_preparation", operatorSummary: summarizeOpenPilotFailure("Branch preparation failed", lastErr), recommendedNextAction: "manual_review"}
+	case "open-pilot.prepare-prompt":
+		return openPilotFailureDiagnostics{failingGate: "prompt_preparation", operatorSummary: summarizeOpenPilotFailure("Prompt preparation failed", lastErr), recommendedNextAction: "resume"}
+	case "open-pilot.agent-work":
+		return openPilotFailureDiagnostics{failingGate: "agent_work", operatorSummary: summarizeOpenPilotFailure("Agent execution failed", lastErr), recommendedNextAction: "resume"}
+	case "open-pilot.verify-command":
+		return openPilotFailureDiagnostics{failingGate: "local_verify", operatorSummary: summarizeOpenPilotFailure("Local verification failed", lastErr), recommendedNextAction: "rerun_verify"}
+	case "open-pilot.push-branch":
+		return openPilotFailureDiagnostics{failingGate: "git_push", operatorSummary: summarizeOpenPilotFailure("Push or branch publication failed", lastErr), recommendedNextAction: "fix_agent_commit"}
+	case "open-pilot.pr-plan":
+		return openPilotFailureDiagnostics{failingGate: "pull_request", operatorSummary: summarizeOpenPilotFailure("PR creation failed", lastErr), recommendedNextAction: giteaFailureAction(lastErr)}
+	case "open-pilot.ai-review":
+		if phase == OpenPilotPhasePaused || changesRequested {
+			summary := fmt.Sprintf("AI review requested changes (repair attempt %d/%d)", repairAttempts, maxAttempts)
+			if feedback != "" {
+				summary += ": " + feedback
+			}
+			return openPilotFailureDiagnostics{failingGate: "ai_review", operatorSummary: summary, recommendedNextAction: "fix_agent_commit"}
+		}
+		return openPilotFailureDiagnostics{failingGate: "ai_review", operatorSummary: summarizeOpenPilotFailure("AI review failed", lastErr), recommendedNextAction: "fix_agent_commit"}
+	case "open-pilot.ci-checks":
+		if status == "timeout" || status == "pending" {
+			return openPilotFailureDiagnostics{failingGate: "ci_checks", operatorSummary: summarizeOpenPilotFailure("CI checks timed out", lastErr), recommendedNextAction: "wait_ci"}
+		}
+		return openPilotFailureDiagnostics{failingGate: "ci_checks", operatorSummary: summarizeOpenPilotFailure("CI checks failed", lastErr), recommendedNextAction: "fix_agent_commit"}
+	case "open-pilot.merge-pr":
+		return openPilotFailureDiagnostics{failingGate: "merge", operatorSummary: summarizeOpenPilotFailure("Merge failed", lastErr), recommendedNextAction: giteaFailureAction(lastErr)}
+	case "open-pilot.close-issue":
+		return openPilotFailureDiagnostics{failingGate: "issue_close", operatorSummary: summarizeOpenPilotFailure("Issue close failed", lastErr), recommendedNextAction: giteaFailureAction(lastErr)}
+	default:
+		label := openPilotFailureLabel(stepName)
+		if status == "timeout" || status == "pending" {
+			return openPilotFailureDiagnostics{failingGate: status, operatorSummary: summarizeOpenPilotFailure(label+" failed", lastErr), recommendedNextAction: "wait_ci"}
+		}
+		return openPilotFailureDiagnostics{failingGate: strings.TrimPrefix(stepName, "open-pilot."), operatorSummary: summarizeOpenPilotFailure(label+" failed", lastErr), recommendedNextAction: "manual_review"}
+	}
+}
+
+func openPilotFailureLabel(stepName string) string {
+	label := strings.TrimPrefix(stepName, "open-pilot.")
+	label = strings.ReplaceAll(label, "-", " ")
+	label = strings.ReplaceAll(label, "_", " ")
+	if label == "" {
+		return "Open Pilot step"
+	}
+	return strings.ToUpper(label[:1]) + label[1:]
+}
+
+func openPilotResumeClaimPhase(current OpenPilotPhase, inputs map[string]string) OpenPilotPhase {
+	switch inputs["retry_from_step"] {
+	case "open-pilot.validate-issue":
+		return OpenPilotPhaseRequested
+	case "open-pilot.branch-plan":
+		return OpenPilotPhaseValidated
+	case "open-pilot.prepare-prompt", "open-pilot.agent-work":
+		return OpenPilotPhaseBranchPrepared
+	case "open-pilot.verify-command":
+		return OpenPilotPhaseAgentCompleted
+	case "open-pilot.push-branch":
+		if current == OpenPilotPhaseAgentCompleted {
+			return OpenPilotPhaseAgentCompleted
+		}
+		return OpenPilotPhaseVerified
+	case "open-pilot.pr-plan":
+		if current == OpenPilotPhaseAgentCompleted || current == OpenPilotPhaseVerified || current == OpenPilotPhasePushed {
+			return current
+		}
+		return OpenPilotPhasePushed
+	case "open-pilot.ai-review":
+		return OpenPilotPhasePRCreated
+	case "open-pilot.ci-checks":
+		return OpenPilotPhaseAIReviewed
+	case "open-pilot.merge-pr":
+		return OpenPilotPhaseCIPassed
+	case "open-pilot.close-issue":
+		return OpenPilotPhaseMerged
+	default:
+		return OpenPilotPhaseRequested
+	}
+}
+
+func gateStatusForOpenPilotStep(stepName string, gateStatus map[string]string) string {
+	switch stepName {
+	case "open-pilot.validate-issue":
+		return gateStatus["issue_validation"]
+	case "open-pilot.branch-plan":
+		return gateStatus["branch_preparation"]
+	case "open-pilot.prepare-prompt":
+		return gateStatus["prompt_preparation"]
+	case "open-pilot.agent-work":
+		return gateStatus["agent_work"]
+	case "open-pilot.verify-command":
+		return gateStatus["local_verify"]
+	case "open-pilot.push-branch":
+		return gateStatus["git_push"]
+	case "open-pilot.pr-plan":
+		return gateStatus["pull_request"]
+	case "open-pilot.ai-review":
+		return gateStatus["ai_review"]
+	case "open-pilot.ci-checks":
+		return gateStatus["ci_checks"]
+	case "open-pilot.merge-pr":
+		return gateStatus["merge"]
+	case "open-pilot.close-issue":
+		return gateStatus["issue_close"]
+	default:
+		return ""
+	}
+}
+
+func summarizeOpenPilotFailure(prefix, lastErr string) string {
+	lastErr = strings.TrimSpace(lastErr)
+	if lastErr == "" {
+		return prefix
+	}
+	return prefix + ": " + lastErr
+}
+
+func giteaFailureAction(lastErr string) string {
+	lower := strings.ToLower(lastErr)
+	if strings.Contains(lower, "401") || strings.Contains(lower, "403") || strings.Contains(lower, "unauthor") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "token") || strings.Contains(lower, "auth") {
+		return "check_gitea_token"
+	}
+	return "manual_review"
 }
 
 func normalizeOpenPilotRepairCounts(state *OpenPilotIssueState) error {

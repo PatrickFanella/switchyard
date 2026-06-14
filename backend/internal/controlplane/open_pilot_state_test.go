@@ -133,13 +133,16 @@ func TestMemoryStoreOpenPilotIssueStateCRUDDeepCopy(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := NewStore(func() time.Time { return now })
 	input := OpenPilotIssueState{
-		Repo:              "OWNER/REPO",
-		Issue:             "123",
-		Phase:             OpenPilotPhaseRequested,
-		GateStatus:        OpenPilotGateStatus{"ai_review": "pending"},
-		ResumeInputs:      map[string]string{"branch": "open-pilot/issue-123"},
-		RepairAttempts:    1,
-		MaxRepairAttempts: 0,
+		Repo:                  "OWNER/REPO",
+		Issue:                 "123",
+		Phase:                 OpenPilotPhaseRequested,
+		GateStatus:            OpenPilotGateStatus{"ai_review": "pending"},
+		ResumeInputs:          map[string]string{"branch": "open-pilot/issue-123"},
+		RepairAttempts:        1,
+		MaxRepairAttempts:     0,
+		FailingGate:           "local_verify",
+		OperatorSummary:       "Local verification failed",
+		RecommendedNextAction: "rerun_verify",
 	}
 	saved, err := store.UpsertOpenPilotIssueState(input)
 	if err != nil {
@@ -157,7 +160,7 @@ func TestMemoryStoreOpenPilotIssueStateCRUDDeepCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if fetched.ID != saved.ID || fetched.GateStatus["ai_review"] != "pending" || fetched.ResumeInputs["branch"] != "open-pilot/issue-123" {
+	if fetched.ID != saved.ID || fetched.GateStatus["ai_review"] != "pending" || fetched.ResumeInputs["branch"] != "open-pilot/issue-123" || fetched.FailingGate != "local_verify" || fetched.OperatorSummary != "Local verification failed" || fetched.RecommendedNextAction != "rerun_verify" {
 		t.Fatalf("fetched = %+v", fetched)
 	}
 	fetched.GateStatus["ai_review"] = "changed"
@@ -166,7 +169,7 @@ func TestMemoryStoreOpenPilotIssueStateCRUDDeepCopy(t *testing.T) {
 	if len(listed) != 1 {
 		t.Fatalf("len(listed) = %d", len(listed))
 	}
-	if listed[0].GateStatus["ai_review"] != "pending" || listed[0].ResumeInputs["branch"] != "open-pilot/issue-123" {
+	if listed[0].GateStatus["ai_review"] != "pending" || listed[0].ResumeInputs["branch"] != "open-pilot/issue-123" || listed[0].FailingGate != "local_verify" || listed[0].OperatorSummary != "Local verification failed" || listed[0].RecommendedNextAction != "rerun_verify" {
 		t.Fatalf("listed = %+v", listed[0])
 	}
 	listed[0].CreatedAt = time.Unix(200, 0)
@@ -175,7 +178,7 @@ func TestMemoryStoreOpenPilotIssueStateCRUDDeepCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertOpenPilotIssueState() update error = %v", err)
 	}
-	if updated.ID != saved.ID || updated.Phase != OpenPilotPhaseValidated || !updated.CreatedAt.Equal(saved.CreatedAt) {
+	if updated.ID != saved.ID || updated.Phase != OpenPilotPhaseValidated || !updated.CreatedAt.Equal(saved.CreatedAt) || updated.FailingGate != "local_verify" || updated.OperatorSummary != "Local verification failed" || updated.RecommendedNextAction != "rerun_verify" {
 		t.Fatalf("updated = %+v", updated)
 	}
 }
@@ -209,7 +212,10 @@ func (fakeOpenPilotStateRow) Scan(dest ...any) error {
 	*dest[16].(*int) = 0
 	*dest[17].(*int) = 2
 	*dest[18].(*sql.NullString) = sql.NullString{}
-	*dest[19].(*time.Time) = time.Unix(100, 0).UTC()
-	*dest[20].(*time.Time) = time.Unix(101, 0).UTC()
+	*dest[19].(*sql.NullString) = sql.NullString{}
+	*dest[20].(*sql.NullString) = sql.NullString{}
+	*dest[21].(*sql.NullString) = sql.NullString{}
+	*dest[22].(*time.Time) = time.Unix(100, 0).UTC()
+	*dest[23].(*time.Time) = time.Unix(101, 0).UTC()
 	return nil
 }

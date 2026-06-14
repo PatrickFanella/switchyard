@@ -222,18 +222,18 @@ func (s *MemoryStore) ClaimOpenPilotIssueStateForResume(repo, issue string, resu
 	if !ok {
 		return OpenPilotIssueState{}, ErrNotFound
 	}
-	if existing.Phase != OpenPilotPhaseFailed && existing.Phase != OpenPilotPhasePaused {
+	if !isOpenPilotResumablePhase(existing.Phase) {
 		return OpenPilotIssueState{}, ErrInvalid
 	}
 	if err := normalizeOpenPilotRepairCounts(&existing); err != nil {
 		return OpenPilotIssueState{}, err
 	}
-	if err := ValidateOpenPilotTransition(existing.Phase, OpenPilotPhaseRequested); err != nil {
-		return OpenPilotIssueState{}, err
-	}
-	existing.Phase = OpenPilotPhaseRequested
+	existing.Phase = openPilotResumeClaimPhase(existing.Phase, resumeInputs)
 	existing.ResumeInputs = cloneMap(resumeInputs)
 	existing.LastError = ""
+	existing.FailingGate = ""
+	existing.OperatorSummary = ""
+	existing.RecommendedNextAction = ""
 	existing.UpdatedAt = s.now().UTC()
 	s.openPilotIssueStates[key] = existing
 	return cloneOpenPilotIssueState(existing), nil

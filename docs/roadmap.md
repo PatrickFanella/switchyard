@@ -210,6 +210,7 @@ Exit criteria:
 
 - At least Devlog and Changemaker run as pipelines. Current: complete.
 - Open Pilot has a visible prototype pipeline with branch and PR planning artifacts, even if mutation remains policy-gated. Current: complete.
+- Open Pilot resume now derives its cursor from persisted DB state and records actionable failure diagnostics for verify, push, PR, CI, merge, and close failures.
 
 ## Phase 5 — Open Pilot v1
 

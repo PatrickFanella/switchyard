@@ -874,6 +874,21 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 	if lastErr != "" {
 		saved.LastError = lastErr
 	}
+	if phase == OpenPilotPhaseFailed || phase == OpenPilotPhasePaused {
+		diagnostics := openPilotFailureDiagnosticsForState(saved, phase, stepName, lastErr, state)
+		if diagnostics.failingGate != "" {
+			saved.FailingGate = diagnostics.failingGate
+		}
+		if diagnostics.operatorSummary != "" {
+			saved.OperatorSummary = diagnostics.operatorSummary
+		}
+		if diagnostics.recommendedNextAction != "" {
+			saved.RecommendedNextAction = diagnostics.recommendedNextAction
+		}
+		if state != nil {
+			state["open-pilot.failure-diagnostics.persisted"] = true
+		}
+	}
 	if saved.MaxRepairAttempts == 0 {
 		saved.MaxRepairAttempts = openPilotDefaultMaxRepairAttempts
 	}
@@ -929,6 +944,9 @@ func (o openPilotExecutor) bootstrapOpenPilotIssueState(repo, issue, stepName st
 func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Run, step PipelineStep, state map[string]any, err error) {
 	_ = ctx
 	if err == nil {
+		return
+	}
+	if persisted, _ := state["open-pilot.failure-diagnostics.persisted"].(bool); persisted {
 		return
 	}
 	phase := OpenPilotPhaseFailed
@@ -1264,6 +1282,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		summary := "AI review approved"
 		if verdict == "changes_requested" {
 			state["ai_review.feedback"] = feedback
+			state["open-pilot.ai-review.changes-requested"] = true
 			state["retry_from_step"] = "open-pilot.agent-work"
 			state["retry_from_step_position"] = strconv.Itoa(4)
 			attempts := 1

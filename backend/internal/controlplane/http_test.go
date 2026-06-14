@@ -296,8 +296,109 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "8" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
 		t.Fatalf("resume body = %+v", resumeBody)
 	}
-	if resumeBody.State.Phase != controlplane.OpenPilotPhaseRequested || resumeBody.NextAction != "Validate issue" {
+	if resumeBody.State.Phase != controlplane.OpenPilotPhasePRCreated {
 		t.Fatalf("resume state = %+v", resumeBody)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "125", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
+		t.Fatalf("seed agent completed with test command requested error = %v", err)
+	}
+	for _, phase := range []controlplane.OpenPilotPhase{controlplane.OpenPilotPhaseValidated, controlplane.OpenPilotPhaseBranchPrepared, controlplane.OpenPilotPhaseAgentCompleted} {
+		if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "125", phase); err != nil {
+			t.Fatalf("transition issue 125 to %s error = %v", phase, err)
+		}
+	}
+	if saved, err := store.OpenPilotIssueState("OWNER/REPO", "125"); err == nil {
+		saved.ResumeInputs = map[string]string{"retry_from_step": "open-pilot.stale", "retry_from_step_position": "4", "test_command": "make verify"}
+		if _, err := store.UpsertOpenPilotIssueState(saved); err != nil {
+			t.Fatalf("update agent completed with test command error = %v", err)
+		}
+	} else {
+		t.Fatalf("OpenPilotIssueState() issue 125 error = %v", err)
+	}
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=125", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume agent completed with test command error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("agent completed with test command status = %d", resp.StatusCode)
+	}
+	var agentTestBody struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&agentTestBody); err != nil {
+		t.Fatalf("decode agent completed test resume: %v", err)
+	}
+	if agentTestBody.Run.Inputs["retry_from_step"] != "open-pilot.verify-command" || agentTestBody.Run.Inputs["retry_from_step_position"] != "5" {
+		t.Fatalf("agent completed with test command resume = %+v", agentTestBody.Run.Inputs)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "126", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
+		t.Fatalf("seed agent completed without test command requested error = %v", err)
+	}
+	for _, phase := range []controlplane.OpenPilotPhase{controlplane.OpenPilotPhaseValidated, controlplane.OpenPilotPhaseBranchPrepared, controlplane.OpenPilotPhaseAgentCompleted} {
+		if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "126", phase); err != nil {
+			t.Fatalf("transition issue 126 to %s error = %v", phase, err)
+		}
+	}
+	if saved, err := store.OpenPilotIssueState("OWNER/REPO", "126"); err == nil {
+		saved.ResumeInputs = map[string]string{"retry_from_step": "open-pilot.stale", "retry_from_step_position": "4"}
+		if _, err := store.UpsertOpenPilotIssueState(saved); err != nil {
+			t.Fatalf("update agent completed without test command error = %v", err)
+		}
+	} else {
+		t.Fatalf("OpenPilotIssueState() issue 126 error = %v", err)
+	}
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=126", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume agent completed without test command error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("agent completed without test command status = %d", resp.StatusCode)
+	}
+	var agentNoTestBody struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&agentNoTestBody); err != nil {
+		t.Fatalf("decode agent completed no test resume: %v", err)
+	}
+	if agentNoTestBody.Run.Inputs["retry_from_step"] != "open-pilot.push-branch" || agentNoTestBody.Run.Inputs["retry_from_step_position"] != "6" {
+		t.Fatalf("agent completed without test command resume = %+v", agentNoTestBody.Run.Inputs)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "127", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
+		t.Fatalf("seed failed verify requested error = %v", err)
+	}
+	for _, phase := range []controlplane.OpenPilotPhase{controlplane.OpenPilotPhaseValidated, controlplane.OpenPilotPhaseBranchPrepared, controlplane.OpenPilotPhaseAgentCompleted, controlplane.OpenPilotPhaseVerified} {
+		if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "127", phase); err != nil {
+			t.Fatalf("transition issue 127 to %s error = %v", phase, err)
+		}
+	}
+	if saved, err := store.OpenPilotIssueState("OWNER/REPO", "127"); err == nil {
+		saved.Phase = controlplane.OpenPilotPhaseFailed
+		saved.LastStepName = "open-pilot.verify-command"
+		saved.ResumeInputs = map[string]string{"retry_from_step": "open-pilot.agent-work", "retry_from_step_position": "4", "test_command": "make verify"}
+		if _, err := store.UpsertOpenPilotIssueState(saved); err != nil {
+			t.Fatalf("update failed verify error = %v", err)
+		}
+	} else {
+		t.Fatalf("OpenPilotIssueState() issue 127 error = %v", err)
+	}
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=127", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume failed verify error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("failed verify resume status = %d", resp.StatusCode)
+	}
+	var failedVerifyBody struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&failedVerifyBody); err != nil {
+		t.Fatalf("decode failed verify resume: %v", err)
+	}
+	if failedVerifyBody.Run.Inputs["retry_from_step"] != "open-pilot.verify-command" || failedVerifyBody.Run.Inputs["retry_from_step_position"] != "5" {
+		t.Fatalf("failed verify resume = %+v", failedVerifyBody.Run.Inputs)
 	}
 	_, err = store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
 	if err != nil {

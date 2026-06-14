@@ -458,6 +458,9 @@ components:
         repair_attempts: { type: integer }
         max_repair_attempts: { type: integer }
         last_error: { type: string }
+        failing_gate: { type: string }
+        operator_summary: { type: string }
+        recommended_next_action: { type: string }
         updated_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
       required: [id, repo, issue, phase, issue_closed, repair_attempts, max_repair_attempts, updated_at, created_at]

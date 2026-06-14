@@ -71,6 +71,16 @@ func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 			t.Fatalf("open pilot migration missing %q", field)
 		}
 	}
+	diagnostics, err := migrationFS.ReadFile("migrations/007_open_pilot_failure_diagnostics.sql")
+	if err != nil {
+		t.Fatalf("read diagnostics migration: %v", err)
+	}
+	diagnosticsSQL := string(diagnostics)
+	for _, field := range []string{"add column if not exists failing_gate text", "add column if not exists operator_summary text", "add column if not exists recommended_next_action text"} {
+		if !strings.Contains(diagnosticsSQL, field) {
+			t.Fatalf("open pilot diagnostics migration missing %q", field)
+		}
+	}
 }
 
 func TestPostgresStoreOpenPilotIssueStateIntegration(t *testing.T) {
@@ -91,7 +101,7 @@ func TestPostgresStoreOpenPilotIssueStateIntegration(t *testing.T) {
 	store := NewPostgresStore(db, func() time.Time { return time.Unix(100, 0) })
 	repo := "OWNER/POSTGRES-OPEN-PILOT"
 	issue := "1"
-	saved, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, GateStatus: OpenPilotGateStatus{"ai_review": "pending"}, ResumeInputs: map[string]string{"branch": "open-pilot/issue-1"}, MaxRepairAttempts: 0})
+	saved, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, GateStatus: OpenPilotGateStatus{"ai_review": "pending"}, ResumeInputs: map[string]string{"branch": "open-pilot/issue-1"}, MaxRepairAttempts: 0, FailingGate: "local_verify", OperatorSummary: "Local verification failed", RecommendedNextAction: "rerun_verify"})
 	if err != nil {
 		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
 	}
@@ -102,7 +112,7 @@ func TestPostgresStoreOpenPilotIssueStateIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if fetched.ID != saved.ID || fetched.GateStatus["ai_review"] != "pending" || fetched.ResumeInputs["branch"] != "open-pilot/issue-1" {
+	if fetched.ID != saved.ID || fetched.GateStatus["ai_review"] != "pending" || fetched.ResumeInputs["branch"] != "open-pilot/issue-1" || fetched.FailingGate != "local_verify" || fetched.OperatorSummary != "Local verification failed" || fetched.RecommendedNextAction != "rerun_verify" {
 		t.Fatalf("fetched = %+v", fetched)
 	}
 	listed := store.ListOpenPilotIssueStates()

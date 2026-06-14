@@ -138,7 +138,7 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, err)
 		return
 	}
-	if state.Phase != OpenPilotPhaseFailed && state.Phase != OpenPilotPhasePaused {
+	if !isOpenPilotResumablePhase(state.Phase) {
 		writeError(w, http.StatusBadRequest, "state is not resumable")
 		return
 	}
@@ -160,8 +160,14 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
 	if err != nil {
-		state.Phase = originalPhase
+		state.Phase = OpenPilotPhaseFailed
+		if originalPhase == OpenPilotPhasePaused {
+			state.Phase = OpenPilotPhasePaused
+		}
 		state.LastError = err.Error()
+		state.FailingGate = "resume"
+		state.OperatorSummary = "Resume dispatch failed: " + err.Error()
+		state.RecommendedNextAction = "resume"
 		_, _ = a.store.UpsertOpenPilotIssueState(state)
 		writeControlError(w, err)
 		return
@@ -824,24 +830,32 @@ func mergeOpenPilotResumeStateInputs(state OpenPilotIssueState) map[string]strin
 		inputs["resume.open-pilot.close-issue.issue_closed"] = "true"
 	}
 	step, position := openPilotResumeCursorForState(state)
-	if step != "" && inputs["retry_from_step"] == "" {
-		inputs["retry_from_step"] = step
-	}
-	if position != "" && inputs["retry_from_step_position"] == "" {
-		inputs["retry_from_step_position"] = position
+	if step != "" && position != "" {
+		if state.Phase == OpenPilotPhaseFailed || state.Phase == OpenPilotPhasePaused {
+			inputs["retry_from_step"] = step
+			inputs["retry_from_step_position"] = position
+		} else {
+			inputs["retry_from_step"] = step
+			inputs["retry_from_step_position"] = position
+		}
 	}
 	return inputs
 }
 
 func openPilotResumeCursorForState(state OpenPilotIssueState) (string, string) {
-	if state.ResumeInputs != nil {
+	if (state.Phase == OpenPilotPhaseFailed || state.Phase == OpenPilotPhasePaused) && state.ResumeInputs != nil {
+		if state.LastStepName != "" && !openPilotShouldUseStoredRepairCursor(state) {
+			if pos := openPilotStepPosition(state.LastStepName); pos != "" {
+				return state.LastStepName, pos
+			}
+		}
 		if step, pos := state.ResumeInputs["retry_from_step"], state.ResumeInputs["retry_from_step_position"]; step != "" && pos != "" {
 			return step, pos
 		}
-	}
-	if state.LastStepName != "" {
-		if pos := openPilotStepPosition(state.LastStepName); pos != "" {
-			return state.LastStepName, pos
+		if state.LastStepName != "" {
+			if pos := openPilotStepPosition(state.LastStepName); pos != "" {
+				return state.LastStepName, pos
+			}
 		}
 	}
 	switch state.Phase {
@@ -852,7 +866,10 @@ func openPilotResumeCursorForState(state OpenPilotIssueState) (string, string) {
 	case OpenPilotPhaseBranchPrepared:
 		return "open-pilot.prepare-prompt", "3"
 	case OpenPilotPhaseAgentCompleted:
-		return "open-pilot.verify-command", "5"
+		if state.ResumeInputs != nil && strings.TrimSpace(state.ResumeInputs["test_command"]) != "" {
+			return "open-pilot.verify-command", "5"
+		}
+		return "open-pilot.push-branch", "6"
 	case OpenPilotPhaseVerified:
 		return "open-pilot.push-branch", "6"
 	case OpenPilotPhasePushed:
@@ -870,6 +887,13 @@ func openPilotResumeCursorForState(state OpenPilotIssueState) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+func openPilotShouldUseStoredRepairCursor(state OpenPilotIssueState) bool {
+	if state.FailingGate == "ai_review" || state.GateStatus["ai_review"] == "changes_requested" {
+		return true
+	}
+	return state.ResumeInputs != nil && strings.TrimSpace(state.ResumeInputs["ai_review.feedback"]) != ""
 }
 
 func openPilotStepPosition(name string) string {

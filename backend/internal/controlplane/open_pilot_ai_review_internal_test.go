@@ -148,7 +148,7 @@ func TestOpenPilotAIReviewRequestsChangesAndStopsPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if state.Phase != OpenPilotPhaseFailed || state.RepairAttempts != 1 || state.GateStatus["ai_review"] != "changes_requested" || state.ResumeInputs["ai_review.feedback"] == "" || state.ResumeInputs["retry_from_step"] != "open-pilot.agent-work" {
+	if state.Phase != OpenPilotPhaseFailed || state.RepairAttempts != 1 || state.GateStatus["ai_review"] != "changes_requested" || state.ResumeInputs["ai_review.feedback"] == "" || state.ResumeInputs["retry_from_step"] != "open-pilot.agent-work" || state.FailingGate != "ai_review" || state.RecommendedNextAction != "fix_agent_commit" || state.OperatorSummary == "" {
 		t.Fatalf("state = %+v", state)
 	}
 }
@@ -182,7 +182,7 @@ func TestOpenPilotAIReviewPausesAtMaxAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if state.Phase != OpenPilotPhasePaused || state.RepairAttempts != 2 || state.GateStatus["ai_review"] != "changes_requested" {
+	if state.Phase != OpenPilotPhasePaused || state.RepairAttempts != 2 || state.GateStatus["ai_review"] != "changes_requested" || state.FailingGate != "ai_review" || state.RecommendedNextAction != "fix_agent_commit" || state.OperatorSummary == "" {
 		t.Fatalf("state = %+v", state)
 	}
 }

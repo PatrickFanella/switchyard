@@ -157,7 +157,7 @@ func TestOpenPilotCIChecksFailsOnRequiredCheckFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if state.Phase != OpenPilotPhaseFailed || state.GateStatus["ci_checks"] != "failed" {
+	if state.Phase != OpenPilotPhaseFailed || state.GateStatus["ci_checks"] != "failed" || state.FailingGate != "ci_checks" || state.RecommendedNextAction != "fix_agent_commit" || state.OperatorSummary == "" {
 		t.Fatalf("state = %+v", state)
 	}
 }
@@ -192,7 +192,7 @@ func TestOpenPilotCIChecksTimeoutsOnPendingChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if state.Phase != OpenPilotPhaseFailed || state.GateStatus["ci_checks"] != "timeout" {
+	if state.Phase != OpenPilotPhaseFailed || state.GateStatus["ci_checks"] != "timeout" || state.FailingGate != "ci_checks" || state.RecommendedNextAction != "wait_ci" || state.OperatorSummary == "" {
 		t.Fatalf("state = %+v", state)
 	}
 }
