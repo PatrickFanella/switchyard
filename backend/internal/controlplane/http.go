@@ -14,6 +14,7 @@ type API struct {
 	store         Store
 	runner        *Runner
 	adapterProbe  AdapterProbe
+	modelBroker   ModelBrokerStatusProvider
 	canceler      CancelDispatcher
 	scheduler     *Scheduler
 	workerPool    *WorkerPool
@@ -21,7 +22,7 @@ type API struct {
 }
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), canceler: NewEnvCancelDispatcher()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), canceler: NewEnvCancelDispatcher()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
@@ -44,6 +45,7 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/adapters", a.adapters)
+	mux.HandleFunc("GET /api/model-broker/status", a.modelBrokerStatus)
 	mux.HandleFunc("GET /api/open-pilot/states", a.openPilotStates)
 	mux.HandleFunc("GET /api/open-pilot/state", a.openPilotState)
 	mux.HandleFunc("POST /api/open-pilot/state/pause", a.pauseOpenPilotState)
@@ -87,6 +89,12 @@ func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	writeJSON(w, http.StatusOK, a.adapterProbe.Payload(ctx))
+}
+
+func (a *API) modelBrokerStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"model_broker": a.modelBroker.Status(ctx)})
 }
 
 func (a *API) openPilotStates(w http.ResponseWriter, r *http.Request) {

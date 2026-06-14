@@ -173,6 +173,136 @@ func TestAPIAgentProfilesListsNativeProfiles(t *testing.T) {
 	}
 }
 
+func TestAPIModelBrokerStatusReportsNativeBroker(t *testing.T) {
+	upstreamHealthy := true
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/broker/status" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"queue_depth":       2,
+			"max_depth":         8,
+			"in_flight_client":  "",
+			"connected_clients": 3,
+			"upstreams": []map[string]any{
+				{
+					"name":          "local-ollama",
+					"url":           "http://ollama:11434",
+					"healthy":       upstreamHealthy,
+					"queue_depth":   0,
+					"max_depth":     4,
+					"last_probe_at": "2026-06-14T12:00:00Z",
+				},
+				{
+					"name":         "ocq-switchyard",
+					"url":          "http://ocq:8088",
+					"healthy":      upstreamHealthy,
+					"queue_depth":  2,
+					"max_depth":    4,
+					"in_flight_id": "req-2",
+				},
+			},
+		}); err != nil {
+			t.Fatalf("encode status: %v", err)
+		}
+	}))
+	t.Cleanup(broker.Close)
+	t.Setenv("LLAMA_LINE_BASE_URL", broker.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/model-broker/status")
+	if err != nil {
+		t.Fatalf("GET model broker status error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		ModelBroker controlplane.ModelBrokerStatus `json:"model_broker"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.ModelBroker.ID != "switchyard-model-broker" || body.ModelBroker.Status != "healthy" || !body.ModelBroker.Configured {
+		t.Fatalf("model broker = %+v", body.ModelBroker)
+	}
+	if body.ModelBroker.Backend != "switchyard-model-broker" || body.ModelBroker.TransitionalBackend != "llama-line" {
+		t.Fatalf("model broker backend = %+v", body.ModelBroker)
+	}
+	if body.ModelBroker.QueueDepth != 2 || body.ModelBroker.MaxDepth != 8 || !body.ModelBroker.ActiveRequest || body.ModelBroker.ConnectedClients != 3 {
+		t.Fatalf("model broker queue = %+v", body.ModelBroker)
+	}
+	if len(body.ModelBroker.InFlightRequestIDs) != 1 || body.ModelBroker.InFlightRequestIDs[0] != "req-2" {
+		t.Fatalf("in-flight IDs = %+v", body.ModelBroker.InFlightRequestIDs)
+	}
+	if len(body.ModelBroker.Upstreams) != 2 || body.ModelBroker.Upstreams[1].Name != "ocq-switchyard" || body.ModelBroker.Upstreams[1].Status != "healthy" || body.ModelBroker.Upstreams[1].InFlightID != "req-2" {
+		t.Fatalf("upstreams = %+v", body.ModelBroker.Upstreams)
+	}
+	if body.ModelBroker.Upstreams[1].LastProbeAt != nil {
+		t.Fatalf("missing last_probe_at should stay absent: %+v", body.ModelBroker.Upstreams[1])
+	}
+}
+
+func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"queue_depth": 0, "max_depth": 0, "upstreams": []map[string]any{}}); err != nil {
+			t.Fatalf("encode status: %v", err)
+		}
+	}))
+	t.Cleanup(broker.Close)
+	t.Setenv("LLAMA_LINE_BASE_URL", broker.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/model-broker/status")
+	if err != nil {
+		t.Fatalf("GET model broker status error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		ModelBroker controlplane.ModelBrokerStatus `json:"model_broker"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.ModelBroker.Status != "degraded" {
+		t.Fatalf("status = %q, want degraded", body.ModelBroker.Status)
+	}
+}
+
+func TestAPIModelBrokerStatusReportsUnconfigured(t *testing.T) {
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/model-broker/status")
+	if err != nil {
+		t.Fatalf("GET model broker status error = %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		ModelBroker controlplane.ModelBrokerStatus `json:"model_broker"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.ModelBroker.Configured || body.ModelBroker.Status != "not_configured" || body.ModelBroker.Error == "" {
+		t.Fatalf("model broker = %+v", body.ModelBroker)
+	}
+}
+
 func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {

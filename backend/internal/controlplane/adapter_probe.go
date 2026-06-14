@@ -57,6 +57,7 @@ type llamaLineBrokerStatus struct {
 	QueueDepth       int                       `json:"queue_depth"`
 	MaxDepth         int                       `json:"max_depth"`
 	InFlightClient   string                    `json:"in_flight_client"`
+	InFlightID       string                    `json:"in_flight_id"`
 	ConnectedClients int                       `json:"connected_clients"`
 	Upstreams        []llamaLineStatusUpstream `json:"upstreams"`
 }
@@ -66,6 +67,9 @@ type llamaLineStatusUpstream struct {
 	URL         string `json:"url"`
 	Healthy     *bool  `json:"healthy"`
 	LastProbeAt string `json:"last_probe_at"`
+	QueueDepth  int    `json:"queue_depth"`
+	MaxDepth    int    `json:"max_depth"`
+	InFlightID  string `json:"in_flight_id"`
 }
 
 func (p *EnvAdapterProbe) applyLlamaLineStatus(ctx context.Context, payload *AdapterPayload) {

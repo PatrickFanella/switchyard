@@ -147,6 +147,7 @@ Current status:
 
 - `backend/internal/controlplane/model_executor.go` defines the native `ModelBroker` contract.
 - `EnvModelBroker` routes to transitional llama-line and marks responses with `model_broker=switchyard` correlation metadata. OCQ remains the transitional OpenCode executor path and should be reached through llama-line routing when model-broker traffic targets OpenCode-backed models.
+- `GET /api/model-broker/status` exposes a native Switchyard broker status surface backed by transitional llama-line `/broker/status` data.
 
 ## Phase 3 — OCQ/OpenCode executor
 

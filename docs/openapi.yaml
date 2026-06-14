@@ -27,6 +27,12 @@ paths:
       summary: List adapter snapshots
       responses:
         "200": { $ref: "#/components/responses/AdapterPayload" }
+  /api/model-broker/status:
+    get:
+      summary: Get native ModelBroker status
+      description: Reports Switchyard's native model-broker surface while llama-line remains the transitional backend.
+      responses:
+        "200": { $ref: "#/components/responses/ModelBrokerStatusResponse" }
   /api/scheduler:
     get:
       summary: Get scheduler status
@@ -383,6 +389,15 @@ components:
           schema:
             type: object
             additionalProperties: true
+    ModelBrokerStatusResponse:
+      description: Native ModelBroker status response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              model_broker: { $ref: "#/components/schemas/ModelBrokerStatus" }
+            required: [model_broker]
     OpenPilotStatesResponse:
       description: Open Pilot issue state list
       content:
@@ -464,6 +479,39 @@ components:
         updated_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
       required: [id, repo, issue, phase, issue_closed, repair_attempts, max_repair_attempts, updated_at, created_at]
+    ModelBrokerStatus:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [healthy, degraded, unknown, unreachable, failed, not_configured] }
+        configured: { type: boolean }
+        backend: { type: string }
+        transitional_backend: { type: string }
+        base_url: { type: string }
+        queue_depth: { type: integer }
+        max_depth: { type: integer }
+        active_request: { type: boolean }
+        connected_clients: { type: integer }
+        in_flight_request_ids:
+          type: array
+          items: { type: string }
+        upstreams:
+          type: array
+          items: { $ref: "#/components/schemas/ModelBrokerStatusUpstream" }
+        checked_at: { type: string, format: date-time }
+        error: { type: string }
+      required: [id, status, configured, backend, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+    ModelBrokerStatusUpstream:
+      type: object
+      properties:
+        name: { type: string }
+        url: { type: string }
+        status: { type: string, enum: [healthy, failed, unknown] }
+        queue_depth: { type: integer }
+        max_depth: { type: integer }
+        in_flight_id: { type: string }
+        last_probe_at: { type: string, format: date-time }
+      required: [name, url, status, queue_depth, max_depth]
     Workflow:
       type: object
       properties:
