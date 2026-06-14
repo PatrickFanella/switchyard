@@ -86,10 +86,13 @@ services:
       OCQ_GATEWAY_HOST: 0.0.0.0
       OCQ_GATEWAY_PORT: 8088
       OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-switchyard-local-ocq-key}
-      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://host.docker.internal:4096}
-      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-}
-      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode:4096}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
       OCQ_DEFAULT_DIRECTORY: ${OCQ_DEFAULT_DIRECTORY:-/workspace}
+    depends_on:
+      opencode:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -99,6 +102,27 @@ services:
       retries: 5
     ports:
       - "${OCQ_PORT:-8088}:8088"
+
+  opencode:
+    build: ./services/opencode
+    environment:
+      OPENCODE_SERVER_HOSTNAME: 0.0.0.0
+      OPENCODE_SERVER_PORT: 4096
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const u=process.env.OPENCODE_SERVER_USERNAME,p=process.env.OPENCODE_SERVER_PASSWORD; fetch('http://127.0.0.1:4096/session?directory=/workspace',{headers:{authorization:'Basic '+Buffer.from(u+':'+p).toString('base64')}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - ${OPENCODE_WORKSPACE:-.}:/workspace
+      - ${OPENCODE_CONFIG_DIR:-./.opencode}:/root/.config/opencode
+      - ${OPENCODE_DATA_DIR:-./opencode-data}:/root/.local/share/opencode
 
   llama-line:
     build: ./services/llama-line

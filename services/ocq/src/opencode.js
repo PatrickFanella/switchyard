@@ -43,6 +43,11 @@ function parseEnvFile(file) {
 }
 
 function authHeader(opts) {
+  const processUsername = process.env.OPENCODE_SERVER_USERNAME
+  const processPassword = process.env.OPENCODE_SERVER_PASSWORD
+  if (processUsername && processPassword) {
+    return `Basic ${Buffer.from(`${processUsername}:${processPassword}`).toString("base64")}`
+  }
   const env = parseEnvFile(opts.envFile)
   const username = process.env.OPENCODE_SERVER_USERNAME || env.OPENCODE_SERVER_USERNAME
   const password = process.env.OPENCODE_SERVER_PASSWORD || env.OPENCODE_SERVER_PASSWORD

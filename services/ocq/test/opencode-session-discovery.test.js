@@ -1,7 +1,22 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const { listSessions, getSession } = require("../src/opencode")
+const { authHeader, listSessions, getSession } = require("../src/opencode")
 const { listen, close, createMockOpenCode } = require("./helpers")
+
+test("authHeader can authenticate from process env without env file", () => {
+  const previousUsername = process.env.OPENCODE_SERVER_USERNAME
+  const previousPassword = process.env.OPENCODE_SERVER_PASSWORD
+  process.env.OPENCODE_SERVER_USERNAME = "switchyard"
+  process.env.OPENCODE_SERVER_PASSWORD = "secret"
+  try {
+    assert.equal(authHeader({ envFile: "/does/not/exist" }), `Basic ${Buffer.from("switchyard:secret").toString("base64")}`)
+  } finally {
+    if (previousUsername === undefined) delete process.env.OPENCODE_SERVER_USERNAME
+    else process.env.OPENCODE_SERVER_USERNAME = previousUsername
+    if (previousPassword === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+    else process.env.OPENCODE_SERVER_PASSWORD = previousPassword
+  }
+})
 
 test("listSessions normalizes OpenCode sessions", async () => {
   const mock = createMockOpenCode((req, res) => {
