@@ -53,32 +53,37 @@ func (r MapExecutorRegistry) ExecutorFor(workflowID string) WorkflowExecutor {
 }
 
 type EnvWorkflowExecutors struct {
-	store                  Store
-	changemakerBaseURL     string
-	changemakerToken       string
-	openPilotCommand       string
-	ocqBaseURL             string
-	ocqGatewayKey          string
-	llamaLineBaseURL       string
-	llamaLineAPIKey        string
-	devlogModel            string
-	openPilotModel         string
-	devlogAllowedModels    map[string]bool
-	openPilotAllowedModels map[string]bool
-	openPilotLabels        []string
-	requireIssueSpec       bool
-	openPilotWriteMode     string
-	openPilotGitPushMode   string
-	openPilotBaseBranch    string
-	openPilotBranchPrefix  string
-	openPilotPRDraft       bool
-	modelExecutor          ModelExecutor
-	ocqExecutor            OCQExecutor
-	issueFetcher           IssueFetcher
-	giteaWriter            GiteaWriter
-	commandRunner          CommandRunner
-	worktreeManager        OpenPilotWorktreeManager
-	client                 *http.Client
+	store                     Store
+	changemakerBaseURL        string
+	changemakerToken          string
+	openPilotCommand          string
+	ocqBaseURL                string
+	ocqGatewayKey             string
+	llamaLineBaseURL          string
+	llamaLineAPIKey           string
+	devlogModel               string
+	openPilotModel            string
+	devlogAllowedModels       map[string]bool
+	openPilotAllowedModels    map[string]bool
+	openPilotLabels           []string
+	openPilotCICheckMode      string
+	openPilotCIRequiredChecks []string
+	openPilotCICheckTimeout   time.Duration
+	openPilotCICheckInterval  time.Duration
+	requireIssueSpec          bool
+	openPilotWriteMode        string
+	openPilotGitPushMode      string
+	openPilotBaseBranch       string
+	openPilotBranchPrefix     string
+	openPilotPRDraft          bool
+	modelExecutor             ModelExecutor
+	ocqExecutor               OCQExecutor
+	issueFetcher              IssueFetcher
+	giteaReader               GiteaPullRequestReader
+	giteaWriter               GiteaWriter
+	commandRunner             CommandRunner
+	worktreeManager           OpenPilotWorktreeManager
+	client                    *http.Client
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -93,33 +98,60 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotWriteMode = firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "allow")
 		openPilotGitPushMode = firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "allow")
 	}
+	ciCheckMode := firstNonEmpty(os.Getenv("OPEN_PILOT_CI_CHECK_MODE"), "disabled")
+	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_MODE")) == "" {
+		ciCheckMode = "require-pass"
+	}
+	requiredChecksRaw := strings.TrimSpace(os.Getenv("OPEN_PILOT_REQUIRED_CHECKS"))
+	requiredChecks := splitCSV(requiredChecksRaw)
+	if len(requiredChecks) == 0 && ciCheckMode != "disabled" {
+		requiredChecks = splitCSV("verify,lint,test")
+	}
+	ciCheckTimeout := 10 * time.Minute
+	if raw := strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_TIMEOUT")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			ciCheckTimeout = parsed
+		}
+	}
+	ciCheckInterval := 15 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_INTERVAL")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			ciCheckInterval = parsed
+		}
+	}
+	giteaClient := NewEnvGiteaClient()
 	return &EnvWorkflowExecutors{
-		store:                  configuredStore,
-		changemakerBaseURL:     strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
-		changemakerToken:       os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
-		openPilotCommand:       strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
-		ocqBaseURL:             strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
-		ocqGatewayKey:          os.Getenv("OCQ_GATEWAY_KEY"),
-		llamaLineBaseURL:       strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
-		llamaLineAPIKey:        os.Getenv("LLAMA_LINE_API_KEY"),
-		devlogModel:            firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
-		openPilotModel:         firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
-		devlogAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"))),
-		openPilotAllowedModels: setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"))),
-		openPilotLabels:        splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
-		requireIssueSpec:       strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
-		openPilotWriteMode:     openPilotWriteMode,
-		openPilotGitPushMode:   openPilotGitPushMode,
-		openPilotBaseBranch:    firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
-		openPilotBranchPrefix:  firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
-		openPilotPRDraft:       !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
-		modelExecutor:          NewEnvModelExecutor(),
-		ocqExecutor:            NewEnvOCQExecutor(),
-		issueFetcher:           NewEnvGiteaClient(),
-		giteaWriter:            NewEnvGiteaClient(),
-		commandRunner:          NewEnvCommandRunner(),
-		worktreeManager:        NewEnvOpenPilotWorktreeManager(),
-		client:                 &http.Client{Timeout: 10 * time.Second},
+		store:                     configuredStore,
+		changemakerBaseURL:        strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
+		changemakerToken:          os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
+		openPilotCommand:          strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
+		ocqBaseURL:                strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
+		ocqGatewayKey:             os.Getenv("OCQ_GATEWAY_KEY"),
+		llamaLineBaseURL:          strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		llamaLineAPIKey:           os.Getenv("LLAMA_LINE_API_KEY"),
+		devlogModel:               firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
+		openPilotModel:            firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
+		devlogAllowedModels:       setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"))),
+		openPilotAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"))),
+		openPilotLabels:           splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
+		openPilotCICheckMode:      ciCheckMode,
+		openPilotCIRequiredChecks: requiredChecks,
+		openPilotCICheckTimeout:   ciCheckTimeout,
+		openPilotCICheckInterval:  ciCheckInterval,
+		requireIssueSpec:          strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
+		openPilotWriteMode:        openPilotWriteMode,
+		openPilotGitPushMode:      openPilotGitPushMode,
+		openPilotBaseBranch:       firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
+		openPilotBranchPrefix:     firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
+		openPilotPRDraft:          !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
+		modelExecutor:             NewEnvModelExecutor(),
+		ocqExecutor:               NewEnvOCQExecutor(),
+		issueFetcher:              giteaClient,
+		giteaReader:               giteaClient,
+		giteaWriter:               giteaClient,
+		commandRunner:             NewEnvCommandRunner(),
+		worktreeManager:           NewEnvOpenPilotWorktreeManager(),
+		client:                    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -382,8 +414,31 @@ func (o openPilotExecutor) ShouldExecutePipelineStep(run Run, step PipelineStep,
 		return completed
 	case "ai-review":
 		return o.env != nil && o.env.modelExecutor != nil && o.env.llamaLineBaseURL != "" && openPilotHasKnownPullRequest(state, run.Inputs)
+	case "ci-checks":
+		gateStatus := openPilotGateStatusFromState(state)
+		if gateStatus["ai_review"] != "approved" {
+			return false
+		}
+		if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok && pr.Head.SHA != "" {
+			return true
+		}
+		if openPilotPullRequestHeadCandidate(state, run.Inputs) != "" {
+			return true
+		}
+		return false
 	default:
 		return true
+	}
+}
+
+func openPilotGateStatusFromState(state map[string]any) map[string]string {
+	switch gateStatus := state["open-pilot.gate-status"].(type) {
+	case map[string]string:
+		return gateStatus
+	case OpenPilotGateStatus:
+		return map[string]string(gateStatus)
+	default:
+		return nil
 	}
 }
 
@@ -392,6 +447,21 @@ func openPilotHasKnownPullRequest(state map[string]any, inputs map[string]string
 		return true
 	}
 	return firstNonEmpty(inputs["resume.open-pilot.pr-plan.pull_request_url"], inputs["pull_request_url"], inputs["resume.open-pilot.pr-plan.pull_request_id"], inputs["resume.open-pilot.pr-plan.pull_request_number"]) != ""
+}
+
+func openPilotPullRequestHeadCandidate(state map[string]any, inputs map[string]string) string {
+	if pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest); ok {
+		if head := firstNonEmpty(pr.Head.Ref, pr.Head.Label); head != "" {
+			return head
+		}
+	}
+	if branchName, ok := state["open-pilot.branch-name"].(string); ok && branchName != "" {
+		return branchName
+	}
+	if branchPlan, ok := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan); ok && branchPlan.Branch != "" {
+		return branchPlan.Branch
+	}
+	return firstNonEmpty(inputs["branch"], inputs["resume.open-pilot.branch-plan.branch"], inputs["open-pilot.branch-name"])
 }
 
 func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state map[string]any) {
@@ -1123,9 +1193,265 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, err
 		}
 		return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: response.CorrelationIDs}, nil
+	case "ci-checks":
+		return o.executeOpenPilotCIChecks(ctx, run, state)
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)
 	}
+}
+
+type openPilotCICheckResult struct {
+	status  string
+	summary string
+}
+
+func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run, state map[string]any) (PipelineStepExecution, error) {
+	if o.env == nil {
+		return PipelineStepExecution{}, errors.New("open-pilot CI checks not configured")
+	}
+	mode := strings.TrimSpace(o.env.openPilotCICheckMode)
+	if mode == "" {
+		mode = "disabled"
+	}
+	if mode != "disabled" && mode != "poll" && mode != "require-pass" {
+		return PipelineStepExecution{}, fmt.Errorf("unsupported OPEN_PILOT_CI_CHECK_MODE %q", mode)
+	}
+	gateStatus := map[string]string{}
+	if existing := openPilotGateStatusFromState(state); len(existing) > 0 {
+		gateStatus = cloneMap(existing)
+	}
+	if gateStatus == nil {
+		gateStatus = map[string]string{}
+	}
+	if mode == "disabled" {
+		gateStatus["ci_checks"] = "skipped"
+		state["open-pilot.gate-status"] = gateStatus
+		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseAIReviewed, "open-pilot.ci-checks", "", state); err != nil {
+			return PipelineStepExecution{Summary: "CI checks skipped"}, err
+		}
+		return PipelineStepExecution{Summary: "CI checks skipped"}, nil
+	}
+	pr, prFound, err := o.resolveOpenPilotCIPullRequest(ctx, run, state, false)
+	if err != nil {
+		gateStatus["ci_checks"] = "failed"
+		state["open-pilot.gate-status"] = gateStatus
+		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.ci-checks", err.Error(), state); persistErr != nil {
+			return PipelineStepExecution{Summary: "CI checks failed"}, errors.Join(err, persistErr)
+		}
+		return PipelineStepExecution{Summary: "CI checks failed"}, err
+	}
+	if prFound {
+		state["open-pilot.pull-request"] = pr
+	}
+	if o.env.giteaReader == nil {
+		return PipelineStepExecution{}, errors.New("gitea pull request reader not configured")
+	}
+	requiredChecks := o.env.openPilotCIRequiredChecks
+	if len(requiredChecks) == 0 {
+		requiredChecks = splitCSV("verify,lint,test")
+	}
+	deadline := time.Now().Add(o.env.openPilotCICheckTimeout)
+	if o.env.openPilotCICheckTimeout <= 0 {
+		deadline = time.Now()
+	}
+	interval := o.env.openPilotCICheckInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	for {
+		if pr.Head.SHA == "" {
+			return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "failed", pr, nil, errors.New("open-pilot pull request head sha is required"))
+		}
+		snapshot, err := o.env.giteaReader.PullRequestChecks(ctx, run.Inputs["repo"], pr)
+		if err != nil {
+			return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "failed", pr, nil, err)
+		}
+		outcome, done := evaluateOpenPilotCIChecks(requiredChecks, snapshot)
+		if done {
+			if outcome.status == "failed" {
+				return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "failed", pr, &snapshot, errors.New(outcome.summary))
+			}
+			gateStatus["ci_checks"] = outcome.status
+			state["open-pilot.gate-status"] = gateStatus
+			artifactBody, artifact := buildOpenPilotCICheckArtifact(run.Inputs["repo"], pr, mode, requiredChecks, snapshot, outcome.status, outcome.summary)
+			_ = artifactBody
+			if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseCIPassed, "open-pilot.ci-checks", "", state); err != nil {
+				return PipelineStepExecution{Summary: outcome.summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: prCorrelationIDs(pr)}, err
+			}
+			return PipelineStepExecution{Summary: outcome.summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: prCorrelationIDs(pr)}, nil
+		}
+		if time.Now().After(deadline) {
+			return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "timeout", pr, &snapshot, errors.New("open pilot ci checks timed out waiting for required checks"))
+		}
+		wait := interval
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+		if wait <= 0 {
+			wait = time.Millisecond
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return PipelineStepExecution{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (o openPilotExecutor) resolveOpenPilotCIPullRequest(ctx context.Context, run Run, state map[string]any, allowMissing bool) (GiteaPullRequest, bool, error) {
+	pr, ok := state["open-pilot.pull-request"].(GiteaPullRequest)
+	if !ok {
+		pr = GiteaPullRequest{}
+	}
+	if openPilotPullRequestKnown(pr) && pr.Head.SHA != "" {
+		return pr, true, nil
+	}
+	head := openPilotPullRequestHeadCandidate(state, run.Inputs)
+	if head == "" {
+		if allowMissing {
+			return pr, openPilotPullRequestKnown(pr), nil
+		}
+		return GiteaPullRequest{}, false, errors.New("open-pilot pull request head is required")
+	}
+	if o.env == nil || o.env.giteaReader == nil {
+		if allowMissing {
+			return pr, openPilotPullRequestKnown(pr), nil
+		}
+		return GiteaPullRequest{}, false, errors.New("gitea pull request reader not configured")
+	}
+	resolved, found, err := o.env.giteaReader.FindPullRequestByHead(ctx, run.Inputs["repo"], head)
+	if err != nil {
+		return GiteaPullRequest{}, false, err
+	}
+	if found {
+		if resolved.Head.SHA == "" {
+			resolved.Head.SHA = pr.Head.SHA
+		}
+		if resolved.Head.SHA == "" {
+			if allowMissing {
+				return pr, openPilotPullRequestKnown(pr), nil
+			}
+			return GiteaPullRequest{}, false, errors.New("open-pilot pull request head sha is required")
+		}
+		return resolved, true, nil
+	}
+	if pr.Head.SHA != "" {
+		return pr, openPilotPullRequestKnown(pr), nil
+	}
+	if allowMissing {
+		return pr, openPilotPullRequestKnown(pr), nil
+	}
+	return GiteaPullRequest{}, false, errors.New("open-pilot pull request not found by head")
+}
+
+func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSummary) (openPilotCICheckResult, bool) {
+	if len(requiredChecks) == 0 {
+		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: no required checks configured"}, true
+	}
+	hasPending := false
+	for _, required := range requiredChecks {
+		switch evaluateOpenPilotRequiredCheck(required, snapshot) {
+		case "failed":
+			return openPilotCICheckResult{status: "failed", summary: "CI checks failed: " + required}, true
+		case "pending":
+			hasPending = true
+		}
+	}
+	if hasPending {
+		return openPilotCICheckResult{}, false
+	}
+	return openPilotCICheckResult{status: "passed", summary: "CI checks passed: " + strings.Join(requiredChecks, ", ")}, true
+}
+
+func evaluateOpenPilotRequiredCheck(required string, snapshot GiteaCheckSummary) string {
+	required = strings.TrimSpace(required)
+	if required == "" {
+		return "pending"
+	}
+	status := "pending"
+	for _, item := range snapshot.Statuses {
+		if item.Context != required {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(item.Status)) {
+		case "success":
+			status = "passed"
+		case "failure", "error", "cancelled", "timed_out", "action_required":
+			return "failed"
+		default:
+			status = "pending"
+		}
+	}
+	for _, check := range snapshot.Checks {
+		if check.Name != required {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(check.Conclusion)) {
+		case "success":
+			if strings.EqualFold(strings.TrimSpace(check.Status), "completed") || strings.TrimSpace(check.Status) == "" {
+				status = "passed"
+			} else {
+				status = "pending"
+			}
+		case "failure", "error", "cancelled", "timed_out", "action_required":
+			return "failed"
+		default:
+			status = "pending"
+		}
+	}
+	return status
+}
+
+func buildOpenPilotCICheckArtifact(repo string, pr GiteaPullRequest, mode string, requiredChecks []string, snapshot GiteaCheckSummary, result, summary string) (string, CreateArtifactInput) {
+	body := map[string]any{
+		"repo":            repo,
+		"mode":            mode,
+		"result":          result,
+		"summary":         summary,
+		"required_checks": requiredChecks,
+		"pull_request":    pr,
+		"checks":          snapshot,
+	}
+	encoded, _ := json.MarshalIndent(body, "", "  ")
+	return string(encoded), CreateArtifactInput{Name: "open-pilot-ci-checks.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}
+}
+
+func prCorrelationIDs(pr GiteaPullRequest) map[string]string {
+	out := map[string]string{}
+	if pr.HTMLURL != "" {
+		out["pull_request"] = pr.HTMLURL
+	}
+	if pr.Number != 0 {
+		out["pull_request_number"] = fmt.Sprintf("%d", pr.Number)
+	}
+	if pr.ID != 0 {
+		out["pull_request_id"] = fmt.Sprintf("%d", pr.ID)
+	}
+	if pr.Head.SHA != "" {
+		out["head_sha"] = pr.Head.SHA
+	}
+	return out
+}
+
+func (o openPilotExecutor) persistOpenPilotCICheckFailure(run Run, state map[string]any, gateStatus map[string]string, status string, pr GiteaPullRequest, snapshot *GiteaCheckSummary, err error) (PipelineStepExecution, error) {
+	gateStatus["ci_checks"] = status
+	state["open-pilot.gate-status"] = gateStatus
+	state["open-pilot.pull-request"] = pr
+	summary := "CI checks " + status
+	if snapshot != nil {
+		artifactBody, artifact := buildOpenPilotCICheckArtifact(run.Inputs["repo"], pr, o.env.openPilotCICheckMode, o.env.openPilotCIRequiredChecks, *snapshot, status, summary)
+		_ = artifactBody
+		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.ci-checks", err.Error(), state); persistErr != nil {
+			return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: prCorrelationIDs(pr)}, errors.Join(err, persistErr)
+		}
+		return PipelineStepExecution{Summary: summary, Artifacts: []CreateArtifactInput{artifact}, CorrelationIDs: prCorrelationIDs(pr)}, err
+	}
+	if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.ci-checks", err.Error(), state); persistErr != nil {
+		return PipelineStepExecution{Summary: summary, CorrelationIDs: prCorrelationIDs(pr)}, errors.Join(err, persistErr)
+	}
+	return PipelineStepExecution{Summary: summary, CorrelationIDs: prCorrelationIDs(pr)}, err
 }
 
 func (e *EnvWorkflowExecutors) openPilotBranchName(repo string, issue string, fetched *GiteaIssue) string {

@@ -20,6 +20,29 @@ func TestOperatorSafetyWarnsWhenAutonomyFullWithoutProxyAuth(t *testing.T) {
 	}
 }
 
+func TestOperatorSafetyWarnsWhenAutonomyFullRequiresCIWithoutGitea(t *testing.T) {
+	t.Setenv("OPEN_PILOT_AUTONOMY_MODE", "full")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")
+
+	status := controlplane.NewEnvOperatorSafetyStatus()
+	joined := strings.Join(status.Warnings, "\n")
+	if !strings.Contains(joined, "OPEN_PILOT_CI_CHECK_MODE=require-pass") {
+		t.Fatalf("warnings = %+v", status.Warnings)
+	}
+}
+
+func TestOperatorSafetyAllowsExplicitCIDisabledWithoutGitea(t *testing.T) {
+	t.Setenv("OPEN_PILOT_AUTONOMY_MODE", "full")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")
+	t.Setenv("OPEN_PILOT_CI_CHECK_MODE", "disabled")
+
+	status := controlplane.NewEnvOperatorSafetyStatus()
+	joined := strings.Join(status.Warnings, "\n")
+	if strings.Contains(joined, "OPEN_PILOT_CI_CHECK_MODE=require-pass") {
+		t.Fatalf("warnings = %+v", status.Warnings)
+	}
+}
+
 func TestOperatorSafetyEndpoint(t *testing.T) {
 	t.Setenv("OPEN_PILOT_AUTONOMY_MODE", "full")
 	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")

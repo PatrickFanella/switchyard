@@ -39,6 +39,19 @@ func TestOpenPilotPhaseRejectsSkippingMerge(t *testing.T) {
 	}
 }
 
+func TestOpenPilotPhaseRejectsActivePhaseSkips(t *testing.T) {
+	for _, tt := range []struct{ from, to OpenPilotPhase }{
+		{OpenPilotPhaseRequested, OpenPilotPhaseCIPassed},
+		{OpenPilotPhaseValidated, OpenPilotPhaseMerged},
+		{OpenPilotPhasePRCreated, OpenPilotPhaseMerged},
+		{OpenPilotPhaseAIReviewed, OpenPilotPhaseMerged},
+	} {
+		if err := ValidateOpenPilotTransition(tt.from, tt.to); err == nil {
+			t.Fatalf("expected active phase skip %s -> %s to be rejected", tt.from, tt.to)
+		}
+	}
+}
+
 func TestOpenPilotPhaseAllowsResumeTransitionsToActivePhases(t *testing.T) {
 	for _, tt := range []struct{ from, to OpenPilotPhase }{
 		{OpenPilotPhaseFailed, OpenPilotPhaseRequested},

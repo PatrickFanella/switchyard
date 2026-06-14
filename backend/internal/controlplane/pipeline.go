@@ -77,6 +77,7 @@ func DefaultPipelineRegistry() StaticPipelineRegistry {
 				{ID: "push-branch", Position: 6, Name: "open-pilot.push-branch", Executor: "git"},
 				{ID: "pr-plan", Position: 7, Name: "open-pilot.pr-plan", Executor: "gitea"},
 				{ID: "ai-review", Position: 8, Name: "open-pilot.ai-review", Executor: "model", Profile: "operator-reviewer", Model: "${model}"},
+				{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"},
 			},
 		},
 	}
