@@ -685,6 +685,31 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if failedVerifyBody.Run.Inputs["retry_from_step"] != "open-pilot.verify-command" || failedVerifyBody.Run.Inputs["retry_from_step_position"] != "5" {
 		t.Fatalf("failed verify resume = %+v", failedVerifyBody.Run.Inputs)
 	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "128", Phase: controlplane.OpenPilotPhaseRequested, GateStatus: controlplane.OpenPilotGateStatus{"merge": "merged"}, MergeCommitSHA: "deadbeef"}); err != nil {
+		t.Fatalf("seed merged requested error = %v", err)
+	}
+	for _, phase := range []controlplane.OpenPilotPhase{controlplane.OpenPilotPhaseValidated, controlplane.OpenPilotPhaseBranchPrepared, controlplane.OpenPilotPhaseAgentCompleted, controlplane.OpenPilotPhaseVerified, controlplane.OpenPilotPhasePushed, controlplane.OpenPilotPhasePRCreated, controlplane.OpenPilotPhaseAIReviewed, controlplane.OpenPilotPhaseCIPassed, controlplane.OpenPilotPhaseMergeReady, controlplane.OpenPilotPhaseMerged} {
+		if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "128", phase); err != nil {
+			t.Fatalf("transition issue 128 to %s error = %v", phase, err)
+		}
+	}
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=128", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume merged error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("merged resume status = %d", resp.StatusCode)
+	}
+	var mergedBody struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&mergedBody); err != nil {
+		t.Fatalf("decode merged resume: %v", err)
+	}
+	if mergedBody.Run.Inputs["retry_from_step"] != "open-pilot.close-issue" || mergedBody.Run.Inputs["retry_from_step_position"] != "11" || mergedBody.Run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"] != "deadbeef" {
+		t.Fatalf("merged resume = %+v", mergedBody.Run.Inputs)
+	}
 	_, err = store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
 	if err != nil {
 		t.Fatalf("CreateRun conflict error = %v", err)

@@ -158,7 +158,7 @@ func isOpenPilotActivePhase(phase OpenPilotPhase) bool {
 
 func isOpenPilotResumablePhase(phase OpenPilotPhase) bool {
 	switch phase {
-	case OpenPilotPhaseAgentCompleted, OpenPilotPhaseFailed, OpenPilotPhasePaused:
+	case OpenPilotPhaseAgentCompleted, OpenPilotPhaseMerged, OpenPilotPhaseFailed, OpenPilotPhasePaused:
 		return true
 	default:
 		return false
