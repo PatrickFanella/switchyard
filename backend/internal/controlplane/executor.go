@@ -1988,6 +1988,14 @@ func (e *EnvWorkflowExecutors) executeOpenPilotPush(ctx context.Context, plan Op
 			return errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires an executed worktree")
 		}
 		cmd := exec.CommandContext(ctx, "git", "-C", plan.WorktreePath, "push", plan.Remote, "HEAD:"+plan.Branch)
+		env, cleanup, err := openPilotGitCredentialEnv()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		if len(env) > 0 {
+			cmd.Env = env
+		}
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			message := strings.TrimSpace(string(output))
@@ -2007,6 +2015,14 @@ func (e *EnvWorkflowExecutors) openPilotRemoteBranchExists(ctx context.Context, 
 		return false, nil
 	}
 	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "ls-remote", "--exit-code", "--heads", remote, branch)
+	env, cleanup, authErr := openPilotGitCredentialEnv()
+	if authErr != nil {
+		return false, authErr
+	}
+	defer cleanup()
+	if len(env) > 0 {
+		cmd.Env = env
+	}
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return strings.TrimSpace(string(output)) != "", nil
@@ -2022,6 +2038,36 @@ func (e *EnvWorkflowExecutors) openPilotRemoteBranchExists(ctx context.Context, 
 		message = err.Error()
 	}
 	return false, errors.New(message)
+}
+
+func openPilotGitCredentialEnv() ([]string, func(), error) {
+	token := strings.TrimSpace(os.Getenv("GITEA_TOKEN"))
+	if token == "" {
+		return nil, func() {}, nil
+	}
+	username := firstNonEmpty(strings.TrimSpace(os.Getenv("GITEA_GIT_USERNAME")), strings.TrimSpace(os.Getenv("GITEA_USERNAME")), "oauth2")
+	file, err := os.CreateTemp("", "switchyard-open-pilot-askpass-*")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	_, writeErr := file.WriteString("#!/bin/sh\ncase \"$1\" in\n*Username*) printf '%s\\n' \"$OPEN_PILOT_GIT_USERNAME\" ;;\n*Password*) printf '%s\\n' \"$GITEA_TOKEN\" ;;\n*) printf '\\n' ;;\nesac\n")
+	closeErr := file.Close()
+	if writeErr != nil {
+		cleanup()
+		return nil, func() {}, writeErr
+	}
+	if closeErr != nil {
+		cleanup()
+		return nil, func() {}, closeErr
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	env := append(os.Environ(), "GIT_ASKPASS="+path, "GIT_TERMINAL_PROMPT=0", "OPEN_PILOT_GIT_USERNAME="+username)
+	return env, cleanup, nil
 }
 
 func (e *EnvWorkflowExecutors) openPilotWorktreeStatus(ctx context.Context, worktreePath string) (string, error) {

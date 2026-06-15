@@ -56,6 +56,8 @@ func TestOpenPilotPhaseAllowsResumeTransitionsToActivePhases(t *testing.T) {
 	for _, tt := range []struct{ from, to OpenPilotPhase }{
 		{OpenPilotPhaseFailed, OpenPilotPhaseRequested},
 		{OpenPilotPhasePaused, OpenPilotPhaseAgentCompleted},
+		{OpenPilotPhaseFailed, OpenPilotPhasePaused},
+		{OpenPilotPhasePaused, OpenPilotPhaseFailed},
 	} {
 		if err := ValidateOpenPilotTransition(tt.from, tt.to); err != nil {
 			t.Fatalf("expected resume transition %s -> %s, got %v", tt.from, tt.to, err)

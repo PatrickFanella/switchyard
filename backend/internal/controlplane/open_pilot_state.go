@@ -107,6 +107,9 @@ func ValidateOpenPilotTransition(from, to OpenPilotPhase) error {
 	if from == OpenPilotPhaseIssueClosed {
 		return fmt.Errorf("invalid open pilot transition: %s -> %s", from, to)
 	}
+	if (from == OpenPilotPhaseFailed && to == OpenPilotPhasePaused) || (from == OpenPilotPhasePaused && to == OpenPilotPhaseFailed) {
+		return nil
+	}
 	if from == OpenPilotPhaseFailed || from == OpenPilotPhasePaused {
 		if isOpenPilotActivePhase(to) {
 			return nil

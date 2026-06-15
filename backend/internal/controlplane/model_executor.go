@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,8 +59,17 @@ func NewEnvModelBroker() *EnvModelBroker {
 	return &EnvModelBroker{
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:  os.Getenv("LLAMA_LINE_API_KEY"),
-		client:           &http.Client{Timeout: 10 * time.Second},
+		client:           &http.Client{Timeout: modelBrokerTimeout()},
 	}
+}
+
+func modelBrokerTimeout() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_TIMEOUT")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 10 * time.Minute
 }
 
 // NewEnvModelExecutor preserves the previous constructor name while returning
@@ -98,14 +109,12 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return ModelResponse{}, fmt.Errorf("model request failed: %s", resp.Status)
 	}
-	var decoded struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ModelResponse{}, err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	decoded, err := decodeModelBrokerChatResponse(bodyBytes)
+	if err != nil {
 		return ModelResponse{}, err
 	}
 	if len(decoded.Choices) == 0 {
@@ -122,6 +131,51 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 		correlation["ocq_session_id"] = sessionID
 	}
 	return ModelResponse{Content: decoded.Choices[0].Message.Content, CorrelationIDs: correlation}, nil
+}
+
+type modelBrokerChatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+func decodeModelBrokerChatResponse(body []byte) (modelBrokerChatResponse, error) {
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "data:") {
+		var completion string
+		var lastStatus string
+		for _, line := range strings.Split(trimmed, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, ":") {
+				continue
+			}
+			if strings.HasPrefix(line, "data:") {
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if payload == "[DONE]" {
+					break
+				}
+				if strings.Contains(payload, `"choices"`) {
+					completion = payload
+				} else if payload != "" {
+					lastStatus = payload
+				}
+			}
+		}
+		if completion != "" {
+			trimmed = completion
+		} else if lastStatus != "" {
+			return modelBrokerChatResponse{}, fmt.Errorf("model broker stream ended without chat completion; last event: %s", lastStatus)
+		} else {
+			return modelBrokerChatResponse{}, errors.New("model broker stream ended without chat completion")
+		}
+	}
+	var decoded modelBrokerChatResponse
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return modelBrokerChatResponse{}, err
+	}
+	return decoded, nil
 }
 
 func (e *EnvModelBroker) Configured() bool {
