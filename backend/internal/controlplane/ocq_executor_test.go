@@ -1,10 +1,13 @@
 package controlplane_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
 )
@@ -70,5 +73,20 @@ func TestEnvOpenCodeExecutorKeepsClientRequestIDWhenOCQOmitsHeader(t *testing.T)
 	}
 	if response.RequestID != "client-request" || response.CorrelationIDs["ocq_request_id"] != "client-request" {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestEnvOpenCodeExecutorHonorsConfiguredTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(25 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OCQ_BASE_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_TIMEOUT", "1ms")
+
+	_, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "opencode-test", Prompt: "do work"})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SendPrompt() error = %v, want deadline exceeded", err)
 	}
 }

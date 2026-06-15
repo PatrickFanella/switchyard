@@ -92,8 +92,8 @@ func (p *EnvOpenCodeExecutorStatusProvider) Status(ctx context.Context) OpenCode
 			Title:     firstNonEmpty(session.Title, session.Name, session.ID),
 			Status:    sessionStatus,
 			User:      session.User,
-			CreatedAt: parseOptionalRFC3339(firstNonEmpty(session.CreatedAt, session.CreatedAtLegacy)),
-			UpdatedAt: parseOptionalRFC3339(firstNonEmpty(session.UpdatedAt, session.UpdatedAtLegacy)),
+			CreatedAt: parseOptionalRFC3339(firstNonEmpty(string(session.CreatedAt), string(session.CreatedAtLegacy))),
+			UpdatedAt: parseOptionalRFC3339(firstNonEmpty(string(session.UpdatedAt), string(session.UpdatedAtLegacy))),
 		})
 	}
 	status.SessionCount = len(status.Sessions)
@@ -128,16 +128,32 @@ func (p *EnvOpenCodeExecutorStatusProvider) getJSON(ctx context.Context, path st
 
 type ocqSessionsResponse struct {
 	Sessions []struct {
-		ID              string `json:"id"`
-		Title           string `json:"title"`
-		Name            string `json:"name"`
-		Status          string `json:"status"`
-		User            string `json:"user"`
-		CreatedAt       string `json:"created_at"`
-		UpdatedAt       string `json:"updated_at"`
-		CreatedAtLegacy string `json:"createdAt"`
-		UpdatedAtLegacy string `json:"updatedAt"`
+		ID              string            `json:"id"`
+		Title           string            `json:"title"`
+		Name            string            `json:"name"`
+		Status          string            `json:"status"`
+		User            string            `json:"user"`
+		CreatedAt       ocqFlexibleString `json:"created_at"`
+		UpdatedAt       ocqFlexibleString `json:"updated_at"`
+		CreatedAtLegacy ocqFlexibleString `json:"createdAt"`
+		UpdatedAtLegacy ocqFlexibleString `json:"updatedAt"`
 	} `json:"sessions"`
+}
+
+type ocqFlexibleString string
+
+func (s *ocqFlexibleString) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*s = ocqFlexibleString(text)
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err == nil {
+		*s = ocqFlexibleString(number.String())
+		return nil
+	}
+	return nil
 }
 
 type statusCodeError struct {

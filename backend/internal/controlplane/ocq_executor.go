@@ -43,7 +43,16 @@ type EnvOpenCodeExecutor struct {
 type EnvOCQExecutor = EnvOpenCodeExecutor
 
 func NewEnvOpenCodeExecutor() *EnvOpenCodeExecutor {
-	return &EnvOpenCodeExecutor{baseURL: strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"), gatewayKey: os.Getenv("OCQ_GATEWAY_KEY"), client: &http.Client{Timeout: 30 * time.Second}}
+	return &EnvOpenCodeExecutor{baseURL: strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"), gatewayKey: os.Getenv("OCQ_GATEWAY_KEY"), client: &http.Client{Timeout: openCodeExecutorTimeout()}}
+}
+
+func openCodeExecutorTimeout() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_TIMEOUT")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 10 * time.Minute
 }
 
 func NewEnvOCQExecutor() *EnvOpenCodeExecutor {

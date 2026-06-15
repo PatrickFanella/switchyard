@@ -140,10 +140,10 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		ocqGatewayKey:             os.Getenv("OCQ_GATEWAY_KEY"),
 		llamaLineBaseURL:          strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:           os.Getenv("LLAMA_LINE_API_KEY"),
-		devlogModel:               firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"),
-		openPilotModel:            firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"),
-		devlogAllowedModels:       setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "opencode:gpt-5.5"))),
-		openPilotAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "opencode:gpt-5.5"))),
+		devlogModel:               firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"),
+		openPilotModel:            firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"),
+		devlogAllowedModels:       setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"))),
+		openPilotAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"))),
 		openPilotLabels:           splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
 		openPilotCICheckMode:      ciCheckMode,
 		openPilotMergeMode:        mergeMode,
@@ -301,7 +301,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work")})
 	if err != nil {
 		fallbackExecution := WorkflowExecution{Summary: "Prepared Open Pilot prompt for issue " + issue, Events: []WorkflowExecutionEvent{{Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
-		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OCQ not configured; prompt prepared for operator handoff", "", nil)
+		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OpenCode executor unavailable; prompt prepared for operator handoff", "", nil)
 		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", err.Error())
 		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", err.Error(), map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}); persistErr != nil {
 			return fallbackExecution, persistErr
@@ -598,6 +598,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run
 	if issueSummary != "" {
 		state["open-pilot.issue-summary"] = issueSummary
 	}
+	if prompt := run.Inputs["resume.open-pilot.prompt"]; prompt != "" {
+		state["open-pilot.prompt"] = prompt
+	}
 	branchPlan := openPilotWorktreePlanFromResume(run.Inputs)
 	if branchPlan.Branch != "" {
 		state["open-pilot.branch-name"] = branchPlan.Branch
@@ -605,7 +608,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run
 		if issueSummary == "" {
 			issueSummary = "Retried Open Pilot issue " + run.Inputs["issue"]
 		}
-		state["open-pilot.prompt"] = buildOpenPilotPrompt(run.Inputs["repo"], run.Inputs["issue"], issueSummary, nil, run.Inputs, branchPlan)
+		if _, ok := state["open-pilot.prompt"].(string); !ok {
+			state["open-pilot.prompt"] = buildOpenPilotPrompt(run.Inputs["repo"], run.Inputs["issue"], issueSummary, nil, run.Inputs, branchPlan)
+		}
 	}
 	if summary := run.Inputs["resume.open-pilot.agent-work.summary"]; summary != "" {
 		state["open-pilot.agent-completed"] = true
@@ -1093,9 +1098,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), fallbackState); persistErr != nil {
-				return PipelineStepExecution{Summary: "OCQ not configured; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
+				return PipelineStepExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
 			}
-			return PipelineStepExecution{Summary: "OCQ not configured; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
+			return PipelineStepExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
 		}
 		state["open-pilot.agent-completed"] = true
 		state["open-pilot.agent-summary"] = response.Content

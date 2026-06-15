@@ -104,7 +104,7 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 	if run.Status != controlplane.RunSucceeded || run.Summary != "Prepared Open Pilot prompt for issue 123" {
 		t.Fatalf("run = %+v", run)
 	}
-	if len(detail.Steps) != 4 || detail.Steps[1].Name != "open-pilot.branch-plan" || detail.Steps[3].Executor != "opencode" || detail.Steps[3].OutputSummary != "OCQ not configured; prompt prepared for operator handoff" {
+	if len(detail.Steps) != 4 || detail.Steps[1].Name != "open-pilot.branch-plan" || detail.Steps[3].Executor != "opencode" || detail.Steps[3].OutputSummary != "OpenCode executor unavailable; prompt prepared for operator handoff" {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
 	if len(detail.Artifacts) != 2 || detail.Artifacts[1].Name != "open-pilot-prompt.md" {
@@ -357,6 +357,42 @@ func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
 	}
 	if detail.Steps[1].Inputs["branch"] != "open-pilot/issue-123-fix-switchyard" || detail.Steps[2].Inputs["head"] != "open-pilot/issue-123-fix-switchyard" {
 		t.Fatalf("rehydrated inputs missing: %+v", detail.Steps)
+	}
+}
+
+func TestRunnerReusesStoredOpenPilotPromptFromResumeInputs(t *testing.T) {
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	const prompt = "stored prompt with acceptance instructions"
+	_, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{
+		"repo":                     "OWNER/REPO",
+		"issue":                    "123",
+		"test_command":             "make verify",
+		"retry_from_step_position": "5",
+		"retry_from_step":          "open-pilot.verify-command",
+		"resume.open-pilot.validate-issue.summary":  "Fetched issue: Fix switchyard (open)",
+		"resume.open-pilot.prompt":                  prompt,
+		"resume.open-pilot.branch-plan.repo":        "OWNER/REPO",
+		"resume.open-pilot.branch-plan.base_branch": "main",
+		"resume.open-pilot.branch-plan.branch":      "open-pilot/issue-123-fix-switchyard",
+		"resume.open-pilot.branch-plan.mode":        "dry-run",
+		"resume.open-pilot.branch-plan.dry_run":     "true",
+		"resume.open-pilot.agent-work.summary":      "implementation summary",
+	}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if got := state.ResumeInputs["resume.open-pilot.prompt"]; got != prompt {
+		t.Fatalf("resume prompt = %q, want %q", got, prompt)
 	}
 }
 

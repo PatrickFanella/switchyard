@@ -377,7 +377,7 @@ func TestAPIOpenCodeExecutorStatusReportsNativeExecutor(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]any{
 				{"id": "sess-1", "title": "Issue 123", "status": "active", "user": "operator", "createdAt": "2026-06-14T12:00:00Z", "updatedAt": "2026-06-14T12:03:00Z"},
-				{"id": "sess-2", "name": "Review", "status": "completed", "createdAt": "bad-timestamp"},
+				{"id": "sess-2", "name": "Review", "status": "completed", "createdAt": 1718376000000},
 			}}); err != nil {
 				t.Fatalf("encode sessions: %v", err)
 			}
