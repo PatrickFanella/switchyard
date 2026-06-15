@@ -204,9 +204,11 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
 	seedOpenPilotIssueState(t, store, newOpenPilotIssueState("OWNER/REPO", "123", OpenPilotPhasePaused, 1, 2, map[string]string{
-		"resume.open-pilot.branch-plan.branch":      "open-pilot/issue-123",
-		"resume.open-pilot.branch-plan.base_branch": "main",
-		"ai_review.feedback":                        "Please tighten validation and add tests",
+		"resume.open-pilot.branch-plan.branch":        "open-pilot/issue-123",
+		"resume.open-pilot.branch-plan.base_branch":   "main",
+		"resume.open-pilot.branch-plan.worktree_path": "/tmp/worktree",
+		"resume.open-pilot.branch-plan.executed":      "true",
+		"ai_review.feedback":                          "Please tighten validation and add tests",
 	}, OpenPilotGateStatus{"ai_review": "changes_requested", "local_verify": "passed"}))
 	ocq := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "agent output"}}
 	env := newOpenPilotAIReviewTestEnv(store)
@@ -227,6 +229,9 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 	}
 	if len(ocq.requests) != 1 || !strings.Contains(ocq.requests[0].Prompt, "Please tighten validation and add tests") {
 		t.Fatalf("prompt = %q", ocq.requests)
+	}
+	if ocq.requests[0].WorkDir != "/tmp/worktree" {
+		t.Fatalf("workdir = %q", ocq.requests[0].WorkDir)
 	}
 }
 

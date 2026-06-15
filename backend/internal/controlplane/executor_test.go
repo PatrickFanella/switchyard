@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,7 +87,12 @@ func TestEnvWorkflowExecutorsDispatchesOpenPilotCommand(t *testing.T) {
 }
 
 func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("GITEA_BASE_URL", "")
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -187,9 +193,15 @@ func TestRunnerRejectsOpenPilotIssueMissingRequiredLabels(t *testing.T) {
 }
 
 func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	var requestBody map[string]any
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode body: %v", err)
 		}
 		w.Header().Set("X-OCQ-Request-ID", "req-1")
 		w.Header().Set("X-OCQ-Session", "ses-1")
@@ -198,6 +210,9 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
 	t.Setenv("OPEN_PILOT_MODEL", "opencode-open-pilot")
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -218,17 +233,84 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	if detail.Steps[3].Model != "opencode-open-pilot" || detail.Steps[3].CorrelationIDs["ocq_request_id"] != "req-1" || detail.Steps[3].CorrelationIDs["ocq_session_id"] != "ses-1" {
 		t.Fatalf("agent step = %+v", detail.Steps[3])
 	}
-	if len(detail.Artifacts) != 5 || detail.Artifacts[2].Name != "open-pilot-response.md" || detail.Artifacts[3].Name != "open-pilot-push-plan.json" || detail.Artifacts[4].Name != "open-pilot-pr-plan.json" {
-		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	if detail.Steps[3].CorrelationIDs["worktree_path"] != detail.Steps[1].CorrelationIDs["worktree_path"] {
+		t.Fatalf("agent step correlations = %+v branch = %+v", detail.Steps[3].CorrelationIDs, detail.Steps[1].CorrelationIDs)
+	}
+	if requestBody["directory"] != detail.Steps[1].CorrelationIDs["worktree_path"] || requestBody["directory"] == "" {
+		t.Fatalf("request body = %+v worktree = %q", requestBody, detail.Steps[1].CorrelationIDs["worktree_path"])
+	}
+	found := map[string]bool{}
+	for _, artifact := range detail.Artifacts {
+		found[artifact.Name] = true
+	}
+	for _, name := range []string{"open-pilot-response.md", "open-pilot-push-plan.json", "open-pilot-pr-plan.json", "open-pilot-worktree-cleanup.json"} {
+		if !found[name] {
+			t.Fatalf("artifacts = %+v", detail.Artifacts)
+		}
+	}
+}
+
+func TestRunnerPausesOpenPilotAgentWorkWithoutExecutedWorktree(t *testing.T) {
+	for _, mode := range []string{"disabled", "dry-run"} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			repoPath := initTestGitRepo(t)
+			worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+			var ocqCalls int32
+			ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&ocqCalls, 1)
+				t.Fatalf("OCQ should not be called when worktree mode is %s", mode)
+			}))
+			t.Cleanup(ocq.Close)
+			t.Setenv("OCQ_BASE_URL", ocq.URL)
+			t.Setenv("OPEN_PILOT_WORKTREE_MODE", mode)
+			t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+			t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+
+			store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+			if err := controlplane.SeedDefaults(store); err != nil {
+				t.Fatalf("SeedDefaults() error = %v", err)
+			}
+			runner := controlplane.NewRunner(store)
+			run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			detail, err := store.RunDetail(run.ID)
+			if err != nil {
+				t.Fatalf("RunDetail() error = %v", err)
+			}
+			if atomic.LoadInt32(&ocqCalls) != 0 {
+				t.Fatalf("ocqCalls = %d", ocqCalls)
+			}
+			if run.Summary != "Open Pilot paused: isolated worktree required" || run.Status != controlplane.RunSucceeded {
+				t.Fatalf("run = %+v", run)
+			}
+			if len(detail.Steps) != 4 || detail.Steps[3].OutputSummary != "Open Pilot paused: isolated worktree required" {
+				t.Fatalf("steps = %+v", detail.Steps)
+			}
+			state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+			if err != nil {
+				t.Fatalf("OpenPilotIssueState() error = %v", err)
+			}
+			if state.Phase != controlplane.OpenPilotPhasePaused || state.LastStepName != "open-pilot.agent-work" || state.LastError != "open-pilot agent-work requires OPEN_PILOT_WORKTREE_MODE=allow to create an isolated worktree" {
+				t.Fatalf("state = %+v", state)
+			}
+		})
 	}
 }
 
 func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
 	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status,diff")
@@ -289,11 +371,16 @@ func TestRunnerDoesNotPersistOpenPilotPRCreatedPhaseWhenPRIsDryRunOrDisabled(t *
 
 func runOpenPilotNoPersistTest(t *testing.T, pushMode, writeMode string) controlplane.OpenPilotIssueState {
 	t.Helper()
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
 	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status,diff")
@@ -397,11 +484,16 @@ func TestRunnerReusesStoredOpenPilotPromptFromResumeInputs(t *testing.T) {
 }
 
 func TestRunnerPersistsOpenPilotStateThroughAgentWork(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "disabled")
 
@@ -482,6 +574,13 @@ func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
 }
 
 func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	remotePath := filepath.Join(t.TempDir(), "remote.git")
+	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "origin", "main")
+	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
@@ -499,9 +598,12 @@ func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing
 	t.Cleanup(gitea.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
-	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
@@ -523,11 +625,16 @@ func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing
 }
 
 func TestRunnerPersistsOpenPilotFailureState(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "deny")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
@@ -933,6 +1040,13 @@ func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
 }
 
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	remotePath := filepath.Join(t.TempDir(), "remote.git")
+	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "origin", "main")
+	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
@@ -960,6 +1074,10 @@ func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	t.Cleanup(gitea.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC", "true")
 
@@ -982,11 +1100,16 @@ func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 }
 
 func TestRunnerFailsOpenPilotDeniedVerifyCommand(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "deny")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })

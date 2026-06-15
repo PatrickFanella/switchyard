@@ -17,6 +17,7 @@ type OpenCodeRequest struct {
 	Prompt    string
 	SessionID string
 	RequestID string
+	WorkDir   string
 }
 
 type OpenCodeResponse struct {
@@ -70,6 +71,9 @@ func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRe
 	body := map[string]any{"model": request.Model, "stream": false, "messages": []map[string]string{{"role": "user", "content": request.Prompt}}}
 	if request.SessionID != "" {
 		body["ocq_session_id"] = request.SessionID
+	}
+	if request.WorkDir != "" {
+		body["directory"] = request.WorkDir
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

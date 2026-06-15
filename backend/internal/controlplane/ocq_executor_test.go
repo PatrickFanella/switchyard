@@ -27,7 +27,7 @@ func TestEnvOpenCodeExecutorSendsPromptThroughOCQ(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body["model"] != "opencode-test" || body["ocq_session_id"] != "ses-1" {
+		if body["model"] != "opencode-test" || body["ocq_session_id"] != "ses-1" || body["directory"] != "/tmp/worktree" {
 			t.Fatalf("body = %+v", body)
 		}
 		w.Header().Set("X-OCQ-Request-ID", "req-1")
@@ -38,7 +38,7 @@ func TestEnvOpenCodeExecutorSendsPromptThroughOCQ(t *testing.T) {
 	t.Setenv("OCQ_BASE_URL", server.URL)
 	t.Setenv("OCQ_GATEWAY_KEY", "ocq-key")
 
-	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "opencode-test", Prompt: "do work", SessionID: "ses-1", RequestID: "request-1"})
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "opencode-test", Prompt: "do work", SessionID: "ses-1", RequestID: "request-1", WorkDir: "/tmp/worktree"})
 	if err != nil {
 		t.Fatalf("SendPrompt() error = %v", err)
 	}

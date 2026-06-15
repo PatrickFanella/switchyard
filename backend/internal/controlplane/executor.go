@@ -298,15 +298,30 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work")})
+	if !openPilotHasExecutedWorktree(branchPlan) {
+		fallbackExecution := WorkflowExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
+		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, fallbackExecution.Summary, "", nil)
+		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", openPilotAgentWorkRequiresWorktreeMessage)
+		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", openPilotAgentWorkRequiresWorktreeMessage, map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}); persistErr != nil {
+			return fallbackExecution, persistErr
+		}
+		return fallbackExecution, nil
+	}
+	response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath})
 	if err != nil {
-		fallbackExecution := WorkflowExecution{Summary: "Prepared Open Pilot prompt for issue " + issue, Events: []WorkflowExecutionEvent{{Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
-		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, "OpenCode executor unavailable; prompt prepared for operator handoff", "", nil)
+		fallbackExecution := WorkflowExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
+		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, fallbackExecution.Summary, "", nil)
 		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", err.Error())
 		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", err.Error(), map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}); persistErr != nil {
 			return fallbackExecution, persistErr
 		}
 		return fallbackExecution, nil
+	}
+	if response.CorrelationIDs == nil {
+		response.CorrelationIDs = map[string]string{}
+	}
+	if branchPlan.WorktreePath != "" {
+		response.CorrelationIDs["worktree_path"] = branchPlan.WorktreePath
 	}
 	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}); err != nil {
 		_, _ = store.FinishRunStep(agent.ID, StepFailed, "", err.Error(), response.CorrelationIDs)
@@ -1011,6 +1026,9 @@ func (o openPilotExecutor) PipelineStepCorrelationIDs(run Run, step PipelineStep
 	} else if sessionID := strings.TrimSpace(run.Inputs["ocq_session_id"]); sessionID != "" {
 		correlation["ocq_session_id"] = sessionID
 	}
+	if branchPlan, ok := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan); ok && openPilotHasExecutedWorktree(branchPlan) {
+		correlation["worktree_path"] = branchPlan.WorktreePath
+	}
 	return correlation
 }
 
@@ -1093,7 +1111,16 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		issueSummary, _ := state["open-pilot.issue-summary"].(string)
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		model := firstNonEmpty(step.Model, o.env.openPilotModel)
-		response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, step.Name)})
+		if !openPilotHasExecutedWorktree(branchPlan) {
+			state["summary"] = "Open Pilot paused: isolated worktree required"
+			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, openPilotAgentWorkRequiresWorktreeMessage, fallbackState); persistErr != nil {
+				return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
+			}
+			return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
+		}
+		request := OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
+		response, err := o.env.openCodeExecutor.SendPrompt(ctx, request)
 		if err != nil {
 			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
@@ -1101,6 +1128,12 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return PipelineStepExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
 			}
 			return PipelineStepExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
+		}
+		if response.CorrelationIDs == nil {
+			response.CorrelationIDs = map[string]string{}
+		}
+		if branchPlan.WorktreePath != "" {
+			response.CorrelationIDs["worktree_path"] = branchPlan.WorktreePath
 		}
 		state["open-pilot.agent-completed"] = true
 		state["open-pilot.agent-summary"] = response.Content
@@ -1867,6 +1900,12 @@ func (e *EnvWorkflowExecutors) openPilotBranchName(repo string, issue string, fe
 
 func openCodeSessionID(inputs map[string]string) string {
 	return firstNonEmpty(inputs["opencode_session_id"], inputs["ocq_session_id"])
+}
+
+const openPilotAgentWorkRequiresWorktreeMessage = "open-pilot agent-work requires OPEN_PILOT_WORKTREE_MODE=allow to create an isolated worktree"
+
+func openPilotHasExecutedWorktree(plan OpenPilotWorktreePlan) bool {
+	return plan.Executed && strings.TrimSpace(plan.WorktreePath) != ""
 }
 
 func openPilotOpenCodeRequestID(run Run, stepName string) string {
