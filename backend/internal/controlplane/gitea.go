@@ -280,7 +280,7 @@ func pullRequestMatchesHead(pr GiteaPullRequest, head string) bool {
 		return pr.Head.Label == head || (pr.Head.Label == "" && pr.Head.Ref == head)
 	}
 	if pr.Head.Label != "" {
-		return pr.Head.Label == owner+":"+branch
+		return pr.Head.Label == owner+":"+branch || pr.Head.Label == branch
 	}
 	if pr.Head.Ref != branch {
 		return false

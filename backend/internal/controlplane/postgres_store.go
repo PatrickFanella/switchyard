@@ -247,7 +247,7 @@ func (s *PostgresStore) ClaimOpenPilotIssueStateForResume(repo, issue string, re
 		return OpenPilotIssueState{}, err
 	}
 	claimPhase := openPilotResumeClaimPhase(existing.Phase, resumeInputs)
-	row = tx.QueryRowContext(context.Background(), `update open_pilot_issue_states set phase=$3, resume_inputs=$4::jsonb, last_error='', failing_gate='', operator_summary='', recommended_next_action='', max_repair_attempts=$5, updated_at=$6 where repo=$1 and issue=$2 and phase in ('agent_completed','merged','failed','paused') returning `+openPilotIssueStateColumns+``, repo, issue, claimPhase, string(resumeJSON), existing.MaxRepairAttempts, now)
+	row = tx.QueryRowContext(context.Background(), `update open_pilot_issue_states set phase=$3, resume_inputs=$4::jsonb, last_error='', failing_gate='', operator_summary='', recommended_next_action='', max_repair_attempts=$5, updated_at=$6 where repo=$1 and issue=$2 and phase in ('agent_completed','ai_reviewed','merged','failed','paused') returning `+openPilotIssueStateColumns+``, repo, issue, claimPhase, string(resumeJSON), existing.MaxRepairAttempts, now)
 	saved, err := scanOpenPilotIssueStateRow(row)
 	if err != nil {
 		_ = tx.Rollback()

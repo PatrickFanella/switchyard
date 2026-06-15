@@ -521,6 +521,10 @@ func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state
 		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
 		return
 	}
+	if strings.TrimSpace(run.Inputs["retry_from_step"]) != "" {
+		o.hydrateOpenPilotPipelineStateFromIssueState(run, saved, state)
+		return
+	}
 	if saved.Phase != OpenPilotPhaseFailed && saved.Phase != OpenPilotPhasePaused && saved.Phase != OpenPilotPhaseMerged && saved.Phase != OpenPilotPhaseIssueClosed {
 		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
 		return
@@ -1785,6 +1789,12 @@ func (o openPilotExecutor) resolveOpenPilotCIPullRequest(ctx context.Context, ru
 func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSummary) (openPilotCICheckResult, bool) {
 	if len(requiredChecks) == 0 {
 		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: no required checks configured"}, true
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.State), "failure") || strings.EqualFold(strings.TrimSpace(snapshot.State), "error") {
+		return openPilotCICheckResult{status: "failed", summary: "CI checks failed: aggregate status " + snapshot.State}, true
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.State), "success") {
+		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: aggregate status success"}, true
 	}
 	hasPending := false
 	for _, required := range requiredChecks {

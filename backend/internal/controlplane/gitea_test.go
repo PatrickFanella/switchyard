@@ -80,6 +80,7 @@ func TestEnvGiteaClientFindPullRequestByHead(t *testing.T) {
 	}{
 		{name: "branch", head: "feature-123", wantNumber: 8, wantRef: "feature-123", wantLabel: "OWNER:feature-123"},
 		{name: "prefixed", head: "OWNER:feature-123", wantNumber: 8, wantRef: "feature-123", wantLabel: "OWNER:feature-123"},
+		{name: "same repo bare label", head: "same-repo-branch", wantNumber: 9, wantRef: "same-repo-branch", wantLabel: "same-repo-branch"},
 	}
 
 	for _, tt := range tests {
@@ -100,7 +101,7 @@ func TestEnvGiteaClientFindPullRequestByHead(t *testing.T) {
 				if got := r.URL.Query().Get("page"); got != "1" {
 					t.Fatalf("page = %q", got)
 				}
-				_, _ = w.Write([]byte(`[{"id":1,"number":7,"title":"Unrelated","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"unrelated","label":"OWNER:unrelated","sha":"abc123"}},{"id":2,"number":8,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/8","head":{"ref":"feature-123","label":"OWNER:feature-123","sha":"def456"}}]`))
+				_, _ = w.Write([]byte(`[{"id":1,"number":7,"title":"Unrelated","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"unrelated","label":"OWNER:unrelated","sha":"abc123"}},{"id":2,"number":8,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/8","head":{"ref":"feature-123","label":"OWNER:feature-123","sha":"def456"}},{"id":3,"number":9,"title":"Same repo","state":"open","html_url":"https://git/OWNER/REPO/pulls/9","head":{"ref":"same-repo-branch","label":"same-repo-branch","sha":"fff999"}}]`))
 			}))
 			t.Cleanup(server.Close)
 			t.Setenv("GITEA_BASE_URL", server.URL)

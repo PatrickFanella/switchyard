@@ -76,6 +76,7 @@ func TestOpenPilotCIChecksPassesAndLooksUpPRByHead(t *testing.T) {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
 	seed := openPilotCITestState()
+	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
 		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
@@ -193,6 +194,81 @@ func TestOpenPilotCIChecksTimeoutsOnPendingChecks(t *testing.T) {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
 	if state.Phase != OpenPilotPhaseFailed || state.GateStatus["ci_checks"] != "timeout" || state.FailingGate != "ci_checks" || state.RecommendedNextAction != "wait_ci" || state.OperatorSummary == "" {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestOpenPilotCIChecksFailsOnAggregateFailureWithUnmatchedRequiredNames(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	seed := openPilotCITestState()
+	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
+	seedOpenPilotIssueState(t, store, seed)
+	reader := &scriptedCIGiteaReader{
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", Label: "open-pilot/issue-123", SHA: "abc123"}},
+		findFound: true,
+		checks: []GiteaCheckSummary{{
+			State:    "failure",
+			SHA:      "abc123",
+			Statuses: []GiteaCommitStatus{{Context: "template-check / verify (push)", Status: "failure"}, {Context: "template-check / verify (pull_request)", Status: "failure"}},
+		}},
+	}
+	env := newOpenPilotCICheckTestEnv(store)
+	env.giteaReader = reader
+	runner := &Runner{store: store}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "branch": "open-pilot/issue-123"}})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	_, err = runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env})
+	if err == nil || !strings.Contains(err.Error(), "aggregate status failure") {
+		t.Fatalf("expected aggregate failure, got %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.Phase != OpenPilotPhaseFailed || state.GateStatus["ci_checks"] != "failed" || state.RecommendedNextAction != "fix_agent_commit" {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestOpenPilotCIChecksPassesOnAggregateSuccessWithUnmatchedRequiredNames(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	seed := openPilotCITestState()
+	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
+	seedOpenPilotIssueState(t, store, seed)
+	reader := &scriptedCIGiteaReader{
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", Label: "open-pilot/issue-123", SHA: "abc123"}},
+		findFound: true,
+		checks: []GiteaCheckSummary{{
+			State:    "success",
+			SHA:      "abc123",
+			Statuses: []GiteaCommitStatus{{Context: "template-check / verify (push)", Status: "success"}, {Context: "template-check / verify (pull_request)", Status: "success"}},
+		}},
+	}
+	env := newOpenPilotCICheckTestEnv(store)
+	env.giteaReader = reader
+	runner := &Runner{store: store}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "branch": "open-pilot/issue-123"}})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	if _, err := runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env}); err != nil {
+		t.Fatalf("executePipeline() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.Phase != OpenPilotPhaseCIPassed || state.GateStatus["ci_checks"] != "passed" {
 		t.Fatalf("state = %+v", state)
 	}
 }
@@ -319,6 +395,51 @@ func TestOpenPilotCIChecksResumeUsesPersistedGateStatus(t *testing.T) {
 	}
 	if len(reader.findCalls) != 1 || len(reader.checkCalls) != 1 {
 		t.Fatalf("expected CI gate to run on resume: find=%+v check=%+v", reader.findCalls, reader.checkCalls)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.Phase != OpenPilotPhaseCIPassed || state.GateStatus["ci_checks"] != "passed" {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestOpenPilotCIChecksResumeFromAIReviewedUsesPersistedGateStatus(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	seed := openPilotCITestState()
+	seed.Phase = OpenPilotPhaseAIReviewed
+	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "skipped"}
+	seed.PullRequestURL = "https://git/OWNER/REPO/pulls/7"
+	seed.PullRequestNum = 7
+	seed.ResumeInputs["resume.open-pilot.pr-plan.pull_request_url"] = seed.PullRequestURL
+	seed.ResumeInputs["resume.open-pilot.pr-plan.pull_request_number"] = "7"
+	seedOpenPilotStateAtPhase(t, store, seed, OpenPilotPhaseAIReviewed)
+	reader := &scriptedCIGiteaReader{
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findFound: true,
+		checks: []GiteaCheckSummary{{
+			State:    "success",
+			SHA:      "abc123",
+			Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}, {Context: "lint", Status: "success"}, {Context: "test", Status: "success"}},
+		}},
+	}
+	env := newOpenPilotCICheckTestEnv(store)
+	env.giteaReader = reader
+	runner := &Runner{store: store}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.ci-checks", "retry_from_step_position": "9"}})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	if _, err := runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env}); err != nil {
+		t.Fatalf("executePipeline() error = %v", err)
+	}
+	if len(reader.findCalls) != 1 || len(reader.checkCalls) != 1 {
+		t.Fatalf("expected CI gate to run from ai_reviewed resume: find=%+v check=%+v", reader.findCalls, reader.checkCalls)
 	}
 	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
 	if err != nil {

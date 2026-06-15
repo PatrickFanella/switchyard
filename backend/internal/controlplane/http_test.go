@@ -747,6 +747,31 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if failedVerifyBody.Run.Inputs["retry_from_step"] != "open-pilot.verify-command" || failedVerifyBody.Run.Inputs["retry_from_step_position"] != "5" {
 		t.Fatalf("failed verify resume = %+v", failedVerifyBody.Run.Inputs)
 	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "129", Phase: controlplane.OpenPilotPhaseRequested, PullRequestNum: 42, PullRequestURL: "https://git.example.test/OWNER/REPO/pulls/42", GateStatus: controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"}}); err != nil {
+		t.Fatalf("seed ai reviewed requested error = %v", err)
+	}
+	for _, phase := range []controlplane.OpenPilotPhase{controlplane.OpenPilotPhaseValidated, controlplane.OpenPilotPhaseBranchPrepared, controlplane.OpenPilotPhaseAgentCompleted, controlplane.OpenPilotPhaseVerified, controlplane.OpenPilotPhasePushed, controlplane.OpenPilotPhasePRCreated, controlplane.OpenPilotPhaseAIReviewed} {
+		if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "129", phase); err != nil {
+			t.Fatalf("transition issue 129 to %s error = %v", phase, err)
+		}
+	}
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/resume?repo=OWNER/REPO&issue=129", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume ai reviewed error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("ai reviewed resume status = %d", resp.StatusCode)
+	}
+	var aiReviewedBody struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&aiReviewedBody); err != nil {
+		t.Fatalf("decode ai reviewed resume: %v", err)
+	}
+	if aiReviewedBody.Run.Inputs["retry_from_step"] != "open-pilot.ci-checks" || aiReviewedBody.Run.Inputs["retry_from_step_position"] != "9" || aiReviewedBody.Run.Inputs["resume.open-pilot.pr-plan.pull_request_number"] != "42" {
+		t.Fatalf("ai reviewed resume = %+v", aiReviewedBody.Run.Inputs)
+	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "128", Phase: controlplane.OpenPilotPhaseRequested, GateStatus: controlplane.OpenPilotGateStatus{"merge": "merged"}, MergeCommitSHA: "deadbeef"}); err != nil {
 		t.Fatalf("seed merged requested error = %v", err)
 	}
