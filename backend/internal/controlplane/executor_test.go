@@ -300,6 +300,45 @@ func TestRunnerPausesOpenPilotAgentWorkWithoutExecutedWorktree(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsOpenPilotMismatchedRepoPathOrigin(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	runGitForTest(t, repoPath, "remote", "add", "origin", "https://git.example.test/OWNER/OTHER.git")
+	var ocqCalls int32
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&ocqCalls, 1)
+		t.Fatalf("OCQ should not be called for mismatched repo path")
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if atomic.LoadInt32(&ocqCalls) != 0 {
+		t.Fatalf("ocqCalls = %d", ocqCalls)
+	}
+	if run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "does not match requested repo") {
+		t.Fatalf("run = %+v", run)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.branch-plan" || !strings.Contains(state.LastError, "owner/other") {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
 func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")

@@ -174,6 +174,9 @@ func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo
 		if err := m.runGit(ctx, "-C", m.repoPath, "rev-parse", "--is-inside-work-tree"); err != nil {
 			return plan, fmt.Errorf("validate source repository: %w", err)
 		}
+		if err := m.validateRepoMatchesRequest(ctx, repo); err != nil {
+			return plan, err
+		}
 		if err := m.runGit(ctx, "-C", m.repoPath, "worktree", "add", "-b", branch, plan.WorktreePath, baseBranch); err != nil {
 			return plan, fmt.Errorf("create git worktree: %w", err)
 		}
@@ -252,6 +255,52 @@ func (m *GitOpenPilotWorktreeManager) runGitOutput(ctx context.Context, args ...
 		return "", errors.New(message)
 	}
 	return string(output), nil
+}
+
+func (m *GitOpenPilotWorktreeManager) validateRepoMatchesRequest(ctx context.Context, repo string) error {
+	remote, err := m.runGitOutput(ctx, "-C", m.repoPath, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return nil
+	}
+	remoteRepo := openPilotRepoSlugFromRemote(remote)
+	if remoteRepo == "" {
+		return nil
+	}
+	requested := normalizeOpenPilotRepoSlug(repo)
+	if requested == "" || requested != remoteRepo {
+		return fmt.Errorf("OPEN_PILOT_REPO_PATH origin %q does not match requested repo %q", remoteRepo, repo)
+	}
+	return nil
+}
+
+func openPilotRepoSlugFromRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	remote = strings.TrimSuffix(remote, ".git")
+	if remote == "" || strings.HasPrefix(remote, "/") || strings.HasPrefix(remote, "./") || strings.HasPrefix(remote, "../") {
+		return ""
+	}
+	if strings.HasPrefix(remote, "git@") {
+		if _, path, ok := strings.Cut(remote, ":"); ok {
+			return normalizeOpenPilotRepoSlug(path)
+		}
+	}
+	if strings.Contains(remote, "://") {
+		parts := strings.Split(strings.Trim(remote, "/"), "/")
+		if len(parts) >= 2 {
+			return normalizeOpenPilotRepoSlug(parts[len(parts)-2] + "/" + parts[len(parts)-1])
+		}
+	}
+	return ""
+}
+
+func normalizeOpenPilotRepoSlug(repo string) string {
+	repo = strings.TrimSpace(strings.Trim(repo, "/"))
+	repo = strings.TrimSuffix(repo, ".git")
+	parts := strings.Split(repo, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.ToLower(parts[len(parts)-2] + "/" + parts[len(parts)-1])
 }
 
 func safePathSegment(value string) string {
