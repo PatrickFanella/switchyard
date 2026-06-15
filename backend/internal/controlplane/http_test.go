@@ -89,6 +89,68 @@ func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
 	}
 }
 
+func TestAPIRejectsOpenPilotManualTriggerWithoutInputs(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/triggers/manual-open-pilot/run", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST trigger run error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if runs := store.ListRuns(); len(runs) != 0 {
+		t.Fatalf("runs = %+v, want none", runs)
+	}
+}
+
+func TestAPIRetryOpenPilotPausedRunRequiresLifecycleResume(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", TriggerID: "manual-open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
+		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
+	}
+	if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "123", controlplane.OpenPilotPhasePaused); err != nil {
+		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/retry", nil)
+	if err != nil {
+		t.Fatalf("new retry request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST retry error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("retry status = %d, want 409", resp.StatusCode)
+	}
+	if runs := store.ListRuns(); len(runs) != 1 {
+		t.Fatalf("runs = %+v, want original only", runs)
+	}
+}
+
 type fakeCanceler struct{ called bool }
 
 func (f *fakeCanceler) Cancel(context.Context, controlplane.Run) controlplane.CancelResult {
@@ -784,7 +846,7 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 
-	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", TriggerID: "manual-open-pilot"})
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", TriggerID: "manual-open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}

@@ -28,7 +28,7 @@ func TestSeedDefaultsCreatesWorkflowAndTriggerCatalog(t *testing.T) {
 	}
 }
 
-func TestRunnerCreatesRunEnvelope(t *testing.T) {
+func TestRunnerRejectsManualOpenPilotWithoutInputs(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := controlplane.NewStore(func() time.Time { return now })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -36,26 +36,32 @@ func TestRunnerCreatesRunEnvelope(t *testing.T) {
 	}
 	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{})
 
-	run, err := runner.RunTrigger(t.Context(), "manual-open-pilot")
+	_, err := runner.RunTrigger(t.Context(), "manual-open-pilot")
+	if err != controlplane.ErrInvalid {
+		t.Fatalf("RunTrigger() error = %v, want invalid input", err)
+	}
+	if runs := store.ListRuns(); len(runs) != 0 {
+		t.Fatalf("runs = %+v, want none", runs)
+	}
+}
+
+func TestRunnerCreatesDevlogRunEnvelope(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{})
+
+	run, err := runner.RunTrigger(t.Context(), "manual-devlog")
 	if err != nil {
 		t.Fatalf("RunTrigger() error = %v", err)
 	}
-	if run.WorkflowID != "open-pilot" || run.TriggerID != "manual-open-pilot" {
+	if run.WorkflowID != "devlog" || run.TriggerID != "manual-devlog" || run.Status != controlplane.RunSucceeded {
 		t.Fatalf("run = %+v", run)
 	}
-	if run.Status != controlplane.RunSucceeded {
-		t.Fatalf("status = %q, want succeeded", run.Status)
-	}
-
-	detail, err := store.RunDetail(run.ID)
-	if err != nil {
-		t.Fatalf("RunDetail() error = %v", err)
-	}
-	if len(detail.Steps) != 1 || detail.Steps[0].Status != controlplane.StepSucceeded || detail.Steps[0].Name != "open-pilot.execute" {
-		t.Fatalf("steps = %+v", detail.Steps)
-	}
-	if len(detail.Events) != 7 {
-		t.Fatalf("len(events) = %d, want 7: %+v", len(detail.Events), detail.Events)
+	if runs := store.ListRuns(); len(runs) != 1 || runs[0].ID != run.ID {
+		t.Fatalf("runs = %+v", runs)
 	}
 }
 

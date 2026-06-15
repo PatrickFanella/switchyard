@@ -820,6 +820,9 @@ export default function App() {
   const [openPilotRepo, setOpenPilotRepo] = useState('');
   const [openPilotIssue, setOpenPilotIssue] = useState('');
   const [error, setError] = useState<string>('');
+  const openPilotRepoInput = openPilotRepo.trim();
+  const openPilotIssueInput = openPilotIssue.trim();
+  const openPilotInputsReady = openPilotRepoInput !== '' && openPilotIssueInput !== '';
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
@@ -917,10 +920,10 @@ export default function App() {
     try {
       const trigger = dashboard.triggers.find((item) => item.id === triggerID);
       const isOpenPilot = trigger?.workflow_id === 'open-pilot';
-      const data = isOpenPilot && openPilotRepo && openPilotIssue
+      const data = isOpenPilot && openPilotInputsReady
         ? await fetchJSON<{ run: Run }>('/api/runs', {
             method: 'POST',
-            body: JSON.stringify({ workflow_id: 'open-pilot', trigger_id: triggerID, inputs: { repo: openPilotRepo, issue: openPilotIssue } }),
+            body: JSON.stringify({ workflow_id: 'open-pilot', trigger_id: triggerID, inputs: { repo: openPilotRepoInput, issue: openPilotIssueInput } }),
           })
         : await fetchJSON<{ run: Run }>(`/api/triggers/${triggerID}/run`, { method: 'POST' });
       setSelectedRunID(data.run.id);
@@ -954,6 +957,21 @@ export default function App() {
     setError('');
     try {
       const data = await fetchJSON<{ run: Run }>(`/api/runs/${runID}/${action}`, { method: 'POST' });
+      setSelectedRunID(data.run.id);
+      await loadDashboard();
+      await loadRunDetail(data.run.id);
+    } catch (caught) {
+      setError(messageFrom(caught));
+    } finally {
+      setRunActionID('');
+    }
+  }
+
+  async function resumeOpenPilotState(state: OpenPilotIssueState) {
+    setRunActionID(`${state.id}:open-pilot:resume`);
+    setError('');
+    try {
+      const data = await fetchJSON<{ run: Run }>(`/api/open-pilot/state/resume?repo=${encodeURIComponent(state.repo)}&issue=${encodeURIComponent(state.issue)}`, { method: 'POST' });
       setSelectedRunID(data.run.id);
       await loadDashboard();
       await loadRunDetail(data.run.id);
@@ -1113,7 +1131,8 @@ export default function App() {
                         <div className="flex flex-wrap justify-end gap-2">
                           <button
                             className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
-                            disabled={!trigger.enabled || runningTriggerID === trigger.id}
+                            disabled={!trigger.enabled || runningTriggerID === trigger.id || (trigger.workflow_id === 'open-pilot' && !openPilotInputsReady)}
+                            title={trigger.workflow_id === 'open-pilot' && !openPilotInputsReady ? 'Fill repo and issue to run Open Pilot' : undefined}
                             onClick={() => void runTrigger(trigger.id)}
                             type="button"
                           >
@@ -1263,10 +1282,10 @@ export default function App() {
                       <button
                         className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={runActionID === `${runDetail.run.id}:retry`}
-                        onClick={() => void runAction(runDetail.run.id, 'retry')}
+                        onClick={() => openPilotState && runDetail.run.workflow_id === 'open-pilot' && ['failed', 'paused', 'agent_completed', 'merged'].includes(openPilotState.state.phase) ? void resumeOpenPilotState(openPilotState.state) : void runAction(runDetail.run.id, 'retry')}
                         type="button"
                       >
-                        {runActionID === `${runDetail.run.id}:retry` ? 'Retrying…' : 'Retry run'}
+                        {runActionID === `${runDetail.run.id}:retry` || (openPilotState && runActionID === `${openPilotState.state.id}:open-pilot:resume`) ? 'Retrying…' : openPilotState && runDetail.run.workflow_id === 'open-pilot' && ['failed', 'paused', 'agent_completed', 'merged'].includes(openPilotState.state.phase) ? 'Resume Open Pilot' : 'Retry run'}
                       </button>
                       <button
                         className="hud-chip border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--danger))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"

@@ -164,6 +164,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err := SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
+	if err := store.UpsertTrigger(Trigger{ID: "manual-open-pilot", WorkflowID: string(WorkflowOpenPilot), Type: TriggerManual, Name: "Run Open Pilot now", Description: "Manual trigger for issue-to-PR automation.", Enabled: true, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}}); err != nil {
+		t.Fatalf("UpsertTrigger() error = %v", err)
+	}
 	runner := NewRunner(store)
 	run, err := runner.RunTrigger(ctx, "manual-open-pilot")
 	if err != nil {

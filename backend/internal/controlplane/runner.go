@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 type PipelineStepExecution struct {
@@ -78,6 +79,9 @@ func (r *Runner) AgentProfiles() []AgentProfile {
 }
 
 func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error) {
+	if err := validateCreateRunInput(input); err != nil {
+		return Run{}, err
+	}
 	run, err := r.store.CreateRun(input)
 	if err != nil {
 		return Run{}, err
@@ -90,6 +94,9 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 }
 
 func (r *Runner) Enqueue(input CreateRunInput) (Run, error) {
+	if err := validateCreateRunInput(input); err != nil {
+		return Run{}, err
+	}
 	return r.store.CreateRun(input)
 }
 
@@ -348,4 +355,14 @@ func (r *Runner) EnqueueTrigger(triggerID string) (Run, error) {
 		return Run{}, ErrNotFound
 	}
 	return r.Enqueue(CreateRunInput{WorkflowID: trigger.WorkflowID, TriggerID: trigger.ID, Inputs: trigger.Inputs})
+}
+
+func validateCreateRunInput(input CreateRunInput) error {
+	if input.WorkflowID != string(WorkflowOpenPilot) {
+		return nil
+	}
+	if strings.TrimSpace(input.Inputs["repo"]) == "" || strings.TrimSpace(input.Inputs["issue"]) == "" {
+		return ErrInvalid
+	}
+	return nil
 }
