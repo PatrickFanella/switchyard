@@ -96,6 +96,57 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/AgentProfile" }
                 required: [profiles]
+  /api/workflow-definitions:
+    get:
+      summary: List workflow definitions
+      responses:
+        "200":
+          description: Workflow definition list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_definitions:
+                    type: array
+                    items: { $ref: "#/components/schemas/WorkflowDefinition" }
+                required: [workflow_definitions]
+  /api/workflow-definitions/{id}:
+    get:
+      summary: Get a workflow definition
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      responses:
+        "200":
+          description: Workflow definition
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_definition: { $ref: "#/components/schemas/WorkflowDefinition" }
+                required: [workflow_definition]
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      summary: Create or update a workflow definition
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkflowDefinitionUpsertRequest" }
+      responses:
+        "200":
+          description: Updated workflow definition
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_definition: { $ref: "#/components/schemas/WorkflowDefinition" }
+                required: [workflow_definition]
+        default: { $ref: "#/components/responses/Error" }
   /api/open-pilot/states:
     get:
       summary: List Open Pilot issue states
@@ -325,6 +376,11 @@ components:
       schema: { type: string }
     TriggerID:
       name: triggerId
+      in: path
+      required: true
+      schema: { type: string }
+    WorkflowDefinitionID:
+      name: id
       in: path
       required: true
       schema: { type: string }
@@ -566,6 +622,81 @@ components:
         uses: { type: array, items: { type: string } }
         status: { type: string }
       required: [id, kind, name, description, owns, uses, status]
+    JSONShape:
+      type: object
+      properties:
+        type: { type: string }
+        description: { type: string }
+        properties:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/JSONShapeProperty" }
+        required:
+          type: array
+          items: { type: string }
+      required: [type]
+    JSONShapeProperty:
+      type: object
+      properties:
+        type: { type: string }
+        description: { type: string }
+      required: [type]
+    PipelineStepDefinition:
+      type: object
+      properties:
+        id: { type: string }
+        position: { type: integer }
+        name: { type: string }
+        executor: { type: string }
+        profile: { type: string }
+        model: { type: string }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+        output_shape: { $ref: "#/components/schemas/JSONShape" }
+      required: [id, position, name, executor]
+    PipelineDefinition:
+      type: object
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/PipelineStepDefinition" }
+      required: [id, name, steps]
+    WorkflowDefinition:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string }
+        owns:
+          type: array
+          items: { type: string }
+        uses:
+          type: array
+          items: { type: string }
+        input_shape: { $ref: "#/components/schemas/JSONShape" }
+        pipeline: { $ref: "#/components/schemas/PipelineDefinition" }
+        created_at: { type: string, format: date-time, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true }
+      required: [id, name, status, pipeline]
+    WorkflowDefinitionUpsertRequest:
+      type: object
+      description: Request body for creating or updating a draft workflow definition. The path ID is authoritative; activation is intentionally not exposed by this endpoint.
+      properties:
+        name: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [draft] }
+        owns:
+          type: array
+          items: { type: string }
+        uses:
+          type: array
+          items: { type: string }
+        input_shape: { $ref: "#/components/schemas/JSONShape" }
+        pipeline: { $ref: "#/components/schemas/PipelineDefinition" }
+      required: [name, pipeline]
     Trigger:
       type: object
       properties:

@@ -4,12 +4,206 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
 )
+
+func TestAPIWorkflowDefinitionCRUD(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	body := bytes.NewBufferString(`{"id":"wrong-id","name":"Custom Digest","description":"Daily custom digest","status":"draft","input_shape":{"type":"object","properties":{"topic":{"type":"string"}},"required":["topic"]},"pipeline":{"id":"custom-digest-pipeline","workflow_id":"wrong-id","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model","profile":"content-writer","model":"${model}"}]}}`)
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/custom-digest", body)
+	if err != nil {
+		t.Fatalf("new PUT request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	var putBody struct {
+		WorkflowDefinition controlplane.WorkflowDefinition `json:"workflow_definition"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&putBody); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	if putBody.WorkflowDefinition.ID != "custom-digest" || putBody.WorkflowDefinition.Pipeline.WorkflowID != "custom-digest" {
+		t.Fatalf("workflow definition = %+v", putBody.WorkflowDefinition)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/workflow-definitions")
+	if err != nil {
+		t.Fatalf("GET workflow definitions error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET list status = %d", resp.StatusCode)
+	}
+	var listBody struct {
+		WorkflowDefinitions []controlplane.WorkflowDefinition `json:"workflow_definitions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listBody); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listBody.WorkflowDefinitions) != 1 || listBody.WorkflowDefinitions[0].ID != "custom-digest" {
+		t.Fatalf("workflow definitions = %+v", listBody.WorkflowDefinitions)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/workflow-definitions/custom-digest")
+	if err != nil {
+		t.Fatalf("GET workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d", resp.StatusCode)
+	}
+	var getBody struct {
+		WorkflowDefinition controlplane.WorkflowDefinition `json:"workflow_definition"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&getBody); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if getBody.WorkflowDefinition.Name != "Custom Digest" || getBody.WorkflowDefinition.InputShape.Type != "object" {
+		t.Fatalf("workflow definition = %+v", getBody.WorkflowDefinition)
+	}
+
+	body = bytes.NewBufferString(`{"name":"Updated Digest","description":"Updated description","status":"draft","pipeline":{"id":"updated-pipeline","workflow_id":"wrong-id","name":"Updated Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model","profile":"content-writer","model":"${model}"}]}}`)
+	req, err = http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/custom-digest", body)
+	if err != nil {
+		t.Fatalf("new update request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT update workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&putBody); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if putBody.WorkflowDefinition.Name != "Updated Digest" || putBody.WorkflowDefinition.ID != "custom-digest" {
+		t.Fatalf("updated workflow definition = %+v", putBody.WorkflowDefinition)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/workflow-definitions/custom-digest")
+	if err != nil {
+		t.Fatalf("GET updated workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&getBody); err != nil {
+		t.Fatalf("decode updated GET response: %v", err)
+	}
+	if getBody.WorkflowDefinition.Name != "Updated Digest" || getBody.WorkflowDefinition.Status != "draft" {
+		t.Fatalf("updated workflow definition = %+v", getBody.WorkflowDefinition)
+	}
+}
+
+func TestAPIWorkflowDefinitionWritesAreDraftOnlyAndValidated(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for name, body := range map[string]string{
+		"active status":     `{"name":"Custom Digest","description":"Daily custom digest","status":"active","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model"}]}}`,
+		"duplicate step id": `{"name":"Custom Digest","description":"Daily custom digest","status":"draft","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model"},{"id":"generate","position":2,"name":"custom.generate-again","executor":"internal"}]}}`,
+		"http executor":     `{"name":"Custom Digest","description":"Daily custom digest","status":"draft","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"call","position":1,"name":"custom.call","executor":"http"}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/custom-digest", bytes.NewBufferString(body))
+			if err != nil {
+				t.Fatalf("new PUT request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("PUT workflow definition error = %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+			}
+		})
+	}
+}
+
+func TestAPICORSDoesNotAdvertiseWorkflowDefinitionPUT(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodOptions, srv.URL+"/api/workflow-definitions/custom-digest", nil)
+	if err != nil {
+		t.Fatalf("new OPTIONS request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if methods := resp.Header.Get("Access-Control-Allow-Methods"); strings.Contains(methods, "PUT") {
+		t.Fatalf("Access-Control-Allow-Methods = %q", methods)
+	}
+}
+
+func TestAPIWorkflowDefinitionRejectsInvalidJSON(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/custom-digest", bytes.NewBufferString(`{"name":`))
+	if err != nil {
+		t.Fatalf("new PUT request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT invalid workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPIWorkflowDefinitionNotFound(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/workflow-definitions/missing")
+	if err != nil {
+		t.Fatalf("GET missing workflow definition error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func mustReadBody(t *testing.T, r io.Reader) string {
+	t.Helper()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(data)
+}
 
 func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 	store := controlplane.NewStore(nil)
