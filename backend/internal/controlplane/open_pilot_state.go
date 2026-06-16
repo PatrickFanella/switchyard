@@ -16,6 +16,7 @@ const (
 	OpenPilotPhaseBranchPrepared OpenPilotPhase = "branch_prepared"
 	OpenPilotPhaseAgentCompleted OpenPilotPhase = "agent_completed"
 	OpenPilotPhaseVerified       OpenPilotPhase = "verified"
+	OpenPilotPhaseCommitted      OpenPilotPhase = "committed"
 	OpenPilotPhasePushed         OpenPilotPhase = "pushed"
 	OpenPilotPhasePRCreated      OpenPilotPhase = "pr_created"
 	OpenPilotPhaseAIReviewed     OpenPilotPhase = "ai_reviewed"
@@ -62,6 +63,7 @@ var openPilotPhaseChain = []OpenPilotPhase{
 	OpenPilotPhaseBranchPrepared,
 	OpenPilotPhaseAgentCompleted,
 	OpenPilotPhaseVerified,
+	OpenPilotPhaseCommitted,
 	OpenPilotPhasePushed,
 	OpenPilotPhasePRCreated,
 	OpenPilotPhaseAIReviewed,
@@ -77,6 +79,7 @@ var openPilotKnownPhases = map[OpenPilotPhase]struct{}{
 	OpenPilotPhaseBranchPrepared: {},
 	OpenPilotPhaseAgentCompleted: {},
 	OpenPilotPhaseVerified:       {},
+	OpenPilotPhaseCommitted:      {},
 	OpenPilotPhasePushed:         {},
 	OpenPilotPhasePRCreated:      {},
 	OpenPilotPhaseAIReviewed:     {},
@@ -131,7 +134,13 @@ func ValidateOpenPilotTransition(from, to OpenPilotPhase) error {
 	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePRCreated {
 		return nil
 	}
+	if from == OpenPilotPhaseVerified && to == OpenPilotPhasePushed {
+		return nil
+	}
 	if from == OpenPilotPhaseVerified && to == OpenPilotPhasePRCreated {
+		return nil
+	}
+	if from == OpenPilotPhaseCommitted && to == OpenPilotPhasePRCreated {
 		return nil
 	}
 	if !isOpenPilotActivePhase(from) || !isOpenPilotActivePhase(to) {
@@ -161,7 +170,7 @@ func isOpenPilotActivePhase(phase OpenPilotPhase) bool {
 
 func isOpenPilotResumablePhase(phase OpenPilotPhase) bool {
 	switch phase {
-	case OpenPilotPhaseAgentCompleted, OpenPilotPhaseAIReviewed, OpenPilotPhaseMerged, OpenPilotPhaseFailed, OpenPilotPhasePaused:
+	case OpenPilotPhaseAgentCompleted, OpenPilotPhaseVerified, OpenPilotPhaseCommitted, OpenPilotPhaseAIReviewed, OpenPilotPhaseMerged, OpenPilotPhaseFailed, OpenPilotPhasePaused:
 		return true
 	default:
 		return false
@@ -228,6 +237,8 @@ func openPilotFailureDiagnosticsForState(saved OpenPilotIssueState, phase OpenPi
 		return openPilotFailureDiagnostics{failingGate: "agent_work", operatorSummary: summarizeOpenPilotFailure("Agent execution failed", lastErr), recommendedNextAction: "resume"}
 	case "open-pilot.verify-command":
 		return openPilotFailureDiagnostics{failingGate: "local_verify", operatorSummary: summarizeOpenPilotFailure("Local verification failed", lastErr), recommendedNextAction: "rerun_verify"}
+	case "open-pilot.commit-changes":
+		return openPilotFailureDiagnostics{failingGate: "git_commit", operatorSummary: summarizeOpenPilotFailure("Commit preparation failed", lastErr), recommendedNextAction: "fix_agent_commit"}
 	case "open-pilot.push-branch":
 		return openPilotFailureDiagnostics{failingGate: "git_push", operatorSummary: summarizeOpenPilotFailure("Push or branch publication failed", lastErr), recommendedNextAction: "fix_agent_commit"}
 	case "open-pilot.pr-plan":
@@ -279,13 +290,18 @@ func openPilotResumeClaimPhase(current OpenPilotPhase, inputs map[string]string)
 		return OpenPilotPhaseBranchPrepared
 	case "open-pilot.verify-command":
 		return OpenPilotPhaseAgentCompleted
+	case "open-pilot.commit-changes":
+		return OpenPilotPhaseVerified
 	case "open-pilot.push-branch":
+		if current == OpenPilotPhaseCommitted {
+			return OpenPilotPhaseCommitted
+		}
 		if current == OpenPilotPhaseAgentCompleted {
 			return OpenPilotPhaseAgentCompleted
 		}
 		return OpenPilotPhaseVerified
 	case "open-pilot.pr-plan":
-		if current == OpenPilotPhaseAgentCompleted || current == OpenPilotPhaseVerified || current == OpenPilotPhasePushed {
+		if current == OpenPilotPhaseAgentCompleted || current == OpenPilotPhaseVerified || current == OpenPilotPhaseCommitted || current == OpenPilotPhasePushed {
 			return current
 		}
 		return OpenPilotPhasePushed
@@ -314,6 +330,8 @@ func gateStatusForOpenPilotStep(stepName string, gateStatus map[string]string) s
 		return gateStatus["agent_work"]
 	case "open-pilot.verify-command":
 		return gateStatus["local_verify"]
+	case "open-pilot.commit-changes":
+		return gateStatus["git_commit"]
 	case "open-pilot.push-branch":
 		return gateStatus["git_push"]
 	case "open-pilot.pr-plan":

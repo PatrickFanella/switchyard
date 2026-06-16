@@ -75,6 +75,7 @@ type EnvWorkflowExecutors struct {
 	requireIssueSpec          bool
 	openPilotWriteMode        string
 	openPilotGitPushMode      string
+	openPilotAutoCommitMode   string
 	openPilotBaseBranch       string
 	openPilotBranchPrefix     string
 	openPilotPRDraft          bool
@@ -89,6 +90,57 @@ type EnvWorkflowExecutors struct {
 	client                    *http.Client
 }
 
+type OpenPilotCommitResult struct {
+	Mode         string `json:"mode"`
+	WorktreePath string `json:"worktree_path,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	BaseBranch   string `json:"base_branch,omitempty"`
+	Executed     bool   `json:"executed"`
+	DryRun       bool   `json:"dry_run"`
+	SHA          string `json:"sha,omitempty"`
+	Subject      string `json:"subject,omitempty"`
+	StatusBefore string `json:"status_before,omitempty"`
+	StatusAfter  string `json:"status_after,omitempty"`
+	DiffStat     string `json:"diffstat,omitempty"`
+	NameStatus   string `json:"name_status,omitempty"`
+}
+
+func (r OpenPilotCommitResult) StepInputs() map[string]string {
+	inputs := map[string]string{"mode": r.Mode}
+	if r.WorktreePath != "" {
+		inputs["worktree_path"] = r.WorktreePath
+	}
+	if r.Branch != "" {
+		inputs["branch"] = r.Branch
+	}
+	if r.SHA != "" {
+		inputs["sha"] = r.SHA
+	}
+	if r.Subject != "" {
+		inputs["subject"] = r.Subject
+	}
+	if r.Executed {
+		inputs["executed"] = "true"
+	}
+	if r.DryRun {
+		inputs["dry_run"] = "true"
+	}
+	return inputs
+}
+
+func (r OpenPilotCommitResult) Summary() string {
+	switch {
+	case r.DryRun:
+		return "Auto-commit dry-run; commit artifact attached"
+	case r.Executed && r.SHA != "":
+		return "Committed Open Pilot changes " + r.SHA
+	case r.Executed:
+		return "Committed Open Pilot changes"
+	default:
+		return "Auto-commit disabled; commit skipped"
+	}
+}
+
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 	var configuredStore Store
 	if len(store) > 0 {
@@ -97,9 +149,11 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 	autonomyFull := openPilotAutonomyFullEnabled()
 	openPilotWriteMode := firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "disabled")
 	openPilotGitPushMode := firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "disabled")
+	openPilotAutoCommitMode := firstNonEmpty(os.Getenv("OPEN_PILOT_AUTO_COMMIT_MODE"), "disabled")
 	if autonomyFull {
 		openPilotWriteMode = firstNonEmpty(os.Getenv("OPEN_PILOT_GITEA_WRITE_MODE"), "allow")
 		openPilotGitPushMode = firstNonEmpty(os.Getenv("OPEN_PILOT_GIT_PUSH_MODE"), "allow")
+		openPilotAutoCommitMode = firstNonEmpty(os.Getenv("OPEN_PILOT_AUTO_COMMIT_MODE"), "allow")
 	}
 	ciCheckMode := firstNonEmpty(os.Getenv("OPEN_PILOT_CI_CHECK_MODE"), "disabled")
 	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_MODE")) == "" {
@@ -154,6 +208,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		requireIssueSpec:          strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
 		openPilotWriteMode:        openPilotWriteMode,
 		openPilotGitPushMode:      openPilotGitPushMode,
+		openPilotAutoCommitMode:   openPilotAutoCommitMode,
 		openPilotBaseBranch:       firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
 		openPilotBranchPrefix:     firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
 		openPilotPRDraft:          !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
@@ -390,7 +445,8 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 
-	prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response.Content, run.Inputs)
+	legacyState := map[string]any{"open-pilot.response": response.Content, "open-pilot.verify-summary": "Command executed by policy runner", "open-pilot.branch-plan": branchPlan}
+	prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response.Content, run.Inputs, legacyState)
 	prStep, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 7, Name: "open-pilot.pr-plan", Executor: "gitea", Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}})
 	if err != nil {
 		return WorkflowExecution{}, err
@@ -843,6 +899,20 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 			}
 		}
 	}
+	if commitResult, ok := state["open-pilot.commit-result"].(OpenPilotCommitResult); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.mode", commitResult.Mode)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.worktree_path", commitResult.WorktreePath)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.branch", commitResult.Branch)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.base_branch", commitResult.BaseBranch)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.sha", commitResult.SHA)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.subject", commitResult.Subject)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.status_before", commitResult.StatusBefore)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.status_after", commitResult.StatusAfter)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.diffstat", commitResult.DiffStat)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.commit-changes.name_status", commitResult.NameStatus)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.commit-changes.executed", commitResult.Executed)
+		setOpenPilotResumeBool(saved.ResumeInputs, "resume.open-pilot.commit-changes.dry_run", commitResult.DryRun)
+	}
 	if corr, ok := state["open-pilot.agent-correlation"].(map[string]string); ok {
 		for k, v := range corr {
 			setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.correlation."+k, v)
@@ -994,6 +1064,8 @@ func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Ru
 	case "agent-work":
 		phase = OpenPilotPhaseFailed
 	case "verify-command":
+		phase = OpenPilotPhaseFailed
+	case "commit-changes":
 		phase = OpenPilotPhaseFailed
 	case "push-branch":
 		phase = OpenPilotPhaseFailed
@@ -1183,6 +1255,31 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
 		}
 		return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, nil
+	case "commit-changes":
+		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+		result, err := o.env.openPilotCommitChanges(ctx, run, branchPlan, state)
+		state["open-pilot.commit-result"] = result
+		correlation := map[string]string{"mode": result.Mode}
+		if result.SHA != "" {
+			correlation["commit_sha"] = result.SHA
+		}
+		if result.WorktreePath != "" {
+			correlation["worktree_path"] = result.WorktreePath
+		}
+		artifacts := openPilotCommitArtifacts(result)
+		if err != nil {
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, err
+		}
+		if result.Executed {
+			if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseCommitted, step.Name, "", state); err != nil {
+				return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, err
+			}
+			return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, nil
+		}
+		return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, nil
 	case "push-branch":
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		pushPlan := o.env.openPilotPushPlan(branchPlan)
@@ -1253,7 +1350,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		pushPlan, _ := state["open-pilot.push-plan"].(OpenPilotPushPlan)
 		existingPR, hasExistingPR := state["open-pilot.pull-request"].(GiteaPullRequest)
 		prKnown := hasExistingPR && openPilotPullRequestKnown(existingPR)
-		prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response, run.Inputs)
+		prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response, run.Inputs, state)
 		prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
 		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}}}
 		switch o.env.openPilotWriteMode {
@@ -1926,7 +2023,7 @@ func openPilotOpenCodeRequestID(run Run, stepName string) string {
 	return run.ID + "-" + suffix
 }
 
-func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue string, branchName string, issueSummary string, response string, inputs map[string]string) GiteaPullRequestInput {
+func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue string, branchName string, issueSummary string, response string, inputs map[string]string, state map[string]any) GiteaPullRequestInput {
 	base := firstNonEmpty(inputs["base_branch"], e.openPilotBaseBranch)
 	title := firstNonEmpty(inputs["pr_title"], "Open Pilot: issue "+issue)
 	var body strings.Builder
@@ -1937,7 +2034,60 @@ func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue stri
 	if response != "" {
 		body.WriteString("## Agent summary\n\n" + response + "\n")
 	}
+	if verifySummary := openPilotVerifySummaryForContext(inputs, state); verifySummary != "" {
+		body.WriteString("\n## Verification\n\n" + verifySummary + "\n")
+	}
+	if commitSummary := openPilotCommitSummaryForContext(inputs, state); commitSummary != "" {
+		body.WriteString("\n## Commit\n\n" + commitSummary + "\n")
+	}
 	return GiteaPullRequestInput{Repo: repo, Base: base, Head: branchName, Title: title, Body: body.String(), Draft: e.openPilotPRDraft}
+}
+
+func openPilotVerifySummaryForContext(inputs map[string]string, state map[string]any) string {
+	verifySummary := firstNonEmpty(inputs["resume.open-pilot.verify-command.summary"], inputs["open-pilot.verify-summary"])
+	if verifySummary == "" && state != nil {
+		if summary, ok := state["open-pilot.verify-summary"].(string); ok {
+			verifySummary = summary
+		}
+	}
+	command := firstNonEmpty(inputs["test_command"], inputs["resume.open-pilot.verify-command.command"])
+	if command != "" && verifySummary != "" {
+		return fmt.Sprintf("Switchyard ran `%s`: %s.", command, verifySummary)
+	}
+	if verifySummary != "" {
+		return "Switchyard verification: " + verifySummary + "."
+	}
+	return ""
+}
+
+func openPilotCommitSummaryForContext(inputs map[string]string, state map[string]any) string {
+	sha := firstNonEmpty(inputs["resume.open-pilot.commit-changes.sha"], inputs["commit_sha"])
+	subject := firstNonEmpty(inputs["resume.open-pilot.commit-changes.subject"], inputs["commit_subject"])
+	diffstat := inputs["resume.open-pilot.commit-changes.diffstat"]
+	if state != nil {
+		if result, ok := state["open-pilot.commit-result"].(OpenPilotCommitResult); ok {
+			sha = firstNonEmpty(sha, result.SHA)
+			subject = firstNonEmpty(subject, result.Subject)
+			diffstat = firstNonEmpty(diffstat, result.DiffStat)
+		}
+	}
+	if sha == "" && subject == "" && diffstat == "" {
+		return ""
+	}
+	var builder strings.Builder
+	if sha != "" {
+		builder.WriteString("Switchyard committed verified worktree changes at `" + strings.TrimSpace(sha) + "`")
+	} else {
+		builder.WriteString("Switchyard committed verified worktree changes")
+	}
+	if subject != "" {
+		builder.WriteString(" (`" + strings.TrimSpace(subject) + "`)")
+	}
+	builder.WriteString(".")
+	if diffstat != "" {
+		builder.WriteString("\n\n```\n" + strings.TrimSpace(diffstat) + "\n```")
+	}
+	return builder.String()
 }
 
 func (e *EnvWorkflowExecutors) openPilotPushPlan(branchPlan OpenPilotWorktreePlan) OpenPilotPushPlan {
@@ -1952,6 +2102,119 @@ func (e *EnvWorkflowExecutors) openPilotPushPlan(branchPlan OpenPilotWorktreePla
 		plan.Executed = true
 	}
 	return plan
+}
+
+func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run Run, plan OpenPilotWorktreePlan, state map[string]any) (OpenPilotCommitResult, error) {
+	mode := strings.TrimSpace(e.openPilotAutoCommitMode)
+	if mode == "" {
+		mode = "disabled"
+	}
+	result := OpenPilotCommitResult{Mode: mode, WorktreePath: plan.WorktreePath, Branch: plan.Branch, BaseBranch: plan.BaseBranch}
+	if mode == "disabled" {
+		return result, nil
+	}
+	if mode != "dry-run" && mode != "allow" {
+		return result, fmt.Errorf("unsupported OPEN_PILOT_AUTO_COMMIT_MODE %q", mode)
+	}
+	if !openPilotHasExecutedWorktree(plan) {
+		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE requires an executed Open Pilot worktree")
+	}
+	gateStatus := openPilotGateStatusFromState(state)
+	if strings.TrimSpace(run.Inputs["test_command"]) != "" && gateStatus["local_verify"] != "passed" {
+		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE requires local verification to pass before committing")
+	}
+	branch, err := gitOutput(ctx, plan.WorktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return result, err
+	}
+	if plan.Branch != "" && strings.TrimSpace(branch) != plan.Branch {
+		return result, fmt.Errorf("open-pilot worktree branch %q does not match planned branch %q", strings.TrimSpace(branch), plan.Branch)
+	}
+	status, err := e.openPilotWorktreeStatus(ctx, plan.WorktreePath)
+	if err != nil {
+		return result, err
+	}
+	result.StatusBefore = status
+	if strings.TrimSpace(status) == "clean" {
+		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow requires worktree changes to commit")
+	}
+	if err := gitRun(ctx, plan.WorktreePath, "diff", "--check"); err != nil {
+		return result, err
+	}
+	diffStat, _ := gitOutput(ctx, plan.WorktreePath, "diff", "--stat")
+	nameStatus, _ := gitOutput(ctx, plan.WorktreePath, "diff", "--name-status")
+	result.DiffStat = diffStat
+	result.NameStatus = nameStatus
+	if mode == "dry-run" {
+		result.DryRun = true
+		return result, nil
+	}
+	if err := gitRun(ctx, plan.WorktreePath, "add", "-A"); err != nil {
+		return result, err
+	}
+	if err := gitRun(ctx, plan.WorktreePath, "diff", "--cached", "--quiet"); err == nil {
+		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow found no staged changes to commit")
+	}
+	message := firstNonEmpty(strings.TrimSpace(run.Inputs["commit_message"]), "Open Pilot: issue "+run.Inputs["issue"])
+	if err := gitRun(ctx, plan.WorktreePath, "-c", "user.name=Switchyard Open Pilot", "-c", "user.email=open-pilot@switchyard.local", "commit", "-m", message); err != nil {
+		return result, err
+	}
+	sha, err := gitOutput(ctx, plan.WorktreePath, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return result, err
+	}
+	subject, _ := gitOutput(ctx, plan.WorktreePath, "log", "-1", "--pretty=%s")
+	statusAfter, err := e.openPilotWorktreeStatus(ctx, plan.WorktreePath)
+	if err != nil {
+		return result, err
+	}
+	result.SHA = strings.TrimSpace(sha)
+	result.Subject = strings.TrimSpace(subject)
+	result.StatusAfter = statusAfter
+	result.Executed = true
+	if strings.TrimSpace(statusAfter) != "clean" {
+		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow committed changes but worktree is still dirty")
+	}
+	return result, nil
+}
+
+func openPilotCommitArtifacts(result OpenPilotCommitResult) []CreateArtifactInput {
+	encoded, _ := json.MarshalIndent(result, "", "  ")
+	artifacts := []CreateArtifactInput{{Name: "open-pilot-commit.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}}
+	if result.StatusBefore != "" {
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-status-before-commit.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.StatusBefore)})
+	}
+	if result.DiffStat != "" {
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-diffstat.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.DiffStat)})
+	}
+	if result.NameStatus != "" {
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-name-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.NameStatus)})
+	}
+	if result.StatusAfter != "" {
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-status-after-commit.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.StatusAfter)})
+	}
+	return artifacts
+}
+
+func gitRun(ctx context.Context, worktreePath string, args ...string) error {
+	_, err := gitOutput(ctx, worktreePath, args...)
+	return err
+}
+
+func gitOutput(ctx context.Context, worktreePath string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", worktreePath}, args...)...)
+	output, err := cmd.CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		if message == "" {
+			message = err.Error()
+		}
+		return "", errors.New(message)
+	}
+	if message == "" {
+		return "", nil
+	}
+	return message + "\n", nil
 }
 
 func openPilotWorktreePlanFromResume(inputs map[string]string) OpenPilotWorktreePlan {
@@ -2214,9 +2477,9 @@ func buildOpenPilotPrompt(repo string, issue string, issueSummary string, fetche
 	}
 	builder.WriteString("\n## Instructions\n\nInspect the issue, preserve repository conventions, and make the smallest safe change. ")
 	if openPilotAutonomyFullEnabled() {
-		builder.WriteString("You may run implementation, inspection, formatting, and test commands inside the assigned worktree. Commit your completed changes on the assigned branch before finishing; Switchyard will verify that the branch is ahead of base, inspect worktree status, push the branch, and create the PR through audited follow-up steps. Do not push or create the PR yourself. Summarize commits, files changed, and verification results with file references.\n")
+		builder.WriteString("You may run implementation, inspection, formatting, and test commands inside the assigned worktree. Do not commit, push, or create the PR yourself; Switchyard will verify, commit, inspect worktree status, push the branch, and create the PR through audited follow-up steps. Summarize files changed and any verification you ran with file references.\n")
 	} else {
-		builder.WriteString("Do not run shell/test commands or push changes yourself; Switchyard will run verification and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
+		builder.WriteString("Do not run shell/test commands, commit, or push changes yourself; Switchyard will run verification, commit, and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
 	}
 	if feedback := firstNonEmpty(inputs["ai_review.feedback"], inputs["resume.open-pilot.ai-review.feedback"]); feedback != "" {
 		builder.WriteString("\n## Prior AI review feedback\n\n" + feedback + "\n")
@@ -2249,14 +2512,11 @@ func buildOpenPilotAIReviewPrompt(repo, issue string, inputs map[string]string, 
 	} else {
 		builder.WriteString("Pull request URL: not available\n")
 	}
-	verifySummary := firstNonEmpty(inputs["resume.open-pilot.verify-command.summary"], inputs["open-pilot.verify-summary"])
-	if verifySummary == "" {
-		if summary, ok := state["open-pilot.verify-summary"].(string); ok {
-			verifySummary = summary
-		}
-	}
-	if verifySummary != "" {
+	if verifySummary := openPilotVerifySummaryForContext(inputs, state); verifySummary != "" {
 		builder.WriteString("Local verify summary: " + verifySummary + "\n")
+	}
+	if commitSummary := openPilotCommitSummaryForContext(inputs, state); commitSummary != "" {
+		builder.WriteString("Commit summary: " + strings.ReplaceAll(commitSummary, "\n", " ") + "\n")
 	}
 	agentSummary := firstNonEmpty(inputs["resume.open-pilot.agent-work.summary"], inputs["open-pilot.agent-summary"])
 	if agentSummary == "" {

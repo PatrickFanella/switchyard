@@ -227,7 +227,7 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 6 {
+	if run.Summary != "Ran Open Pilot issue 123 through OCQ" || len(detail.Steps) != 7 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	if detail.Steps[3].Model != "opencode-open-pilot" || detail.Steps[3].CorrelationIDs["ocq_request_id"] != "req-1" || detail.Steps[3].CorrelationIDs["ocq_session_id"] != "ses-1" {
@@ -367,13 +367,13 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 7 || detail.Steps[4].Name != "open-pilot.verify-command" || detail.Steps[4].Status != controlplane.StepSucceeded || detail.Steps[5].Name != "open-pilot.push-branch" || detail.Steps[6].Name != "open-pilot.pr-plan" {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 8 || detail.Steps[4].Name != "open-pilot.verify-command" || detail.Steps[4].Status != controlplane.StepSucceeded || detail.Steps[5].Name != "open-pilot.commit-changes" || detail.Steps[6].Name != "open-pilot.push-branch" || detail.Steps[7].Name != "open-pilot.pr-plan" {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	if detail.Steps[4].CorrelationIDs["policy_mode"] != "dry-run" {
 		t.Fatalf("verify step = %+v", detail.Steps[4])
 	}
-	if detail.Steps[1].Inputs["branch"] == "" || detail.Steps[4].Inputs["command"] != "make verify" || detail.Steps[5].Inputs["mode"] == "" || detail.Steps[6].Inputs["head"] == "" {
+	if detail.Steps[1].Inputs["branch"] == "" || detail.Steps[4].Inputs["command"] != "make verify" || detail.Steps[6].Inputs["mode"] == "" || detail.Steps[7].Inputs["head"] == "" {
 		t.Fatalf("dynamic inputs not persisted: %+v", detail.Steps)
 	}
 }
@@ -475,13 +475,13 @@ func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 3 {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 4 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
-	if detail.Steps[0].Name != "open-pilot.verify-command" || detail.Steps[1].Name != "open-pilot.push-branch" || detail.Steps[2].Name != "open-pilot.pr-plan" {
+	if detail.Steps[0].Name != "open-pilot.verify-command" || detail.Steps[1].Name != "open-pilot.commit-changes" || detail.Steps[2].Name != "open-pilot.push-branch" || detail.Steps[3].Name != "open-pilot.pr-plan" {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
-	if detail.Steps[1].Inputs["branch"] != "open-pilot/issue-123-fix-switchyard" || detail.Steps[2].Inputs["head"] != "open-pilot/issue-123-fix-switchyard" {
+	if detail.Steps[2].Inputs["branch"] != "open-pilot/issue-123-fix-switchyard" || detail.Steps[3].Inputs["head"] != "open-pilot/issue-123-fix-switchyard" {
 		t.Fatalf("rehydrated inputs missing: %+v", detail.Steps)
 	}
 }
@@ -740,7 +740,7 @@ func TestRunnerPrefersOpenPilotDBStateForHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if len(detail.Steps) != 3 || detail.Steps[1].Inputs["branch"] != "db-branch" || detail.Steps[2].Inputs["head"] != "db-branch" {
+	if len(detail.Steps) != 4 || detail.Steps[2].Inputs["branch"] != "db-branch" || detail.Steps[3].Inputs["head"] != "db-branch" {
 		t.Fatalf("hydrated steps = %+v", detail.Steps)
 	}
 	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
@@ -787,7 +787,7 @@ func TestRunnerReusesKnownOpenPilotPullRequestOnResume(t *testing.T) {
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
 
 	runner := controlplane.NewRunner(store)
-	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step_position": "7", "retry_from_step": "open-pilot.pr-plan"}})
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step_position": "8", "retry_from_step": "open-pilot.pr-plan"}})
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -835,7 +835,7 @@ func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 7 {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 8 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	worktreePath := detail.Steps[1].CorrelationIDs["worktree_path"]
@@ -885,7 +885,7 @@ func TestRunnerSkipsOpenPilotWorktreeCleanupWithoutDurableHandoff(t *testing.T) 
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 7 {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 	worktreePath := detail.Steps[1].CorrelationIDs["worktree_path"]
@@ -1035,6 +1035,71 @@ func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
 	}
 }
 
+func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
+	repoPath := initTestGitRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	remotePath := filepath.Join(t.TempDir(), "remote.git")
+	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "origin", "main")
+	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode ocq: %v", err)
+		}
+		workdir, _ := body["directory"].(string)
+		if workdir == "" {
+			t.Fatal("missing OCQ directory")
+		}
+		if err := os.WriteFile(filepath.Join(workdir, "generated.txt"), []byte("generated\n"), 0o644); err != nil {
+			t.Fatalf("write generated: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"created generated.txt"}}]}`))
+	}))
+	t.Cleanup(ocq.Close)
+	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
+	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
+	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status")
+	t.Setenv("OPEN_PILOT_AUTO_COMMIT_MODE", "allow")
+	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "allow")
+
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "test_command": "git status"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatalf("RunDetail() error = %v", err)
+	}
+	if run.Status != controlplane.RunSucceeded {
+		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
+	}
+	commitStep := detail.Steps[5]
+	pushStep := detail.Steps[6]
+	if commitStep.Name != "open-pilot.commit-changes" || commitStep.Status != controlplane.StepSucceeded || commitStep.Inputs["executed"] != "true" || commitStep.CorrelationIDs["commit_sha"] == "" {
+		t.Fatalf("commit step = %+v", commitStep)
+	}
+	if pushStep.Name != "open-pilot.push-branch" || pushStep.Status != controlplane.StepSucceeded || pushStep.CorrelationIDs["commits_ahead"] != "1" {
+		t.Fatalf("push step = %+v", pushStep)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if state.ResumeInputs["resume.open-pilot.commit-changes.sha"] == "" || state.ResumeInputs["resume.open-pilot.commit-changes.executed"] != "true" || state.GateStatus["local_verify"] != "passed" {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
 func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
@@ -1133,7 +1198,7 @@ func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 6 || detail.Steps[5].OutputSummary != "Created pull request" || detail.Steps[5].CorrelationIDs["pull_request"] == "" {
+	if run.Status != controlplane.RunSucceeded || len(detail.Steps) != 7 || detail.Steps[6].OutputSummary != "Created pull request" || detail.Steps[6].CorrelationIDs["pull_request"] == "" {
 		t.Fatalf("run = %+v steps = %+v", run, detail.Steps)
 	}
 }
