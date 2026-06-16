@@ -2,10 +2,9 @@ package controlplane
 
 func SeedDefaults(store Store) error {
 	workflows := []Workflow{
-		{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot", Description: "Gitea issue selection, branch/PR policy, and agent run workflow.", Owns: []string{"gitea labels", "branches", "pull requests"}, Uses: []string{"llama-line", "ocq", "blacktower"}, Status: "planned"},
-		{ID: "changemaker", Kind: WorkflowChangemaker, Name: "Changemaker", Description: "Timed activity summarization and publication workflow.", Owns: []string{"change windows", "post generation", "publishing"}, Uses: []string{"llama-line"}, Status: "wrapped"},
+		{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot", Description: "Gitea issue selection, branch/PR policy, and agent run workflow.", Owns: []string{"gitea labels", "branches", "pull requests"}, Uses: []string{"opencode", "model-broker", "blacktower"}, Status: "planned"},
 		{ID: "changemaker-daily-digest", Kind: WorkflowChangemaker, Name: "Changemaker Daily Digest", Description: "Native workflow-creator Changemaker template.", Owns: []string{"prompt", "draft artifact", "timer"}, Uses: []string{"model-broker"}, Status: "active"},
-		{ID: "devlog", Kind: WorkflowDevlog, Name: "Devlog", Description: "Repository/activity narrative workflow for periodic development logs.", Owns: []string{"activity collection", "devlog prompts", "draft artifacts"}, Uses: []string{"llama-line", "gitea"}, Status: "planned"},
+		{ID: "devlog", Kind: WorkflowDevlog, Name: "Devlog", Description: "Repository/activity narrative workflow for periodic development logs.", Owns: []string{"activity collection", "devlog prompts", "draft artifacts"}, Uses: []string{"model-broker", "gitea"}, Status: "planned"},
 	}
 	existingWorkflows := map[string]struct{}{}
 	for _, workflow := range store.ListWorkflows() {
@@ -21,7 +20,6 @@ func SeedDefaults(store Store) error {
 	}
 	triggers := []Trigger{
 		{ID: "manual-open-pilot", WorkflowID: "open-pilot", Type: TriggerManual, Name: "Run Open Pilot now", Description: "Manual trigger for issue-to-PR automation.", Enabled: true},
-		{ID: "daily-changemaker", WorkflowID: "changemaker", Type: TriggerCron, Name: "Daily Changemaker", Description: "Daily content workflow trigger owned by Switchyard, not Changemaker.", Enabled: false, Schedule: "0 9 * * *"},
 		{ID: "daily-changemaker-native", WorkflowID: "changemaker-daily-digest", Type: TriggerCron, Name: "Daily Changemaker Native", Description: "Native workflow-creator Changemaker template.", Enabled: false, Schedule: "0 9 * * *", Inputs: map[string]string{"topic": "daily project activity", "prompt": "Write a concise narrative digest of notable project activity. Include what changed, why it matters, and suggested next steps."}},
 		{ID: "gitea-open-pilot-poll", WorkflowID: "open-pilot", Type: TriggerPoll, Name: "Gitea ready-for-agent poll", Description: "Poll Gitea for work ready to become Open Pilot runs.", Enabled: false, Schedule: "*/10 * * * *"},
 		{ID: "manual-devlog", WorkflowID: "devlog", Type: TriggerManual, Name: "Generate devlog", Description: "Manual devlog draft generation.", Enabled: true},

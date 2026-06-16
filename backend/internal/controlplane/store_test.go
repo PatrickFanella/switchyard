@@ -15,16 +15,16 @@ func TestSeedDefaultsCreatesWorkflowAndTriggerCatalog(t *testing.T) {
 	}
 
 	workflows := store.ListWorkflows()
-	if len(workflows) != 4 {
-		t.Fatalf("len(workflows) = %d, want 4", len(workflows))
+	if len(workflows) != 3 {
+		t.Fatalf("len(workflows) = %d, want 3", len(workflows))
 	}
-	if workflows[0].ID != "changemaker" || workflows[1].ID != "changemaker-daily-digest" || workflows[2].ID != "devlog" || workflows[3].ID != "open-pilot" {
+	if workflows[0].ID != "changemaker-daily-digest" || workflows[1].ID != "devlog" || workflows[2].ID != "open-pilot" {
 		t.Fatalf("workflows sorted by id = %+v", workflows)
 	}
 
 	triggers := store.ListTriggers()
-	if len(triggers) != 5 {
-		t.Fatalf("len(triggers) = %d, want 5", len(triggers))
+	if len(triggers) != 4 {
+		t.Fatalf("len(triggers) = %d, want 4", len(triggers))
 	}
 }
 
@@ -109,22 +109,22 @@ func TestRunnerCreatesDevlogRunEnvelope(t *testing.T) {
 	}
 }
 
-func TestRunnerDispatchesChangemakerExecutor(t *testing.T) {
+func TestRunnerDispatchesNativeChangemakerExecutor(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := controlplane.NewStore(func() time.Time { return now })
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
 	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{
-		"changemaker": controlplane.WorkflowExecutorFunc(func(_ context.Context, run controlplane.Run) (controlplane.WorkflowExecution, error) {
-			if run.WorkflowID != "changemaker" {
+		"changemaker-daily-digest": controlplane.WorkflowExecutorFunc(func(_ context.Context, run controlplane.Run) (controlplane.WorkflowExecution, error) {
+			if run.WorkflowID != "changemaker-daily-digest" {
 				t.Fatalf("workflow = %s", run.WorkflowID)
 			}
 			return controlplane.WorkflowExecution{Summary: "dispatched test changemaker", Events: []controlplane.WorkflowExecutionEvent{{Type: "changemaker.accepted", Message: "accepted"}}}, nil
 		}),
 	})
 
-	run, err := runner.RunTrigger(t.Context(), "daily-changemaker")
+	run, err := runner.RunTrigger(t.Context(), "daily-changemaker-native")
 	if err != nil {
 		t.Fatalf("RunTrigger() error = %v", err)
 	}

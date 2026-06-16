@@ -52,6 +52,9 @@ type ModelExecutor = ModelBroker
 type EnvModelBroker struct {
 	llamaLineBaseURL string
 	llamaLineAPIKey  string
+	openCodeBaseURL  string
+	openCodeUsername string
+	openCodePassword string
 	client           *http.Client
 }
 
@@ -59,6 +62,9 @@ func NewEnvModelBroker() *EnvModelBroker {
 	return &EnvModelBroker{
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:  os.Getenv("LLAMA_LINE_API_KEY"),
+		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		openCodeUsername: os.Getenv("OPENCODE_SERVER_USERNAME"),
+		openCodePassword: os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		client:           &http.Client{Timeout: modelBrokerTimeout()},
 	}
 }
@@ -79,12 +85,17 @@ func NewEnvModelExecutor() *EnvModelBroker {
 }
 
 func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (ModelResponse, error) {
-	baseURL := e.llamaLineBaseURL
-	token := e.llamaLineAPIKey
-	source := "llama-line"
-	if baseURL == "" {
-		return ModelResponse{}, fmt.Errorf("no model broker base URL configured")
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
+		if strings.TrimSpace(e.llamaLineBaseURL) == "" {
+			return ModelResponse{}, fmt.Errorf("LLAMA_LINE_BASE_URL is not configured")
+		}
+		return e.generateViaLlamaLine(ctx, request)
 	}
+	return e.generateViaOpenCode(ctx, request)
+}
+
+func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	baseURL := e.llamaLineBaseURL
 	endpoint, err := url.JoinPath(baseURL, "/v1/chat/completions")
 	if err != nil {
 		return ModelResponse{}, err
@@ -98,8 +109,8 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 		return ModelResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if e.llamaLineAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+e.llamaLineAPIKey)
 	}
 	resp, err := e.client.Do(req)
 	if err != nil {
@@ -120,7 +131,7 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 	if len(decoded.Choices) == 0 {
 		return ModelResponse{}, fmt.Errorf("model response contained no choices")
 	}
-	correlation := map[string]string{"model_broker": "switchyard", "model_source": source}
+	correlation := map[string]string{"model_broker": "switchyard", "model_source": "llama-line", "model_broker_backend": "compat"}
 	if requestID := resp.Header.Get("X-Llama-Line-Request-ID"); requestID != "" {
 		correlation["llama_line_request_id"] = requestID
 	}
@@ -131,6 +142,43 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 		correlation["ocq_session_id"] = sessionID
 	}
 	return ModelResponse{Content: decoded.Choices[0].Message.Content, CorrelationIDs: correlation}, nil
+}
+
+func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	executor := &EnvOpenCodeExecutor{baseURL: e.openCodeBaseURL, username: e.openCodeUsername, password: e.openCodePassword, client: e.client}
+	prompt := modelMessagesToPrompt(request.Messages)
+	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: request.Model, Prompt: prompt, RequestID: "model-broker-" + shortRandomID(), WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace")})
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	correlation := cloneMap(response.CorrelationIDs)
+	if correlation == nil {
+		correlation = map[string]string{}
+	}
+	correlation["model_broker"] = "switchyard"
+	correlation["model_source"] = "opencode"
+	correlation["model_broker_backend"] = "native"
+	return ModelResponse{Content: response.Content, CorrelationIDs: correlation}, nil
+}
+
+func modelMessagesToPrompt(messages []ModelMessage) string {
+	var builder strings.Builder
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		role := strings.TrimSpace(message.Role)
+		if role == "" {
+			role = "user"
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(strings.ToUpper(role[:1]) + strings.ToLower(role[1:]) + ":\n")
+		builder.WriteString(content)
+	}
+	return builder.String()
 }
 
 type modelBrokerChatResponse struct {
@@ -179,5 +227,8 @@ func decodeModelBrokerChatResponse(body []byte) (modelBrokerChatResponse, error)
 }
 
 func (e *EnvModelBroker) Configured() bool {
-	return strings.TrimSpace(e.llamaLineBaseURL) != ""
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
+		return strings.TrimSpace(e.llamaLineBaseURL) != ""
+	}
+	return strings.TrimSpace(e.openCodeBaseURL) != ""
 }

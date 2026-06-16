@@ -19,16 +19,19 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
-      LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-http://llama-line:11434}
-      LLAMA_LINE_API_KEY: ${LLAMA_LINE_API_KEY:-switchyard-local-llama-line-key}
+      MODEL_BROKER_BACKEND: ${MODEL_BROKER_BACKEND:-native}
+      LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-}
+      LLAMA_LINE_API_KEY: ${LLAMA_LINE_API_KEY:-}
       MODEL_BROKER_TIMEOUT: ${MODEL_BROKER_TIMEOUT:-10m}
-      LLAMA_LINE_ADMIN_KEY: ${LLAMA_LINE_ADMIN_KEY:-switchyard-local-admin-key}
-      OCQ_BASE_URL: ${OCQ_BASE_URL:-http://ocq:8088}
-      OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-switchyard-local-ocq-key}
+      LLAMA_LINE_ADMIN_KEY: ${LLAMA_LINE_ADMIN_KEY:-}
+      OPENCODE_EXECUTOR_BACKEND: ${OPENCODE_EXECUTOR_BACKEND:-native}
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode:4096}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
+      OCQ_BASE_URL: ${OCQ_BASE_URL:-}
+      OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-}
       OPENCODE_EXECUTOR_TIMEOUT: ${OPENCODE_EXECUTOR_TIMEOUT:-10m}
       BLACKTOWER_BASE_URL: ${BLACKTOWER_BASE_URL:-}
-      CHANGEMAKER_BASE_URL: ${CHANGEMAKER_BASE_URL:-}
-      CHANGEMAKER_ADMIN_TOKEN: ${CHANGEMAKER_ADMIN_TOKEN:-}
       SWITCHYARD_PUBLIC_URL: ${SWITCHYARD_PUBLIC_URL:-}
       SWITCHYARD_REVERSE_PROXY_AUTH: ${SWITCHYARD_REVERSE_PROXY_AUTH:-false}
       SWITCHYARD_SCHEDULER_ENABLED: ${SWITCHYARD_SCHEDULER_ENABLED:-false}
@@ -78,9 +81,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ocq:
-        condition: service_healthy
-      llama-line:
+      opencode:
         condition: service_healthy
     ports:
       - "${API_PORT:-18080}:8080"
@@ -88,6 +89,7 @@ services:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
 
   ocq:
+    profiles: ["compat"]
     build:
       context: ./services/ocq
       dockerfile: Dockerfile.gateway
@@ -137,6 +139,7 @@ services:
       - ${OPENCODE_DATA_DIR:-./opencode-data}:/root/.local/share/opencode
 
   llama-line:
+    profiles: ["compat"]
     build: ./services/llama-line
     environment:
       OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-switchyard-local-ocq-key}

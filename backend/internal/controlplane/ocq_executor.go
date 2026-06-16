@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,13 +40,19 @@ type OCQExecutor = OpenCodeExecutor
 type EnvOpenCodeExecutor struct {
 	baseURL    string
 	gatewayKey string
+	username   string
+	password   string
 	client     *http.Client
 }
 
 type EnvOCQExecutor = EnvOpenCodeExecutor
 
 func NewEnvOpenCodeExecutor() *EnvOpenCodeExecutor {
-	return &EnvOpenCodeExecutor{baseURL: strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"), gatewayKey: os.Getenv("OCQ_GATEWAY_KEY"), client: &http.Client{Timeout: openCodeExecutorTimeout()}}
+	baseURL := strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/")
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_BACKEND")), "ocq") {
+		baseURL = strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/")
+	}
+	return &EnvOpenCodeExecutor{baseURL: baseURL, gatewayKey: os.Getenv("OCQ_GATEWAY_KEY"), username: os.Getenv("OPENCODE_SERVER_USERNAME"), password: os.Getenv("OPENCODE_SERVER_PASSWORD"), client: &http.Client{Timeout: openCodeExecutorTimeout()}}
 }
 
 func openCodeExecutorTimeout() time.Duration {
@@ -61,6 +69,13 @@ func NewEnvOCQExecutor() *EnvOpenCodeExecutor {
 }
 
 func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_BACKEND")), "ocq") {
+		return e.sendPromptViaOCQ(ctx, request)
+	}
+	return e.sendPromptViaOpenCode(ctx, request)
+}
+
+func (e *EnvOpenCodeExecutor) sendPromptViaOCQ(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
 	if e.baseURL == "" {
 		return OpenCodeResponse{}, fmt.Errorf("OCQ_BASE_URL is not configured")
 	}
@@ -125,3 +140,153 @@ func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRe
 	correlation["opencode_executor_backend"] = "ocq"
 	return OpenCodeResponse{Content: decoded.Choices[0].Message.Content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
 }
+
+func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
+	if e.baseURL == "" {
+		return OpenCodeResponse{}, fmt.Errorf("OPENCODE_SERVER_URL is not configured")
+	}
+	directory := firstNonEmpty(request.WorkDir, os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace")
+	sessionID := request.SessionID
+	if sessionID == "" {
+		created, err := e.createOpenCodeSession(ctx, directory)
+		if err != nil {
+			return OpenCodeResponse{}, err
+		}
+		sessionID = created
+	}
+	content, err := e.postOpenCodeMessage(ctx, sessionID, request)
+	if err != nil {
+		return OpenCodeResponse{}, err
+	}
+	requestID := firstNonEmpty(request.RequestID, "opencode-"+shortRandomID())
+	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: map[string]string{"opencode_executor": "switchyard", "opencode_executor_backend": "native", "opencode_session_id": sessionID, "opencode_request_id": requestID}}, nil
+}
+
+func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directory string) (string, error) {
+	endpoint, err := url.Parse(e.baseURL + "/session")
+	if err != nil {
+		return "", err
+	}
+	q := endpoint.Query()
+	q.Set("directory", directory)
+	endpoint.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	e.applyOpenCodeAuth(req)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("opencode session create failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var decoded struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return "", err
+	}
+	if decoded.ID == "" {
+		return "", fmt.Errorf("opencode session create response missing id")
+	}
+	return decoded.ID, nil
+}
+
+func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID string, request OpenCodeRequest) (string, error) {
+	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, "/message")
+	if err != nil {
+		return "", err
+	}
+	body := map[string]any{"parts": []map[string]string{{"type": "text", "text": request.Prompt}}}
+	if request.Model != "" {
+		body["model"] = openCodeModelPayload(request.Model)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if request.RequestID != "" {
+		req.Header.Set("X-Request-ID", request.RequestID)
+	}
+	e.applyOpenCodeAuth(req)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("opencode message failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return extractOpenCodeMessageContent(responseBody)
+}
+
+func (e *EnvOpenCodeExecutor) applyOpenCodeAuth(req *http.Request) {
+	if e.username != "" || e.password != "" {
+		req.SetBasicAuth(firstNonEmpty(e.username, "switchyard"), e.password)
+	}
+	if e.gatewayKey != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+e.gatewayKey)
+	}
+}
+
+func openCodeModelPayload(model string) map[string]string {
+	provider := "openai"
+	modelID := model
+	if strings.Contains(model, "/") {
+		parts := strings.SplitN(model, "/", 2)
+		provider = parts[0]
+		modelID = parts[1]
+	}
+	return map[string]string{"providerID": provider, "modelID": modelID}
+}
+
+func extractOpenCodeMessageContent(body []byte) (string, error) {
+	var decoded struct {
+		Info struct {
+			Role string `json:"role"`
+		} `json:"info"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(body, &decoded); err == nil {
+		var parts []string
+		for _, part := range decoded.Parts {
+			if strings.TrimSpace(part.Text) != "" {
+				parts = append(parts, part.Text)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n"), nil
+		}
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return "", err
+	}
+	if content, ok := generic["content"].(string); ok && strings.TrimSpace(content) != "" {
+		return content, nil
+	}
+	if message, ok := generic["message"].(string); ok && strings.TrimSpace(message) != "" {
+		return message, nil
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
+func shortRandomID() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }

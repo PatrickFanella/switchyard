@@ -41,6 +41,10 @@ type OpenCodeExecutorStatusSession struct {
 type EnvOpenCodeExecutorStatusProvider struct {
 	ocqBaseURL    string
 	ocqGatewayKey string
+	openCodeURL   string
+	username      string
+	password      string
+	backend       string
 	client        *http.Client
 }
 
@@ -48,12 +52,19 @@ func NewEnvOpenCodeExecutorStatusProvider() *EnvOpenCodeExecutorStatusProvider {
 	return &EnvOpenCodeExecutorStatusProvider{
 		ocqBaseURL:    strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey: os.Getenv("OCQ_GATEWAY_KEY"),
+		openCodeURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		username:      os.Getenv("OPENCODE_SERVER_USERNAME"),
+		password:      os.Getenv("OPENCODE_SERVER_PASSWORD"),
+		backend:       firstNonEmpty(os.Getenv("OPENCODE_EXECUTOR_BACKEND"), "native"),
 		client:        &http.Client{Timeout: 2 * time.Second},
 	}
 }
 
 func (p *EnvOpenCodeExecutorStatusProvider) Status(ctx context.Context) OpenCodeExecutorStatus {
 	now := time.Now().UTC()
+	if !strings.EqualFold(strings.TrimSpace(p.backend), "ocq") {
+		return p.nativeStatus(ctx, now)
+	}
 	status := OpenCodeExecutorStatus{
 		ID:                  "switchyard-opencode-executor",
 		Status:              "not_configured",
@@ -95,6 +106,68 @@ func (p *EnvOpenCodeExecutorStatusProvider) Status(ctx context.Context) OpenCode
 			CreatedAt: parseOptionalRFC3339(firstNonEmpty(string(session.CreatedAt), string(session.CreatedAtLegacy))),
 			UpdatedAt: parseOptionalRFC3339(firstNonEmpty(string(session.UpdatedAt), string(session.UpdatedAtLegacy))),
 		})
+	}
+	status.SessionCount = len(status.Sessions)
+	return status
+}
+
+func (p *EnvOpenCodeExecutorStatusProvider) nativeStatus(ctx context.Context, now time.Time) OpenCodeExecutorStatus {
+	status := OpenCodeExecutorStatus{ID: "switchyard-opencode-executor", Status: "not_configured", Configured: strings.TrimSpace(p.openCodeURL) != "", Backend: "switchyard-opencode-executor", BaseURL: p.openCodeURL, Sessions: []OpenCodeExecutorStatusSession{}, CheckedAt: now}
+	if !status.Configured {
+		status.Error = "OPENCODE_SERVER_URL is not configured"
+		return status
+	}
+	endpoint, err := url.Parse(p.openCodeURL + "/session")
+	if err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	q := endpoint.Query()
+	q.Set("directory", firstNonEmpty(os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"))
+	endpoint.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	if p.username != "" || p.password != "" {
+		req.SetBasicAuth(firstNonEmpty(p.username, "switchyard"), p.password)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		status.Status = "unreachable"
+		status.Error = err.Error()
+		return status
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		status.Status = "failed"
+		status.Error = resp.Status
+		return status
+	}
+	var sessions []struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Name      string `json:"name"`
+		Status    string `json:"status"`
+		CreatedAt string `json:"createdAt"`
+		UpdatedAt string `json:"updatedAt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	status.Healthy = true
+	status.Status = "healthy"
+	for _, session := range sessions {
+		sessionStatus := firstNonEmpty(session.Status, "active")
+		if isOpenCodeActiveSessionStatus(sessionStatus) {
+			status.ActiveSessionCount++
+		}
+		status.Sessions = append(status.Sessions, OpenCodeExecutorStatusSession{ID: session.ID, Title: firstNonEmpty(session.Title, session.Name, session.ID), Status: sessionStatus, CreatedAt: parseOptionalRFC3339(session.CreatedAt), UpdatedAt: parseOptionalRFC3339(session.UpdatedAt)})
 	}
 	status.SessionCount = len(status.Sessions)
 	return status

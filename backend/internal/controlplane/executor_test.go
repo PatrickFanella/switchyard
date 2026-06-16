@@ -15,50 +15,6 @@ import (
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
 )
 
-func TestEnvWorkflowExecutorsDispatchesChangemaker(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/runs" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s", r.Method)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
-			t.Fatalf("Authorization = %q", got)
-		}
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body["kind"] != "manual" || body["since"] != "2026-01-01" || body["until"] != "2026-01-02" {
-			t.Fatalf("body = %+v", body)
-		}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"state":"running"}`))
-	}))
-	t.Cleanup(server.Close)
-	t.Setenv("CHANGEMAKER_BASE_URL", server.URL)
-	t.Setenv("CHANGEMAKER_ADMIN_TOKEN", "test-token")
-
-	executor := controlplane.NewEnvWorkflowExecutors().ExecutorFor("changemaker")
-	execution, err := executor.Execute(t.Context(), controlplane.Run{
-		ID:         "run-1",
-		WorkflowID: "changemaker",
-		Status:     controlplane.RunRunning,
-		Inputs: map[string]string{
-			"since": "2026-01-01",
-			"until": "2026-01-02",
-		},
-		CreatedAt: time.Unix(100, 0),
-	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if execution.Summary != "Dispatched Changemaker run" || len(execution.Events) != 2 {
-		t.Fatalf("execution = %+v", execution)
-	}
-}
-
 func TestEnvWorkflowExecutorsDispatchesOpenPilotCommand(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "args.txt")
@@ -90,6 +46,7 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -135,6 +92,7 @@ func TestRunnerFetchesOpenPilotIssueWhenGiteaConfigured(t *testing.T) {
 	t.Cleanup(gitea.Close)
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -170,6 +128,7 @@ func TestRunnerRejectsOpenPilotIssueMissingRequiredLabels(t *testing.T) {
 	t.Cleanup(gitea.Close)
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -209,6 +168,7 @@ func TestRunnerRunsOpenPilotPromptPipelineWithOCQ(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_MODEL", "opencode-open-pilot")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
@@ -263,6 +223,7 @@ func TestRunnerPausesOpenPilotAgentWorkWithoutExecutedWorktree(t *testing.T) {
 			}))
 			t.Cleanup(ocq.Close)
 			t.Setenv("OCQ_BASE_URL", ocq.URL)
+			t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 			t.Setenv("OPEN_PILOT_WORKTREE_MODE", mode)
 			t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 			t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -311,6 +272,7 @@ func TestRunnerRejectsOpenPilotMismatchedRepoPathOrigin(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -347,6 +309,7 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -417,6 +380,7 @@ func runOpenPilotNoPersistTest(t *testing.T, pushMode, writeMode string) control
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -530,6 +494,7 @@ func TestRunnerPersistsOpenPilotStateThroughAgentWork(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -581,10 +546,13 @@ func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
 	}))
 	t.Cleanup(gitea.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 
@@ -636,6 +604,7 @@ func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing
 	}))
 	t.Cleanup(gitea.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
@@ -644,6 +613,8 @@ func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -671,6 +642,7 @@ func TestRunnerPersistsOpenPilotFailureState(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -785,6 +757,8 @@ func TestRunnerReusesKnownOpenPilotPullRequestOnResume(t *testing.T) {
 	t.Cleanup(gitea.Close)
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
 
 	runner := controlplane.NewRunner(store)
 	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step_position": "8", "retry_from_step": "open-pilot.pr-plan"}})
@@ -815,6 +789,7 @@ func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -867,6 +842,7 @@ func TestRunnerSkipsOpenPilotWorktreeCleanupWithoutDurableHandoff(t *testing.T) 
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_WORKTREE_CLEANUP", "on-success")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
@@ -914,8 +890,11 @@ func TestRunnerRejectsOpenPilotPullRequestForUnpushedWorktreeBranch(t *testing.T
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 
@@ -962,9 +941,12 @@ func TestRunnerCreatesOpenPilotPullRequestForExistingRemoteHead(t *testing.T) {
 	}))
 	t.Cleanup(gitea.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 
@@ -1002,6 +984,7 @@ func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
@@ -1058,6 +1041,7 @@ func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -1108,6 +1092,7 @@ func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
@@ -1177,12 +1162,15 @@ func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	}))
 	t.Cleanup(gitea.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("GITEA_BASE_URL", gitea.URL)
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC", "true")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
@@ -1211,6 +1199,7 @@ func TestRunnerFailsOpenPilotDeniedVerifyCommand(t *testing.T) {
 	}))
 	t.Cleanup(ocq.Close)
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OPEN_PILOT_WORKTREE_MODE", "allow")
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
@@ -1237,6 +1226,7 @@ func TestRunnerFailsOpenPilotDeniedVerifyCommand(t *testing.T) {
 func TestRunnerGeneratesDevlogArtifact(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
@@ -1322,6 +1312,7 @@ func TestRunnerGeneratesDevlogWithModel(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"# Generated by model"}}]}`))
 	}))
 	t.Cleanup(modelServer.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("LLAMA_LINE_BASE_URL", modelServer.URL)
 	t.Setenv("DEVLOG_MODEL", "devlog-test-model")
 
@@ -1360,6 +1351,7 @@ func TestRunnerAllowsDevlogModelOverride(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"# Override"}}]}`))
 	}))
 	t.Cleanup(modelServer.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("LLAMA_LINE_BASE_URL", modelServer.URL)
 	t.Setenv("DEVLOG_MODEL", "default-model")
 	t.Setenv("DEVLOG_ALLOWED_MODELS", "default-model,override-model")
@@ -1382,26 +1374,19 @@ func TestRunnerAllowsDevlogModelOverride(t *testing.T) {
 	}
 }
 
-func TestEnvWorkflowExecutorsStubsChangemakerWhenUnconfigured(t *testing.T) {
-	t.Setenv("CHANGEMAKER_BASE_URL", "")
-	executor := controlplane.NewEnvWorkflowExecutors().ExecutorFor("changemaker")
-	execution, err := executor.Execute(t.Context(), controlplane.Run{WorkflowID: "changemaker"})
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if execution.Events[0].Type != "workflow.stub" {
-		t.Fatalf("execution = %+v", execution)
-	}
-}
-
-func TestRunnerExecutesChangemakerPipeline(t *testing.T) {
-	t.Setenv("CHANGEMAKER_BASE_URL", "")
+func TestRunnerExecutesNativeChangemakerTemplate(t *testing.T) {
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"# Digest"}}]}`))
+	}))
+	t.Cleanup(modelServer.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", modelServer.URL)
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
 	runner := controlplane.NewRunner(store)
-	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "changemaker", Inputs: map[string]string{"kind": "daily"}})
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "changemaker-daily-digest", Inputs: map[string]string{"topic": "daily", "prompt": "Write a digest"}})
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -1409,19 +1394,13 @@ func TestRunnerExecutesChangemakerPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || run.Summary != "Recorded Switchyard run envelope for changemaker" {
+	if run.Status != controlplane.RunSucceeded || run.Summary != "Changemaker draft generated by model step" {
 		t.Fatalf("run = %+v", run)
 	}
-	if len(detail.Steps) != 1 || detail.Steps[0].Name != "changemaker.dispatch" || detail.Steps[0].Executor != "http" || detail.Steps[0].Status != controlplane.StepSucceeded {
+	if len(detail.Steps) != 3 || detail.Steps[0].Name != "changemaker.prepare" || detail.Steps[1].Name != "changemaker.generate" || detail.Steps[2].Name != "changemaker.attach-draft" {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
-	foundStub := false
-	for _, event := range detail.Events {
-		if event.Type == "workflow.stub" {
-			foundStub = true
-		}
-	}
-	if !foundStub {
-		t.Fatalf("events = %+v", detail.Events)
+	if len(detail.Artifacts) != 3 {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }

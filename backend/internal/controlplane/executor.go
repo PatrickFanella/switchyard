@@ -187,8 +187,6 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 	giteaClient := NewEnvGiteaClient()
 	return &EnvWorkflowExecutors{
 		store:                     configuredStore,
-		changemakerBaseURL:        strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
-		changemakerToken:          os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
 		openPilotCommand:          strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
 		ocqBaseURL:                strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey:             os.Getenv("OCQ_GATEWAY_KEY"),
@@ -226,8 +224,6 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 
 func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	switch workflowID {
-	case string(WorkflowChangemaker):
-		return changemakerExecutor{env: e}
 	case string(WorkflowOpenPilot):
 		return openPilotExecutor{env: e}
 	case string(WorkflowDevlog):

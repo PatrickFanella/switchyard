@@ -25,26 +25,22 @@ type RunDetailCancelDispatcher interface {
 }
 
 type EnvCancelDispatcher struct {
-	changemakerBaseURL string
-	changemakerToken   string
-	ocqBaseURL         string
-	ocqGatewayKey      string
-	llamaLineBaseURL   string
-	llamaLineAdminKey  string
-	openPilotCommand   string
-	client             *http.Client
+	ocqBaseURL        string
+	ocqGatewayKey     string
+	llamaLineBaseURL  string
+	llamaLineAdminKey string
+	openPilotCommand  string
+	client            *http.Client
 }
 
 func NewEnvCancelDispatcher() *EnvCancelDispatcher {
 	return &EnvCancelDispatcher{
-		changemakerBaseURL: strings.TrimRight(os.Getenv("CHANGEMAKER_BASE_URL"), "/"),
-		changemakerToken:   os.Getenv("CHANGEMAKER_ADMIN_TOKEN"),
-		ocqBaseURL:         strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
-		ocqGatewayKey:      os.Getenv("OCQ_GATEWAY_KEY"),
-		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
-		llamaLineAdminKey:  os.Getenv("LLAMA_LINE_ADMIN_KEY"),
-		openPilotCommand:   strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
-		client:             &http.Client{Timeout: 5 * time.Second},
+		ocqBaseURL:        strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
+		ocqGatewayKey:     os.Getenv("OCQ_GATEWAY_KEY"),
+		llamaLineBaseURL:  strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		llamaLineAdminKey: os.Getenv("LLAMA_LINE_ADMIN_KEY"),
+		openPilotCommand:  strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
+		client:            &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -56,8 +52,6 @@ func (d *EnvCancelDispatcher) CancelRunDetail(ctx context.Context, detail RunDet
 	run := detail.Run
 	result := CancelResult{}
 	switch run.WorkflowID {
-	case string(WorkflowChangemaker):
-		result.Events = append(result.Events, d.cancelChangemaker(ctx)...)
 	case string(WorkflowOpenPilot):
 		result.Events = append(result.Events, d.cancelOpenPilot(ctx, run)...)
 	}
@@ -97,21 +91,6 @@ func cancelCorrelationIDs(detail RunDetail) map[string]string {
 		}
 	}
 	return out
-}
-
-func (d *EnvCancelDispatcher) cancelChangemaker(ctx context.Context) []WorkflowExecutionEvent {
-	if d.changemakerBaseURL == "" {
-		return []WorkflowExecutionEvent{{Type: "changemaker.cancel.skipped", Message: "CHANGEMAKER_BASE_URL is not configured"}}
-	}
-	endpoint, _ := url.JoinPath(d.changemakerBaseURL, "/api/runs/cancel")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(nil))
-	if err != nil {
-		return []WorkflowExecutionEvent{{Type: "changemaker.cancel.failed", Message: err.Error()}}
-	}
-	if d.changemakerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+d.changemakerToken)
-	}
-	return d.doCancelRequest("changemaker.cancel", req)
 }
 
 func (d *EnvCancelDispatcher) abortOCQRequest(ctx context.Context, requestID string, sessionID string) []WorkflowExecutionEvent {

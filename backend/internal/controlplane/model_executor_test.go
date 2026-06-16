@@ -20,6 +20,7 @@ func TestEnvModelExecutorUsesLlamaLine(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"model output"}}]}`))
 	}))
 	t.Cleanup(server.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("LLAMA_LINE_BASE_URL", server.URL)
 	t.Setenv("LLAMA_LINE_API_KEY", "llama-key")
 	t.Setenv("OCQ_BASE_URL", "")
@@ -43,11 +44,12 @@ func TestEnvModelBrokerDoesNotCallOCQDirectly(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("OCQ_BASE_URL", server.URL)
 	t.Setenv("OCQ_GATEWAY_KEY", "ocq-key")
 
 	_, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "ocq-model", Messages: []controlplane.ModelMessage{{Role: "user", Content: "hello"}}})
-	if err == nil || err.Error() != "no model broker base URL configured" {
+	if err == nil || err.Error() != "LLAMA_LINE_BASE_URL is not configured" {
 		t.Fatalf("Generate() error = %v", err)
 	}
 }

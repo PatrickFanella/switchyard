@@ -43,18 +43,29 @@ type ModelBrokerStatusUpstream struct {
 
 type EnvModelBrokerStatusProvider struct {
 	llamaLineBaseURL string
+	openCodeBaseURL  string
+	username         string
+	password         string
+	backend          string
 	client           *http.Client
 }
 
 func NewEnvModelBrokerStatusProvider() *EnvModelBrokerStatusProvider {
 	return &EnvModelBrokerStatusProvider{
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		username:         os.Getenv("OPENCODE_SERVER_USERNAME"),
+		password:         os.Getenv("OPENCODE_SERVER_PASSWORD"),
+		backend:          firstNonEmpty(os.Getenv("MODEL_BROKER_BACKEND"), "native"),
 		client:           &http.Client{Timeout: 2 * time.Second},
 	}
 }
 
 func (p *EnvModelBrokerStatusProvider) Status(ctx context.Context) ModelBrokerStatus {
 	now := time.Now().UTC()
+	if !strings.EqualFold(strings.TrimSpace(p.backend), "llama-line") {
+		return p.nativeStatus(ctx, now)
+	}
 	status := ModelBrokerStatus{
 		ID:                  "switchyard-model-broker",
 		Status:              "not_configured",
@@ -124,6 +135,45 @@ func (p *EnvModelBrokerStatusProvider) Status(ctx context.Context) ModelBrokerSt
 			LastProbeAt: parseOptionalRFC3339(upstream.LastProbeAt),
 		})
 	}
+	return status
+}
+
+func (p *EnvModelBrokerStatusProvider) nativeStatus(ctx context.Context, now time.Time) ModelBrokerStatus {
+	status := ModelBrokerStatus{ID: "switchyard-model-broker", Status: "not_configured", Configured: strings.TrimSpace(p.openCodeBaseURL) != "", Backend: "switchyard-model-broker", BaseURL: p.openCodeBaseURL, InFlightRequestIDs: []string{}, Upstreams: []ModelBrokerStatusUpstream{}, CheckedAt: now}
+	if !status.Configured {
+		status.Error = "OPENCODE_SERVER_URL is not configured"
+		return status
+	}
+	endpoint, err := url.JoinPath(p.openCodeBaseURL, "/config")
+	if err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	if p.username != "" || p.password != "" {
+		req.SetBasicAuth(firstNonEmpty(p.username, "switchyard"), p.password)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		status.Status = "unreachable"
+		status.Error = err.Error()
+		return status
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		status.Status = "failed"
+		status.Error = resp.Status
+		return status
+	}
+	status.Status = "healthy"
+	status.Upstreams = []ModelBrokerStatusUpstream{{Name: "opencode", URL: p.openCodeBaseURL, Status: "healthy"}}
+	status.ConnectedClients = 1
 	return status
 }
 

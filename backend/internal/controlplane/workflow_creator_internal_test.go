@@ -57,13 +57,13 @@ func TestStoreBackedPipelineRegistryPrefersActiveWorkflowDefinition(t *testing.T
 	}
 
 	pipelines := registry.ListPipelines()
-	if len(pipelines) != 4 {
-		t.Fatalf("len(pipelines) = %d, want 4", len(pipelines))
+	if len(pipelines) != 3 {
+		t.Fatalf("len(pipelines) = %d, want 3", len(pipelines))
 	}
-	if pipelines[1].ID != "custom-digest-pipeline" {
+	if pipelines[0].ID != "custom-digest-pipeline" {
 		t.Fatalf("pipelines = %+v", pipelines)
 	}
-	if got := workflowIDs(pipelines); !reflect.DeepEqual(got, []string{"changemaker", "custom-digest", "devlog", "open-pilot"}) {
+	if got := workflowIDs(pipelines); !reflect.DeepEqual(got, []string{"custom-digest", "devlog", "open-pilot"}) {
 		t.Fatalf("workflowIDs = %+v", got)
 	}
 }
@@ -100,10 +100,10 @@ func TestStoreBackedPipelineRegistryIgnoresDraftWorkflowDefinition(t *testing.T)
 	}
 
 	pipelines := registry.ListPipelines()
-	if len(pipelines) != 3 {
-		t.Fatalf("len(pipelines) = %d, want 3", len(pipelines))
+	if len(pipelines) != 2 {
+		t.Fatalf("len(pipelines) = %d, want 2", len(pipelines))
 	}
-	if got := workflowIDs(pipelines); !reflect.DeepEqual(got, []string{"changemaker", "devlog", "open-pilot"}) {
+	if got := workflowIDs(pipelines); !reflect.DeepEqual(got, []string{"devlog", "open-pilot"}) {
 		t.Fatalf("workflowIDs = %+v", got)
 	}
 }

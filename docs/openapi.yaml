@@ -30,13 +30,13 @@ paths:
   /api/model-broker/status:
     get:
       summary: Get native ModelBroker status
-      description: Reports Switchyard's native model-broker surface while llama-line remains the transitional backend.
+      description: Reports Switchyard's native model-broker surface. llama-line may appear only when the compatibility backend is enabled.
       responses:
         "200": { $ref: "#/components/responses/ModelBrokerStatusResponse" }
   /api/opencode-executor/status:
     get:
       summary: Get native OpenCodeExecutor status
-      description: Reports Switchyard's native OpenCode executor surface while OCQ remains the transitional backend.
+      description: Reports Switchyard's native OpenCode executor surface. OCQ may appear only when the compatibility backend is enabled.
       responses:
         "200": { $ref: "#/components/responses/OpenCodeExecutorStatusResponse" }
   /api/scheduler:

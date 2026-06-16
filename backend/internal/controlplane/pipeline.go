@@ -122,15 +122,6 @@ func DefaultPipelineRegistry() StaticPipelineRegistry {
 				{ID: "attach-artifact", Position: 3, Name: "devlog.attach-artifact", Executor: "internal"},
 			},
 		},
-		string(WorkflowChangemaker): {
-			ID:          "changemaker-wrapper",
-			WorkflowID:  string(WorkflowChangemaker),
-			Name:        "Changemaker Wrapper",
-			Description: "Validate and dispatch a Changemaker service run through its HTTP adapter.",
-			Steps: []PipelineStep{
-				{ID: "dispatch", Position: 1, Name: "changemaker.dispatch", Executor: "http"},
-			},
-		},
 		string(WorkflowOpenPilot): {
 			ID:          "open-pilot-prototype",
 			WorkflowID:  string(WorkflowOpenPilot),

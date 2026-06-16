@@ -14,7 +14,7 @@ func TestSchedulerInitializesNextRunForScheduledTriggers(t *testing.T) {
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
-	if _, err := store.SetTriggerEnabled("daily-changemaker", true); err != nil {
+	if _, err := store.SetTriggerEnabled("daily-changemaker-native", true); err != nil {
 		t.Fatalf("SetTriggerEnabled() error = %v", err)
 	}
 	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{})
@@ -23,9 +23,9 @@ func TestSchedulerInitializesNextRunForScheduledTriggers(t *testing.T) {
 	if err := scheduler.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
-	trigger, ok := store.Trigger("daily-changemaker")
+	trigger, ok := store.Trigger("daily-changemaker-native")
 	if !ok {
-		t.Fatal("daily-changemaker not found")
+		t.Fatal("daily-changemaker-native not found")
 	}
 	if trigger.NextRunAt == nil || !trigger.NextRunAt.Equal(time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)) {
 		t.Fatalf("next_run_at = %v", trigger.NextRunAt)
@@ -38,14 +38,14 @@ func TestSchedulerDispatchesDueTrigger(t *testing.T) {
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
-	if _, err := store.SetTriggerEnabled("daily-changemaker", true); err != nil {
+	if _, err := store.SetTriggerEnabled("daily-changemaker-native", true); err != nil {
 		t.Fatalf("SetTriggerEnabled() error = %v", err)
 	}
 	due := now.Add(-time.Minute)
-	if _, err := store.UpdateTriggerScheduleState("daily-changemaker", nil, &due, ""); err != nil {
+	if _, err := store.UpdateTriggerScheduleState("daily-changemaker-native", nil, &due, ""); err != nil {
 		t.Fatalf("UpdateTriggerScheduleState() error = %v", err)
 	}
-	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{"changemaker": controlplane.WorkflowExecutorFunc(func(context.Context, controlplane.Run) (controlplane.WorkflowExecution, error) {
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{"changemaker-daily-digest": controlplane.WorkflowExecutorFunc(func(context.Context, controlplane.Run) (controlplane.WorkflowExecution, error) {
 		return controlplane.WorkflowExecution{Summary: "scheduler dispatch", Events: []controlplane.WorkflowExecutionEvent{{Type: "changemaker.accepted", Message: "accepted"}}}, nil
 	})})
 	scheduler := controlplane.NewScheduler(store, runner, time.Minute, func() time.Time { return now })
@@ -53,12 +53,12 @@ func TestSchedulerDispatchesDueTrigger(t *testing.T) {
 	if err := scheduler.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
-	trigger, _ := store.Trigger("daily-changemaker")
+	trigger, _ := store.Trigger("daily-changemaker-native")
 	if trigger.LastRunAt == nil || !trigger.LastRunAt.Equal(now) {
 		t.Fatalf("last_run_at = %v", trigger.LastRunAt)
 	}
 	runs := store.ListRuns()
-	if len(runs) != 1 || runs[0].TriggerID != "daily-changemaker" || runs[0].Summary != "scheduler dispatch" {
+	if len(runs) != 1 || runs[0].TriggerID != "daily-changemaker-native" || runs[0].Summary != "scheduler dispatch" {
 		t.Fatalf("runs = %+v", runs)
 	}
 }

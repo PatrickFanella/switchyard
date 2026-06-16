@@ -35,6 +35,7 @@ func TestEnvOpenCodeExecutorSendsPromptThroughOCQ(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
 	}))
 	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OCQ_BASE_URL", server.URL)
 	t.Setenv("OCQ_GATEWAY_KEY", "ocq-key")
 
@@ -57,6 +58,45 @@ func TestEnvOCQExecutorCompatibilityConstructor(t *testing.T) {
 	}
 }
 
+func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
+	var sessionDirectory string
+	var messageBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			sessionDirectory = r.URL.Query().Get("directory")
+			_, _ = w.Write([]byte(`{"id":"ses-native"}`))
+		case r.URL.Path == "/session/ses-native/message" && r.Method == http.MethodPost:
+			if got := r.Header.Get("X-Request-ID"); got != "req-native" {
+				t.Fatalf("X-Request-ID = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&messageBody); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"native done"}]}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Prompt: "do native work", RequestID: "req-native", WorkDir: "/tmp/worktree"})
+	if err != nil {
+		t.Fatalf("SendPrompt() error = %v", err)
+	}
+	if sessionDirectory != "/tmp/worktree" || response.Content != "native done" || response.SessionID != "ses-native" || response.RequestID != "req-native" {
+		t.Fatalf("response = %+v directory=%q", response, sessionDirectory)
+	}
+	if response.CorrelationIDs["opencode_executor_backend"] != "native" || response.CorrelationIDs["opencode_session_id"] != "ses-native" {
+		t.Fatalf("correlation = %+v", response.CorrelationIDs)
+	}
+	if messageBody["model"] == nil || len(messageBody["parts"].([]any)) != 1 {
+		t.Fatalf("message body = %+v", messageBody)
+	}
+}
+
 func TestEnvOpenCodeExecutorKeepsClientRequestIDWhenOCQOmitsHeader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Request-ID"); got != "client-request" {
@@ -65,6 +105,7 @@ func TestEnvOpenCodeExecutorKeepsClientRequestIDWhenOCQOmitsHeader(t *testing.T)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
 	}))
 	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OCQ_BASE_URL", server.URL)
 
 	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "opencode-test", Prompt: "do work", RequestID: "client-request"})
@@ -82,6 +123,7 @@ func TestEnvOpenCodeExecutorHonorsConfiguredTimeout(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
 	}))
 	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OCQ_BASE_URL", server.URL)
 	t.Setenv("OPENCODE_EXECUTOR_TIMEOUT", "1ms")
 

@@ -228,8 +228,8 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&workflows); err != nil {
 		t.Fatalf("decode workflows: %v", err)
 	}
-	if len(workflows.Workflows) != 4 {
-		t.Fatalf("len(workflows) = %d, want 4", len(workflows.Workflows))
+	if len(workflows.Workflows) != 3 {
+		t.Fatalf("len(workflows) = %d, want 3", len(workflows.Workflows))
 	}
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/triggers/manual-devlog/run", bytes.NewReader(nil))
@@ -361,7 +361,7 @@ func TestAPIUpdatesTriggerEnabled(t *testing.T) {
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 
-	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/triggers/daily-changemaker", bytes.NewBufferString(`{"enabled":true}`))
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/triggers/daily-changemaker-native", bytes.NewBufferString(`{"enabled":true}`))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestAPIUpdatesTriggerEnabled(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	trigger, ok := store.Trigger("daily-changemaker")
+	trigger, ok := store.Trigger("daily-changemaker-native")
 	if !ok || !trigger.Enabled {
 		t.Fatalf("trigger = %+v ok=%v", trigger, ok)
 	}
@@ -399,7 +399,7 @@ func TestAPIPipelinesListsStaticPipelines(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode pipelines: %v", err)
 	}
-	if len(body.Pipelines) != 3 || body.Pipelines[0].ID == "" || len(body.Pipelines[0].Steps) == 0 {
+	if len(body.Pipelines) != 2 || body.Pipelines[0].ID == "" || len(body.Pipelines[0].Steps) == 0 {
 		t.Fatalf("pipelines = %+v", body.Pipelines)
 	}
 }
@@ -464,6 +464,7 @@ func TestAPIModelBrokerStatusReportsNativeBroker(t *testing.T) {
 		}
 	}))
 	t.Cleanup(broker.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("LLAMA_LINE_BASE_URL", broker.URL)
 
 	store := controlplane.NewStore(nil)
@@ -513,6 +514,7 @@ func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 		}
 	}))
 	t.Cleanup(broker.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("LLAMA_LINE_BASE_URL", broker.URL)
 
 	store := controlplane.NewStore(nil)
@@ -538,6 +540,7 @@ func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 
 func TestAPIModelBrokerStatusReportsUnconfigured(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	store := controlplane.NewStore(nil)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
 	srv := httptest.NewServer(api.Handler())
@@ -580,6 +583,7 @@ func TestAPIOpenCodeExecutorStatusReportsNativeExecutor(t *testing.T) {
 		}
 	}))
 	t.Cleanup(ocq.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
 	t.Setenv("OCQ_GATEWAY_KEY", "test-gateway-key")
 
@@ -632,6 +636,7 @@ func TestAPIOpenCodeExecutorStatusFailsWhenSessionsFail(t *testing.T) {
 		}
 	}))
 	t.Cleanup(ocq.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
 
 	store := controlplane.NewStore(nil)
@@ -667,6 +672,7 @@ func TestAPIOpenCodeExecutorStatusFailsWhenOCQAuthFails(t *testing.T) {
 		}
 	}))
 	t.Cleanup(ocq.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	t.Setenv("OCQ_BASE_URL", ocq.URL)
 	t.Setenv("OCQ_GATEWAY_KEY", "wrong-key")
 
@@ -693,6 +699,7 @@ func TestAPIOpenCodeExecutorStatusFailsWhenOCQAuthFails(t *testing.T) {
 
 func TestAPIOpenCodeExecutorStatusReportsUnconfigured(t *testing.T) {
 	t.Setenv("OCQ_BASE_URL", "")
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
 	store := controlplane.NewStore(nil)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
 	srv := httptest.NewServer(api.Handler())
