@@ -9,6 +9,8 @@ describe('App', () => {
     expect(html).toContain('Switchyard control-plane suite');
     expect(html).toContain('UI → Switchyard → llama-line → OCQ → Blacktower');
     expect(html).toContain('Open Pilot');
+    expect(html).toContain('Workflow Creator');
+    expect(html).toContain('Changemaker Daily Digest');
     expect(html).toContain('Run detail');
     expect(html).toContain('Events and artifacts');
     expect(html).toContain('Queues');

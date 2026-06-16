@@ -10,6 +10,50 @@ type Workflow = {
   status: string;
 };
 
+type JSONShapeProperty = {
+  type: string;
+  description?: string;
+};
+
+type JSONShape = {
+  type: string;
+  description?: string;
+  properties?: Record<string, JSONShapeProperty>;
+  required?: string[];
+};
+
+type PipelineStepDefinition = {
+  id: string;
+  position: number;
+  name: string;
+  executor: string;
+  profile?: string;
+  model?: string;
+  inputs?: Record<string, string>;
+  output_shape?: JSONShape;
+};
+
+type PipelineDefinition = {
+  id: string;
+  workflow_id?: string;
+  name: string;
+  description?: string;
+  steps: PipelineStepDefinition[];
+};
+
+export type WorkflowDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  owns?: string[];
+  uses?: string[];
+  input_shape?: JSONShape;
+  pipeline: PipelineDefinition;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type Trigger = {
   id: string;
   workflow_id: string;
@@ -296,6 +340,26 @@ const starterWorkflows: Workflow[] = [
   },
 ];
 
+const starterWorkflowDefinitions: WorkflowDefinition[] = [
+  {
+    id: 'changemaker-daily-digest',
+    name: 'Changemaker Daily Digest',
+    description: 'Native workflow-creator template for timed narrative digests.',
+    status: 'active',
+    input_shape: { type: 'object', required: ['topic', 'prompt'] },
+    pipeline: {
+      id: 'changemaker-daily-digest-pipeline',
+      workflow_id: 'changemaker-daily-digest',
+      name: 'Changemaker Daily Digest',
+      steps: [
+        { id: 'prepare', position: 1, name: 'changemaker.prepare', executor: 'internal' },
+        { id: 'changemaker-draft', position: 2, name: 'changemaker.generate', executor: 'model', profile: 'content-writer', model: '${model}' },
+        { id: 'attach', position: 3, name: 'changemaker.attach-draft', executor: 'internal' },
+      ],
+    },
+  },
+];
+
 const routingSteps = ['UI', 'Switchyard', 'llama-line', 'OCQ', 'Blacktower'];
 
 const views: { id: ViewID; label: string; source: string }[] = [
@@ -387,6 +451,14 @@ function statusClasses(status: string) {
 
 function workflowName(workflows: Workflow[], workflowID: string) {
   return workflows.find((workflow) => workflow.id === workflowID)?.name ?? workflowID;
+}
+
+function workflowDefinitionExecutors(definition: WorkflowDefinition) {
+  return arrayOrEmpty(definition.pipeline?.steps)
+    .slice()
+    .sort((left, right) => left.position - right.position)
+    .map((step) => step.executor)
+    .join(' → ') || 'No steps';
 }
 
 function messageFrom(error: unknown) {
@@ -809,6 +881,7 @@ function FeatureFrame({ title, kicker, note, children }: { title: string; kicker
 
 export default function App() {
   const [dashboard, setDashboard] = useState<DashboardState>({ workflows: starterWorkflows, triggers: [], runs: [], adapters: emptyAdapters, scheduler: emptyScheduler, workers: emptyWorkers });
+  const [workflowDefinitions, setWorkflowDefinitions] = useState<WorkflowDefinition[]>(starterWorkflowDefinitions);
   const [selectedRunID, setSelectedRunID] = useState<string>('');
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [openPilotState, setOpenPilotState] = useState<OpenPilotStateResponse | null>(null);
@@ -828,8 +901,9 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const [workflowData, triggerData, runData, adapterData, schedulerData, workerData] = await Promise.all([
+      const [workflowData, workflowDefinitionData, triggerData, runData, adapterData, schedulerData, workerData] = await Promise.all([
         fetchJSON<DashboardResponse<Workflow>>('/api/workflows'),
+        fetchJSON<{ workflow_definitions: WorkflowDefinition[] }>('/api/workflow-definitions').catch(() => ({ workflow_definitions: starterWorkflowDefinitions })),
         fetchJSON<DashboardResponse<Trigger>>('/api/triggers'),
         fetchJSON<DashboardResponse<Run>>('/api/runs'),
         fetchJSON<AdapterPayload>('/api/adapters'),
@@ -845,6 +919,7 @@ export default function App() {
         scheduler: schedulerData ?? emptyScheduler,
         workers: workerData ?? emptyWorkers,
       });
+      setWorkflowDefinitions(arrayOrEmpty(workflowDefinitionData.workflow_definitions).length > 0 ? arrayOrEmpty(workflowDefinitionData.workflow_definitions) : starterWorkflowDefinitions);
     } catch (caught) {
       setError(messageFrom(caught));
     } finally {
@@ -1099,6 +1174,53 @@ export default function App() {
                       <div>
                         <dt className="text-[hsl(var(--signal))]">Uses</dt>
                         <dd className="mt-1 leading-5 text-[hsl(var(--ink))]">{workflow.uses.join(', ') || 'Switchyard'}</dd>
+                      </div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+            </article>
+
+            <article className="hud-panel-strong p-4 sm:p-5">
+              <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[hsl(var(--border-faint))] pb-4">
+                <div>
+                  <p className="hud-label text-[hsl(var(--faint))]">Workflow Creator</p>
+                  <h2 className="mt-2 text-xl font-semibold uppercase tracking-tight text-[hsl(var(--ink))]">Custom pipelines</h2>
+                </div>
+                <span className="hud-chip border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--signal))]">
+                  {workflowDefinitions.length} definitions
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3">
+                {workflowDefinitions.length === 0 ? (
+                  <p className="hud-panel bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
+                    No workflow definitions returned by the API yet.
+                  </p>
+                ) : null}
+
+                {workflowDefinitions.map((definition) => (
+                  <article key={definition.id} className="hud-panel bg-[hsl(var(--panel-strong))] p-4">
+                    <div className="flex items-start justify-between gap-3 border-b border-[hsl(var(--border-faint))] pb-3">
+                      <div>
+                        <p className="hud-label text-[hsl(var(--faint))]">{definition.id}</p>
+                        <h3 className="mt-2 text-base font-semibold text-[hsl(var(--ink))]">{definition.name}</h3>
+                      </div>
+                      <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(definition.status)}`}>{definition.status}</span>
+                    </div>
+                    <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{definition.description}</p>
+                    <dl className="mt-4 grid gap-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))] sm:grid-cols-3">
+                      <div>
+                        <dt className="text-[hsl(var(--signal))]">Steps</dt>
+                        <dd className="mt-1 text-[hsl(var(--ink))]">{arrayOrEmpty(definition.pipeline?.steps).length}</dd>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <dt className="text-[hsl(var(--signal))]">Executor chain</dt>
+                        <dd className="mt-1 leading-5 text-[hsl(var(--ink))]">{workflowDefinitionExecutors(definition)}</dd>
+                      </div>
+                      <div className="sm:col-span-3">
+                        <dt className="text-[hsl(var(--signal))]">Required input</dt>
+                        <dd className="mt-1 leading-5 text-[hsl(var(--ink))]">{definition.input_shape?.required?.join(', ') || 'none declared'}</dd>
                       </div>
                     </dl>
                   </article>
