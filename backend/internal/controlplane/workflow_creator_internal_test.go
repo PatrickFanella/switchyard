@@ -108,6 +108,32 @@ func TestStoreBackedPipelineRegistryIgnoresDraftWorkflowDefinition(t *testing.T)
 	}
 }
 
+func TestSeedDefaultsCreatesChangemakerWorkflowTemplate(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+
+	definition, err := store.WorkflowDefinition("changemaker-daily-digest")
+	if err != nil {
+		t.Fatalf("WorkflowDefinition() error = %v", err)
+	}
+	if definition.Status != "active" || definition.InputShape.Type != "object" || definition.InputShape.Properties["topic"].Type != "string" || definition.InputShape.Properties["prompt"].Type != "string" {
+		t.Fatalf("definition = %+v", definition)
+	}
+	if len(definition.Pipeline.Steps) != 3 || definition.Pipeline.Steps[0].Executor != "internal" || definition.Pipeline.Steps[1].Executor != "model" || definition.Pipeline.Steps[2].Executor != "internal" {
+		t.Fatalf("definition pipeline = %+v", definition.Pipeline)
+	}
+
+	trigger, ok := store.Trigger("daily-changemaker-native")
+	if !ok {
+		t.Fatal("daily-changemaker-native not found")
+	}
+	if trigger.WorkflowID != "changemaker-daily-digest" || trigger.Type != TriggerCron || trigger.Enabled || trigger.Schedule != "0 9 * * *" {
+		t.Fatalf("trigger = %+v", trigger)
+	}
+}
+
 func TestRunnerExecutesPersistedInternalWorkflow(t *testing.T) {
 	store := NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := store.UpsertWorkflow(Workflow{ID: "custom-digest", Kind: WorkflowKind("custom-digest"), Name: "Custom Digest"}); err != nil {

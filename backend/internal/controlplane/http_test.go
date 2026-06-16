@@ -228,8 +228,8 @@ func TestAPIListsWorkflowsAndRunsTrigger(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&workflows); err != nil {
 		t.Fatalf("decode workflows: %v", err)
 	}
-	if len(workflows.Workflows) != 3 {
-		t.Fatalf("len(workflows) = %d, want 3", len(workflows.Workflows))
+	if len(workflows.Workflows) != 4 {
+		t.Fatalf("len(workflows) = %d, want 4", len(workflows.Workflows))
 	}
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/triggers/manual-devlog/run", bytes.NewReader(nil))

@@ -15,16 +15,16 @@ func TestSeedDefaultsCreatesWorkflowAndTriggerCatalog(t *testing.T) {
 	}
 
 	workflows := store.ListWorkflows()
-	if len(workflows) != 3 {
-		t.Fatalf("len(workflows) = %d, want 3", len(workflows))
+	if len(workflows) != 4 {
+		t.Fatalf("len(workflows) = %d, want 4", len(workflows))
 	}
-	if workflows[0].ID != "changemaker" || workflows[1].ID != "devlog" || workflows[2].ID != "open-pilot" {
+	if workflows[0].ID != "changemaker" || workflows[1].ID != "changemaker-daily-digest" || workflows[2].ID != "devlog" || workflows[3].ID != "open-pilot" {
 		t.Fatalf("workflows sorted by id = %+v", workflows)
 	}
 
 	triggers := store.ListTriggers()
-	if len(triggers) != 4 {
-		t.Fatalf("len(triggers) = %d, want 4", len(triggers))
+	if len(triggers) != 5 {
+		t.Fatalf("len(triggers) = %d, want 5", len(triggers))
 	}
 }
 
