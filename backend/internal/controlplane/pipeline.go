@@ -1,6 +1,9 @@
 package controlplane
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 type Pipeline struct {
 	ID          string         `json:"id"`
@@ -39,6 +42,71 @@ func (r StaticPipelineRegistry) ListPipelines() []Pipeline {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+type StoreBackedPipelineRegistry struct {
+	store    Store
+	fallback PipelineRegistry
+}
+
+func NewStoreBackedPipelineRegistry(store Store, fallback PipelineRegistry) StoreBackedPipelineRegistry {
+	return StoreBackedPipelineRegistry{store: store, fallback: fallback}
+}
+
+func (r StoreBackedPipelineRegistry) PipelineForWorkflow(workflowID string) (Pipeline, bool) {
+	if r.store != nil {
+		if definition, err := r.store.WorkflowDefinition(workflowID); err == nil && isActiveWorkflowDefinition(definition) {
+			return pipelineFromDefinition(definition), true
+		}
+	}
+	if r.fallback == nil {
+		return Pipeline{}, false
+	}
+	return r.fallback.PipelineForWorkflow(workflowID)
+}
+
+func (r StoreBackedPipelineRegistry) ListPipelines() []Pipeline {
+	seen := map[string]struct{}{}
+	out := make([]Pipeline, 0)
+	if r.store != nil {
+		if definitions, err := r.store.ListWorkflowDefinitions(); err == nil {
+			for _, definition := range definitions {
+				if !isActiveWorkflowDefinition(definition) {
+					continue
+				}
+				pipeline := pipelineFromDefinition(definition)
+				out = append(out, pipeline)
+				seen[pipeline.WorkflowID] = struct{}{}
+			}
+		}
+	}
+	if r.fallback != nil {
+		for _, pipeline := range r.fallback.ListPipelines() {
+			if _, ok := seen[pipeline.WorkflowID]; ok {
+				continue
+			}
+			out = append(out, pipeline)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func pipelineFromDefinition(definition WorkflowDefinition) Pipeline {
+	steps := make([]PipelineStep, 0, len(definition.Pipeline.Steps))
+	for _, step := range definition.Pipeline.Steps {
+		steps = append(steps, PipelineStep{ID: step.ID, Position: step.Position, Name: step.Name, Executor: step.Executor, Profile: step.Profile, Model: step.Model, Inputs: cloneMap(step.Inputs)})
+	}
+	sort.Slice(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
+	workflowID := definition.Pipeline.WorkflowID
+	if workflowID == "" {
+		workflowID = definition.ID
+	}
+	return Pipeline{ID: definition.Pipeline.ID, WorkflowID: workflowID, Name: definition.Pipeline.Name, Description: definition.Pipeline.Description, Steps: steps}
+}
+
+func isActiveWorkflowDefinition(definition WorkflowDefinition) bool {
+	return strings.EqualFold(strings.TrimSpace(definition.Status), "active")
 }
 
 func DefaultPipelineRegistry() StaticPipelineRegistry {

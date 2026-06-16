@@ -233,8 +233,203 @@ func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {
 	case string(WorkflowDevlog):
 		return devlogExecutor{env: e}
 	default:
-		return WorkflowExecutorFunc(stubWorkflowExecution(workflowID, "Workflow execution adapter is not wired yet"))
+		return genericWorkflowExecutor{env: e}
 	}
+}
+
+type genericWorkflowExecutor struct {
+	env *EnvWorkflowExecutors
+}
+
+func (g genericWorkflowExecutor) Execute(ctx context.Context, run Run) (WorkflowExecution, error) {
+	_ = ctx
+	return WorkflowExecution{Summary: "Recorded Switchyard run envelope for " + run.WorkflowID}, nil
+}
+
+func (g genericWorkflowExecutor) ResolvePipelineStepModel(workflowID string, step PipelineStep, inputs map[string]string) (string, error) {
+	if step.Model == "" {
+		if model := strings.TrimSpace(inputs["model"]); model != "" {
+			return model, nil
+		}
+		if g.env == nil {
+			return "", fmt.Errorf("no model broker configured for workflow %s", workflowID)
+		}
+		return g.env.resolveWorkflowModel(workflowID, inputs)
+	}
+	if step.Model == "${model}" {
+		if model := strings.TrimSpace(inputs["model"]); model != "" {
+			return model, nil
+		}
+		if g.env == nil {
+			return "", fmt.Errorf("no model broker configured for workflow %s", workflowID)
+		}
+		return g.env.resolveWorkflowModel(workflowID, inputs)
+	}
+	return step.Model, nil
+}
+
+func (g genericWorkflowExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
+	if state == nil {
+		state = map[string]any{}
+	}
+	renderedInputs := renderPipelineStepInputs(step.Inputs, run.Inputs)
+	switch step.Executor {
+	case "internal":
+		return g.executeGenericInternalStep(step, renderedInputs, state), nil
+	case "model":
+		return g.executeGenericModelStep(ctx, run, step, renderedInputs, state)
+	case "command":
+		return g.executeGenericCommandStep(ctx, run, step, renderedInputs, state)
+	case "http":
+		return g.executeGenericHTTPStep(step, renderedInputs)
+	default:
+		return PipelineStepExecution{}, fmt.Errorf("unsupported pipeline step executor %q", step.Executor)
+	}
+}
+
+func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, inputs map[string]string, state map[string]any) PipelineStepExecution {
+	out := PipelineStepExecution{Inputs: inputs}
+	if summary := strings.TrimSpace(firstNonEmpty(inputs["summary"], inputs["template"])); summary != "" {
+		out.Summary = summary
+	} else if len(inputs) > 0 {
+		out.Summary = "Rendered step inputs"
+	} else {
+		out.Summary = "Completed internal step"
+	}
+	artifactName := strings.TrimSpace(inputs["artifact_name"])
+	if artifactName != "" {
+		artifactKind := firstNonEmpty(inputs["artifact_kind"], "json")
+		artifactBody, _ := json.MarshalIndent(inputs, "", "  ")
+		uriPrefix := "data:application/json;charset=utf-8,"
+		if artifactKind == "markdown" {
+			artifactBody = []byte(renderPipelineStepMarkdown(inputs))
+			uriPrefix = "data:text/markdown;charset=utf-8,"
+		}
+		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: uriPrefix + url.QueryEscape(string(artifactBody))})
+	} else if len(inputs) > 0 {
+		artifactKind := firstNonEmpty(inputs["artifact_kind"], "json")
+		if artifactKind == "markdown" {
+			artifactName = step.ID + ".md"
+		} else {
+			artifactName = step.ID + ".json"
+		}
+		artifactBody, _ := json.MarshalIndent(inputs, "", "  ")
+		uriPrefix := "data:application/json;charset=utf-8,"
+		if artifactKind == "markdown" {
+			artifactBody = []byte(renderPipelineStepMarkdown(inputs))
+			uriPrefix = "data:text/markdown;charset=utf-8,"
+		}
+		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: uriPrefix + url.QueryEscape(string(artifactBody))})
+	}
+	state["summary"] = out.Summary
+	return out
+}
+
+func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, run Run, step PipelineStep, inputs map[string]string, state map[string]any) (PipelineStepExecution, error) {
+	if g.env == nil || g.env.modelExecutor == nil {
+		return PipelineStepExecution{}, fmt.Errorf("no model broker configured")
+	}
+	prompt := strings.TrimSpace(firstNonEmpty(inputs["prompt"], inputs["template"]))
+	if prompt == "" {
+		return PipelineStepExecution{}, fmt.Errorf("model step %q requires prompt input", step.ID)
+	}
+	model := strings.TrimSpace(step.Model)
+	if model == "" || model == "${model}" {
+		resolved, err := g.ResolvePipelineStepModel(run.WorkflowID, step, run.Inputs)
+		if err != nil {
+			return PipelineStepExecution{}, err
+		}
+		model = resolved
+	}
+	response, err := g.env.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "user", Content: prompt}}})
+	if err != nil {
+		return PipelineStepExecution{}, err
+	}
+	out := PipelineStepExecution{
+		Summary:        "Generated model output",
+		Artifacts:      []CreateArtifactInput{{Name: step.ID + ".md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}},
+		CorrelationIDs: response.CorrelationIDs,
+		Inputs:         map[string]string{"model": model, "prompt": prompt},
+	}
+	state["summary"] = out.Summary
+	return out, nil
+}
+
+func (g genericWorkflowExecutor) executeGenericCommandStep(ctx context.Context, run Run, step PipelineStep, inputs map[string]string, state map[string]any) (PipelineStepExecution, error) {
+	if g.env == nil || g.env.commandRunner == nil {
+		return PipelineStepExecution{}, fmt.Errorf("no command runner configured")
+	}
+	command := strings.TrimSpace(firstNonEmpty(inputs["command"], run.Inputs["command"]))
+	if command == "" {
+		return PipelineStepExecution{}, fmt.Errorf("command step %q requires a command", step.ID)
+	}
+	result, err := g.env.commandRunner.Run(ctx, command)
+	correlation := map[string]string{"policy_reason": result.Decision.Reason}
+	if result.Decision.DryRun {
+		correlation["policy_mode"] = string(CommandPolicyDryRun)
+	}
+	out := PipelineStepExecution{Inputs: map[string]string{"command": command}, CorrelationIDs: correlation, Summary: result.Output}
+	if out.Summary == "" {
+		out.Summary = "Command allowed"
+	}
+	state["summary"] = out.Summary
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (g genericWorkflowExecutor) executeGenericHTTPStep(step PipelineStep, inputs map[string]string) (PipelineStepExecution, error) {
+	allowHTTP, _ := strconv.ParseBool(strings.TrimSpace(inputs["allow_http"]))
+	if !allowHTTP {
+		return PipelineStepExecution{}, fmt.Errorf("http executor requires allow_http=true for step %q", step.ID)
+	}
+	return PipelineStepExecution{}, fmt.Errorf("http executor is not implemented yet")
+}
+
+func renderPipelineStepInputs(inputs, runInputs map[string]string) map[string]string {
+	if len(inputs) == 0 {
+		return nil
+	}
+	rendered := make(map[string]string, len(inputs))
+	for key, value := range inputs {
+		rendered[key] = renderTemplateValues(value, runInputs)
+	}
+	return rendered
+}
+
+func renderPipelineStepMarkdown(inputs map[string]string) string {
+	if len(inputs) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(inputs))
+	for key := range inputs {
+		if key == "artifact_name" || key == "artifact_kind" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var builder strings.Builder
+	for _, key := range keys {
+		builder.WriteString("- ")
+		builder.WriteString(key)
+		builder.WriteString(": ")
+		builder.WriteString(inputs[key])
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func renderTemplateValues(template string, values map[string]string) string {
+	if template == "" || len(values) == 0 {
+		return template
+	}
+	rendered := template
+	for key, value := range values {
+		rendered = strings.ReplaceAll(rendered, "{{"+key+"}}", value)
+	}
+	return rendered
 }
 
 type changemakerExecutor struct {

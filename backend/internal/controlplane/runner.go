@@ -54,7 +54,7 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if len(executors) > 0 && executors[0] != nil {
 		registry = executors[0]
 	}
-	return &Runner{store: store, executors: registry, pipelines: DefaultPipelineRegistry(), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter()}
+	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter()}
 }
 
 func (r *Runner) SetExecutorLimiter(limiter ExecutorLimiter) {
