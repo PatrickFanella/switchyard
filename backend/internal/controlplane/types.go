@@ -20,6 +20,50 @@ type Workflow struct {
 	Status      string       `json:"status"`
 }
 
+type JSONShape struct {
+	Type        string                       `json:"type"`
+	Description string                       `json:"description,omitempty"`
+	Properties  map[string]JSONShapeProperty `json:"properties,omitempty"`
+	Required    []string                     `json:"required,omitempty"`
+}
+
+type JSONShapeProperty struct {
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+}
+
+type WorkflowDefinition struct {
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Status      string             `json:"status"`
+	Owns        []string           `json:"owns,omitempty"`
+	Uses        []string           `json:"uses,omitempty"`
+	InputShape  JSONShape          `json:"input_shape,omitempty"`
+	Pipeline    PipelineDefinition `json:"pipeline"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
+type PipelineDefinition struct {
+	ID          string                   `json:"id"`
+	WorkflowID  string                   `json:"workflow_id"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description,omitempty"`
+	Steps       []PipelineStepDefinition `json:"steps"`
+}
+
+type PipelineStepDefinition struct {
+	ID          string            `json:"id"`
+	Position    int               `json:"position"`
+	Name        string            `json:"name"`
+	Executor    string            `json:"executor"`
+	Profile     string            `json:"profile,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Inputs      map[string]string `json:"inputs,omitempty"`
+	OutputShape JSONShape         `json:"output_shape,omitempty"`
+}
+
 type TriggerType string
 
 const (

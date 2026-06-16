@@ -28,6 +28,50 @@ func TestSeedDefaultsCreatesWorkflowAndTriggerCatalog(t *testing.T) {
 	}
 }
 
+func TestStoreWorkflowDefinitionsCRUD(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	definition := controlplane.WorkflowDefinition{
+		ID:          "daily-digest",
+		Name:        "Daily Digest",
+		Description: "Generate a daily digest from a prompt.",
+		Status:      "draft",
+		InputShape:  controlplane.JSONShape{Type: "object", Properties: map[string]controlplane.JSONShapeProperty{"topic": {Type: "string", Description: "Digest topic"}}, Required: []string{"topic"}},
+		Pipeline: controlplane.PipelineDefinition{
+			ID:         "daily-digest-pipeline",
+			WorkflowID: "daily-digest",
+			Name:       "Daily Digest Pipeline",
+			Steps: []controlplane.PipelineStepDefinition{
+				{ID: "build-prompt", Position: 1, Name: "digest.build-prompt", Executor: "internal", Inputs: map[string]string{"template": "Write about {{topic}}"}},
+				{ID: "generate", Position: 2, Name: "digest.generate", Executor: "model", Profile: "content-writer", Model: "${model}"},
+			},
+		},
+	}
+
+	created, err := store.UpsertWorkflowDefinition(definition)
+	if err != nil {
+		t.Fatalf("UpsertWorkflowDefinition() error = %v", err)
+	}
+	if created.ID != "daily-digest" || created.Pipeline.Steps[1].Executor != "model" {
+		t.Fatalf("created = %+v", created)
+	}
+
+	fetched, err := store.WorkflowDefinition("daily-digest")
+	if err != nil {
+		t.Fatalf("WorkflowDefinition() error = %v", err)
+	}
+	if fetched.InputShape.Properties["topic"].Type != "string" {
+		t.Fatalf("fetched = %+v", fetched)
+	}
+
+	list, err := store.ListWorkflowDefinitions()
+	if err != nil {
+		t.Fatalf("ListWorkflowDefinitions() error = %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "daily-digest" {
+		t.Fatalf("list = %+v", list)
+	}
+}
+
 func TestRunnerRejectsManualOpenPilotWithoutInputs(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := controlplane.NewStore(func() time.Time { return now })

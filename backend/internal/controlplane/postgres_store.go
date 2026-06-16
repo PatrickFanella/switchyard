@@ -18,12 +18,70 @@ type PostgresStore struct {
 }
 
 const openPilotIssueStateColumns = "id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, failing_gate, operator_summary, recommended_next_action, created_at, updated_at"
+const workflowDefinitionColumns = "id, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at"
 
 func NewPostgresStore(db *sql.DB, now func() time.Time) *PostgresStore {
 	if now == nil {
 		now = time.Now
 	}
 	return &PostgresStore{db: db, now: now}
+}
+
+func (s *PostgresStore) UpsertWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
+	definition, err := normalizeWorkflowDefinition(definition)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	owns, err := json.Marshal(definition.Owns)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	uses, err := json.Marshal(definition.Uses)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	inputShape, err := json.Marshal(definition.InputShape)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	pipeline, err := json.Marshal(definition.Pipeline)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	row := s.db.QueryRowContext(context.Background(), `
+		insert into workflow_definitions(id, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at)
+		values($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb, now(), now())
+		on conflict(id) do update set name=excluded.name, description=excluded.description, status=excluded.status, owns=excluded.owns, uses=excluded.uses, input_shape=excluded.input_shape, pipeline=excluded.pipeline, updated_at=now()
+		returning `+workflowDefinitionColumns,
+		definition.ID, definition.Name, definition.Description, definition.Status, string(owns), string(uses), string(inputShape), string(pipeline))
+	saved, err := scanWorkflowDefinitionRow(row)
+	return saved, mapScanErr(err)
+}
+
+func (s *PostgresStore) WorkflowDefinition(id string) (WorkflowDefinition, error) {
+	row := s.db.QueryRowContext(context.Background(), `select `+workflowDefinitionColumns+` from workflow_definitions where id=$1`, id)
+	definition, err := scanWorkflowDefinitionRow(row)
+	return definition, mapScanErr(err)
+}
+
+func (s *PostgresStore) ListWorkflowDefinitions() ([]WorkflowDefinition, error) {
+	rows, err := s.db.QueryContext(context.Background(), `select `+workflowDefinitionColumns+` from workflow_definitions order by id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]WorkflowDefinition, 0)
+	for rows.Next() {
+		definition, err := scanWorkflowDefinitionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, definition)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func OpenPostgres(ctx context.Context, databaseURL string) (*sql.DB, error) {
@@ -291,6 +349,27 @@ func (s *PostgresStore) ListWorkflows() []Workflow {
 		}
 	}
 	return out
+}
+
+func scanWorkflowDefinitionRow(row scanner) (WorkflowDefinition, error) {
+	var definition WorkflowDefinition
+	var ownsBytes, usesBytes, inputShapeBytes, pipelineBytes []byte
+	if err := row.Scan(&definition.ID, &definition.Name, &definition.Description, &definition.Status, &ownsBytes, &usesBytes, &inputShapeBytes, &pipelineBytes, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	if err := json.Unmarshal(ownsBytes, &definition.Owns); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	if err := json.Unmarshal(usesBytes, &definition.Uses); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	if err := json.Unmarshal(inputShapeBytes, &definition.InputShape); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	if err := json.Unmarshal(pipelineBytes, &definition.Pipeline); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return definition, nil
 }
 
 func (s *PostgresStore) ListTriggers() []Trigger {

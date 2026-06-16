@@ -21,6 +21,19 @@ func TestControlPlaneMigrationDeclaresDurableTables(t *testing.T) {
 	}
 }
 
+func TestWorkflowCreatorMigrationDeclaresDefinitionTables(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/008_workflow_creator.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"create table if not exists workflow_definitions", "input_shape jsonb not null default '{}'::jsonb", "pipeline jsonb not null", "workflow_definitions_status_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("workflow creator migration missing %q", field)
+		}
+	}
+}
+
 func TestTriggerSchedulerMigrationDeclaresMetadata(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/002_trigger_scheduler.sql")
 	if err != nil {
@@ -160,9 +173,37 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	var exists bool
+	if err := db.QueryRowContext(ctx, `select exists (select 1 from information_schema.tables where table_name = 'workflow_definitions')`).Scan(&exists); err != nil {
+		t.Fatalf("check workflow_definitions table: %v", err)
+	}
+	if !exists {
+		t.Fatal("workflow_definitions table was not created")
+	}
 	store := NewPostgresStore(db, func() time.Time { return time.Unix(100, 0) })
 	if err := SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	definition, err := store.UpsertWorkflowDefinition(WorkflowDefinition{ID: "daily-digest", Name: "Daily Digest", Description: "Generate a daily digest from a prompt.", Status: "active", Owns: []string{"digest drafts"}, Uses: []string{"llama-line"}, InputShape: JSONShape{Type: "object", Properties: map[string]JSONShapeProperty{"topic": {Type: "string"}}, Required: []string{"topic"}}, Pipeline: PipelineDefinition{ID: "daily-digest-pipeline", WorkflowID: "daily-digest", Name: "Daily Digest Pipeline", Steps: []PipelineStepDefinition{{ID: "generate", Position: 1, Name: "digest.generate", Executor: "model", Profile: "content-writer", Model: "${model}", Inputs: map[string]string{"template": "Write about {{topic}}"}}}}})
+	if err != nil {
+		t.Fatalf("UpsertWorkflowDefinition() error = %v", err)
+	}
+	if definition.Pipeline.Steps[0].Executor != "model" || definition.InputShape.Properties["topic"].Type != "string" {
+		t.Fatalf("definition = %+v", definition)
+	}
+	fetchedDefinition, err := store.WorkflowDefinition("daily-digest")
+	if err != nil {
+		t.Fatalf("WorkflowDefinition() error = %v", err)
+	}
+	if fetchedDefinition.ID != definition.ID || fetchedDefinition.Pipeline.ID != "daily-digest-pipeline" {
+		t.Fatalf("fetchedDefinition = %+v", fetchedDefinition)
+	}
+	definitions, err := store.ListWorkflowDefinitions()
+	if err != nil {
+		t.Fatalf("ListWorkflowDefinitions() error = %v", err)
+	}
+	if len(definitions) < 1 {
+		t.Fatalf("definitions = %+v", definitions)
 	}
 	if err := store.UpsertTrigger(Trigger{ID: "manual-open-pilot", WorkflowID: string(WorkflowOpenPilot), Type: TriggerManual, Name: "Run Open Pilot now", Description: "Manual trigger for issue-to-PR automation.", Enabled: true, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}}); err != nil {
 		t.Fatalf("UpsertTrigger() error = %v", err)

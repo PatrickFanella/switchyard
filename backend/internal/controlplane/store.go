@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +16,9 @@ var (
 )
 
 type Store interface {
+	UpsertWorkflowDefinition(WorkflowDefinition) (WorkflowDefinition, error)
+	WorkflowDefinition(string) (WorkflowDefinition, error)
+	ListWorkflowDefinitions() ([]WorkflowDefinition, error)
 	UpsertWorkflow(Workflow) error
 	UpsertTrigger(Trigger) error
 	OpenPilotIssueState(repo, issue string) (OpenPilotIssueState, error)
@@ -51,6 +55,7 @@ type Store interface {
 type MemoryStore struct {
 	mu                   sync.RWMutex
 	now                  func() time.Time
+	workflowDefinitions  map[string]WorkflowDefinition
 	workflows            map[string]Workflow
 	triggers             map[string]Trigger
 	openPilotIssueStates map[string]OpenPilotIssueState
@@ -66,6 +71,7 @@ func NewStore(now func() time.Time) *MemoryStore {
 	}
 	return &MemoryStore{
 		now:                  now,
+		workflowDefinitions:  map[string]WorkflowDefinition{},
 		workflows:            map[string]Workflow{},
 		triggers:             map[string]Trigger{},
 		openPilotIssueStates: map[string]OpenPilotIssueState{},
@@ -92,6 +98,45 @@ func (s *MemoryStore) UpsertWorkflow(w Workflow) error {
 	defer s.mu.Unlock()
 	s.workflows[w.ID] = w
 	return nil
+}
+
+func (s *MemoryStore) UpsertWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	definition, err := normalizeWorkflowDefinition(definition)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	now := s.now().UTC()
+	if existing, ok := s.workflowDefinitions[definition.ID]; ok {
+		definition.CreatedAt = existing.CreatedAt
+	} else {
+		definition.CreatedAt = now
+	}
+	definition.UpdatedAt = now
+	s.workflowDefinitions[definition.ID] = cloneWorkflowDefinition(definition)
+	return cloneWorkflowDefinition(definition), nil
+}
+
+func (s *MemoryStore) WorkflowDefinition(id string) (WorkflowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	definition, ok := s.workflowDefinitions[id]
+	if !ok {
+		return WorkflowDefinition{}, ErrNotFound
+	}
+	return cloneWorkflowDefinition(definition), nil
+}
+
+func (s *MemoryStore) ListWorkflowDefinitions() ([]WorkflowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]WorkflowDefinition, 0, len(s.workflowDefinitions))
+	for _, definition := range s.workflowDefinitions {
+		out = append(out, cloneWorkflowDefinition(definition))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 func (s *MemoryStore) UpsertTrigger(t Trigger) error {
@@ -680,6 +725,72 @@ func cloneMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
+	definition = cloneWorkflowDefinition(definition)
+	definition.ID = strings.TrimSpace(definition.ID)
+	definition.Name = strings.TrimSpace(definition.Name)
+	definition.Description = strings.TrimSpace(definition.Description)
+	definition.Status = strings.TrimSpace(definition.Status)
+	definition.Pipeline.ID = strings.TrimSpace(definition.Pipeline.ID)
+	definition.Pipeline.WorkflowID = strings.TrimSpace(definition.Pipeline.WorkflowID)
+	definition.Pipeline.Name = strings.TrimSpace(definition.Pipeline.Name)
+	definition.Pipeline.Description = strings.TrimSpace(definition.Pipeline.Description)
+	if definition.ID == "" || definition.Name == "" || definition.Pipeline.ID == "" || definition.Pipeline.Name == "" || len(definition.Pipeline.Steps) == 0 {
+		return WorkflowDefinition{}, ErrInvalid
+	}
+	if definition.Status == "" {
+		definition.Status = "draft"
+	}
+	if definition.Owns == nil {
+		definition.Owns = []string{}
+	}
+	if definition.Uses == nil {
+		definition.Uses = []string{}
+	}
+	if definition.Pipeline.WorkflowID == "" {
+		definition.Pipeline.WorkflowID = definition.ID
+	}
+	if definition.Pipeline.WorkflowID != definition.ID {
+		return WorkflowDefinition{}, ErrInvalid
+	}
+	for i := range definition.Pipeline.Steps {
+		step := &definition.Pipeline.Steps[i]
+		step.ID = strings.TrimSpace(step.ID)
+		step.Name = strings.TrimSpace(step.Name)
+		step.Executor = strings.TrimSpace(step.Executor)
+		step.Profile = strings.TrimSpace(step.Profile)
+		step.Model = strings.TrimSpace(step.Model)
+		if step.ID == "" || step.Position < 1 || step.Name == "" || step.Executor == "" {
+			return WorkflowDefinition{}, ErrInvalid
+		}
+	}
+	return definition, nil
+}
+
+func cloneJSONShape(shape JSONShape) JSONShape {
+	shape.Required = append([]string(nil), shape.Required...)
+	if shape.Properties != nil {
+		properties := make(map[string]JSONShapeProperty, len(shape.Properties))
+		for key, value := range shape.Properties {
+			properties[key] = value
+		}
+		shape.Properties = properties
+	}
+	return shape
+}
+
+func cloneWorkflowDefinition(definition WorkflowDefinition) WorkflowDefinition {
+	definition.Owns = append([]string(nil), definition.Owns...)
+	definition.Uses = append([]string(nil), definition.Uses...)
+	definition.InputShape = cloneJSONShape(definition.InputShape)
+	definition.Pipeline.Steps = append([]PipelineStepDefinition(nil), definition.Pipeline.Steps...)
+	for i := range definition.Pipeline.Steps {
+		definition.Pipeline.Steps[i].Inputs = cloneMap(definition.Pipeline.Steps[i].Inputs)
+		definition.Pipeline.Steps[i].OutputShape = cloneJSONShape(definition.Pipeline.Steps[i].OutputShape)
+	}
+	return definition
 }
 
 func openPilotIssueStateKey(repo, issue string) string {
