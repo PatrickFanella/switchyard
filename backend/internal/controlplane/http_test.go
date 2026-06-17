@@ -870,6 +870,38 @@ func TestAPILlamaLineCompatHistorySearchAndLogsUseDurableLedger(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatLegacyAdminAndUIAliases(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	_, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "legacy-alias-1", Model: "llama3.2", Path: "/api/generate", Client: "test", RequestBody: `{"prompt":"alias"}`})
+	if err != nil {
+		t.Fatalf("create ledger row: %v", err)
+	}
+	_, _ = store.FinishModelBrokerRequest("legacy-alias-1", controlplane.FinishModelBrokerRequestInput{Status: "completed", ResponseBody: `{"content":"ok"}`, CorrelationIDs: map[string]string{"llama_line_request_id": "legacy-alias-1"}})
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/admin/logs/recent", "/admin/audit/recent", "/admin/search?q=alias", "/admin/stats/summary", "/admin/feedback", "/ui/api/status", "/ui/api/history", "/ui/api/logs", "/ui/api/search?q=alias", "/ui/api/config"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %s", path, resp.Status)
+		}
+	}
+	resp, err := http.Get(srv.URL + "/ui/")
+	if err != nil {
+		t.Fatalf("GET /ui/: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("ui response = %s %q", resp.Status, resp.Header.Get("Content-Type"))
+	}
+}
+
 func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

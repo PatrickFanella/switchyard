@@ -430,6 +430,65 @@ func (a *API) llamaLineCompatLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "count": len(logs), "backend": "switchyard-native"})
 }
 
+func (a *API) llamaLineCompatAudit(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	requests, err := a.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Limit: limit})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	events := make([]map[string]any, 0, len(requests))
+	for _, req := range requests {
+		events = append(events, map[string]any{
+			"id":              req.ID,
+			"request_id":      req.ID,
+			"action":          "model_broker." + req.Status,
+			"status":          req.Status,
+			"model":           req.Model,
+			"path":            req.Path,
+			"client":          req.Client,
+			"correlation_ids": req.CorrelationIDs,
+			"created_at":      req.CreatedAt,
+			"updated_at":      req.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"audit": events, "events": events, "count": len(events), "backend": "switchyard-native"})
+}
+
+func (a *API) llamaLineCompatStatsSummary(w http.ResponseWriter, r *http.Request) {
+	requests, err := a.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Limit: 1000})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	byStatus := map[string]int{}
+	byModel := map[string]int{}
+	for _, req := range requests {
+		byStatus[req.Status]++
+		if strings.TrimSpace(req.Model) != "" {
+			byModel[req.Model]++
+		}
+	}
+	queued, inflight := a.compatBroker.snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{"requests_total": len(requests), "by_status": byStatus, "by_model": byModel, "queue_depth": len(queued), "inflight_depth": len(inflight), "backend": "switchyard-native"})
+}
+
+func (a *API) llamaLineCompatFeedback(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var input map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "feedback": input, "backend": "switchyard-native"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"feedback": []any{}, "backend": "switchyard-native", "message": "feedback is accepted for compatibility but not persisted"})
+}
+
+func (a *API) llamaLineCompatUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<!doctype html><html><head><title>Switchyard Model Broker</title></head><body><h1>Switchyard native model broker</h1><p>This compatibility page replaces the legacy llama-line UI.</p><ul><li><a href="/broker/status">Broker status</a></li><li><a href="/api/history">History</a></li><li><a href="/api/logs">Logs</a></li><li><a href="/api/config">Config</a></li></ul></body></html>`))
+}
+
 func (a *API) llamaLineCompatConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"backend":                    "switchyard-native",
