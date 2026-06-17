@@ -87,6 +87,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /ocq/logs", a.ocqCompatLogs)
 	mux.HandleFunc("GET /api/history", a.llamaLineCompatHistory)
 	mux.HandleFunc("GET /api/history/{id}", a.llamaLineCompatHistoryItem)
+	mux.HandleFunc("GET /api/requests/{id}/result", a.llamaLineCompatRequestResult)
 	mux.HandleFunc("GET /api/search", a.llamaLineCompatSearch)
 	mux.HandleFunc("GET /api/logs", a.llamaLineCompatLogs)
 	mux.HandleFunc("GET /api/config", a.llamaLineCompatConfig)

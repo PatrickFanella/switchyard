@@ -12,9 +12,12 @@ info:
     surfaces. The compatibility ingress preserves llama-line/OCQ correlation
     headers (`X-Request-ID`, `X-Llama-Line-Request-ID`, `X-OCQ-Request-ID`,
     `X-OCQ-Session` when available) and serves OpenAI streaming requests as
-    buffered SSE with queued/running/completed status events. Native broker calls
-    route to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL is
-    configured and the model is local or prefixed with ollama/.
+    native SSE chunks when upstream streaming is available, with buffered
+    fallback and queued/running/completed status events. Native broker calls route
+    to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL is
+    configured and the model is local or prefixed with ollama/. Requests may be
+    submitted durably with `Prefer: respond-async` or `?async=true` and polled at
+    `/api/requests/{id}/result`; queued jobs are recovered on API startup.
 servers:
   - url: http://127.0.0.1:28080
     description: Local Docker Compose API
@@ -159,6 +162,34 @@ paths:
           content:
             application/json:
               schema: { type: object }
+  /api/requests/{id}/result:
+    get:
+      summary: Poll a durable model broker request result
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Result is available }
+        "202": { description: Request is queued, running, or cancel-requested }
+        "410": { description: Request was canceled }
+        "502": { description: Request failed upstream }
+  /ocq/sessions:
+    get:
+      summary: OCQ-compatible native OpenCode session list
+      responses:
+        "200": { description: Session list }
+  /ocq/requests:
+    get:
+      summary: OCQ-compatible request list backed by the model broker ledger
+      responses:
+        "200": { description: Request list }
+  /ocq/settings:
+    get:
+      summary: OCQ-compatible native executor settings
+      responses:
+        "200": { description: Executor settings }
   /api/adapters:
     get:
       summary: List adapter snapshots

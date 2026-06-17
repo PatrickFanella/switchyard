@@ -2,8 +2,10 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,7 +30,9 @@ type llamaLineCompatTrackedRequest struct {
 }
 
 func newLlamaLineCompatTracker(store Store) *llamaLineCompatTracker {
-	return &llamaLineCompatTracker{requests: map[string]*llamaLineCompatTrackedRequest{}, maxDepth: 100, store: store}
+	tracker := &llamaLineCompatTracker{requests: map[string]*llamaLineCompatTrackedRequest{}, maxDepth: 100, store: store}
+	tracker.recoverQueuedAsync()
+	return tracker
 }
 
 func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBody string) (string, context.Context, func(string, string, string, map[string]string)) {
@@ -47,6 +51,75 @@ func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBod
 	return id, ctx, func(status string, responseBody string, errorText string, correlation map[string]string) {
 		t.finish(id, status, responseBody, errorText, correlation)
 	}
+}
+
+func (t *llamaLineCompatTracker) submitAsync(r *http.Request, model string, messages []ModelMessage, requestBody string) (ModelBrokerRequest, bool) {
+	id := firstNonEmpty(r.Header.Get("X-Request-ID"), r.Header.Get("X-Llama-Line-Request-ID"), "llama-"+shortRandomID())
+	client := r.RemoteAddr
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		client = forwarded
+	}
+	req, _ := t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client, RequestBody: requestBody})
+	if isTerminalModelBrokerRequest(req.Status) || req.Status == ModelBrokerRequestRunning {
+		return req, false
+	}
+	go t.runAsync(req.ID, model, messages)
+	return req, true
+}
+
+func (t *llamaLineCompatTracker) recoverQueuedAsync() {
+	running, err := t.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestRunning}, Limit: t.maxDepth})
+	if err == nil {
+		for _, req := range running {
+			_, _ = t.store.FinishModelBrokerRequest(req.ID, FinishModelBrokerRequestInput{Status: ModelBrokerRequestFailed, Error: "recovered stale running request after API restart", CorrelationIDs: req.CorrelationIDs})
+		}
+	}
+	requests, err := t.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestQueued}, Limit: t.maxDepth})
+	if err != nil {
+		return
+	}
+	for _, req := range requests {
+		model, messages, ok := decodeModelBrokerRequestPayload(req)
+		if !ok {
+			continue
+		}
+		go t.runAsync(req.ID, model, messages)
+	}
+}
+
+func (t *llamaLineCompatTracker) runAsync(id string, model string, messages []ModelMessage) {
+	row, err := t.store.ModelBrokerRequest(id)
+	if err != nil || isTerminalModelBrokerRequest(row.Status) || row.Status == ModelBrokerRequestRunning {
+		return
+	}
+	if row.Status == ModelBrokerRequestCancelRequested {
+		_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: ModelBrokerRequestCanceled, Error: "request canceled before execution", CorrelationIDs: map[string]string{"llama_line_request_id": id}})
+		return
+	}
+	_, _ = t.store.StartModelBrokerRequest(id)
+	response, err := NewEnvModelBroker().Generate(context.Background(), ModelRequest{Model: model, Messages: messages, RequestID: id})
+	if err != nil {
+		_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: ModelBrokerRequestFailed, ResponseBody: `{}`, Error: err.Error(), CorrelationIDs: map[string]string{"llama_line_request_id": id}})
+		return
+	}
+	if response.CorrelationIDs == nil {
+		response.CorrelationIDs = map[string]string{}
+	}
+	response.CorrelationIDs["llama_line_request_id"] = id
+	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
+	_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: ModelBrokerRequestCompleted, ResponseBody: string(responseBody), CorrelationIDs: response.CorrelationIDs})
+}
+
+func decodeModelBrokerRequestPayload(req ModelBrokerRequest) (string, []ModelMessage, bool) {
+	var input struct {
+		Model    string         `json:"model"`
+		Messages []ModelMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(req.RequestBody), &input); err != nil {
+		return "", nil, false
+	}
+	model := firstNonEmpty(strings.TrimSpace(input.Model), req.Model)
+	return model, input.Messages, model != "" && len(input.Messages) > 0
 }
 
 func (t *llamaLineCompatTracker) markRunning(id string) {

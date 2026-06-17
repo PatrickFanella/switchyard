@@ -56,6 +56,10 @@ func (a *API) llamaLineCompatChatCompletions(w http.ResponseWriter, r *http.Requ
 	if len(input.Messages) == 0 && strings.TrimSpace(input.Prompt) != "" {
 		input.Messages = []ModelMessage{{Role: "user", Content: input.Prompt}}
 	}
+	if compatAsyncRequested(r) && !input.Stream {
+		a.llamaLineCompatAcceptAsync(w, r, input.Model, input.Messages)
+		return
+	}
 	if input.Stream {
 		a.llamaLineCompatStreamChatCompletions(w, r, input)
 		return
@@ -131,6 +135,10 @@ func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if compatAsyncRequested(r) {
+		a.llamaLineCompatAcceptAsync(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
+		return
+	}
 	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
 	if !ok {
 		return
@@ -142,6 +150,10 @@ func (a *API) llamaLineCompatChat(w http.ResponseWriter, r *http.Request) {
 	var input llamaLineCompatChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if compatAsyncRequested(r) {
+		a.llamaLineCompatAcceptAsync(w, r, input.Model, input.Messages)
 		return
 	}
 	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, input.Messages)
@@ -157,11 +169,35 @@ func (a *API) llamaLineCompatGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if compatAsyncRequested(r) {
+		a.llamaLineCompatAcceptAsync(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
+		return
+	}
 	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"model": input.Model, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "response": response.Content, "done": true})
+}
+
+func compatAsyncRequested(r *http.Request) bool {
+	prefer := strings.ToLower(r.Header.Get("Prefer"))
+	return strings.Contains(prefer, "respond-async") || strings.EqualFold(r.URL.Query().Get("async"), "true") || strings.EqualFold(r.URL.Query().Get("mode"), "async")
+}
+
+func (a *API) llamaLineCompatAcceptAsync(w http.ResponseWriter, r *http.Request, model string, messages []ModelMessage) {
+	if strings.TrimSpace(model) == "" {
+		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
+	}
+	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "path": r.URL.Path, "async": true})
+	req, started := a.compatBroker.submitAsync(r, model, messages, string(requestBody))
+	setCompatRequestHeaders(w.Header(), req.ID, req.CorrelationIDs)
+	w.Header().Set("Location", "/api/requests/"+req.ID+"/result")
+	status := http.StatusAccepted
+	if isTerminalModelBrokerRequest(req.Status) {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "accepted": true, "started": started, "result_url": "/api/requests/" + req.ID + "/result", "history_url": "/api/history/" + req.ID, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Request, model string, messages []ModelMessage) (ModelResponse, bool) {
@@ -427,6 +463,31 @@ func (a *API) llamaLineCompatHistoryItem(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, req)
+}
+
+func (a *API) llamaLineCompatRequestResult(w http.ResponseWriter, r *http.Request) {
+	req, err := a.store.ModelBrokerRequest(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "request not found")
+		return
+	}
+	switch req.Status {
+	case ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested:
+		writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": false, "history_url": "/api/history/" + req.ID, "backend": "switchyard-native"})
+	case ModelBrokerRequestCanceled:
+		writeJSON(w, http.StatusGone, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": false, "error": req.Error, "backend": "switchyard-native"})
+	case ModelBrokerRequestFailed:
+		writeJSON(w, http.StatusBadGateway, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": true, "error": req.Error, "backend": "switchyard-native"})
+	default:
+		var response map[string]any
+		if strings.TrimSpace(req.ResponseBody) != "" {
+			_ = json.Unmarshal([]byte(req.ResponseBody), &response)
+		}
+		if response == nil {
+			response = map[string]any{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": true, "response": response, "backend": "switchyard-native"})
+	}
 }
 
 func (a *API) llamaLineCompatSearch(w http.ResponseWriter, r *http.Request) {

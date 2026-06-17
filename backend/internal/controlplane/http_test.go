@@ -875,6 +875,89 @@ func TestAPILlamaLineCompatHistorySearchAndLogsUseDurableLedger(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatAsyncRequestPersistsAndPollsResult(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "async answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/generate?async=true", bytes.NewBufferString(`{"model":"ollama/llama3.2","prompt":"hello"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "async-ledger-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST async generate: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("async status = %s", resp.Status)
+	}
+	if resp.Header.Get("Location") != "/api/requests/async-ledger-1/result" {
+		t.Fatalf("Location = %q", resp.Header.Get("Location"))
+	}
+
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		resultResp, err := http.Get(srv.URL + "/api/requests/async-ledger-1/result")
+		if err != nil {
+			t.Fatalf("GET result: %v", err)
+		}
+		body := mustReadBody(t, resultResp.Body)
+		resultResp.Body.Close()
+		if resultResp.StatusCode == http.StatusOK {
+			if !strings.Contains(body, "async answer") {
+				t.Fatalf("result body = %s", body)
+			}
+			return
+		}
+		if resultResp.StatusCode != http.StatusAccepted {
+			t.Fatalf("result status = %s body = %s", resultResp.Status, body)
+		}
+	}
+	t.Fatal("async result did not complete")
+}
+
+func TestAPILlamaLineCompatRecoversQueuedAsyncRequestOnStartup(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "recovered answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	_, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "recover-queued-1", Model: "ollama/llama3.2", Path: "/api/generate", Client: "test", RequestBody: `{"model":"ollama/llama3.2","messages":[{"role":"user","content":"recover"}],"path":"/api/generate","async":true}`})
+	if err != nil {
+		t.Fatalf("create queued request: %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		resultResp, err := http.Get(srv.URL + "/api/requests/recover-queued-1/result")
+		if err != nil {
+			t.Fatalf("GET result: %v", err)
+		}
+		body := mustReadBody(t, resultResp.Body)
+		resultResp.Body.Close()
+		if resultResp.StatusCode == http.StatusOK {
+			if !strings.Contains(body, "recovered answer") {
+				t.Fatalf("result body = %s", body)
+			}
+			return
+		}
+	}
+	t.Fatal("recovered queued request did not complete")
+}
+
 func TestAPILlamaLineCompatLegacyAdminAndUIAliases(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	_, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "legacy-alias-1", Model: "llama3.2", Path: "/api/generate", Client: "test", RequestBody: `{"prompt":"alias"}`})
