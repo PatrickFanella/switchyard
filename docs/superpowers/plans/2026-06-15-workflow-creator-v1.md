@@ -85,7 +85,7 @@ Workflow Creator V1 explicitly does **not** support:
 - Modify: `README.md`
   - Document workflow creator and Changemaker-native direction.
 - Modify: `.env.example`
-  - Remove need for `CHANGEMAKER_BASE_URL` once native template is implemented; keep legacy env as optional compatibility.
+  - Remove `CHANGEMAKER_BASE_URL`; Changemaker now runs only as native workflow-template policy.
 
 ---
 
@@ -659,7 +659,7 @@ func TestRunnerExecutesCustomWorkflowModelStep(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"message\":{\"content\":\"draft body\"}}]}\n\n"))
 	}))
 	t.Cleanup(model.Close)
-	t.Setenv("LLAMA_LINE_BASE_URL", model.URL)
+	t.Setenv("OPENCODE_SERVER_URL", model.URL)
 	t.Setenv("DEVLOG_MODEL", "gpt-test")
 
 	store := NewStore(func() time.Time { return time.Unix(100, 0) })
@@ -839,7 +839,7 @@ Add a trigger:
 Update `README.md` to state:
 
 ```markdown
-Changemaker is now represented as a native workflow-creator template (`changemaker-daily-digest`). `CHANGEMAKER_BASE_URL` remains a legacy adapter fallback only; new scheduled content workflows should be authored as Switchyard workflow definitions.
+Changemaker is now represented as a native workflow-creator template (`changemaker-daily-digest`). There is no external Changemaker runtime; new scheduled content workflows should be authored as Switchyard workflow definitions.
 ```
 
 - [ ] **Step 5: Run tests**
@@ -975,7 +975,7 @@ Expected: all pass.
 docker compose up -d --build
 ```
 
-Expected: API, web, postgres, opencode/OCQ/llama-line compatibility services remain healthy while native Changemaker no longer requires `CHANGEMAKER_BASE_URL`.
+Expected: API, web, postgres, and opencode remain healthy. The API also serves llama-line-compatible ingress on `LLAMA_LINE_PORT`; no OCQ, llama-line, or external Changemaker containers are expected.
 
 - [ ] **Step 3: Post-deploy checks**
 

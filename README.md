@@ -1,19 +1,19 @@
 # Switchyard
 
-Switchyard is a Go backend and Vite React TypeScript monorepo for a cohesive automation runtime: workflow orchestration, model routing, OpenCode execution, built-in agent profiles, operator HUD/API, and first-party workflows such as Open Pilot, Changemaker-style content generation, and Devlog.
+Switchyard is a Go backend and Vite React TypeScript monorepo for a cohesive automation runtime: workflow orchestration, model routing, OpenCode execution, built-in agent profiles, operator HUD/API, and first-party workflows such as Open Pilot, native workflow-creator templates, and Devlog.
 
-The product direction is not to tape together the old OCQ, llama-line, Blacktower, and Changemaker apps. Those codebases are references and transitional scaffolding. Switchyard should rebuild their useful ideas as native modules: model broker, OpenCode executor, profiles/personas, workflow policy, logs, artifacts, and operator controls.
+OCQ, llama-line, and Changemaker are historical references that have been absorbed into native Switchyard modules. The product direction is to keep their useful ideas as first-party contracts: model broker, OpenCode executor, profiles/personas, workflow policy, logs, artifacts, and operator controls.
 
 ## Monorepo layout
 
 ```txt
 backend/              Switchyard API, scheduler, runs, triggers, native runtime
 web/                  Switchyard HUD dashboard
-services/ocq/         transitional/reference OpenCode gateway implementation
-services/llama-line/  transitional/reference model broker implementation
-workflows/changemaker/ transitional/reference content workflow policy
 blacktower/           legacy/reference checkout only, ignored when present
+docs/                 ADRs, references, and migration notes
 ```
+
+Historical OCQ/llama-line/Changemaker directories have been removed; their behavior now lives behind native Switchyard modules.
 
 ## Quick start
 
@@ -47,8 +47,9 @@ The Docker Compose stack sets `DATABASE_URL` for the API service using libpq key
 
 The local stack now runs Switchyard-native workflow, model-broker, and OpenCode executor paths by default:
 
-- The root Docker stack includes Postgres, API, web, and a local OpenCode server sidecar. OCQ and llama-line are compatibility services behind the `compat` Compose profile only.
-- Workflow code targets Switchyard-native `ModelBroker` and `OpenCodeExecutor` contracts. The native broker and OpenCode executor talk directly to `OPENCODE_SERVER_URL` (default `http://opencode:4096`). Set `MODEL_BROKER_BACKEND=llama-line` or `OPENCODE_EXECUTOR_BACKEND=ocq` only when deliberately testing compatibility sidecars.
+- The root Docker stack includes Postgres, API, web, and a local OpenCode server sidecar. Compatibility backends are cutover-only.
+- Switchyard API also exposes llama-line/Ollama-compatible ingress on `LLAMA_LINE_PORT` for cutover: `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, `/v1/embeddings`, and admin queue stubs.
+- Workflow code targets Switchyard-native `ModelBroker` and `OpenCodeExecutor` contracts. The native broker routes provider-style models through `OPENCODE_SERVER_URL` (default `http://opencode:4096`) and routes Ollama/local models to `OLLAMA_BASE_URL` when configured. Use `ollama/<model>` to force Ollama routing, or tune automatic local-model prefixes with `MODEL_BROKER_OLLAMA_MODELS`. Do not point `OLLAMA_BASE_URL` at Switchyard's own `LLAMA_LINE_PORT`; it must be the real upstream Ollama server.
 - The OpenCode image includes the basic Switchyard toolchain (`git`, Go, Make, Node/npm/Corepack, shell utilities), mounts `OPENCODE_WORKSPACE` (default `.`) at `/workspace`, mounts `OPENCODE_CONFIG_DIR` (default ignored `./.opencode`) at `/root/.config/opencode`, and mounts `OPENCODE_DATA_DIR` (default ignored `./opencode-data`) at `/root/.local/share/opencode` for auth data such as `auth.json`. The API mounts the same `OPENCODE_WORKSPACE` at `/workspace` so Open Pilot can create isolated worktrees that OpenCode can edit; API/OpenCode containers mark mounted workspaces as Git safe directories to avoid UID-mismatch failures. Set those paths to your host OpenCode directories to reuse `opencode auth login` credentials. Override `OPENCODE_SERVER_URL=http://host.docker.internal:4096` only when deliberately using a host-run OpenCode server. `OPENCODE_EXECUTOR_TIMEOUT` and `MODEL_BROKER_TIMEOUT` default to `10m` for long-running agent prompts and model-broker gates.
 - External `BLACKTOWER_BASE_URL` probes remain optional/reference-only. Changemaker is now native workflow-template policy, not an external runtime dependency.
 
@@ -77,7 +78,7 @@ switchyard open-pilot run --repo OWNER/REPO --issue 123 --json --api-url http://
 switchyard open-pilot cancel --run RUN_ID --json --api-url http://127.0.0.1:8080
 ```
 
-Run cancellation is Switchyard-side plus best-effort upstream cancellation. Switchyard calls OCQ abort endpoints when compatibility `ocq_request_id` is present, llama-line `DELETE /admin/queue/{request_id}` when compatibility `llama_line_request_id` is present, and `OPEN_PILOT_COMMAND cancel --run <id> --json` when configured.
+Run cancellation is Switchyard-side plus best-effort upstream cancellation. Switchyard uses historical compatibility IDs only when a cutover run still carries them, and `OPEN_PILOT_COMMAND cancel --run <id> --json` when configured.
 
 Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
 

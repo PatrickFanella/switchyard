@@ -52,6 +52,7 @@ type ModelExecutor = ModelBroker
 type EnvModelBroker struct {
 	llamaLineBaseURL string
 	llamaLineAPIKey  string
+	ollamaBaseURL    string
 	openCodeBaseURL  string
 	openCodeUsername string
 	openCodePassword string
@@ -62,6 +63,7 @@ func NewEnvModelBroker() *EnvModelBroker {
 	return &EnvModelBroker{
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:  os.Getenv("LLAMA_LINE_API_KEY"),
+		ollamaBaseURL:    strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/"),
 		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
 		openCodeUsername: os.Getenv("OPENCODE_SERVER_USERNAME"),
 		openCodePassword: os.Getenv("OPENCODE_SERVER_PASSWORD"),
@@ -91,7 +93,31 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 		}
 		return e.generateViaLlamaLine(ctx, request)
 	}
+	if e.shouldGenerateViaOllama(request.Model) {
+		return e.generateViaOllama(ctx, request)
+	}
 	return e.generateViaOpenCode(ctx, request)
+}
+
+func (e *EnvModelBroker) shouldGenerateViaOllama(model string) bool {
+	backend := strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND"))
+	if strings.EqualFold(backend, "ollama") {
+		return true
+	}
+	if strings.TrimSpace(e.ollamaBaseURL) == "" {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(trimModelProviderPrefix(model, "ollama")))
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "ollama/") {
+		return true
+	}
+	for _, prefix := range strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi"), ",") {
+		prefix = strings.ToLower(strings.TrimSpace(prefix))
+		if prefix != "" && strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request ModelRequest) (ModelResponse, error) {
@@ -142,6 +168,60 @@ func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request Model
 		correlation["ocq_session_id"] = sessionID
 	}
 	return ModelResponse{Content: decoded.Choices[0].Message.Content, CorrelationIDs: correlation}, nil
+}
+
+func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	if strings.TrimSpace(e.ollamaBaseURL) == "" {
+		return ModelResponse{}, fmt.Errorf("OLLAMA_BASE_URL is not configured")
+	}
+	endpoint, err := url.JoinPath(e.ollamaBaseURL, "/api/chat")
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	body, err := json.Marshal(map[string]any{"model": ollamaModelName(request.Model), "stream": false, "messages": request.Messages})
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return ModelResponse{}, fmt.Errorf("ollama request failed: %s", resp.Status)
+	}
+	var decoded struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		Response string `json:"response"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return ModelResponse{}, err
+	}
+	content := firstNonEmpty(decoded.Message.Content, decoded.Response)
+	if strings.TrimSpace(content) == "" {
+		return ModelResponse{}, fmt.Errorf("ollama response did not include content")
+	}
+	return ModelResponse{Content: content, CorrelationIDs: map[string]string{"model_broker": "switchyard", "model_source": "ollama", "model_broker_backend": "native", "ollama_model": ollamaModelName(request.Model)}}, nil
+}
+
+func ollamaModelName(model string) string {
+	return trimModelProviderPrefix(model, "ollama")
+}
+
+func trimModelProviderPrefix(model string, provider string) string {
+	trimmed := strings.TrimSpace(model)
+	prefix := provider + "/"
+	if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(prefix)) {
+		return strings.TrimSpace(trimmed[len(prefix):])
+	}
+	return trimmed
 }
 
 func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelRequest) (ModelResponse, error) {
@@ -229,6 +309,9 @@ func decodeModelBrokerChatResponse(body []byte) (modelBrokerChatResponse, error)
 func (e *EnvModelBroker) Configured() bool {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
 		return strings.TrimSpace(e.llamaLineBaseURL) != ""
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "ollama") {
+		return strings.TrimSpace(e.ollamaBaseURL) != ""
 	}
 	return strings.TrimSpace(e.openCodeBaseURL) != ""
 }

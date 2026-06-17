@@ -10,7 +10,7 @@ tags:
 
 # Service Consolidation Plan
 
-> **Superseded direction:** This document is retained as historical design input. The current architecture decision is [ADR 0003: Rebuild Imported Apps as Native Switchyard Modules](adr/0003-native-switchyard-modules.md). Switchyard should not keep Blacktower/OCQ/llama-line/Changemaker as separate product boundaries; it should absorb their useful ideas into native Switchyard modules.
+> **Superseded direction:** This document is retained as historical design input. The current architecture decision is [ADR 0003: Rebuild Imported Apps as Native Switchyard Modules](adr/0003-native-switchyard-modules.md). Switchyard should not keep Blacktower/OCQ/llama-line/Changemaker as separate product boundaries; it should absorb their useful ideas into native Switchyard modules. The imported OCQ, llama-line, and Changemaker directories were later removed.
 
 ## Core Recommendation
 

@@ -2,7 +2,14 @@ openapi: 3.1.0
 info:
   title: Switchyard Control Plane API
   version: 0.1.0
-  description: Local control-plane API for workflows, runs, triggers, pipelines, workers, and adapter status.
+  description: >-
+    Local control-plane API for workflows, runs, triggers, pipelines, workers,
+    adapter status, and compatibility ingress. Switchyard also exposes
+    llama-line/Ollama-compatible cutover endpoints on LLAMA_LINE_PORT:
+    /broker/status, /v1/chat/completions, /api/chat, /api/generate, /api/tags,
+    /v1/models, /api/embed, /v1/embeddings, and admin queue stubs. Native broker
+    calls route to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL
+    is configured and the model is local or prefixed with ollama/.
 servers:
   - url: http://127.0.0.1:28080
     description: Local Docker Compose API
@@ -30,13 +37,13 @@ paths:
   /api/model-broker/status:
     get:
       summary: Get native ModelBroker status
-      description: Reports Switchyard's native model-broker surface. llama-line may appear only when the compatibility backend is enabled.
+      description: Reports Switchyard's native model-broker surface. llama-line-compatible ingress may back it during cutover.
       responses:
         "200": { $ref: "#/components/responses/ModelBrokerStatusResponse" }
   /api/opencode-executor/status:
     get:
       summary: Get native OpenCodeExecutor status
-      description: Reports Switchyard's native OpenCode executor surface. OCQ may appear only when the compatibility backend is enabled.
+      description: Reports Switchyard's native OpenCode executor surface. OCQ-compatible ingress may back it during cutover.
       responses:
         "200": { $ref: "#/components/responses/OpenCodeExecutorStatusResponse" }
   /api/scheduler:

@@ -38,9 +38,9 @@
 - Test: `backend/internal/controlplane/runner_test.go`
 
 - [ ] Add `WorkflowExecutor` and `ExecutorRegistry` interfaces.
-- [ ] Add `EnvWorkflowExecutor` that dispatches Changemaker when `CHANGEMAKER_BASE_URL` is set:
-  - `workflow_id=changemaker` → `POST /api/runs` with bearer `CHANGEMAKER_ADMIN_TOKEN` when present.
-  - body: `{"kind":"daily"}` by default, or `{"kind":"manual","since":"...","until":"..."}` when run inputs include date bounds.
+- [ ] Add `EnvWorkflowExecutor` behavior for native Changemaker workflow definitions:
+  - `workflow_id=changemaker-daily-digest` runs the stored native pipeline.
+  - body: native workflow inputs such as `{"topic":"daily","prompt":"..."}`.
 - [ ] Keep Open Pilot and Devlog as explicit recorded stubs with events stating they are not wired yet.
 - [ ] Test success and failure behavior with `httptest`.
 - [ ] Run `cd backend && go test ./internal/controlplane` and commit.

@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScript, Postgres, Docker, Open Pilot conventions, transitional reference service modules, and first-party workflows.
+This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScript, Postgres, Docker, Open Pilot conventions, native Switchyard modules, and first-party workflows.
 
 ## Priorities
 
@@ -11,7 +11,7 @@ This repository is Switchyard, a Go full-stack monorepo with Vite React TypeScri
 
 ## Architecture Direction
 
-Switchyard is one cohesive automation runtime. Imported apps under `services/` and `workflows/` are reference implementations and transitional scaffolding, not permanent product boundaries. Preserve domain boundaries while moving useful behavior behind native Switchyard contracts:
+Switchyard is one cohesive automation runtime. OCQ, llama-line, and Changemaker are historical references that were absorbed into native Switchyard modules; their imported directories were removed. Preserve domain boundaries while moving useful behavior behind native Switchyard contracts:
 
 - Switchyard owns triggers, workflow runs, steps, events, artifacts, logs, leases, retries, cancellation, UI/API, and operator summaries.
 - The native model broker module should absorb llama-line ideas: model routing, queueing, upstream health, request IDs, cancellation/drop semantics, and observability.
@@ -20,7 +20,7 @@ Switchyard is one cohesive automation runtime. Imported apps under `services/` a
 - Blacktower means Switchyard-native agent profiles/personas, prompt contracts, roles, and default model assignments; do not introduce a separate Blacktower app boundary.
 - Open Pilot, Changemaker, and Devlog are first-party workflows that own domain policy only; they should not own generic scheduling or runtime mechanics.
 
-Transitional Compose sidecars for OCQ/llama-line are acceptable while native parity is built. New code should prefer Switchyard-native interfaces over direct service-specific coupling. See `docs/adr/0003-native-switchyard-modules.md`.
+Compatibility backends and LLAMA_LINE_PORT ingress are cutover aids only. New code should prefer Switchyard-native interfaces over direct service-specific coupling. See `docs/adr/0003-native-switchyard-modules.md`.
 
 ## Verification
 

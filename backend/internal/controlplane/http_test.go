@@ -506,6 +506,98 @@ func TestAPIModelBrokerStatusReportsNativeBroker(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatChatCompletionsUsesNativeBroker(t *testing.T) {
+	opencode := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session":
+			if r.Method == http.MethodGet {
+				_ = json.NewEncoder(w).Encode([]map[string]string{{"id": "session-1", "title": "compat"}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "session-1"})
+		case "/session/session-1/message":
+			_ = json.NewEncoder(w).Encode(map[string]any{"parts": []map[string]string{{"type": "text", "text": "native answer"}}})
+		default:
+			t.Fatalf("unexpected opencode path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(opencode.Close)
+	t.Setenv("OPENCODE_SERVER_URL", opencode.URL)
+	t.Setenv("OPENCODE_SERVER_USERNAME", "")
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "")
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", bytes.NewBufferString(`{"model":"openai/gpt-5.4","messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("post compat chat: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Choices) != 1 || body.Choices[0].Message.Content != "native answer" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestAPILlamaLineCompatGenerateRoutesOllamaModelToOllama(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %s", r.URL.Path)
+		}
+		var input struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatalf("decode ollama request: %v", err)
+		}
+		if input.Model != "llama3.2" {
+			t.Fatalf("model = %q", input.Model)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "ollama answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/generate", "application/json", bytes.NewBufferString(`{"model":"ollama/llama3.2","prompt":"hello"}`))
+	if err != nil {
+		t.Fatalf("post compat generate: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	var body struct {
+		Response string `json:"response"`
+		Done     bool   `json:"done"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Response != "ollama answer" || !body.Done {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

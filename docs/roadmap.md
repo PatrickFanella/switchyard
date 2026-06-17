@@ -1,6 +1,6 @@
 # Switchyard Roadmap
 
-Switchyard is the monorepo for one cohesive automation runtime. Imported services are transitional reference implementations whose useful ideas should be rebuilt as native Switchyard modules.
+Switchyard is the monorepo for one cohesive automation runtime. OCQ, llama-line, and Changemaker are historical references whose useful ideas have been rebuilt as native Switchyard modules; the imported directories were removed.
 
 The next major phase is to build **Switchyard Runtime**: a small, durable workflow orchestrator with native model brokering, native OpenCode execution, curated profiles, and first-party workflow modules instead of a pile of taped-together apps.
 
@@ -69,8 +69,8 @@ Already done:
 - Postgres-backed runs, triggers, events, artifacts.
 - Scheduler with enabled cron/poll triggers.
 - API-backed HUD dashboard.
-- Imported `services/ocq`, `services/llama-line`, and `workflows/changemaker` as transitional reference implementations.
-- Probes for transitional llama-line/OCQ sidecars, external/reference Blacktower when configured, and Changemaker.
+- Imported OCQ, llama-line, and Changemaker as transitional reference implementations; those directories are now removed.
+- Probes for compatibility backends, external/reference Blacktower when configured, and native workflow policy.
 - Open Pilot CLI/API contract.
 - Devlog Markdown artifact workflow.
 - Best-effort cancellation adapters.
@@ -115,7 +115,7 @@ Exit criteria:
 
 ## Phase 2 — native model broker contract
 
-Goal: remove one-off LLM plumbing from workflow code and route model work through a Switchyard-native `ModelBroker` contract while llama-line remains a transitional backend.
+Goal: remove one-off LLM plumbing from workflow code and route model work through a Switchyard-native `ModelBroker` contract while llama-line-compatible ingress remains available for cutover.
 
 Build:
 
@@ -123,10 +123,10 @@ Build:
 - `model` executor type backed by the broker.
 - Configurable model per workflow and per step.
 - Safe API override for model selection.
-- llama-line request ID capture through the transitional backend.
+- compatibility request ID capture through the cutover backend.
 - Response artifact capture.
 - Timeout/retry policy.
-- Cancellation via llama-line queue drop where possible.
+- Cancellation via queue-drop compatibility where possible.
 
 First target:
 
@@ -134,7 +134,7 @@ First target:
 devlog.generate
   executor: model
   model: DEVLOG_MODEL or workflow config
-  route: ModelBroker -> transitional llama-line /v1/chat/completions
+  route: llama-line-compatible ingress on LLAMA_LINE_PORT -> ModelBroker -> OpenCode or upstream Ollama
 ```
 
 Exit criteria:
@@ -146,21 +146,22 @@ Exit criteria:
 Current status:
 
 - `backend/internal/controlplane/model_executor.go` defines the native `ModelBroker` contract.
-- `EnvModelBroker` routes to transitional llama-line and marks responses with `model_broker=switchyard` correlation metadata. OCQ remains the transitional OpenCode executor path and should be reached through llama-line routing when model-broker traffic targets OpenCode-backed models.
-- `GET /api/model-broker/status` exposes a native Switchyard broker status surface backed by transitional llama-line `/broker/status` data.
+- `EnvModelBroker` handles compatibility ingress requests and marks responses with `model_broker=switchyard` correlation metadata.
+- Native routing sends provider-style models to OpenCode and Ollama/local models to `OLLAMA_BASE_URL` when configured; `ollama/<model>` forces Ollama routing.
+- `GET /api/model-broker/status` exposes a native Switchyard broker status surface; `/broker/status` mirrors that status on the compatibility ingress.
 
-## Phase 3 — OCQ/OpenCode executor
+## Phase 3 — OpenCode executor
 
-Goal: make OpenCode work a first-class Switchyard step while keeping OCQ as the session gateway.
+Goal: make OpenCode work a first-class Switchyard step while keeping compatibility correlation available for cutover only.
 
 Build:
 
 - `opencode` executor type.
 - Prompt input contract.
-- OCQ session selection/creation.
-- Store `ocq_session_id` and `ocq_request_id` on step metadata.
+- OpenCode session selection/creation.
+- Store compatibility session/request IDs on step metadata when present.
 - Capture response as artifact/event.
-- Propagate cancellation to OCQ abort endpoints.
+- Propagate cancellation to compatibility abort endpoints when present.
 - Optional session pinning per workflow/run.
 
 First target:
@@ -169,21 +170,21 @@ First target:
 open-pilot.agent-work
   executor: opencode
   session: repo/issue scoped
-  model: assigned through llama-line/OCQ path
+  model: assigned through native routing
 ```
 
 Exit criteria:
 
-- Switchyard can run an OpenCode prompt through OCQ using native runtime profiles.
-- HUD shows OCQ session/request correlation.
-- Cancel aborts the active OCQ request when possible.
+- Switchyard can run an OpenCode prompt through the native executor using native runtime profiles.
+- HUD shows compatibility session/request correlation only when a cutover run still has it.
+- Cancel aborts the active request when possible.
 
 Current status:
 
-- `backend/internal/controlplane/ocq_executor.go` defines the native `OpenCodeExecutor` contract while OCQ remains the transitional gateway backend.
-- `EnvOpenCodeExecutor` routes prompt/session execution through OCQ and marks responses with `opencode_executor=switchyard` and `opencode_executor_backend=ocq` correlation metadata while preserving OCQ request/session IDs for cancellation compatibility.
-- Open Pilot `agent-work` runs through the `opencode` pipeline step and persists OpenCode/OCQ request/session correlation IDs on run steps.
-- `GET /api/opencode-executor/status` exposes a native Switchyard OpenCode executor status surface backed by transitional OCQ health/session data.
+- `backend/internal/controlplane/ocq_executor.go` defines the native `OpenCodeExecutor` contract.
+- `EnvOpenCodeExecutor` routes prompt/session execution through the native executor and preserves historical request/session IDs only for cancellation compatibility when they exist.
+- Open Pilot `agent-work` runs through the `opencode` pipeline step and persists OpenCode request/session correlation IDs on run steps.
+- `GET /api/opencode-executor/status` exposes a native Switchyard OpenCode executor status surface.
 
 ## Phase 4 — workflow pipelines
 
@@ -231,7 +232,7 @@ Build:
 - Gitea adapter for issue fetch, labels, comments, branches, and PR creation.
 - Open Pilot issue eligibility check from existing template/labels.
 - Prompt builder from issue body, acceptance criteria, and test command.
-- OCQ/OpenCode step for implementation.
+- OpenCode step for implementation.
 - Verification step that runs allowed test command.
 - Push/PR/artifact summary steps.
 - Safe abort/cleanup behavior.
@@ -315,15 +316,15 @@ Exit criteria:
 
 ### M3: Native ModelBroker
 
-- Switchyard-native `ModelBroker` contract is available with env-backed llama-line transport.
+- Switchyard-native `ModelBroker` contract is available with compatibility ingress on `LLAMA_LINE_PORT`.
 - Configurable model assignment is available through `DEVLOG_MODEL` for Devlog.
 - Devlog uses the shared broker path for model-backed generation.
 
-### M4: Shared OCQ Executor
+### M4: OpenCode Executor
 
 - OpenCode prompt/session executor is available.
-- OCQ session/request IDs are persisted on Open Pilot agent steps.
-- Cancellation propagation works when OCQ request/session IDs are present.
+- Historical compatibility request/session IDs are persisted on Open Pilot agent steps when present.
+- Cancellation propagation works when historical request/session IDs are present.
 
 ### M5: Native Open Pilot Prototype
 
@@ -348,6 +349,6 @@ Exit criteria:
 
 - No broad plugin/skill installer inside Switchyard in this phase.
 - No full DAG engine.
-- No direct provider routing around llama-line.
+- No direct provider routing around compatibility ingress.
 - No broad shell executor without a permissions model.
 - No requirement that external Blacktower be checked out or running.

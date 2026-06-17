@@ -43,6 +43,7 @@ type ModelBrokerStatusUpstream struct {
 
 type EnvModelBrokerStatusProvider struct {
 	llamaLineBaseURL string
+	ollamaBaseURL    string
 	openCodeBaseURL  string
 	username         string
 	password         string
@@ -53,6 +54,7 @@ type EnvModelBrokerStatusProvider struct {
 func NewEnvModelBrokerStatusProvider() *EnvModelBrokerStatusProvider {
 	return &EnvModelBrokerStatusProvider{
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		ollamaBaseURL:    strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/"),
 		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
 		username:         os.Getenv("OPENCODE_SERVER_USERNAME"),
 		password:         os.Getenv("OPENCODE_SERVER_PASSWORD"),
@@ -63,6 +65,9 @@ func NewEnvModelBrokerStatusProvider() *EnvModelBrokerStatusProvider {
 
 func (p *EnvModelBrokerStatusProvider) Status(ctx context.Context) ModelBrokerStatus {
 	now := time.Now().UTC()
+	if strings.EqualFold(strings.TrimSpace(p.backend), "ollama") {
+		return p.ollamaStatus(ctx, now)
+	}
 	if !strings.EqualFold(strings.TrimSpace(p.backend), "llama-line") {
 		return p.nativeStatus(ctx, now)
 	}
@@ -135,6 +140,42 @@ func (p *EnvModelBrokerStatusProvider) Status(ctx context.Context) ModelBrokerSt
 			LastProbeAt: parseOptionalRFC3339(upstream.LastProbeAt),
 		})
 	}
+	return status
+}
+
+func (p *EnvModelBrokerStatusProvider) ollamaStatus(ctx context.Context, now time.Time) ModelBrokerStatus {
+	status := ModelBrokerStatus{ID: "switchyard-model-broker", Status: "not_configured", Configured: strings.TrimSpace(p.ollamaBaseURL) != "", Backend: "switchyard-model-broker", BaseURL: p.ollamaBaseURL, InFlightRequestIDs: []string{}, Upstreams: []ModelBrokerStatusUpstream{}, CheckedAt: now}
+	if !status.Configured {
+		status.Error = "OLLAMA_BASE_URL is not configured"
+		return status
+	}
+	endpoint, err := url.JoinPath(p.ollamaBaseURL, "/api/tags")
+	if err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		status.Status = "failed"
+		status.Error = err.Error()
+		return status
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		status.Status = "unreachable"
+		status.Error = err.Error()
+		return status
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		status.Status = "failed"
+		status.Error = resp.Status
+		return status
+	}
+	status.Status = "healthy"
+	status.ConnectedClients = 1
+	status.Upstreams = []ModelBrokerStatusUpstream{{Name: "ollama", URL: p.ollamaBaseURL, Status: "healthy"}}
 	return status
 }
 

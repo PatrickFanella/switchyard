@@ -317,7 +317,7 @@ const starterWorkflows: Workflow[] = [
     name: 'Open Pilot',
     description: 'Guided execution for high-signal Gitea issues with operator visibility.',
     owns: ['issue policy', 'branches', 'pull requests'],
-    uses: ['llama-line', 'OCQ', 'Blacktower'],
+    uses: ['ModelBroker', 'OpenCode executor', 'Blacktower'],
     status: 'seeded',
   },
   {
@@ -326,7 +326,7 @@ const starterWorkflows: Workflow[] = [
     name: 'Changemaker',
     description: 'Timed narrative and change-report workflows with reviewable artifacts.',
     owns: ['change summaries', 'narrative state'],
-    uses: ['llama-line'],
+    uses: ['ModelBroker'],
     status: 'seeded',
   },
   {
@@ -360,15 +360,15 @@ const starterWorkflowDefinitions: WorkflowDefinition[] = [
   },
 ];
 
-const routingSteps = ['UI', 'Switchyard', 'llama-line', 'OCQ', 'Blacktower'];
+const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode executor', 'Blacktower'];
 
 const views: { id: ViewID; label: string; source: string }[] = [
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
-  { id: 'queues', label: 'Queues', source: 'llama-line' },
-  { id: 'sessions', label: 'Sessions', source: 'OCQ / Blacktower' },
-  { id: 'logs', label: 'Logs / Search', source: 'llama-line / OCQ' },
-  { id: 'prompts', label: 'Prompts', source: 'Changemaker' },
-  { id: 'config', label: 'Config', source: 'Changemaker / broker' },
+  { id: 'queues', label: 'Queues', source: 'ModelBroker' },
+  { id: 'sessions', label: 'Sessions', source: 'OpenCode executor / Blacktower' },
+  { id: 'logs', label: 'Logs / Search', source: 'ModelBroker / OpenCode executor' },
+  { id: 'prompts', label: 'Prompts', source: 'Workflow policy' },
+  { id: 'config', label: 'Config', source: 'Workflow policy / broker' },
   { id: 'agents', label: 'Agents', source: 'Blacktower' },
   { id: 'skills', label: 'Skills', source: 'Blacktower' },
 ];
@@ -562,7 +562,7 @@ function EmptyState({ children }: { children: string }) {
 function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayload }) {
   if (view === 'queues') {
     return (
-      <FeatureFrame title="Queue cockpit" kicker="llama-line" note="Queue, upstream health, inflight work, and broker control surfaces from llama-line.">
+      <FeatureFrame title="Queue cockpit" kicker="ModelBroker" note="Queue, upstream health, inflight work, and cutover ingress from the native model broker.">
         <div className="mb-4 grid gap-3 md:grid-cols-4">
           <Field label="Active" value={adapters.llama_line.stats.active_requests} />
           <Field label="Queued" value={adapters.llama_line.stats.queued_requests} />
@@ -626,7 +626,7 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
 
   if (view === 'sessions') {
     return (
-      <FeatureFrame title="Session console" kicker="OCQ / Blacktower" note="OpenCode/Blacktower session list, transcript targets, and future send-prompt controls.">
+      <FeatureFrame title="Session console" kicker="OpenCode executor" note="OpenCode executor/Blacktower session list, transcript targets, and future send-prompt controls.">
         <div className="mb-4 grid gap-3 md:grid-cols-4">
           <Field label="Workspace" value={adapters.ocq.settings.workspace || 'unknown'} />
           <Field label="Provider" value={adapters.ocq.settings.provider || 'unknown'} />
@@ -654,7 +654,7 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
           ))}
         </div>
         <article className="hud-panel-strong mt-4 p-4">
-          <h3 className="hud-label text-[hsl(var(--signal))]">OCQ requests</h3>
+          <h3 className="hud-label text-[hsl(var(--signal))]">OpenCode executor requests</h3>
           <div className="mt-4 grid gap-3">
             {adapters.ocq.requests.map((request) => (
               <div key={request.id} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
@@ -673,7 +673,7 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
 
   if (view === 'logs') {
     return (
-      <FeatureFrame title="Logs and search" kicker="llama-line / OCQ" note="Unified request, log, audit, and semantic-search surface for all adapters.">
+      <FeatureFrame title="Logs and search" kicker="ModelBroker / OpenCode executor" note="Unified request, log, audit, and semantic-search surface for native modules.">
         <article className="hud-panel-strong mb-4 p-4">
           <h3 className="hud-label text-[hsl(var(--signal))]">Search hits</h3>
           <div className="mt-4 grid gap-3">
@@ -706,7 +706,7 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
 
   if (view === 'prompts') {
     return (
-      <FeatureFrame title="Prompt workbench" kicker="Changemaker" note="Editable workflow prompt inventory, variables, and future review controls.">
+      <FeatureFrame title="Prompt workbench" kicker="Workflow policy" note="Editable workflow prompt inventory, variables, and future review controls.">
         <div className="mb-4 grid gap-3 md:grid-cols-4">
           <Field label="Run mode" value={adapters.changemaker.run_control.mode} />
           <Field label="Run control" value={adapters.changemaker.run_control.enabled ? 'enabled' : 'disabled'} />
@@ -745,12 +745,12 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
 
   if (view === 'config') {
     return (
-      <FeatureFrame title="Configuration matrix" kicker="Changemaker / broker" note="Runtime config, feature flags, limits, and future adapter edit surfaces.">
+      <FeatureFrame title="Configuration matrix" kicker="Workflow policy / broker" note="Runtime config, feature flags, limits, and future adapter edit surfaces.">
         <div className="grid gap-3 md:grid-cols-3">
           <Field label="Environment" value={adapters.config.environment} />
           <Field label="Version" value={adapters.config.version} />
           <Field label="Base URL" value={adapters.config.base_url || 'not configured'} />
-          <Field label="Changemaker" value={`${adapters.changemaker.service.status} ${adapters.changemaker.service.version}`} />
+          <Field label="Workflow policy" value={`${adapters.changemaker.service.status} ${adapters.changemaker.service.version}`} />
           <Field label="Health" value={adapters.health.status} />
           <Field label="Checked" value={formatTime(adapters.health.checked_at)} />
         </div>
@@ -769,7 +769,7 @@ function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayloa
           </article>
         </div>
         <article className="hud-panel-strong mt-4 p-4">
-          <h3 className="hud-label text-[hsl(var(--signal))]">Service health</h3>
+          <h3 className="hud-label text-[hsl(var(--signal))]">Module health</h3>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {adapters.health.services.map((service) => (
               <div key={service.name} className="hud-panel bg-[hsl(var(--panel-soft))] p-3">
@@ -1105,7 +1105,7 @@ export default function App() {
           <div className="hud-panel-strong max-w-sm px-4 py-3">
             <p className="hud-label text-[hsl(var(--faint))]">Architecture</p>
             <div className="mt-3 text-sm font-medium uppercase tracking-[0.24em] text-[hsl(var(--ink))]">
-              UI → Switchyard → llama-line → OCQ → Blacktower
+              UI → Switchyard → ModelBroker → OpenCode executor → Blacktower
             </div>
           </div>
         </header>

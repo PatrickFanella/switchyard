@@ -2,6 +2,8 @@
 
 This directory is the current project knowledge base.
 
+Historical OCQ, llama-line, and Changemaker references are kept here as ADRs and migration notes; their imported directories were removed when the native Switchyard modules landed.
+
 ## Sections
 
 - `adr/` — architecture decision records

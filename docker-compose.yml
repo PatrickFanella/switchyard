@@ -19,17 +19,12 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
-      MODEL_BROKER_BACKEND: ${MODEL_BROKER_BACKEND:-native}
-      LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-}
-      LLAMA_LINE_API_KEY: ${LLAMA_LINE_API_KEY:-}
       MODEL_BROKER_TIMEOUT: ${MODEL_BROKER_TIMEOUT:-10m}
-      LLAMA_LINE_ADMIN_KEY: ${LLAMA_LINE_ADMIN_KEY:-}
-      OPENCODE_EXECUTOR_BACKEND: ${OPENCODE_EXECUTOR_BACKEND:-native}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      MODEL_BROKER_OLLAMA_MODELS: ${MODEL_BROKER_OLLAMA_MODELS:-llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi}
       OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode:4096}
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
-      OCQ_BASE_URL: ${OCQ_BASE_URL:-}
-      OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-}
       OPENCODE_EXECUTOR_TIMEOUT: ${OPENCODE_EXECUTOR_TIMEOUT:-10m}
       BLACKTOWER_BASE_URL: ${BLACKTOWER_BASE_URL:-}
       SWITCHYARD_PUBLIC_URL: ${SWITCHYARD_PUBLIC_URL:-}
@@ -85,34 +80,11 @@ services:
         condition: service_healthy
     ports:
       - "${API_PORT:-18080}:8080"
+      - "${LLAMA_LINE_PORT:-11434}:8080"
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
-
-  ocq:
-    profiles: ["compat"]
-    build:
-      context: ./services/ocq
-      dockerfile: Dockerfile.gateway
-    environment:
-      OCQ_GATEWAY_HOST: 0.0.0.0
-      OCQ_GATEWAY_PORT: 8088
-      OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-switchyard-local-ocq-key}
-      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode:4096}
-      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
-      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
-      OCQ_DEFAULT_DIRECTORY: ${OCQ_DEFAULT_DIRECTORY:-/workspace}
-    depends_on:
-      opencode:
-        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "${OCQ_PORT:-8088}:8088"
 
   opencode:
     build: ./services/opencode
@@ -137,22 +109,6 @@ services:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
       - ${OPENCODE_CONFIG_DIR:-./.opencode}:/root/.config/opencode
       - ${OPENCODE_DATA_DIR:-./opencode-data}:/root/.local/share/opencode
-
-  llama-line:
-    profiles: ["compat"]
-    build: ./services/llama-line
-    environment:
-      OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-switchyard-local-ocq-key}
-    depends_on:
-      ocq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:11434/broker/status"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "${LLAMA_LINE_PORT:-21434}:11434"
 
   web:
     build: ./web
