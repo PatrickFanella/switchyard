@@ -19,6 +19,7 @@ type PostgresStore struct {
 
 const openPilotIssueStateColumns = "id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, failing_gate, operator_summary, recommended_next_action, created_at, updated_at"
 const workflowDefinitionColumns = "id, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at"
+const modelBrokerRequestColumns = "id, status, model, path, client, request_body, response_body, error, correlation_ids, created_at, started_at, finished_at, updated_at, cancel_requested_at"
 
 func NewPostgresStore(db *sql.DB, now func() time.Time) *PostgresStore {
 	if now == nil {
@@ -871,7 +872,142 @@ func (s *PostgresStore) RunDetail(id string) (RunDetail, error) {
 	return detail, nil
 }
 
+func (s *PostgresStore) CreateModelBrokerRequest(input CreateModelBrokerRequestInput) (ModelBrokerRequest, error) {
+	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Model) == "" {
+		return ModelBrokerRequest{}, ErrInvalid
+	}
+	body := normalizeJSONText(input.RequestBody)
+	if _, err := s.db.ExecContext(context.Background(), `
+		insert into model_broker_requests(id, status, model, path, client, request_body, correlation_ids, created_at, updated_at)
+		values($1,$2,$3,$4,$5,$6::jsonb,'{}'::jsonb,now(),now())
+		on conflict(id) do nothing`, input.ID, ModelBrokerRequestQueued, input.Model, input.Path, input.Client, body); err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	return s.ModelBrokerRequest(input.ID)
+}
+
+func (s *PostgresStore) StartModelBrokerRequest(id string) (ModelBrokerRequest, error) {
+	row := s.db.QueryRowContext(context.Background(), `update model_broker_requests set status=$2, started_at=coalesce(started_at, now()), updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, ModelBrokerRequestRunning)
+	req, err := scanModelBrokerRequestRow(row)
+	return req, mapScanErr(err)
+}
+
+func (s *PostgresStore) FinishModelBrokerRequest(id string, input FinishModelBrokerRequestInput) (ModelBrokerRequest, error) {
+	status := strings.TrimSpace(input.Status)
+	if status == "" {
+		status = ModelBrokerRequestCompleted
+	}
+	correlation, err := json.Marshal(input.CorrelationIDs)
+	if err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	response := normalizeJSONText(input.ResponseBody)
+	row := s.db.QueryRowContext(context.Background(), `update model_broker_requests set status=$2, response_body=$3::jsonb, error=$4, correlation_ids=$5::jsonb, finished_at=now(), updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, status, response, input.Error, string(correlation))
+	req, err := scanModelBrokerRequestRow(row)
+	return req, mapScanErr(err)
+}
+
+func (s *PostgresStore) CancelModelBrokerRequest(id string) (ModelBrokerRequest, error) {
+	row := s.db.QueryRowContext(context.Background(), `update model_broker_requests set status=$2, cancel_requested_at=now(), updated_at=now() where id=$1 and status in ($3,$4,$5) returning `+modelBrokerRequestColumns, id, ModelBrokerRequestCancelRequested, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested)
+	req, err := scanModelBrokerRequestRow(row)
+	return req, mapScanErr(err)
+}
+
+func (s *PostgresStore) CancelAllModelBrokerRequests() (int, error) {
+	result, err := s.db.ExecContext(context.Background(), `update model_broker_requests set status=$1, cancel_requested_at=now(), updated_at=now() where status in ($2,$3,$4)`, ModelBrokerRequestCancelRequested, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested)
+	if err != nil {
+		return 0, err
+	}
+	count, _ := result.RowsAffected()
+	return int(count), nil
+}
+
+func (s *PostgresStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	args := []any{}
+	where := []string{}
+	if len(filter.Statuses) > 0 {
+		placeholders := []string{}
+		for _, status := range filter.Statuses {
+			args = append(args, status)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		where = append(where, "status in ("+strings.Join(placeholders, ",")+")")
+	}
+	if query := strings.TrimSpace(filter.Query); query != "" {
+		args = append(args, "%"+strings.ToLower(query)+"%")
+		where = append(where, fmt.Sprintf("(lower(id || ' ' || model || ' ' || path || ' ' || client || ' ' || request_body::text || ' ' || coalesce(response_body::text,'') || ' ' || error) like $%d)", len(args)))
+	}
+	query := `select ` + modelBrokerRequestColumns + ` from model_broker_requests`
+	if len(where) > 0 {
+		query += ` where ` + strings.Join(where, ` and `)
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(` order by created_at desc, id desc limit $%d`, len(args))
+	rows, err := s.db.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ModelBrokerRequest{}
+	for rows.Next() {
+		req, err := scanModelBrokerRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, req)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) ModelBrokerRequest(id string) (ModelBrokerRequest, error) {
+	req, err := scanModelBrokerRequestRow(s.db.QueryRowContext(context.Background(), `select `+modelBrokerRequestColumns+` from model_broker_requests where id=$1`, id))
+	return req, mapScanErr(err)
+}
+
+func normalizeJSONText(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "{}"
+	}
+	var value any
+	if json.Unmarshal([]byte(trimmed), &value) == nil {
+		return trimmed
+	}
+	encoded, _ := json.Marshal(map[string]string{"raw": raw})
+	return string(encoded)
+}
+
 type scanner interface{ Scan(dest ...any) error }
+
+func scanModelBrokerRequestRow(row scanner) (ModelBrokerRequest, error) {
+	var req ModelBrokerRequest
+	var requestBody, responseBody, correlation []byte
+	var responseBodyNull sql.NullString
+	var started, finished, cancelRequested sql.NullTime
+	if err := row.Scan(&req.ID, &req.Status, &req.Model, &req.Path, &req.Client, &requestBody, &responseBodyNull, &req.Error, &correlation, &req.CreatedAt, &started, &finished, &req.UpdatedAt, &cancelRequested); err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	req.RequestBody = string(requestBody)
+	if responseBodyNull.Valid {
+		responseBody = []byte(responseBodyNull.String)
+		req.ResponseBody = string(responseBody)
+	}
+	if started.Valid {
+		req.StartedAt = &started.Time
+	}
+	if finished.Valid {
+		req.FinishedAt = &finished.Time
+	}
+	if cancelRequested.Valid {
+		req.CancelRequestedAt = &cancelRequested.Time
+	}
+	_ = json.Unmarshal(correlation, &req.CorrelationIDs)
+	return req, nil
+}
 
 func scanTrigger(rows *sql.Rows) (Trigger, bool) {
 	t, err := scanTriggerRow(rows)

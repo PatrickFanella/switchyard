@@ -7,9 +7,11 @@ info:
     adapter status, and compatibility ingress. Switchyard also exposes
     llama-line/Ollama-compatible cutover endpoints on LLAMA_LINE_PORT:
     /broker/status, /v1/chat/completions, /api/chat, /api/generate, /api/tags,
-    /v1/models, /api/embed, /v1/embeddings, and admin queue/inflight endpoints. Native broker
-    calls route to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL
-    is configured and the model is local or prefixed with ollama/.
+    /v1/models, /api/embed, /v1/embeddings, admin queue/inflight endpoints,
+    and durable /api/history, /api/search, /api/logs, /api/config compatibility
+    surfaces. Native broker calls route to OpenCode by default and to upstream
+    Ollama when OLLAMA_BASE_URL is configured and the model is local or prefixed
+    with ollama/.
 servers:
   - url: http://127.0.0.1:28080
     description: Local Docker Compose API
@@ -92,6 +94,68 @@ paths:
       responses:
         "202": { description: Cancellation accepted }
         "404": { description: Request not found }
+  /api/history:
+    get:
+      summary: List durable model broker request history
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Request history
+          content:
+            application/json:
+              schema: { type: object }
+  /api/history/{id}:
+    get:
+      summary: Get one durable model broker request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Request detail }
+        "404": { description: Request not found }
+  /api/search:
+    get:
+      summary: Search durable model broker requests
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema: { type: object }
+  /api/logs:
+    get:
+      summary: Return request-log view backed by the durable model broker ledger
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Log entries
+          content:
+            application/json:
+              schema: { type: object }
+  /api/config:
+    get:
+      summary: Return native model broker compatibility configuration
+      responses:
+        "200":
+          description: Compatibility config
+          content:
+            application/json:
+              schema: { type: object }
   /api/adapters:
     get:
       summary: List adapter snapshots

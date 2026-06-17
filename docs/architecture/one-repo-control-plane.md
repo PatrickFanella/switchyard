@@ -45,6 +45,6 @@ The backend has durable Postgres storage when `DATABASE_URL` is configured and a
 
 This MVP records run envelopes and events, runs opt-in pipelines, probes compatibility surfaces, and prepares for native model broker, OpenCode executor, and profile modules.
 
-Cutover note: the API also exposes llama-line/Ollama-compatible ingress on `LLAMA_LINE_PORT` for `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, `/v1/embeddings`, and admin queue/inflight endpoints so clients can migrate without repointing immediately. Ollama/local model calls route to the real upstream `OLLAMA_BASE_URL`; do not point that variable at Switchyard's own cutover port.
+Cutover note: the API also exposes llama-line/Ollama-compatible ingress on `LLAMA_LINE_PORT` for `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, `/v1/embeddings`, admin queue/inflight endpoints, and durable `/api/history`, `/api/search`, `/api/logs`, `/api/config` compatibility surfaces so clients can migrate without repointing immediately. Ollama/local model calls route to the real upstream `OLLAMA_BASE_URL`; do not point that variable at Switchyard's own cutover port.
 
 See `../roadmap.md` for the next phase: Switchyard Runtime, a workflow-scoped orchestrator with durable steps, native model brokering, native OpenCode execution, and built-in profiles/personas.

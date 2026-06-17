@@ -702,6 +702,90 @@ func TestAPILlamaLineCompatAdminInflightCancel(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatHistorySearchAndLogsUseDurableLedger(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "durable answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/generate", bytes.NewBufferString(`{"model":"ollama/llama3.2","prompt":"durable prompt"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "durable-ledger-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST generate: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+
+	// Recreate the API over the same store to verify completed requests are not just in process memory.
+	srv.Close()
+	api = controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv = httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	historyResp, err := http.Get(srv.URL + "/api/history/durable-ledger-1")
+	if err != nil {
+		t.Fatalf("GET history item: %v", err)
+	}
+	defer historyResp.Body.Close()
+	if historyResp.StatusCode != http.StatusOK {
+		t.Fatalf("history status = %s", historyResp.Status)
+	}
+	var history controlplane.ModelBrokerRequest
+	if err := json.NewDecoder(historyResp.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if history.ID != "durable-ledger-1" || history.Status != "completed" || !strings.Contains(history.ResponseBody, "durable answer") {
+		t.Fatalf("history = %+v", history)
+	}
+
+	searchResp, err := http.Get(srv.URL + "/api/search?q=durable%20prompt")
+	if err != nil {
+		t.Fatalf("GET search: %v", err)
+	}
+	defer searchResp.Body.Close()
+	var search struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(searchResp.Body).Decode(&search); err != nil {
+		t.Fatalf("decode search: %v", err)
+	}
+	if search.Count != 1 {
+		t.Fatalf("search count = %d", search.Count)
+	}
+
+	logsResp, err := http.Get(srv.URL + "/api/logs")
+	if err != nil {
+		t.Fatalf("GET logs: %v", err)
+	}
+	defer logsResp.Body.Close()
+	var logs struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(logsResp.Body).Decode(&logs); err != nil {
+		t.Fatalf("decode logs: %v", err)
+	}
+	if logs.Count != 1 {
+		t.Fatalf("logs count = %d", logs.Count)
+	}
+}
+
 func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

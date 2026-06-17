@@ -24,7 +24,7 @@ type API struct {
 }
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), compatBroker: newLlamaLineCompatTracker(), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), compatBroker: newLlamaLineCompatTracker(store), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
@@ -62,6 +62,11 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("DELETE /admin/queue/{id}", a.llamaLineCompatQueueItem)
 	mux.HandleFunc("GET /admin/inflight", a.llamaLineCompatInflight)
 	mux.HandleFunc("POST /admin/inflight/cancel", a.llamaLineCompatInflightCancel)
+	mux.HandleFunc("GET /api/history", a.llamaLineCompatHistory)
+	mux.HandleFunc("GET /api/history/{id}", a.llamaLineCompatHistoryItem)
+	mux.HandleFunc("GET /api/search", a.llamaLineCompatSearch)
+	mux.HandleFunc("GET /api/logs", a.llamaLineCompatLogs)
+	mux.HandleFunc("GET /api/config", a.llamaLineCompatConfig)
 	mux.HandleFunc("GET /metrics", a.llamaLineCompatMetrics)
 	mux.HandleFunc("GET /api/adapters", a.adapters)
 	mux.HandleFunc("GET /api/model-broker/status", a.modelBrokerStatus)
