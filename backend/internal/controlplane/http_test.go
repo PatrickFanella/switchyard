@@ -598,6 +598,110 @@ func TestAPILlamaLineCompatGenerateRoutesOllamaModelToOllama(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatAdminInflightCancel(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %s", r.URL.Path)
+		}
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "late answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	result := make(chan int, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/generate", bytes.NewBufferString(`{"model":"ollama/llama3.2","prompt":"hello"}`))
+		if err != nil {
+			result <- 0
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", "compat-cancel-1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			result <- 0
+			return
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		result <- resp.StatusCode
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ollama request did not start")
+	}
+
+	var inflightBody struct {
+		Active   bool `json:"active_request"`
+		Inflight []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"inflight"`
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		resp, err := http.Get(srv.URL + "/admin/inflight")
+		if err != nil {
+			t.Fatalf("GET inflight: %v", err)
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&inflightBody); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode inflight: %v", err)
+		}
+		resp.Body.Close()
+		if len(inflightBody.Inflight) == 1 {
+			break
+		}
+	}
+	if !inflightBody.Active || len(inflightBody.Inflight) != 1 || inflightBody.Inflight[0].ID != "compat-cancel-1" || inflightBody.Inflight[0].Status != "running" {
+		t.Fatalf("inflight = %+v", inflightBody)
+	}
+
+	cancelResp, err := http.Post(srv.URL+"/admin/inflight/cancel", "application/json", bytes.NewBufferString(`{"request_id":"compat-cancel-1"}`))
+	if err != nil {
+		t.Fatalf("POST cancel: %v", err)
+	}
+	defer cancelResp.Body.Close()
+	if cancelResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel status = %s", cancelResp.Status)
+	}
+
+	resp, err := http.Get(srv.URL + "/admin/inflight")
+	if err != nil {
+		t.Fatalf("GET inflight after cancel: %v", err)
+	}
+	defer resp.Body.Close()
+	var after struct {
+		Inflight []any `json:"inflight"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if len(after.Inflight) != 0 {
+		t.Fatalf("after inflight = %+v", after.Inflight)
+	}
+	close(release)
+	select {
+	case <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("generate request did not finish after release")
+	}
+}
+
 func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -15,6 +15,7 @@ type API struct {
 	runner        *Runner
 	adapterProbe  AdapterProbe
 	modelBroker   ModelBrokerStatusProvider
+	compatBroker  *llamaLineCompatTracker
 	openCode      OpenCodeExecutorStatusProvider
 	canceler      CancelDispatcher
 	scheduler     *Scheduler
@@ -23,7 +24,7 @@ type API struct {
 }
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), compatBroker: newLlamaLineCompatTracker(), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {

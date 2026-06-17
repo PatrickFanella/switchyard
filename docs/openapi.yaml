@@ -7,7 +7,7 @@ info:
     adapter status, and compatibility ingress. Switchyard also exposes
     llama-line/Ollama-compatible cutover endpoints on LLAMA_LINE_PORT:
     /broker/status, /v1/chat/completions, /api/chat, /api/generate, /api/tags,
-    /v1/models, /api/embed, /v1/embeddings, and admin queue stubs. Native broker
+    /v1/models, /api/embed, /v1/embeddings, and admin queue/inflight endpoints. Native broker
     calls route to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL
     is configured and the model is local or prefixed with ollama/.
 servers:
@@ -29,6 +29,69 @@ paths:
                 properties:
                   ok: { type: boolean }
                 required: [ok]
+  /broker/status:
+    get:
+      summary: Llama-line-compatible broker status
+      description: Cutover endpoint served on LLAMA_LINE_PORT; includes native queue/inflight state and upstream health.
+      responses:
+        "200":
+          description: Broker status
+          content:
+            application/json:
+              schema: { type: object }
+  /admin/queue:
+    get:
+      summary: List queued compatibility requests
+      responses:
+        "200":
+          description: Queue snapshot
+          content:
+            application/json:
+              schema: { type: object }
+    delete:
+      summary: Cancel all queued and inflight compatibility requests
+      responses:
+        "202":
+          description: Cancellation accepted
+          content:
+            application/json:
+              schema: { type: object }
+  /admin/queue/{id}:
+    delete:
+      summary: Cancel one compatibility request by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202": { description: Request canceled }
+        "404": { description: Request not found }
+  /admin/inflight:
+    get:
+      summary: List inflight compatibility requests
+      responses:
+        "200":
+          description: Inflight snapshot
+          content:
+            application/json:
+              schema: { type: object }
+  /admin/inflight/cancel:
+    post:
+      summary: Cancel inflight compatibility requests
+      description: Cancels a specific request when `id` or `request_id` is supplied; otherwise cancels all tracked requests.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                request_id: { type: string }
+      responses:
+        "202": { description: Cancellation accepted }
+        "404": { description: Request not found }
   /api/adapters:
     get:
       summary: List adapter snapshots

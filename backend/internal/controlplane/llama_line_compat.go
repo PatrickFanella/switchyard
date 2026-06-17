@@ -24,14 +24,22 @@ func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	status := a.modelBroker.Status(ctx)
+	queued, inflight := a.compatBroker.snapshot()
+	inFlightIDs := a.compatBroker.inFlightIDs()
+	if len(inFlightIDs) > 0 {
+		status.InFlightRequestIDs = inFlightIDs
+		status.ActiveRequest = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":            status.Status,
 		"backend":           "switchyard-native",
-		"queue_depth":       status.QueueDepth,
+		"queue_depth":       len(queued),
 		"max_depth":         status.MaxDepth,
-		"active_request":    status.ActiveRequest,
+		"active_request":    len(inflight) > 0 || status.ActiveRequest,
 		"connected_clients": status.ConnectedClients,
 		"in_flight_ids":     status.InFlightRequestIDs,
+		"queue":             queued,
+		"inflight":          inflight,
 		"upstreams":         status.Upstreams,
 		"checked_at":        status.CheckedAt,
 		"error":             status.Error,
@@ -112,12 +120,20 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	if strings.TrimSpace(model) == "" {
 		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
 	}
+	requestID, ctx, finish := a.compatBroker.begin(r, model)
+	w.Header().Set("X-Llama-Line-Request-ID", requestID)
 	broker := NewEnvModelBroker()
-	response, err := broker.Generate(r.Context(), ModelRequest{Model: model, Messages: messages})
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: messages})
 	if err != nil {
+		finish("failed")
 		writeError(w, http.StatusBadGateway, err.Error())
 		return ModelResponse{}, false
 	}
+	finish("completed")
+	if response.CorrelationIDs == nil {
+		response.CorrelationIDs = map[string]string{}
+	}
+	response.CorrelationIDs["llama_line_request_id"] = requestID
 	return response, true
 }
 
@@ -250,19 +266,46 @@ func openAIModelsResponse(ollama map[string]any) map[string]any {
 }
 
 func (a *API) llamaLineCompatQueue(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"queue": []any{}, "queue_depth": 0, "backend": "switchyard-native"})
+	queued, inflight := a.compatBroker.snapshot()
+	if r.Method == http.MethodDelete {
+		cancelled := a.compatBroker.cancelAll("canceled")
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "cancelled": cancelled, "backend": "switchyard-native"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"queue": queued, "queue_depth": len(queued), "inflight_depth": len(inflight), "max_depth": a.compatBroker.maxDepth, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatQueueItem(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "not_found", "id": r.PathValue("id"), "backend": "switchyard-native"})
+	id := r.PathValue("id")
+	if a.compatBroker.cancel(id) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "canceled", "id": id, "backend": "switchyard-native"})
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatInflight(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"inflight": []any{}, "active_request": false, "backend": "switchyard-native"})
+	_, inflight := a.compatBroker.snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{"inflight": inflight, "active_request": len(inflight) > 0, "inflight_depth": len(inflight), "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatInflightCancel(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "backend": "switchyard-native"})
+	var input struct {
+		ID        string `json:"id"`
+		RequestID string `json:"request_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&input)
+	id := firstNonEmpty(input.ID, input.RequestID, r.URL.Query().Get("id"), r.URL.Query().Get("request_id"))
+	if id != "" {
+		if a.compatBroker.cancel(id) {
+			writeJSON(w, http.StatusAccepted, map[string]any{"status": "canceled", "id": id, "cancelled": 1, "backend": "switchyard-native"})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "cancelled": 0, "backend": "switchyard-native"})
+		return
+	}
+	cancelled := a.compatBroker.cancelAll("canceled")
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "cancelled": cancelled, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
