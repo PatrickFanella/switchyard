@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -30,6 +31,18 @@ type ModelRequest struct {
 type ModelResponse struct {
 	Content        string
 	CorrelationIDs map[string]string
+}
+
+type ModelStreamEvent struct {
+	Type           string
+	Content        string
+	Error          string
+	Done           bool
+	CorrelationIDs map[string]string
+}
+
+type ModelStreamer interface {
+	Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error)
 }
 
 // ModelBroker is the Switchyard-native model generation contract.
@@ -100,6 +113,43 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (Mo
 		return e.generateViaOllama(ctx, request)
 	}
 	return e.generateViaOpenCode(ctx, request)
+}
+
+func (e *EnvModelBroker) Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_STREAMING")), "buffered") || strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_STREAMING")), "disabled") {
+		return e.streamBuffered(ctx, request, emit)
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
+		return e.streamViaLlamaLine(ctx, request, emit)
+	}
+	if e.shouldGenerateViaOllama(request.Model) {
+		return e.streamViaOllama(ctx, request, emit)
+	}
+	return e.streamBuffered(ctx, request, emit)
+}
+
+func (e *EnvModelBroker) StreamingMode(model string) string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_STREAMING")), "buffered") || strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_STREAMING")), "disabled") {
+		return "buffered"
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") || e.shouldGenerateViaOllama(model) {
+		return "native"
+	}
+	return "buffered"
+}
+
+func (e *EnvModelBroker) streamBuffered(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {
+	response, err := e.Generate(ctx, request)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	if err := emit(ModelStreamEvent{Type: "content", Content: response.Content, CorrelationIDs: response.CorrelationIDs}); err != nil {
+		return ModelResponse{}, err
+	}
+	if err := emit(ModelStreamEvent{Type: "done", Done: true, CorrelationIDs: response.CorrelationIDs}); err != nil {
+		return ModelResponse{}, err
+	}
+	return response, nil
 }
 
 func (e *EnvModelBroker) shouldGenerateViaOllama(model string) bool {
@@ -219,6 +269,168 @@ func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelReq
 		return ModelResponse{}, fmt.Errorf("ollama response did not include content")
 	}
 	return ModelResponse{Content: content, CorrelationIDs: map[string]string{"model_broker": "switchyard", "model_source": "ollama", "model_broker_backend": "native", "ollama_model": ollamaModelName(request.Model)}}, nil
+}
+
+func (e *EnvModelBroker) streamViaOllama(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {
+	if strings.TrimSpace(e.ollamaBaseURL) == "" {
+		return ModelResponse{}, fmt.Errorf("OLLAMA_BASE_URL is not configured")
+	}
+	endpoint, err := url.JoinPath(e.ollamaBaseURL, "/api/chat")
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	body, err := json.Marshal(map[string]any{"model": ollamaModelName(request.Model), "stream": true, "messages": request.Messages})
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(request.RequestID) != "" {
+		req.Header.Set("X-Request-ID", request.RequestID)
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return ModelResponse{}, fmt.Errorf("ollama request failed: %s", resp.Status)
+	}
+	correlation := map[string]string{"model_broker": "switchyard", "model_source": "ollama", "model_broker_backend": "native", "ollama_model": ollamaModelName(request.Model)}
+	var builder strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var decoded struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Response string `json:"response"`
+			Done     bool   `json:"done"`
+			Error    string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			return ModelResponse{}, err
+		}
+		if decoded.Error != "" {
+			return ModelResponse{}, errors.New(decoded.Error)
+		}
+		chunk := firstNonEmpty(decoded.Message.Content, decoded.Response)
+		if chunk != "" {
+			builder.WriteString(chunk)
+			if err := emit(ModelStreamEvent{Type: "content", Content: chunk, CorrelationIDs: correlation}); err != nil {
+				return ModelResponse{}, err
+			}
+		}
+		if decoded.Done {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return ModelResponse{}, err
+	}
+	if err := emit(ModelStreamEvent{Type: "done", Done: true, CorrelationIDs: correlation}); err != nil {
+		return ModelResponse{}, err
+	}
+	return ModelResponse{Content: builder.String(), CorrelationIDs: correlation}, nil
+}
+
+func (e *EnvModelBroker) streamViaLlamaLine(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {
+	if strings.TrimSpace(e.llamaLineBaseURL) == "" {
+		return ModelResponse{}, fmt.Errorf("LLAMA_LINE_BASE_URL is not configured")
+	}
+	endpoint, err := url.JoinPath(e.llamaLineBaseURL, "/v1/chat/completions")
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	body, err := json.Marshal(map[string]any{"model": request.Model, "stream": true, "messages": request.Messages})
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(request.RequestID) != "" {
+		req.Header.Set("X-Request-ID", request.RequestID)
+		req.Header.Set("X-Llama-Line-Request-ID", request.RequestID)
+	}
+	if e.llamaLineAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+e.llamaLineAPIKey)
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return ModelResponse{}, fmt.Errorf("model request failed: %s", resp.Status)
+	}
+	correlation := map[string]string{"model_broker": "switchyard", "model_source": "llama-line", "model_broker_backend": "compat"}
+	if requestID := resp.Header.Get("X-Llama-Line-Request-ID"); requestID != "" {
+		correlation["llama_line_request_id"] = requestID
+	}
+	if requestID := resp.Header.Get("X-OCQ-Request-ID"); requestID != "" {
+		correlation["ocq_request_id"] = requestID
+	}
+	if sessionID := resp.Header.Get("X-OCQ-Session"); sessionID != "" {
+		correlation["ocq_session_id"] = sessionID
+	}
+	var builder strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+		chunk := openAIStreamPayloadContent(payload)
+		if chunk == "" {
+			continue
+		}
+		builder.WriteString(chunk)
+		if err := emit(ModelStreamEvent{Type: "content", Content: chunk, CorrelationIDs: correlation}); err != nil {
+			return ModelResponse{}, err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return ModelResponse{}, err
+	}
+	if err := emit(ModelStreamEvent{Type: "done", Done: true, CorrelationIDs: correlation}); err != nil {
+		return ModelResponse{}, err
+	}
+	return ModelResponse{Content: builder.String(), CorrelationIDs: correlation}, nil
+}
+
+func openAIStreamPayloadContent(payload string) string {
+	var decoded struct {
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil || len(decoded.Choices) == 0 {
+		return ""
+	}
+	return firstNonEmpty(decoded.Choices[0].Delta.Content, decoded.Choices[0].Message.Content, decoded.Choices[0].Text)
 }
 
 func ollamaModelName(model string) string {

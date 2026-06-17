@@ -76,18 +76,31 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "path": r.URL.Path, "stream": true})
 	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
+	broker := NewEnvModelBroker()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-OCQ-Status", "running")
-	w.Header().Set("X-OCQ-Streaming-Mode", "buffered")
+	w.Header().Set("X-OCQ-Streaming-Mode", broker.StreamingMode(model))
 	w.WriteHeader(http.StatusOK)
 	writeCompatSSE(w, "status", map[string]any{"status": "queued", "request_id": requestID, "backend": "switchyard-native"})
 	writeCompatSSE(w, "status", map[string]any{"status": "running", "request_id": requestID, "backend": "switchyard-native"})
 	flushCompatSSE(w)
 
-	broker := NewEnvModelBroker()
-	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, RequestID: requestID})
+	var streamed strings.Builder
+	var correlation map[string]string
+	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, RequestID: requestID}, func(event ModelStreamEvent) error {
+		if event.CorrelationIDs != nil {
+			correlation = event.CorrelationIDs
+		}
+		if event.Content != "" {
+			streamed.WriteString(event.Content)
+			payload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, event.Content, false))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			flushCompatSSE(w)
+		}
+		return nil
+	})
 	if err != nil {
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
 		writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
@@ -95,15 +108,21 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 		return
 	}
 	if response.CorrelationIDs == nil {
+		response.CorrelationIDs = correlation
+	}
+	if response.CorrelationIDs == nil {
 		response.CorrelationIDs = map[string]string{}
+	}
+	if response.Content == "" {
+		response.Content = streamed.String()
 	}
 	response.CorrelationIDs["llama_line_request_id"] = requestID
 	setCompatRequestHeaders(w.Header(), requestID, response.CorrelationIDs)
 	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
 	writeCompatSSE(w, "status", map[string]any{"status": "completed", "request_id": requestID, "backend": "switchyard-native"})
-	payload, _ := json.Marshal(openAIChatCompletionBody(model, response))
-	_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+	finishPayload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, "", true))
+	_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", finishPayload)
 }
 
 func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +199,15 @@ func openAIChatCompletionBody(model string, response ModelResponse) map[string]a
 		"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": response.Content}, "finish_reason": "stop"}},
 		"usage":   map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
 	}
+}
+
+func openAIChatCompletionChunkBody(model string, requestID string, content string, done bool) map[string]any {
+	choice := map[string]any{"index": 0, "delta": map[string]string{"content": content}, "finish_reason": nil}
+	if done {
+		choice["delta"] = map[string]string{}
+		choice["finish_reason"] = "stop"
+	}
+	return map[string]any{"id": firstNonEmpty(requestID, "chatcmpl-"+shortRandomID()), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{choice}}
 }
 
 func setCompatRequestHeaders(header http.Header, requestID string, correlation map[string]string) {

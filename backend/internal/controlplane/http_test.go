@@ -642,9 +642,14 @@ func TestAPILlamaLineCompatSetsCorrelationHeaders(t *testing.T) {
 	}
 }
 
-func TestAPILlamaLineCompatStreamingUsesBufferedSSEStatusEvents(t *testing.T) {
+func TestAPILlamaLineCompatStreamingUsesNativeSSEChunksAndStatusEvents(t *testing.T) {
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "stream answer"}, "done": true})
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"stream "},"done":false}` + "\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"answer"},"done":true}` + "\n"))
 	}))
 	t.Cleanup(ollama.Close)
 	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
@@ -671,11 +676,11 @@ func TestAPILlamaLineCompatStreamingUsesBufferedSSEStatusEvents(t *testing.T) {
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("Content-Type = %q", resp.Header.Get("Content-Type"))
 	}
-	if resp.Header.Get("X-OCQ-Streaming-Mode") != "buffered" || resp.Header.Get("X-OCQ-Status") != "running" {
+	if resp.Header.Get("X-OCQ-Streaming-Mode") != "native" || resp.Header.Get("X-OCQ-Status") != "running" {
 		t.Fatalf("stream headers = mode:%q status:%q", resp.Header.Get("X-OCQ-Streaming-Mode"), resp.Header.Get("X-OCQ-Status"))
 	}
 	body := mustReadBody(t, resp.Body)
-	for _, want := range []string{"event: status", `"status":"queued"`, `"status":"running"`, `"status":"completed"`, "stream answer", "data: [DONE]"} {
+	for _, want := range []string{"event: status", `"status":"queued"`, `"status":"running"`, `"status":"completed"`, `"object":"chat.completion.chunk"`, `"content":"stream "`, `"content":"answer"`, "data: [DONE]"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream body missing %q: %s", want, body)
 		}
