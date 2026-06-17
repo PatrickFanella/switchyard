@@ -902,6 +902,48 @@ func TestAPILlamaLineCompatLegacyAdminAndUIAliases(t *testing.T) {
 	}
 }
 
+func TestAPIOCQCompatSurfacesUseNativeState(t *testing.T) {
+	opencode := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session" {
+			t.Fatalf("unexpected opencode path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "ses-native", "title": "Native Session", "status": "active"}})
+	}))
+	t.Cleanup(opencode.Close)
+	t.Setenv("OPENCODE_SERVER_URL", opencode.URL)
+
+	store := controlplane.NewStore(nil)
+	_, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "ocq-compat-1", Model: "openai/gpt", Path: "/v1/chat/completions", Client: "test", RequestBody: `{"prompt":"ocq"}`})
+	if err != nil {
+		t.Fatalf("create ledger row: %v", err)
+	}
+	_, _ = store.FinishModelBrokerRequest("ocq-compat-1", controlplane.FinishModelBrokerRequestInput{Status: "completed", ResponseBody: `{"content":"ok"}`, CorrelationIDs: map[string]string{"opencode_request_id": "ocq-compat-1", "opencode_session_id": "ses-native"}})
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/ocq/sessions", "/ocq/sessions/ses-native", "/ocq/requests", "/ocq/requests/ocq-compat-1", "/ocq/settings", "/ocq/audit", "/ocq/logs"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body := mustReadBody(t, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %s body = %s", path, resp.Status, body)
+		}
+	}
+
+	abortResp, err := http.Post(srv.URL+"/ocq/requests/ocq-compat-1/abort", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST abort: %v", err)
+	}
+	defer abortResp.Body.Close()
+	if abortResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("abort status = %s", abortResp.Status)
+	}
+}
+
 func TestAPIModelBrokerStatusDegradesWithoutUpstreams(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
