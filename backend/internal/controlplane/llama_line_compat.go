@@ -56,26 +56,54 @@ func (a *API) llamaLineCompatChatCompletions(w http.ResponseWriter, r *http.Requ
 	if len(input.Messages) == 0 && strings.TrimSpace(input.Prompt) != "" {
 		input.Messages = []ModelMessage{{Role: "user", Content: input.Prompt}}
 	}
+	if input.Stream {
+		a.llamaLineCompatStreamChatCompletions(w, r, input)
+		return
+	}
 	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, input.Messages)
 	if !ok {
 		return
 	}
-	body := map[string]any{
-		"id":      firstNonEmpty(response.CorrelationIDs["opencode_request_id"], response.CorrelationIDs["llama_line_request_id"], "chatcmpl-"+shortRandomID()),
-		"object":  "chat.completion",
-		"created": time.Now().Unix(),
-		"model":   input.Model,
-		"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": response.Content}, "finish_reason": "stop"}},
-		"usage":   map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+	body := openAIChatCompletionBody(input.Model, response)
+	writeJSON(w, http.StatusOK, body)
+}
+
+func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *http.Request, input llamaLineCompatChatRequest) {
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
 	}
-	if input.Stream {
-		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		payload, _ := json.Marshal(body)
-		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "path": r.URL.Path, "stream": true})
+	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
+	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-OCQ-Status", "running")
+	w.Header().Set("X-OCQ-Streaming-Mode", "buffered")
+	w.WriteHeader(http.StatusOK)
+	writeCompatSSE(w, "status", map[string]any{"status": "queued", "request_id": requestID, "backend": "switchyard-native"})
+	writeCompatSSE(w, "status", map[string]any{"status": "running", "request_id": requestID, "backend": "switchyard-native"})
+	flushCompatSSE(w)
+
+	broker := NewEnvModelBroker()
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, RequestID: requestID})
+	if err != nil {
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
+		writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		return
 	}
-	writeJSON(w, http.StatusOK, body)
+	if response.CorrelationIDs == nil {
+		response.CorrelationIDs = map[string]string{}
+	}
+	response.CorrelationIDs["llama_line_request_id"] = requestID
+	setCompatRequestHeaders(w.Header(), requestID, response.CorrelationIDs)
+	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
+	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
+	writeCompatSSE(w, "status", map[string]any{"status": "completed", "request_id": requestID, "backend": "switchyard-native"})
+	payload, _ := json.Marshal(openAIChatCompletionBody(model, response))
+	_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
 }
 
 func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -123,11 +151,12 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "path": r.URL.Path})
 	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
-	w.Header().Set("X-Llama-Line-Request-ID", requestID)
+	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
-	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: messages})
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: requestID})
 	if err != nil {
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
+		w.Header().Set("X-OCQ-Status", "failed")
 		writeError(w, http.StatusBadGateway, err.Error())
 		return ModelResponse{}, false
 	}
@@ -135,9 +164,51 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 		response.CorrelationIDs = map[string]string{}
 	}
 	response.CorrelationIDs["llama_line_request_id"] = requestID
+	setCompatRequestHeaders(w.Header(), requestID, response.CorrelationIDs)
+	w.Header().Set("X-OCQ-Status", "completed")
 	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
 	return response, true
+}
+
+func openAIChatCompletionBody(model string, response ModelResponse) map[string]any {
+	return map[string]any{
+		"id":      firstNonEmpty(response.CorrelationIDs["opencode_request_id"], response.CorrelationIDs["ocq_request_id"], response.CorrelationIDs["llama_line_request_id"], "chatcmpl-"+shortRandomID()),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": response.Content}, "finish_reason": "stop"}},
+		"usage":   map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+	}
+}
+
+func setCompatRequestHeaders(header http.Header, requestID string, correlation map[string]string) {
+	requestID = firstNonEmpty(requestID, correlation["llama_line_request_id"], correlation["opencode_request_id"], correlation["ocq_request_id"])
+	if requestID != "" {
+		header.Set("X-Request-ID", requestID)
+		header.Set("X-Llama-Line-Request-ID", requestID)
+	}
+	ocqRequestID := firstNonEmpty(correlation["ocq_request_id"], correlation["opencode_request_id"], requestID)
+	if ocqRequestID != "" {
+		header.Set("X-OCQ-Request-ID", ocqRequestID)
+	}
+	if sessionID := firstNonEmpty(correlation["ocq_session_id"], correlation["opencode_session_id"]); sessionID != "" {
+		header.Set("X-OCQ-Session", sessionID)
+	}
+}
+
+func writeCompatSSE(w http.ResponseWriter, event string, payload map[string]any) {
+	encoded, _ := json.Marshal(payload)
+	if event != "" {
+		_, _ = fmt.Fprintf(w, "event: %s\n", event)
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+}
+
+func flushCompatSSE(w http.ResponseWriter) {
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (a *API) llamaLineCompatEmbeddings(w http.ResponseWriter, r *http.Request) {

@@ -598,6 +598,90 @@ func TestAPILlamaLineCompatGenerateRoutesOllamaModelToOllama(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatSetsCorrelationHeaders(t *testing.T) {
+	upstreamRequestID := make(chan string, 1)
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequestID <- r.Header.Get("X-Request-ID")
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "header answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewBufferString(`{"model":"ollama/llama3.2","messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "compat-header-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST chat completions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	if resp.Header.Get("X-Request-ID") != "compat-header-1" || resp.Header.Get("X-Llama-Line-Request-ID") != "compat-header-1" || resp.Header.Get("X-OCQ-Request-ID") != "compat-header-1" {
+		t.Fatalf("headers = X-Request-ID:%q X-Llama-Line-Request-ID:%q X-OCQ-Request-ID:%q", resp.Header.Get("X-Request-ID"), resp.Header.Get("X-Llama-Line-Request-ID"), resp.Header.Get("X-OCQ-Request-ID"))
+	}
+	if resp.Header.Get("X-OCQ-Status") != "completed" {
+		t.Fatalf("X-OCQ-Status = %q", resp.Header.Get("X-OCQ-Status"))
+	}
+	select {
+	case got := <-upstreamRequestID:
+		if got != "compat-header-1" {
+			t.Fatalf("upstream X-Request-ID = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not receive request")
+	}
+}
+
+func TestAPILlamaLineCompatStreamingUsesBufferedSSEStatusEvents(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "stream answer"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewBufferString(`{"model":"ollama/llama3.2","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Llama-Line-Request-ID", "compat-stream-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST streaming chat completions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("Content-Type = %q", resp.Header.Get("Content-Type"))
+	}
+	if resp.Header.Get("X-OCQ-Streaming-Mode") != "buffered" || resp.Header.Get("X-OCQ-Status") != "running" {
+		t.Fatalf("stream headers = mode:%q status:%q", resp.Header.Get("X-OCQ-Streaming-Mode"), resp.Header.Get("X-OCQ-Status"))
+	}
+	body := mustReadBody(t, resp.Body)
+	for _, want := range []string{"event: status", `"status":"queued"`, `"status":"running"`, `"status":"completed"`, "stream answer", "data: [DONE]"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestAPILlamaLineCompatAdminInflightCancel(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

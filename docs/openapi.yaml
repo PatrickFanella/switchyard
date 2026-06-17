@@ -9,9 +9,12 @@ info:
     /broker/status, /v1/chat/completions, /api/chat, /api/generate, /api/tags,
     /v1/models, /api/embed, /v1/embeddings, admin queue/inflight endpoints,
     and durable /api/history, /api/search, /api/logs, /api/config compatibility
-    surfaces. Native broker calls route to OpenCode by default and to upstream
-    Ollama when OLLAMA_BASE_URL is configured and the model is local or prefixed
-    with ollama/.
+    surfaces. The compatibility ingress preserves llama-line/OCQ correlation
+    headers (`X-Request-ID`, `X-Llama-Line-Request-ID`, `X-OCQ-Request-ID`,
+    `X-OCQ-Session` when available) and serves OpenAI streaming requests as
+    buffered SSE with queued/running/completed status events. Native broker calls
+    route to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL is
+    configured and the model is local or prefixed with ollama/.
 servers:
   - url: http://127.0.0.1:28080
     description: Local Docker Compose API
