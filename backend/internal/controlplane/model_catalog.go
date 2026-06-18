@@ -146,7 +146,7 @@ func openCodeModelCatalog(r *http.Request) providerModelCatalog {
 		return catalog
 	}
 	catalog.Status = "healthy"
-	catalog.Providers = extractProviderMaps(response)
+	catalog.Providers = sanitizedProviderSummaries(response)
 	catalog.Models = extractOpenCodeModels(response)
 	return catalog
 }
@@ -235,6 +235,26 @@ func extractProviderMaps(response map[string]any) []map[string]any {
 	return providers
 }
 
+func sanitizedProviderSummaries(response map[string]any) []map[string]any {
+	providers := extractProviderMaps(response)
+	summaries := make([]map[string]any, 0, len(providers))
+	for _, provider := range providers {
+		models := 0
+		if modelMap, ok := provider["models"].(map[string]any); ok {
+			models = len(modelMap)
+		} else if modelList, ok := provider["models"].([]any); ok {
+			models = len(modelList)
+		}
+		summaries = append(summaries, map[string]any{
+			"id":          firstString(provider["id"]),
+			"name":        firstString(provider["name"]),
+			"source":      firstString(provider["source"]),
+			"model_count": models,
+		})
+	}
+	return summaries
+}
+
 func extractOpenCodeModels(response map[string]any) []modelCatalogID {
 	models := []modelCatalogID{}
 	seen := map[string]bool{}
@@ -247,11 +267,19 @@ func extractOpenCodeModels(response map[string]any) []modelCatalogID {
 			}
 		case map[string]any:
 			providerName := firstNonEmpty(firstString(typed["provider"], typed["providerID"], typed["provider_id"]), provider)
-			if id := firstString(typed["id"], typed["model"], typed["name"]); id != "" {
+			id := firstString(typed["id"], typed["model"])
+			if id != "" {
 				key := providerName + "/" + id
 				if !seen[key] {
 					seen[key] = true
 					models = append(models, modelCatalogID{ID: id, Name: firstNonEmpty(firstString(typed["name"]), id), Provider: providerName, Details: typed})
+				}
+			}
+			if id == "" {
+				for _, nested := range typed {
+					if nestedMap, ok := nested.(map[string]any); ok && firstString(nestedMap["id"], nestedMap["model"]) != "" {
+						walk(providerName, nestedMap)
+					}
 				}
 			}
 			for key, nested := range typed {

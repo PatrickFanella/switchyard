@@ -158,7 +158,7 @@ func TestAPIModelCatalogListsOllamaAndOpenCodeModels(t *testing.T) {
 		if r.URL.Path != "/config/providers" {
 			t.Fatalf("opencode path = %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"providers":[{"id":"openai","models":[{"id":"gpt-5.5","name":"GPT 5.5"}]}]}`))
+		_, _ = w.Write([]byte(`{"providers":[{"id":"openai","name":"OpenAI","source":"api","key":"secret-key-must-not-leak","models":{"gpt-5.5":{"id":"gpt-5.5","name":"GPT 5.5","providerID":"openai"}}}]}`))
 	}))
 	t.Cleanup(opencode.Close)
 	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
@@ -179,6 +179,9 @@ func TestAPIModelCatalogListsOllamaAndOpenCodeModels(t *testing.T) {
 	body := mustReadBody(t, resp.Body)
 	if !strings.Contains(body, "qwen3.5:latest") || !strings.Contains(body, "gpt-5.5") {
 		t.Fatalf("body missing models: %s", body)
+	}
+	if strings.Contains(body, "secret-key-must-not-leak") {
+		t.Fatalf("body leaked provider secret: %s", body)
 	}
 }
 
