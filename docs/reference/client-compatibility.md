@@ -17,6 +17,8 @@ Switchyard owns the native model-broker runtime and exposes llama-line/Ollama/Op
 | `POST /api/chat` | JSON | Returns plain Ollama JSON with `message.content`; clients expecting SSE must support JSON too. |
 | `POST /api/embed` | JSON | Embedding passthrough. |
 
+Ollama-routed `/api/chat` requests preserve `tools`, `tool_choice`, `options`, tool response messages, and native `message.tool_calls` when the upstream Ollama model returns structured tool calls.
+
 ## OpenAI-compatible endpoints
 
 | Endpoint | Response mode | Notes |
@@ -25,6 +27,8 @@ Switchyard owns the native model-broker runtime and exposes llama-line/Ollama/Op
 | `POST /v1/completions` | JSON | Completion compatibility. |
 | `POST /v1/embeddings` | JSON | Embedding compatibility. |
 | `GET /v1/models` | JSON | Model list compatibility. |
+
+For non-streaming `/v1/chat/completions`, Ollama native `message.tool_calls` are converted to OpenAI-compatible `message.tool_calls` with `finish_reason: "tool_calls"`.
 
 ## Compatibility and admin endpoints
 

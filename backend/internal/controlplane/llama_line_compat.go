@@ -17,10 +17,13 @@ import (
 )
 
 type llamaLineCompatChatRequest struct {
-	Model    string         `json:"model"`
-	Messages []ModelMessage `json:"messages"`
-	Prompt   string         `json:"prompt"`
-	Stream   bool           `json:"stream"`
+	Model      string         `json:"model"`
+	Messages   []ModelMessage `json:"messages"`
+	Prompt     string         `json:"prompt"`
+	Stream     bool           `json:"stream"`
+	Tools      []any          `json:"tools"`
+	ToolChoice any            `json:"tool_choice"`
+	Options    map[string]any `json:"options"`
 }
 
 func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +69,7 @@ func (a *API) llamaLineCompatChatCompletions(w http.ResponseWriter, r *http.Requ
 		a.llamaLineCompatStreamChatCompletions(w, r, input)
 		return
 	}
-	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, input.Messages)
+	response, ok := a.llamaLineCompatGenerateModel(w, r, input)
 	if !ok {
 		return
 	}
@@ -112,7 +115,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 
 	var streamed strings.Builder
 	var correlation map[string]string
-	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, RequestID: requestID}, func(event ModelStreamEvent) error {
+	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID}, func(event ModelStreamEvent) error {
 		if event.CorrelationIDs != nil {
 			correlation = event.CorrelationIDs
 		}
@@ -159,7 +162,8 @@ func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request)
 		a.llamaLineCompatAcceptAsync(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
 		return
 	}
-	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
+	input.Messages = []ModelMessage{{Role: "user", Content: input.Prompt}}
+	response, ok := a.llamaLineCompatGenerateModel(w, r, input)
 	if !ok {
 		return
 	}
@@ -176,11 +180,15 @@ func (a *API) llamaLineCompatChat(w http.ResponseWriter, r *http.Request) {
 		a.llamaLineCompatAcceptAsync(w, r, input.Model, input.Messages)
 		return
 	}
-	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, input.Messages)
+	response, ok := a.llamaLineCompatGenerateModel(w, r, input)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"model": input.Model, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "message": map[string]string{"role": "assistant", "content": response.Content}, "done": true})
+	message := map[string]any{"role": "assistant", "content": response.Content}
+	if len(response.ToolCalls) > 0 {
+		message["tool_calls"] = response.ToolCalls
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"model": input.Model, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "message": message, "done": true})
 }
 
 func (a *API) llamaLineCompatGenerate(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +201,8 @@ func (a *API) llamaLineCompatGenerate(w http.ResponseWriter, r *http.Request) {
 		a.llamaLineCompatAcceptAsync(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
 		return
 	}
-	response, ok := a.llamaLineCompatGenerateModel(w, r, input.Model, []ModelMessage{{Role: "user", Content: input.Prompt}})
+	input.Messages = []ModelMessage{{Role: "user", Content: input.Prompt}}
+	response, ok := a.llamaLineCompatGenerateModel(w, r, input)
 	if !ok {
 		return
 	}
@@ -220,11 +229,12 @@ func (a *API) llamaLineCompatAcceptAsync(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, status, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "accepted": true, "started": started, "result_url": "/api/requests/" + req.ID + "/result", "history_url": "/api/history/" + req.ID, "backend": "switchyard-native"})
 }
 
-func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Request, model string, messages []ModelMessage) (ModelResponse, bool) {
+func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Request, input llamaLineCompatChatRequest) (ModelResponse, bool) {
+	model := input.Model
 	if strings.TrimSpace(model) == "" {
 		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
 	}
-	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "path": r.URL.Path})
+	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "tools": input.Tools, "path": r.URL.Path})
 	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
 	ctx, span := startControlPlaneSpan(ctx, "http.model_compat.generate",
 		attribute.String("path", r.URL.Path),
@@ -245,7 +255,7 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
-	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: requestID})
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID})
 	if err != nil {
 		spanErr = err
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
@@ -259,7 +269,7 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	response.CorrelationIDs["llama_line_request_id"] = requestID
 	setCompatRequestHeaders(w.Header(), requestID, response.CorrelationIDs)
 	w.Header().Set("X-OCQ-Status", "completed")
-	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
+	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "tool_calls": response.ToolCalls, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
 	return response, true
 }
@@ -270,9 +280,58 @@ func openAIChatCompletionBody(model string, response ModelResponse) map[string]a
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   model,
-		"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": response.Content}, "finish_reason": "stop"}},
+		"choices": []map[string]any{{"index": 0, "message": openAIChatMessage(response), "finish_reason": openAIFinishReason(response)}},
 		"usage":   map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
 	}
+}
+
+func openAIChatMessage(response ModelResponse) map[string]any {
+	message := map[string]any{"role": "assistant", "content": response.Content}
+	if len(response.ToolCalls) > 0 {
+		message["tool_calls"] = openAIToolCalls(response.ToolCalls)
+		if strings.TrimSpace(response.Content) == "" {
+			message["content"] = ""
+		}
+	}
+	return message
+}
+
+func openAIFinishReason(response ModelResponse) string {
+	if len(response.ToolCalls) > 0 {
+		return "tool_calls"
+	}
+	return "stop"
+}
+
+func openAIToolCalls(calls []any) []map[string]any {
+	out := make([]map[string]any, 0, len(calls))
+	for index, raw := range calls {
+		call, _ := raw.(map[string]any)
+		function, _ := call["function"].(map[string]any)
+		name := firstNonEmpty(stringFromAny(function["name"]), stringFromAny(call["name"]))
+		arguments := function["arguments"]
+		if arguments == nil {
+			arguments = call["arguments"]
+		}
+		if arguments == nil {
+			arguments = call["parameters"]
+		}
+		argumentString := stringFromAny(arguments)
+		if argumentString == "" && arguments != nil {
+			encoded, _ := json.Marshal(arguments)
+			argumentString = string(encoded)
+		}
+		id := firstNonEmpty(stringFromAny(call["id"]), fmt.Sprintf("call_%d", index))
+		out = append(out, map[string]any{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": argumentString}})
+	}
+	return out
+}
+
+func stringFromAny(value any) string {
+	if str, ok := value.(string); ok {
+		return str
+	}
+	return ""
 }
 
 func openAIChatCompletionChunkBody(model string, requestID string, content string, done bool) map[string]any {
@@ -623,7 +682,7 @@ func (a *API) llamaLineCompatConfig(w http.ResponseWriter, r *http.Request) {
 		"ollama_base_url_configured": strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "",
 		"opencode_server_url":        firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
 		"model_broker_timeout":       modelBrokerTimeout().String(),
-		"ollama_model_prefixes":      strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi"), ","),
+		"ollama_model_prefixes":      strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes"), ","),
 		"max_depth":                  a.compatBroker.maxDepth,
 		"durable_history":            true,
 	})

@@ -23,7 +23,7 @@ services:
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
       MODEL_BROKER_TIMEOUT: ${MODEL_BROKER_TIMEOUT:-10m}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
-      MODEL_BROKER_OLLAMA_MODELS: ${MODEL_BROKER_OLLAMA_MODELS:-llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi}
+      MODEL_BROKER_OLLAMA_MODELS: ${MODEL_BROKER_OLLAMA_MODELS:-llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes}
       OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode:4096}
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}

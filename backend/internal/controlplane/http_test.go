@@ -218,6 +218,73 @@ func TestAPIModelPullPullsOllamaModels(t *testing.T) {
 	}
 }
 
+func TestAPIPreservesOllamaToolCalls(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" || r.Method != http.MethodPost {
+			t.Fatalf("ollama request = %s %s", r.Method, r.URL.Path)
+		}
+		var input map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatalf("decode ollama request: %v", err)
+		}
+		if _, ok := input["tools"].([]any); !ok {
+			t.Fatalf("tools were not forwarded: %#v", input)
+		}
+		if options, ok := input["options"].(map[string]any); !ok || options["temperature"] == nil {
+			t.Fatalf("options were not forwarded: %#v", input)
+		}
+		_, _ = w.Write([]byte(`{"model":"qwen3:14b","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"add_two_numbers","arguments":{"a":41,"b":1}}}]},"done":true}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	body := `{"model":"ollama/qwen3:14b","stream":false,"tools":[{"type":"function","function":{"name":"add_two_numbers","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"Use add_two_numbers to add 41 and 1."}],"options":{"temperature":0}}`
+	resp, err := http.Post(srv.URL+"/api/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/chat error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	responseBody := mustReadBody(t, resp.Body)
+	if !strings.Contains(responseBody, "tool_calls") || !strings.Contains(responseBody, "add_two_numbers") {
+		t.Fatalf("response did not preserve tool calls: %s", responseBody)
+	}
+}
+
+func TestAPIOpenAIChatCompletionsConvertsOllamaToolCalls(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"qwen3:14b","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"add_two_numbers","arguments":{"a":41,"b":1}}}]},"done":true}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	body := `{"model":"ollama/qwen3:14b","tools":[{"type":"function","function":{"name":"add_two_numbers","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"Use add_two_numbers to add 41 and 1."}]}`
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	responseBody := mustReadBody(t, resp.Body)
+	for _, want := range []string{"tool_calls", "finish_reason\":\"tool_calls", "add_two_numbers", "\\\"a\\\":41"} {
+		if !strings.Contains(responseBody, want) {
+			t.Fatalf("response missing %q: %s", want, responseBody)
+		}
+	}
+}
+
 func TestAPIWorkflowDefinitionWritesAreDraftOnlyAndValidated(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
