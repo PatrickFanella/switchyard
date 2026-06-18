@@ -355,7 +355,7 @@ export type ModelBrokerObservability = {
   checked_at: string;
 };
 
-export type ViewID = 'overview' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
+export type ViewID = 'overview' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {
   id: ViewID;

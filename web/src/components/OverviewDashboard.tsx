@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import type {
   DashboardState,
   OpenPilotIssueState,
@@ -9,6 +8,7 @@ import type {
 } from '../types';
 import { formatTime, statusClasses, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong, HudSection } from './hud';
 import { formatOpenPilotGateStatus, workflowName } from '../api';
+import { canResumeOpenPilot } from './runCockpit';
 
 type OverviewDashboardProps = {
   dashboard: DashboardState;
@@ -32,7 +32,7 @@ type OverviewDashboardProps = {
   onRetryRun: (runID: string) => void;
   onCancelRun: (runID: string) => void;
   onResumeOpenPilotState: (state: OpenPilotIssueState) => void;
-  onStepAction: (runID: string, stepID: string, action: 'retry' | 'cancel') => void;
+  onOpenRunCockpit: (runID: string) => void;
   setOpenPilotRepo: (value: string) => void;
   setOpenPilotIssue: (value: string) => void;
 };
@@ -177,153 +177,86 @@ function RunRow({ run, selected, onSelect }: { run: DashboardState['runs'][numbe
   );
 }
 
-function EvidenceList({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <HudPanel className="bg-[hsl(var(--panel-strong))] p-4">
-      <h3 className="hud-label text-[hsl(var(--signal))]">{title}</h3>
-      <div className="mt-4 max-h-80 space-y-3 overflow-y-auto pr-1">{children}</div>
-    </HudPanel>
-  );
-}
-
-function RunDetailPanel({
+function SelectedRunSummaryCard({
   selectedRunDetail,
-  dashboard,
   openPilotState,
   runActionID,
   onRetryRun,
   onCancelRun,
   onResumeOpenPilotState,
-  onStepAction,
+  onOpenRunCockpit,
 }: {
   selectedRunDetail: RunDetail | null;
-  dashboard: DashboardState;
   openPilotState: OpenPilotStateResponse | null;
   runActionID: string;
   onRetryRun: (runID: string) => void;
   onCancelRun: (runID: string) => void;
   onResumeOpenPilotState: (state: OpenPilotIssueState) => void;
-  onStepAction: (runID: string, stepID: string, action: 'retry' | 'cancel') => void;
+  onOpenRunCockpit: (runID: string) => void;
 }) {
   if (!selectedRunDetail) {
-    return <HudEmptyState>Select a run to inspect its timeline, evidence, and operator actions.</HudEmptyState>;
+    return <HudEmptyState>Select a run to inspect the compact summary and open the run cockpit.</HudEmptyState>;
   }
 
+  const resumeable = selectedRunDetail.run.workflow_id === 'open-pilot' && canResumeOpenPilot(openPilotState);
+  const retryBusy = runActionID === `${selectedRunDetail.run.id}:retry`;
+  const cancelBusy = runActionID === `${selectedRunDetail.run.id}:cancel`;
+  const resumeBusy = openPilotState ? runActionID === `${openPilotState.state.id}:open-pilot:resume` : false;
+
   return (
-    <div className="space-y-4">
-      <HudPanel className="bg-[hsl(var(--panel-strong))] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-[hsl(var(--ink))]">{selectedRunDetail.run.summary || 'Run events'}</h3>
-            <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{workflowName(dashboard.workflows, selectedRunDetail.run.workflow_id)} · {selectedRunDetail.run.status}</p>
-          </div>
-          <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(selectedRunDetail.run.status)}`}>{selectedRunDetail.run.status}</span>
+    <HudPanelStrong className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <HudLabel className="text-[hsl(var(--faint))]">Selected run</HudLabel>
+          <h3 className="mt-2 text-xl font-semibold text-[hsl(var(--ink))]">{selectedRunDetail.run.summary || selectedRunDetail.run.id}</h3>
+          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{selectedRunDetail.run.workflow_id} · {selectedRunDetail.run.status}</p>
         </div>
-        <dl className="mt-4 grid gap-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))] sm:grid-cols-2">
-          <HudField label="Created" value={formatTime(selectedRunDetail.run.created_at)} />
-          <HudField label="Artifacts" value={selectedRunDetail.artifacts.length} />
-        </dl>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={runActionID === `${selectedRunDetail.run.id}:retry`}
-            onClick={() => openPilotState && selectedRunDetail.run.workflow_id === 'open-pilot' && ['failed', 'paused', 'agent_completed', 'merged'].includes(openPilotState.state.phase) ? onResumeOpenPilotState(openPilotState.state) : onRetryRun(selectedRunDetail.run.id)}
-            type="button"
-          >
-            {runActionID === `${selectedRunDetail.run.id}:retry` || (openPilotState && runActionID === `${openPilotState.state.id}:open-pilot:resume`) ? 'Retrying…' : openPilotState && selectedRunDetail.run.workflow_id === 'open-pilot' && ['failed', 'paused', 'agent_completed', 'merged'].includes(openPilotState.state.phase) ? 'Resume Open Pilot' : 'Retry run'}
-          </button>
-          <button
-            className="hud-chip border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--danger))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!['queued', 'running'].includes(selectedRunDetail.run.status) || runActionID === `${selectedRunDetail.run.id}:cancel`}
-            onClick={() => onCancelRun(selectedRunDetail.run.id)}
-            type="button"
-          >
-            {runActionID === `${selectedRunDetail.run.id}:cancel` ? 'Canceling…' : 'Cancel run'}
-          </button>
-        </div>
-      </HudPanel>
+        <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(selectedRunDetail.run.status)}`}>{selectedRunDetail.run.status}</span>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <HudField label="Run ID" value={selectedRunDetail.run.id} />
+        <HudField label="Workflow" value={selectedRunDetail.run.workflow_id} />
+        <HudField label="Steps" value={selectedRunDetail.steps.length} />
+        <HudField label="Artifacts" value={selectedRunDetail.artifacts.length} />
+        <HudField label="Events" value={selectedRunDetail.events.length} />
+        <HudField label="Created" value={formatTime(selectedRunDetail.run.created_at)} />
+        {openPilotState && selectedRunDetail.run.workflow_id === 'open-pilot' ? <HudField label="Open Pilot phase" value={openPilotState.state.phase} /> : null}
+        {openPilotState && selectedRunDetail.run.workflow_id === 'open-pilot' ? <HudField label="Next action" value={openPilotState.next_action} /> : null}
+      </div>
 
       {openPilotState && selectedRunDetail.run.workflow_id === 'open-pilot' ? (
-        <HudPanel className="bg-[hsl(var(--panel-strong))] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <HudLabel className="text-[hsl(var(--faint))]">Open Pilot lifecycle state</HudLabel>
-              <h3 className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-[hsl(var(--ink))]">{openPilotState.state.repo}#{openPilotState.state.issue}</h3>
-            </div>
-            <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(openPilotState.state.phase)}`}>{openPilotState.state.phase}</span>
-          </div>
-
-          <dl className="mt-4 grid gap-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))] sm:grid-cols-2">
-            <HudField label="Next action" value={openPilotState.next_action} />
-            <HudField label="Gate status" value={formatOpenPilotGateStatus(openPilotState.state.gate_status)} />
-            <HudField label="Pull request URL" value={openPilotState.state.pull_request_url || '—'} />
-            <HudField label="Merge SHA" value={openPilotState.state.merge_commit_sha || '—'} />
-            <HudField label="Issue closed" value={openPilotState.state.issue_closed ? 'yes' : 'no'} />
-            <HudField label="Repair attempts" value={`${openPilotState.state.repair_attempts} / ${openPilotState.state.max_repair_attempts}`} />
-            <HudField className="sm:col-span-2" label="Last error" value={openPilotState.state.last_error || '—'} />
-          </dl>
-        </HudPanel>
+        <div className="mt-4 rounded-none border border-[hsl(var(--border-faint))] bg-[hsl(var(--panel-soft))] p-3 text-sm text-[hsl(var(--muted))]">
+          {formatOpenPilotGateStatus(openPilotState.state.gate_status)}
+        </div>
       ) : null}
 
-      <HudPanel className="bg-[hsl(var(--panel-strong))] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <HudLabel className="text-[hsl(var(--faint))]">Step timeline</HudLabel>
-            <h3 className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-[hsl(var(--ink))]">{selectedRunDetail.steps.length} recorded step{selectedRunDetail.steps.length === 1 ? '' : 's'}</h3>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-3">
-          {selectedRunDetail.steps.length === 0 ? (
-            <HudEmptyState>No durable steps have been recorded for this run yet.</HudEmptyState>
-          ) : (
-            selectedRunDetail.steps.map((step) => (
-              <HudPanel key={step.id} className="bg-[hsl(var(--panel-soft))] p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <HudLabel className="text-[hsl(var(--faint))]">Step {step.position} · {step.executor}</HudLabel>
-                    <h4 className="mt-2 text-sm font-semibold text-[hsl(var(--ink))]">{step.name}</h4>
-                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Attempts: {step.attempt_count} · {formatTime(step.started_at)} → {formatTime(step.finished_at)}</p>
-                  </div>
-                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(step.status)}`}>{step.status}</span>
-                </div>
-                {step.model ? <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">Model: {step.model}</p> : null}
-                {step.output_summary ? <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{step.output_summary}</p> : null}
-                {step.error ? <p className="mt-3 text-sm leading-6 text-[hsl(var(--danger))]">{step.error}</p> : null}
-                {step.correlation_ids && Object.keys(step.correlation_ids).length > 0 ? (
-                  <dl className="mt-3 grid gap-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
-                    {Object.entries(step.correlation_ids).map(([key, value]) => (
-                      <div key={key} className="flex justify-between gap-3 border-t border-[hsl(var(--border-faint))] pt-2">
-                        <dt className="text-[hsl(var(--signal))]">{key}</dt>
-                        <dd className="break-all text-right text-[hsl(var(--ink))]">{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : null}
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={!['failed', 'canceled', 'timed_out'].includes(step.status) || runActionID === `${step.id}:step:retry`}
-                    onClick={() => onStepAction(selectedRunDetail.run.id, step.id, 'retry')}
-                    type="button"
-                  >
-                    {runActionID === `${step.id}:step:retry` ? 'Retrying…' : 'Retry step'}
-                  </button>
-                  <button
-                    className="hud-chip border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--danger))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={!['queued', 'running'].includes(step.status) || runActionID === `${step.id}:step:cancel`}
-                    onClick={() => onStepAction(selectedRunDetail.run.id, step.id, 'cancel')}
-                    type="button"
-                  >
-                    {runActionID === `${step.id}:step:cancel` ? 'Canceling…' : 'Cancel step'}
-                  </button>
-                </div>
-              </HudPanel>
-            ))
-          )}
-        </div>
-      </HudPanel>
-    </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          className="hud-chip border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--signal))] transition hover:bg-[hsl(var(--panel-soft))]"
+          onClick={() => onOpenRunCockpit(selectedRunDetail.run.id)}
+          type="button"
+        >
+          Open cockpit
+        </button>
+        <button
+          className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={retryBusy || resumeBusy}
+          onClick={() => (resumeable && openPilotState ? onResumeOpenPilotState(openPilotState.state) : onRetryRun(selectedRunDetail.run.id))}
+          type="button"
+        >
+          {retryBusy || resumeBusy ? 'Working…' : resumeable ? 'Resume Open Pilot' : 'Retry run'}
+        </button>
+        <button
+          className="hud-chip border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--danger))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!['queued', 'running'].includes(selectedRunDetail.run.status) || cancelBusy}
+          onClick={() => onCancelRun(selectedRunDetail.run.id)}
+          type="button"
+        >
+          {cancelBusy ? 'Canceling…' : 'Cancel run'}
+        </button>
+      </div>
+    </HudPanelStrong>
   );
 }
 
@@ -348,7 +281,7 @@ export function OverviewDashboard({
   onRetryRun,
   onCancelRun,
   onResumeOpenPilotState,
-  onStepAction,
+  onOpenRunCockpit,
   setOpenPilotRepo,
   setOpenPilotIssue,
   workflows,
@@ -440,59 +373,16 @@ export function OverviewDashboard({
         </div>
       </HudSection>
 
-      <HudSection kicker="Selected run" title="Selected run" note="Timeline, lifecycle state, retry/cancel actions, and summary for the currently selected run.">
-        <RunDetailPanel
-          dashboard={dashboard}
+      <HudSection kicker="Selected run" title="Selected run" note="Compact summary with direct cockpit entry and the highest-signal run actions.">
+        <SelectedRunSummaryCard
           openPilotState={openPilotState}
-          runActionID={runActionID}
-          selectedRunDetail={selectedRunDetail}
           onCancelRun={onCancelRun}
+          onOpenRunCockpit={onOpenRunCockpit}
           onRetryRun={onRetryRun}
           onResumeOpenPilotState={onResumeOpenPilotState}
-          onStepAction={onStepAction}
+          runActionID={runActionID}
+          selectedRunDetail={selectedRunDetail}
         />
-      </HudSection>
-
-      <HudSection kicker="Evidence" title="Evidence" note="Events and artifacts laid out for fast operator review with compact scrollable panels.">
-        <div className="grid gap-4 lg:grid-cols-2">
-          <EvidenceList title="Events">
-            {selectedRunDetail?.events.length ? (
-              selectedRunDetail.events.map((event) => (
-                <HudPanel key={event.id} className="border-[hsl(var(--pulse))] bg-[hsl(var(--panel-strong))] px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="hud-label text-[hsl(var(--pulse))]">{event.type}</p>
-                    <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{formatTime(event.created_at)}</span>
-                  </div>
-                  <p className="mt-2 text-sm leading-6 text-[hsl(var(--muted))]">{event.message}</p>
-                </HudPanel>
-              ))
-            ) : (
-              <HudEmptyState>No events have been recorded for this run yet.</HudEmptyState>
-            )}
-          </EvidenceList>
-
-          <EvidenceList title="Artifacts">
-            {selectedRunDetail?.artifacts.length ? (
-              selectedRunDetail.artifacts.map((artifact) => (
-                <HudPanel key={artifact.id} className="bg-[hsl(var(--panel-strong))] px-3 py-2">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-[hsl(var(--ink))]">{artifact.name}</p>
-                      <p className="mt-1 text-[0.65rem] uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{artifact.kind}</p>
-                    </div>
-                    <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{formatTime(artifact.created_at)}</span>
-                  </div>
-                  <p className="mt-2 break-all text-xs text-[hsl(var(--muted))]">{artifact.uri}</p>
-                  <a className="mt-3 inline-block text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))] underline" href={artifact.uri} rel="noreferrer" target="_blank">
-                    Open artifact
-                  </a>
-                </HudPanel>
-              ))
-            ) : (
-              <HudEmptyState>No artifacts attached</HudEmptyState>
-            )}
-          </EvidenceList>
-        </div>
       </HudSection>
     </section>
   );

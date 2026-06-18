@@ -7,7 +7,7 @@ type NavigationState = {
   selectedRequestID: string;
 };
 
-const viewSet = new Set<ViewID>(['overview', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
+const viewSet = new Set<ViewID>(['overview', 'runs', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
 
 function safeDecodeURIComponent(value: string) {
   try {
@@ -35,6 +35,14 @@ export function parseHash(hash: string | undefined): NavigationState {
     return { activeView: 'overview', selectedRunID: '', selectedRequestID: '' };
   }
 
+  if (viewPart === 'runs') {
+    if (section) {
+      return { activeView: 'runs', selectedRunID: safeDecodeURIComponent(section), selectedRequestID: '' };
+    }
+
+    return { activeView: 'runs', selectedRunID: '', selectedRequestID: '' };
+  }
+
   if (viewPart === 'queues') {
     if (section === 'requests' && runID) {
       return { activeView: 'queues', selectedRunID: '', selectedRequestID: safeDecodeURIComponent(runID) };
@@ -51,6 +59,14 @@ export function parseHash(hash: string | undefined): NavigationState {
 }
 
 export function formatHash(activeView: ViewID, selectedRunID = '', selectedRequestID = '') {
+  if (activeView === 'runs' && selectedRunID) {
+    return `#/runs/${encodeURIComponent(selectedRunID)}`;
+  }
+
+  if (activeView === 'runs') {
+    return '#/overview';
+  }
+
   if (activeView === 'overview' && selectedRunID) {
     return `#/overview/runs/${encodeURIComponent(selectedRunID)}`;
   }
@@ -106,6 +122,18 @@ export function useHashNavigation() {
     }
   }, []);
 
+  const openRunCockpit = useCallback((selectedRunID: string) => {
+    const next = { activeView: 'runs' as const, selectedRunID, selectedRequestID: '' };
+    setNavigation(next);
+
+    if (typeof window !== 'undefined') {
+      const hash = formatHash(next.activeView, next.selectedRunID, next.selectedRequestID);
+      if (window.location.hash !== hash) {
+        window.location.hash = hash;
+      }
+    }
+  }, []);
+
   const setSelectedRequestID = useCallback((selectedRequestID: string) => {
     const next = { activeView: 'queues' as const, selectedRunID: '', selectedRequestID };
     setNavigation(next);
@@ -124,6 +152,7 @@ export function useHashNavigation() {
     selectedRequestID: navigation.selectedRequestID,
     setActiveView,
     setSelectedRunID,
+    openRunCockpit,
     setSelectedRequestID,
   };
 }

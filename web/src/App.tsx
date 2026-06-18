@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { HudErrorState, HudLed, HudLabel, HudPanelStrong, HudTag } from './components/hud';
 import { FeaturePage } from './components/FeaturePage';
+import { RunCockpitPage } from './components/RunCockpitPage';
 import { ObservabilityPage } from './components/ObservabilityPage';
 import { OverviewDashboard } from './components/OverviewDashboard';
 import { QueuesPage } from './components/QueuesPage';
@@ -16,7 +17,7 @@ function ShellChip({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
-  const { activeView, selectedRequestID, selectedRunID, setActiveView, setSelectedRequestID, setSelectedRunID } = useHashNavigation();
+  const { activeView, openRunCockpit, selectedRequestID, selectedRunID, setActiveView, setSelectedRequestID, setSelectedRunID } = useHashNavigation();
   const data = useDashboardData({ activeView, selectedRunID, setSelectedRunID });
 
   return (
@@ -92,8 +93,8 @@ export default function App() {
             onRetryRun={data.retryRun}
             onResumeOpenPilotState={data.resumeOpenPilotState}
             onRunTrigger={data.runTrigger}
+            onOpenRunCockpit={openRunCockpit}
             onSelectRun={data.setSelectedRunID}
-            onStepAction={data.stepAction}
             onToggleTrigger={data.toggleTrigger}
             refreshing={data.refreshing}
             runActionID={data.runActionID}
@@ -105,6 +106,19 @@ export default function App() {
             workflows={data.dashboard.workflows}
             updatingTriggerID={data.updatingTriggerID}
             workflowDefinitions={data.workflowDefinitions}
+          />
+        ) : activeView === 'runs' ? (
+          <RunCockpitPage
+            selectedRunID={selectedRunID}
+            selectedRunDetail={data.selectedRunDetail}
+            openPilotState={data.openPilotState}
+            runActionID={data.runActionID}
+            onRetryRun={data.retryRun}
+            onCancelRun={data.cancelRun}
+            onResumeOpenPilotState={data.resumeOpenPilotState}
+            onStepAction={data.stepAction}
+            onBackToOverview={() => setActiveView('overview')}
+            onRefresh={data.refresh}
           />
         ) : activeView === 'queues' ? (
           <QueuesPage selectedRequestID={selectedRequestID} setSelectedRequestID={setSelectedRequestID} />
