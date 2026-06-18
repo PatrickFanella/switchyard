@@ -12,3 +12,5 @@ Good runbooks include:
 - Verification
 
 Add Switchyard-specific runbooks as operational procedures stabilize.
+
+- [Native Model Broker Cutover](native-model-broker-cutover.md) — operate and troubleshoot Switchyard on the llama-line-compatible `11434` ingress.
