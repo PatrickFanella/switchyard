@@ -1,0 +1,62 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "@tarquinen/opencode-dcp@latest",
+    "/root/.config/opencode/plugins/rtk.ts",
+    "/root/.config/opencode/plugins/switchyard-blacktower.ts"
+  ],
+  "agent": {
+    "explore": { "disable": true },
+    "general": { "disable": true }
+  },
+  "skills": {
+    "paths": [
+      "/root/.config/opencode/skills",
+      "/root/.config/opencode/blacktower/managed-skills"
+    ]
+  },
+  "mcp": {
+    "github": {
+      "type": "local",
+      "command": [
+        "bash",
+        "-lc",
+        "token=\"${GITHUB_PERSONAL_ACCESS_TOKEN:-}\"\nif [ -z \"$token\" ] && command -v gh >/dev/null 2>&1; then\ntoken=\"$(gh auth token 2>/dev/null || true)\"\nfi\nif [ -z \"$token\" ]; then\nprintf \"GITHUB_PERSONAL_ACCESS_TOKEN or gh auth is required for github MCP\\n\" >&2\nexit 1\nfi\nexport GITHUB_PERSONAL_ACCESS_TOKEN=\"$token\"\nexec docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server stdio"
+      ]
+    },
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest", "--isolated", "--headless"]
+    },
+    "chrome-devtools": {
+      "type": "local",
+      "command": ["npx", "-y", "chrome-devtools-mcp@latest", "--isolated", "--headless", "--no-usage-statistics"]
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "websearch": {
+      "type": "remote",
+      "url": "https://mcp.exa.ai/mcp?tools=web_search_exa"
+    },
+    "grep_app": {
+      "type": "remote",
+      "url": "https://mcp.grep.app"
+    }
+  },
+  "lsp": true,
+  "permission": "allow",
+  "compaction": {
+    "auto": false,
+    "prune": true,
+    "reserved": 10000
+  },
+  "experimental": {
+    "mcp_timeout": 30000
+  },
+  "tool_output": {
+    "max_lines": 2000,
+    "max_bytes": 51200
+  }
+}

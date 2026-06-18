@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,6 +63,27 @@ func openCodeExecutorTimeout() time.Duration {
 		}
 	}
 	return 10 * time.Minute
+}
+
+func openCodeSessionCreateTimeout() time.Duration {
+	return durationFromEnv("OPENCODE_SESSION_CREATE_TIMEOUT", 5*time.Second)
+}
+
+func openCodeMessageTimeout() time.Duration {
+	return durationFromEnv("OPENCODE_MESSAGE_TIMEOUT", openCodeExecutorTimeout())
+}
+
+func openCodeAbortTimeout() time.Duration {
+	return durationFromEnv("OPENCODE_ABORT_TIMEOUT", time.Second)
+}
+
+func durationFromEnv(name string, fallback time.Duration) time.Duration {
+	if raw := strings.TrimSpace(os.Getenv(name)); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return fallback
 }
 
 func NewEnvOCQExecutor() *EnvOpenCodeExecutor {
@@ -148,18 +170,48 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 	directory := firstNonEmpty(request.WorkDir, os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace")
 	sessionID := request.SessionID
 	if sessionID == "" {
-		created, err := e.createOpenCodeSession(ctx, directory)
+		createCtx, cancel := context.WithTimeout(ctx, openCodeSessionCreateTimeout())
+		created, err := e.createOpenCodeSession(createCtx, directory)
+		cancel()
 		if err != nil {
 			return OpenCodeResponse{}, err
 		}
 		sessionID = created
 	}
-	content, err := e.postOpenCodeMessage(ctx, sessionID, request)
+	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
+	content, err := e.postOpenCodeMessage(messageCtx, sessionID, request)
+	cancel()
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
+			e.abortOpenCodeSession(context.Background(), sessionID)
+		}
 		return OpenCodeResponse{}, err
 	}
 	requestID := firstNonEmpty(request.RequestID, "opencode-"+shortRandomID())
 	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: map[string]string{"opencode_executor": "switchyard", "opencode_executor_backend": "native", "opencode_session_id": sessionID, "opencode_request_id": requestID}}, nil
+}
+
+func (e *EnvOpenCodeExecutor) abortOpenCodeSession(ctx context.Context, sessionID string) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(e.baseURL) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, openCodeAbortTimeout())
+	defer cancel()
+	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, "/abort")
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	e.applyOpenCodeAuth(req)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 }
 
 func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directory string) (string, error) {

@@ -132,3 +132,35 @@ func TestEnvOpenCodeExecutorHonorsConfiguredTimeout(t *testing.T) {
 		t.Fatalf("SendPrompt() error = %v, want deadline exceeded", err)
 	}
 }
+
+func TestEnvOpenCodeExecutorAbortsNativeSessionOnMessageTimeout(t *testing.T) {
+	aborted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":"ses-timeout"}`))
+		case r.URL.Path == "/session/ses-timeout/message" && r.Method == http.MethodPost:
+			time.Sleep(50 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"late"}]}`))
+		case r.URL.Path == "/session/ses-timeout/abort" && r.Method == http.MethodPost:
+			aborted = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+	t.Setenv("OPENCODE_SESSION_CREATE_TIMEOUT", "1s")
+	t.Setenv("OPENCODE_MESSAGE_TIMEOUT", "1ms")
+	t.Setenv("OPENCODE_ABORT_TIMEOUT", "1s")
+
+	_, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Prompt: "timeout", WorkDir: "/tmp/worktree"})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SendPrompt() error = %v, want deadline exceeded", err)
+	}
+	if !aborted {
+		t.Fatalf("expected native session abort after timeout")
+	}
+}
