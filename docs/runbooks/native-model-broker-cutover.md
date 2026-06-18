@@ -10,6 +10,7 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 | --- | --- | --- | --- |
 | Switchyard compat ingress | NUC / Switchyard Compose | `http://127.0.0.1:11434` and `http://10.0.0.50:11434` | Replaces the old llama-line process. |
 | Switchyard API | NUC / Switchyard Compose | `http://127.0.0.1:28080` or internal `api:8080` | Native control plane. |
+| Switchyard frontend | NUC / Switchyard Compose via Almaz Caddy | `https://switchyard.subcult.tv` | Authelia-protected, proxied by Almaz to `http://10.0.0.50:28081`. |
 | Ollama upstream | NUC host | `http://127.0.0.1:11435` on the host, `http://host.docker.internal:11435` from Compose | Real model server; never point `OLLAMA_BASE_URL` at `11434`. |
 | Phoenix | Almaz | `http://10.0.0.200:6006` | OTLP/HTTP traces with `x-project-name=switchyard`. |
 | Subcorp clients | `10.0.0.56` containers | `http://10.0.0.50:11434` | `/api/chat` returns plain Ollama JSON; `/v1/chat/completions` supports OpenAI JSON/SSE. |
@@ -17,6 +18,7 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 ## Preconditions
 
 - `docker compose ps` shows `switchyard-api-1` running.
+- `docker inspect switchyard-api-1 switchyard-web-1 switchyard-postgres-1 switchyard-opencode-1 --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}}'` reports `unless-stopped` so the stack comes back after Docker starts.
 - `ss -ltnp 'sport = :11434'` shows Docker publishing `11434`.
 - `systemctl show ollama -p Environment` includes `OLLAMA_HOST=0.0.0.0:11435` when Docker must reach host Ollama.
 - UFW allows Docker bridge traffic to host Ollama on `11435`.
@@ -63,6 +65,24 @@ curl -fsS -H 'Content-Type: application/json' \
 ```
 
 Expected: `/api/chat` returns plain Ollama JSON with `message.content` equal to `ok`.
+
+## Frontend smoke
+
+From any host with DNS access:
+
+```bash
+curl -I https://switchyard.subcult.tv
+```
+
+Expected before authentication: `302` redirect to `https://auth.subcult.tv/...`. This confirms the route is live and protected by Authelia.
+
+From Almaz, the local Caddy route can be checked without public DNS/TLS:
+
+```bash
+curl -I -H 'Host: switchyard.subcult.tv' http://127.0.0.1
+```
+
+Expected: `302` redirect to Authelia. The route lives in `/opt/server/management/config/caddy/Caddyfile` and proxies to `10.0.0.50:28081`.
 
 ## Incident triage
 

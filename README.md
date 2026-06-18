@@ -124,6 +124,8 @@ API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintain
 
 Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented in [`docs/reference/client-compatibility.md`](docs/reference/client-compatibility.md).
 
+The deployed operator dashboard is exposed as `https://switchyard.subcult.tv` through Almaz Caddy and Authelia, proxying to the NUC web service on `10.0.0.50:28081`.
+
 The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module surfaces for queues, sessions, logs/search, prompts, config, agents, and skills so model brokering, OpenCode execution, content workflows, and profiles feel native to Switchyard instead of separate consoles. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.
