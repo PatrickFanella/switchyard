@@ -992,6 +992,30 @@ func TestAPILlamaLineCompatRecoversQueuedAsyncRequestOnStartup(t *testing.T) {
 	t.Fatal("recovered queued request did not complete")
 }
 
+func TestAPILlamaLineCompatRecoveryLeavesFreshRunningRequest(t *testing.T) {
+	t.Setenv("MODEL_BROKER_RECOVERY_STALE_AFTER", "1000000h")
+	store := controlplane.NewStore(nil)
+	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "fresh-running", Model: "qwen3.5:latest", Path: "/api/generate", Client: "test", RequestBody: `{"model":"qwen3.5:latest","messages":[{"role":"user","content":"hello"}]}`})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if _, err := store.StartModelBrokerRequest(req.ID); err != nil {
+		t.Fatalf("start request: %v", err)
+	}
+
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	row, err := store.ModelBrokerRequest(req.ID)
+	if err != nil {
+		t.Fatalf("load request: %v", err)
+	}
+	if row.Status != controlplane.ModelBrokerRequestRunning {
+		t.Fatalf("status = %s", row.Status)
+	}
+}
+
 func TestAPILlamaLineCompatLegacyAdminAndUIAliases(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	_, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "legacy-alias-1", Model: "llama3.2", Path: "/api/generate", Client: "test", RequestBody: `{"prompt":"alias"}`})

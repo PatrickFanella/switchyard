@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -70,7 +71,12 @@ func (t *llamaLineCompatTracker) submitAsync(r *http.Request, model string, mess
 func (t *llamaLineCompatTracker) recoverQueuedAsync() {
 	running, err := t.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestRunning}, Limit: t.maxDepth})
 	if err == nil {
+		staleAfter := modelBrokerRecoveryStaleAfter()
+		now := time.Now().UTC()
 		for _, req := range running {
+			if now.Sub(req.UpdatedAt) < staleAfter {
+				continue
+			}
 			_, _ = t.store.FinishModelBrokerRequest(req.ID, FinishModelBrokerRequestInput{Status: ModelBrokerRequestFailed, Error: "recovered stale running request after API restart", CorrelationIDs: req.CorrelationIDs})
 		}
 	}
@@ -85,6 +91,15 @@ func (t *llamaLineCompatTracker) recoverQueuedAsync() {
 		}
 		go t.runAsync(req.ID, model, messages)
 	}
+}
+
+func modelBrokerRecoveryStaleAfter() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RECOVERY_STALE_AFTER")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 15 * time.Minute
 }
 
 func (t *llamaLineCompatTracker) runAsync(id string, model string, messages []ModelMessage) {

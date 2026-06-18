@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
@@ -32,6 +33,31 @@ func TestEnvModelExecutorUsesLlamaLine(t *testing.T) {
 	}
 	if response.Content != "model output" || response.CorrelationIDs["model_broker"] != "switchyard" || response.CorrelationIDs["model_source"] != "llama-line" || response.CorrelationIDs["llama_line_request_id"] != "llama-request-1" {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestEnvModelBrokerRetriesRetryableOllamaFailure(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&calls, 1)
+		if count == 1 {
+			http.Error(w, "try again", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"retried output"},"done":true}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "ollama")
+	t.Setenv("OLLAMA_BASE_URL", server.URL)
+	t.Setenv("MODEL_BROKER_RETRY_ATTEMPTS", "2")
+	t.Setenv("MODEL_BROKER_RETRY_BACKOFF", "0s")
+
+	response, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "qwen3.5:latest", Messages: []controlplane.ModelMessage{{Role: "user", Content: "hello"}}})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if response.Content != "retried output" || response.CorrelationIDs["model_broker_attempts"] != "2" || atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("response = %+v calls = %d", response, calls)
 	}
 }
 

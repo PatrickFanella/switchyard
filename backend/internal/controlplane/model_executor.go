@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,6 +99,51 @@ func modelBrokerTimeout() time.Duration {
 	return 10 * time.Minute
 }
 
+type modelBrokerRetryPolicy struct {
+	Attempts int
+	Backoff  time.Duration
+}
+
+type modelBrokerHTTPError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e modelBrokerHTTPError) Error() string {
+	return e.Status
+}
+
+func modelBrokerRetryPolicyFromEnv() modelBrokerRetryPolicy {
+	attempts := 1
+	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RETRY_ATTEMPTS")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 5 {
+			attempts = parsed
+		}
+	}
+	backoff := 250 * time.Millisecond
+	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RETRY_BACKOFF")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 && parsed <= 10*time.Second {
+			backoff = parsed
+		}
+	}
+	return modelBrokerRetryPolicy{Attempts: attempts, Backoff: backoff}
+}
+
+func modelBrokerRetryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout || status >= 500
+}
+
+func modelBrokerRetryableError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var httpErr modelBrokerHTTPError
+	if errors.As(err, &httpErr) {
+		return modelBrokerRetryableStatus(httpErr.StatusCode)
+	}
+	return true
+}
+
 // NewEnvModelExecutor preserves the previous constructor name while returning
 // the native broker implementation.
 func NewEnvModelExecutor() *EnvModelBroker {
@@ -127,16 +173,48 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (re
 			attribute.String("request_id", request.RequestID),
 		)
 	}()
-	if backend == "llama-line" {
+	return e.generateWithRetry(ctx, backend, request)
+}
+
+func (e *EnvModelBroker) generateWithRetry(ctx context.Context, backend string, request ModelRequest) (ModelResponse, error) {
+	policy := modelBrokerRetryPolicyFromEnv()
+	var lastErr error
+	for attempt := 1; attempt <= policy.Attempts; attempt++ {
+		response, err := e.generateOnce(ctx, backend, request)
+		if err == nil {
+			if response.CorrelationIDs == nil {
+				response.CorrelationIDs = map[string]string{}
+			}
+			response.CorrelationIDs["model_broker_attempts"] = fmt.Sprintf("%d", attempt)
+			return response, nil
+		}
+		lastErr = err
+		if !modelBrokerRetryableError(err) || attempt == policy.Attempts {
+			break
+		}
+		timer := time.NewTimer(policy.Backoff * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ModelResponse{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return ModelResponse{}, lastErr
+}
+
+func (e *EnvModelBroker) generateOnce(ctx context.Context, backend string, request ModelRequest) (ModelResponse, error) {
+	switch backend {
+	case "llama-line":
 		if strings.TrimSpace(e.llamaLineBaseURL) == "" {
 			return ModelResponse{}, fmt.Errorf("LLAMA_LINE_BASE_URL is not configured")
 		}
 		return e.generateViaLlamaLine(ctx, request)
-	}
-	if backend == "ollama" {
+	case "ollama":
 		return e.generateViaOllama(ctx, request)
+	default:
+		return e.generateViaOpenCode(ctx, request)
 	}
-	return e.generateViaOpenCode(ctx, request)
 }
 
 func (e *EnvModelBroker) Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (response ModelResponse, err error) {
@@ -247,7 +325,7 @@ func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request Model
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return ModelResponse{}, fmt.Errorf("model request failed: %s", resp.Status)
+		return ModelResponse{}, modelBrokerHTTPError{StatusCode: resp.StatusCode, Status: "model request failed: " + resp.Status}
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -299,7 +377,7 @@ func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelReq
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return ModelResponse{}, fmt.Errorf("ollama request failed: %s", resp.Status)
+		return ModelResponse{}, modelBrokerHTTPError{StatusCode: resp.StatusCode, Status: "ollama request failed: " + resp.Status}
 	}
 	var decoded struct {
 		Message struct {
@@ -343,7 +421,7 @@ func (e *EnvModelBroker) streamViaOllama(ctx context.Context, request ModelReque
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return ModelResponse{}, fmt.Errorf("ollama request failed: %s", resp.Status)
+		return ModelResponse{}, modelBrokerHTTPError{StatusCode: resp.StatusCode, Status: "ollama request failed: " + resp.Status}
 	}
 	correlation := map[string]string{"model_broker": "switchyard", "model_source": "ollama", "model_broker_backend": "native", "ollama_model": ollamaModelName(request.Model)}
 	var builder strings.Builder
@@ -417,7 +495,7 @@ func (e *EnvModelBroker) streamViaLlamaLine(ctx context.Context, request ModelRe
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return ModelResponse{}, fmt.Errorf("model request failed: %s", resp.Status)
+		return ModelResponse{}, modelBrokerHTTPError{StatusCode: resp.StatusCode, Status: "model request failed: " + resp.Status}
 	}
 	correlation := map[string]string{"model_broker": "switchyard", "model_source": "llama-line", "model_broker_backend": "compat"}
 	if requestID := resp.Header.Get("X-Llama-Line-Request-ID"); requestID != "" {
