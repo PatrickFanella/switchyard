@@ -71,9 +71,19 @@ Already done:
 - API-backed HUD dashboard.
 - Imported OCQ, llama-line, and Changemaker as transitional reference implementations; those directories are now removed.
 - Probes for compatibility backends, external/reference Blacktower when configured, and native workflow policy.
+- Native llama-line/Ollama/OpenAI-compatible ingress on `LLAMA_LINE_PORT`.
+- Durable model-broker request ledger, history/search/log/config compatibility endpoints, admin queue/inflight aliases, and OCQ session/request/settings compatibility views.
+- Phoenix OTLP tracing for model-broker request spans.
 - Open Pilot CLI/API contract.
 - Devlog Markdown artifact workflow.
 - Best-effort cancellation adapters.
+
+Current hardening track:
+
+- Production runbooks and smoke checks for the live `11434` cutover.
+- Observability UI backed by the durable broker ledger and Phoenix trace correlation.
+- Model-broker reliability policy for bounded retries, clearer degradation, and safer async recovery.
+- Feature-tab UI redesign, starting with Queues/Requests.
 
 Exit criteria before Phase 1:
 

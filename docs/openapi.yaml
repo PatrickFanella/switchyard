@@ -100,6 +100,87 @@ paths:
       responses:
         "202": { description: Cancellation accepted }
         "404": { description: Request not found }
+  /admin/logs:
+    get:
+      summary: Legacy llama-line admin logs alias
+      description: Alias of `/api/logs`; backed by the durable model broker ledger.
+      responses:
+        "200": { description: Log entries }
+  /admin/logs/recent:
+    get:
+      summary: Legacy llama-line recent logs alias
+      description: Alias of `/api/logs`.
+      responses:
+        "200": { description: Log entries }
+  /admin/audit:
+    get:
+      summary: Legacy llama-line audit alias
+      description: Audit-style view derived from durable model broker requests.
+      responses:
+        "200": { description: Audit entries }
+  /admin/audit/recent:
+    get:
+      summary: Legacy llama-line recent audit alias
+      description: Alias of `/admin/audit`.
+      responses:
+        "200": { description: Audit entries }
+  /admin/search:
+    get:
+      summary: Legacy llama-line admin search alias
+      description: Alias of `/api/search`.
+      responses:
+        "200": { description: Search results }
+  /admin/stats/summary:
+    get:
+      summary: Legacy llama-line stats summary alias
+      description: Summarizes request counts, model counts, queue depth, and inflight depth from native state.
+      responses:
+        "200": { description: Stats summary }
+  /admin/feedback:
+    get:
+      summary: Legacy feedback compatibility status
+      responses:
+        "200": { description: Feedback compatibility status }
+    post:
+      summary: Accept legacy feedback compatibility payloads
+      description: Accepts feedback for compatibility but does not persist it.
+      responses:
+        "202": { description: Feedback accepted }
+  /ui/:
+    get:
+      summary: Lightweight legacy broker UI landing page
+      responses:
+        "200": { description: HTML compatibility page }
+  /ui/api/status:
+    get:
+      summary: Legacy UI status alias
+      description: Alias of `/broker/status`.
+      responses:
+        "200": { description: Broker status }
+  /ui/api/history:
+    get:
+      summary: Legacy UI history alias
+      description: Alias of `/api/history`.
+      responses:
+        "200": { description: Request history }
+  /ui/api/logs:
+    get:
+      summary: Legacy UI logs alias
+      description: Alias of `/api/logs`.
+      responses:
+        "200": { description: Log entries }
+  /ui/api/search:
+    get:
+      summary: Legacy UI search alias
+      description: Alias of `/api/search`.
+      responses:
+        "200": { description: Search results }
+  /ui/api/config:
+    get:
+      summary: Legacy UI config alias
+      description: Alias of `/api/config`.
+      responses:
+        "200": { description: Compatibility config }
   /api/history:
     get:
       summary: List durable model broker request history
@@ -180,16 +261,75 @@ paths:
       summary: OCQ-compatible native OpenCode session list
       responses:
         "200": { description: Session list }
+  /ocq/sessions/{id}:
+    get:
+      summary: OCQ-compatible native OpenCode session detail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Session detail }
+        "404": { description: Session not found }
+  /ocq/sessions/{session}/messages/{id}/abort:
+    post:
+      summary: OCQ-compatible message abort alias
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema: { type: string }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202": { description: Abort accepted }
   /ocq/requests:
     get:
       summary: OCQ-compatible request list backed by the model broker ledger
       responses:
         "200": { description: Request list }
+  /ocq/requests/{id}:
+    get:
+      summary: OCQ-compatible request detail backed by the model broker ledger
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Request detail }
+        "404": { description: Request not found }
+  /ocq/requests/{id}/abort:
+    post:
+      summary: OCQ-compatible request abort alias
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202": { description: Abort accepted }
+        "404": { description: Request not found }
   /ocq/settings:
     get:
       summary: OCQ-compatible native executor settings
       responses:
         "200": { description: Executor settings }
+  /ocq/audit:
+    get:
+      summary: OCQ-compatible audit alias
+      description: Alias of the native compatibility audit view.
+      responses:
+        "200": { description: Audit entries }
+  /ocq/logs:
+    get:
+      summary: OCQ-compatible logs alias
+      description: Alias of the native compatibility logs view.
+      responses:
+        "200": { description: Log entries }
   /api/adapters:
     get:
       summary: List adapter snapshots

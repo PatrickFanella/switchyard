@@ -2,6 +2,8 @@
 
 Switchyard is one repository for one cohesive automation runtime. OCQ, llama-line, and Changemaker are historical references that were absorbed into native Switchyard modules; the imported directories were removed. Blacktower is planned as Switchyard-native profiles/personas rather than a required external operator layer.
 
+> **Migration status:** OCQ, llama-line, and Changemaker directories have been removed. Switchyard now owns the native model broker, OpenCode executor, compatibility ingress, durable request ledger, and first-party workflow policy.
+
 ## Product shape
 
 ```txt
@@ -26,7 +28,7 @@ Switchyard UI
 ## Migration sequence
 
 1. Treat OCQ, llama-line, and Changemaker as historical reference material only.
-2. Keep compatibility ingress and adapters available while native module contracts are built.
+2. Keep compatibility ingress and adapters available for callers while native module contracts remain the runtime source of truth.
 3. Build Switchyard's API and UI around stable concepts: workflows, triggers, runs, steps, events, artifacts, logs, sessions, prompts, profiles, and module health.
 4. Pull timers out of app-specific workflows. Cron, interval, webhook, manual, and Gitea-poll triggers belong to Switchyard.
 5. Move workflow callers to native Switchyard interfaces, then absorb sidecar behavior behind those interfaces.
@@ -43,7 +45,7 @@ The backend has durable Postgres storage when `DATABASE_URL` is configured and a
 - `POST /api/runs`
 - `POST /api/triggers/{id}/run`
 
-This MVP records run envelopes and events, runs opt-in pipelines, probes compatibility surfaces, and prepares for native model broker, OpenCode executor, and profile modules.
+This MVP records run envelopes and events, runs opt-in pipelines, serves native model broker/OpenCode compatibility surfaces, and prepares for deeper profile modules.
 
 Cutover note: the API also exposes llama-line/Ollama-compatible ingress on `LLAMA_LINE_PORT` for `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, `/v1/embeddings`, admin queue/inflight endpoints, and durable `/api/history`, `/api/search`, `/api/logs`, `/api/config` compatibility surfaces so clients can migrate without repointing immediately. Ollama/local model calls route to the real upstream `OLLAMA_BASE_URL`; do not point that variable at Switchyard's own cutover port.
 
