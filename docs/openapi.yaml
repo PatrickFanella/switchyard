@@ -335,6 +335,67 @@ paths:
       summary: List adapter snapshots
       responses:
         "200": { $ref: "#/components/responses/AdapterPayload" }
+  /api/models:
+    get:
+      summary: List available model inventory
+      description: Reports installed Ollama models plus OpenCode provider/model metadata when those upstreams are configured.
+      responses:
+        "200":
+          description: Model catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ollama:
+                    type: object
+                    properties:
+                      configured: { type: boolean }
+                      base_url: { type: string }
+                      status: { type: string }
+                      models:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            provider: { type: string }
+                  opencode:
+                    type: object
+                    properties:
+                      configured: { type: boolean }
+                      base_url: { type: string }
+                      status: { type: string }
+                      models:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            provider: { type: string }
+                  checked_at: { type: string, format: date-time }
+  /api/models/pull:
+    post:
+      summary: Pull Ollama models through the configured upstream
+      description: Pulls one or more Ollama models via upstream `/api/pull` with `stream:false`. OpenCode model downloads are not supported because OpenCode only refreshes provider metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider: { type: string, enum: [ollama] }
+                models:
+                  type: array
+                  items: { type: string }
+              required: [models]
+      responses:
+        "200": { description: Pull results }
+        "400": { description: Invalid provider or model list }
+        "502": { description: Ollama pull failed }
   /api/model-broker/status:
     get:
       summary: Get native ModelBroker status

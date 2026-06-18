@@ -146,6 +146,75 @@ func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
 	}
 }
 
+func TestAPIModelCatalogListsOllamaAndOpenCodeModels(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			t.Fatalf("ollama path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"models":[{"model":"qwen3.5:latest","name":"qwen3.5:latest"}]}`))
+	}))
+	t.Cleanup(ollama.Close)
+	opencode := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/config/providers" {
+			t.Fatalf("opencode path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"providers":[{"id":"openai","models":[{"id":"gpt-5.5","name":"GPT 5.5"}]}]}`))
+	}))
+	t.Cleanup(opencode.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+	t.Setenv("OPENCODE_SERVER_URL", opencode.URL)
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/models")
+	if err != nil {
+		t.Fatalf("GET /api/models error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	body := mustReadBody(t, resp.Body)
+	if !strings.Contains(body, "qwen3.5:latest") || !strings.Contains(body, "gpt-5.5") {
+		t.Fatalf("body missing models: %s", body)
+	}
+}
+
+func TestAPIModelPullPullsOllamaModels(t *testing.T) {
+	var pulled string
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/pull" || r.Method != http.MethodPost {
+			t.Fatalf("ollama request = %s %s", r.Method, r.URL.Path)
+		}
+		var input map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatalf("decode pull body: %v", err)
+		}
+		pulled, _ = input["name"].(string)
+		_, _ = w.Write([]byte(`{"status":"success"}`))
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	api := controlplane.NewAPI(controlplane.NewStore(nil), controlplane.NewRunner(controlplane.NewStore(nil)))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/models/pull", "application/json", strings.NewReader(`{"models":["ollama/qwen3.5:latest"]}`))
+	if err != nil {
+		t.Fatalf("POST /api/models/pull error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	if pulled != "qwen3.5:latest" {
+		t.Fatalf("pulled = %q", pulled)
+	}
+}
+
 func TestAPIWorkflowDefinitionWritesAreDraftOnlyAndValidated(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))

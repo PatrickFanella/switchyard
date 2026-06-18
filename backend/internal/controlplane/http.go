@@ -93,6 +93,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", a.llamaLineCompatConfig)
 	mux.HandleFunc("GET /metrics", a.llamaLineCompatMetrics)
 	mux.HandleFunc("GET /api/adapters", a.adapters)
+	mux.HandleFunc("GET /api/models", a.modelCatalog)
+	mux.HandleFunc("POST /api/models/pull", a.pullModels)
 	mux.HandleFunc("GET /api/observability/model-broker", a.modelBrokerObservability)
 	mux.HandleFunc("GET /api/model-broker/status", a.modelBrokerStatus)
 	mux.HandleFunc("GET /api/opencode-executor/status", a.openCodeExecutorStatus)

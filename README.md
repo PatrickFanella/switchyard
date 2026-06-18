@@ -126,6 +126,21 @@ Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented
 
 The deployed operator dashboard is exposed as `https://switchyard.subcult.tv` through Almaz Caddy and Authelia, proxying to the NUC web service on `10.0.0.50:28081`.
 
+Model inventory and pulls:
+
+```bash
+# List installed Ollama models plus OpenCode provider/model metadata.
+switchyard models list --api-url http://127.0.0.1:28080
+
+# Pull Ollama models through Switchyard's configured OLLAMA_BASE_URL.
+switchyard models pull --models qwen3.5:latest,nomic-embed-text:v1.5 --api-url http://127.0.0.1:28080
+
+# Refresh OpenCode model metadata when the opencode CLI is available locally.
+switchyard models refresh-opencode
+```
+
+The API surfaces the same inventory at `GET /api/models` and Ollama pull automation at `POST /api/models/pull`. OpenCode does not download model weights itself; it can refresh provider metadata with `opencode models --refresh`.
+
 The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module surfaces for queues, sessions, logs/search, prompts, config, agents, and skills so model brokering, OpenCode execution, content workflows, and profiles feel native to Switchyard instead of separate consoles. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
 See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.

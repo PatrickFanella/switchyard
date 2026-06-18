@@ -34,6 +34,8 @@ Switchyard owns the native model-broker runtime and exposes llama-line/Ollama/Op
 - `GET /api/search`
 - `GET /api/logs`
 - `GET /api/config`
+- `GET /api/models`
+- `POST /api/models/pull`
 - `GET /admin/queue`
 - `DELETE /admin/queue`
 - `DELETE /admin/queue/{id}`
@@ -58,3 +60,9 @@ Switchyard owns the native model-broker runtime and exposes llama-line/Ollama/Op
 ## Subcorp note
 
 Subcorp should point `OLLAMA_BASE_URL` and embedding URLs at `http://10.0.0.50:11434`. Its `/api/chat` parser must accept plain JSON and not require SSE.
+
+## Model inventory and pulls
+
+- `GET /api/models` reports installed Ollama models from the real upstream Ollama `/api/tags` endpoint and OpenCode provider/model metadata from the configured OpenCode server.
+- `POST /api/models/pull` pulls Ollama models by calling upstream Ollama `/api/pull` with `stream:false`.
+- OpenCode metadata can be refreshed with `opencode models --refresh`; OpenCode does not pull provider model weights.
