@@ -6,7 +6,7 @@ type NavigationState = {
   selectedRunID: string;
 };
 
-const viewSet = new Set<ViewID>(['overview', 'queues', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
+const viewSet = new Set<ViewID>(['overview', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
 
 function safeDecodeURIComponent(value: string) {
   try {

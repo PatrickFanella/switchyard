@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { HudErrorState, HudLed, HudLabel, HudPanelStrong, HudTag } from './components/hud';
 import { FeaturePage } from './components/FeaturePage';
+import { ObservabilityPage } from './components/ObservabilityPage';
 import { OverviewDashboard } from './components/OverviewDashboard';
 import { apiBase } from './api';
 import { useDashboardData } from './hooks/useDashboardData';
@@ -104,6 +105,8 @@ export default function App() {
             updatingTriggerID={data.updatingTriggerID}
             workflowDefinitions={data.workflowDefinitions}
           />
+        ) : activeView === 'observability' ? (
+          <ObservabilityPage />
         ) : (
           <FeaturePage view={activeView} adapters={data.dashboard.adapters} />
         )}

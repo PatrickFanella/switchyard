@@ -302,7 +302,38 @@ export type DashboardResponse<T> = {
   [key: string]: T[] | null;
 };
 
-export type ViewID = 'overview' | 'queues' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
+export type ModelBrokerObservabilityRequest = {
+  id: string;
+  status: string;
+  model: string;
+  path: string;
+  client: string;
+  error?: string;
+  duration_ms?: number;
+  correlation_ids?: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ModelBrokerObservability = {
+  status: {
+    status: string;
+    configured: boolean;
+    backend: string;
+    base_url?: string;
+    queue_depth: number;
+    active_request: boolean;
+    upstreams: { name: string; url: string; status: string; queue_depth?: number }[];
+    error?: string;
+  };
+  totals: Record<string, number>;
+  recent_requests: ModelBrokerObservabilityRequest[];
+  recent_errors: ModelBrokerObservabilityRequest[];
+  latency_ms: { count: number; avg: number; max: number };
+  checked_at: string;
+};
+
+export type ViewID = 'overview' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {
   id: ViewID;
@@ -367,6 +398,7 @@ export const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode execut
 export const views: ViewMeta[] = [
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
   { id: 'queues', label: 'Queues', source: 'ModelBroker' },
+  { id: 'observability', label: 'Observability', source: 'Phoenix / ModelBroker' },
   { id: 'sessions', label: 'Sessions', source: 'OpenCode executor / Blacktower' },
   { id: 'logs', label: 'Logs / Search', source: 'ModelBroker / OpenCode executor' },
   { id: 'prompts', label: 'Prompts', source: 'Workflow policy' },

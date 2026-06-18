@@ -6,6 +6,7 @@ import {
   type AdapterPayload,
   type DashboardResponse,
   type DashboardState,
+  type ModelBrokerObservability,
   type OpenPilotStateResponse,
   type Run,
   type RunDetail,
@@ -184,6 +185,10 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
       ? arrayOrEmpty(workflowDefinitionData.workflow_definitions)
       : defaultWorkflowDefinitions,
   };
+}
+
+export async function loadModelBrokerObservability() {
+  return fetchJSON<ModelBrokerObservability>('/api/observability/model-broker');
 }
 
 export async function loadRunDetail(runID: string) {

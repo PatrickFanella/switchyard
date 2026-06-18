@@ -112,6 +112,40 @@ func TestAPIWorkflowDefinitionCRUD(t *testing.T) {
 	}
 }
 
+func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "req-1", Model: "qwen3.5:latest", Path: "/api/generate", Client: "test", RequestBody: `{"prompt":"redacted"}`})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if _, err := store.StartModelBrokerRequest(req.ID); err != nil {
+		t.Fatalf("start request: %v", err)
+	}
+	if _, err := store.FinishModelBrokerRequest(req.ID, controlplane.FinishModelBrokerRequestInput{Status: controlplane.ModelBrokerRequestCompleted, ResponseBody: `{"response":"redacted"}`, CorrelationIDs: map[string]string{"trace_id": "abc"}}); err != nil {
+		t.Fatalf("finish request: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/observability/model-broker")
+	if err != nil {
+		t.Fatalf("GET observability error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	body := mustReadBody(t, resp.Body)
+	if !strings.Contains(body, "req-1") || !strings.Contains(body, "completed") || !strings.Contains(body, "trace_id") {
+		t.Fatalf("observability body missing summary fields: %s", body)
+	}
+	if strings.Contains(body, "request_body") || strings.Contains(body, "prompt") || strings.Contains(body, "response_body") {
+		t.Fatalf("observability body exposed request or response body: %s", body)
+	}
+}
+
 func TestAPIWorkflowDefinitionWritesAreDraftOnlyAndValidated(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))

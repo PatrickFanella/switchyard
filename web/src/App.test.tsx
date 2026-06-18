@@ -40,6 +40,16 @@ function mockDashboardFetch() {
       }
       if (url.includes('/api/scheduler')) return { enabled: false, running: false, interval: 'disabled' };
       if (url.includes('/api/workers')) return { enabled: false, running: false, workers: 0, active: 0 };
+      if (url.includes('/api/observability/model-broker')) {
+        return {
+          status: { status: 'healthy', configured: true, backend: 'switchyard-model-broker', queue_depth: 0, active_request: false, upstreams: [{ name: 'ollama', url: 'http://ollama', status: 'healthy' }] },
+          totals: { completed: 1, failed: 0 },
+          recent_requests: [{ id: 'req-1', status: 'completed', model: 'qwen3.5:latest', path: '/api/generate', client: 'test', duration_ms: 42, correlation_ids: { trace_id: 'abc' }, created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z' }],
+          recent_errors: [],
+          latency_ms: { count: 1, avg: 42, max: 42 },
+          checked_at: '2026-06-17T00:00:01.000Z',
+        };
+      }
       return {};
     })();
 
@@ -105,6 +115,26 @@ describe('App', () => {
     });
 
     expect(window.location.hash).toBe('#/queues');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('renders model broker observability from hash navigation', async () => {
+    window.location.hash = '#/observability';
+    mockDashboardFetch();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(container.textContent).toContain('Model broker signal');
+    expect(container.textContent).toContain('req-1');
 
     await act(async () => {
       root.unmount();
