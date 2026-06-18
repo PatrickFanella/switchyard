@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type llamaLineCompatChatRequest struct {
@@ -79,6 +81,23 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "path": r.URL.Path, "stream": true})
 	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
+	ctx, span := startControlPlaneSpan(ctx, "http.model_compat.stream",
+		attribute.String("path", r.URL.Path),
+		attribute.String("model", model),
+		attribute.String("request_id", requestID),
+	)
+	var spanErr error
+	defer func() {
+		status := "completed"
+		if spanErr != nil {
+			status = "failed"
+		}
+		finishControlPlaneSpan(span, status, spanErr,
+			attribute.String("path", r.URL.Path),
+			attribute.String("model", model),
+			attribute.String("request_id", requestID),
+		)
+	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -106,6 +125,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 		return nil
 	})
 	if err != nil {
+		spanErr = err
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
 		writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
@@ -206,10 +226,28 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "path": r.URL.Path})
 	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
+	ctx, span := startControlPlaneSpan(ctx, "http.model_compat.generate",
+		attribute.String("path", r.URL.Path),
+		attribute.String("model", model),
+		attribute.String("request_id", requestID),
+	)
+	var spanErr error
+	defer func() {
+		status := "completed"
+		if spanErr != nil {
+			status = "failed"
+		}
+		finishControlPlaneSpan(span, status, spanErr,
+			attribute.String("path", r.URL.Path),
+			attribute.String("model", model),
+			attribute.String("request_id", requestID),
+		)
+	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
 	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: requestID})
 	if err != nil {
+		spanErr = err
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
 		w.Header().Set("X-OCQ-Status", "failed")
 		writeError(w, http.StatusBadGateway, err.Error())

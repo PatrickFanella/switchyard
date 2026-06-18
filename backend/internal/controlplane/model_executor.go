@@ -13,6 +13,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type ModelMessage struct {
@@ -102,27 +104,71 @@ func NewEnvModelExecutor() *EnvModelBroker {
 	return NewEnvModelBroker()
 }
 
-func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (response ModelResponse, err error) {
+	backend := "opencode"
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
+		backend = "llama-line"
+	} else if e.shouldGenerateViaOllama(request.Model) {
+		backend = "ollama"
+	}
+	ctx, span := startControlPlaneSpan(ctx, "model_broker.generate",
+		attribute.String("model", request.Model),
+		attribute.String("backend", backend),
+		attribute.String("request_id", request.RequestID),
+	)
+	defer func() {
+		status := "completed"
+		if err != nil {
+			status = "failed"
+		}
+		finishControlPlaneSpan(span, status, err,
+			attribute.String("model", request.Model),
+			attribute.String("backend", backend),
+			attribute.String("request_id", request.RequestID),
+		)
+	}()
+	if backend == "llama-line" {
 		if strings.TrimSpace(e.llamaLineBaseURL) == "" {
 			return ModelResponse{}, fmt.Errorf("LLAMA_LINE_BASE_URL is not configured")
 		}
 		return e.generateViaLlamaLine(ctx, request)
 	}
-	if e.shouldGenerateViaOllama(request.Model) {
+	if backend == "ollama" {
 		return e.generateViaOllama(ctx, request)
 	}
 	return e.generateViaOpenCode(ctx, request)
 }
 
-func (e *EnvModelBroker) Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {
+func (e *EnvModelBroker) Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (response ModelResponse, err error) {
+	backend := "opencode"
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
+		backend = "llama-line"
+	} else if e.shouldGenerateViaOllama(request.Model) {
+		backend = "ollama"
+	}
+	ctx, span := startControlPlaneSpan(ctx, "model_broker.stream",
+		attribute.String("model", request.Model),
+		attribute.String("backend", backend),
+		attribute.String("request_id", request.RequestID),
+	)
+	defer func() {
+		status := "completed"
+		if err != nil {
+			status = "failed"
+		}
+		finishControlPlaneSpan(span, status, err,
+			attribute.String("model", request.Model),
+			attribute.String("backend", backend),
+			attribute.String("request_id", request.RequestID),
+		)
+	}()
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_STREAMING")), "buffered") || strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_STREAMING")), "disabled") {
 		return e.streamBuffered(ctx, request, emit)
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
+	if backend == "llama-line" {
 		return e.streamViaLlamaLine(ctx, request, emit)
 	}
-	if e.shouldGenerateViaOllama(request.Model) {
+	if backend == "ollama" {
 		return e.streamViaOllama(ctx, request, emit)
 	}
 	return e.streamBuffered(ctx, request, emit)

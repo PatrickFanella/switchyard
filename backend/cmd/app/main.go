@@ -2,17 +2,50 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/app"
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
+	"git.subcult.tv/PatrickFanella/switchyard/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	tp, shutdown, err := telemetry.NewTracerProviderFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	if tp != nil {
+		otel.SetTracerProvider(tp)
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+			log.Printf("switchyard telemetry export error: %v", err)
+		}))
+		_, span := otel.Tracer("git.subcult.tv/PatrickFanella/switchyard/cmd/app").Start(ctx, "switchyard.startup", trace.WithAttributes(attribute.String("service", "switchyard")))
+		span.End()
+		log.Print("switchyard telemetry tracing enabled")
+	}
+	defer func() {
+		_ = shutdown(context.Background())
+	}()
+
 	addr := os.Getenv("SWITCHYARD_LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -20,15 +53,15 @@ func main() {
 
 	store := controlplane.Store(controlplane.NewStore(nil))
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		db, err := controlplane.OpenPostgres(ctx, databaseURL)
+		db, err := controlplane.OpenPostgres(dbCtx, databaseURL)
 		if err != nil {
-			log.Fatalf("connect postgres: %v", err)
+			return fmt.Errorf("connect postgres: %w", err)
 		}
 		defer db.Close()
-		if err := controlplane.Migrate(ctx, db); err != nil {
-			log.Fatalf("migrate postgres: %v", err)
+		if err := controlplane.Migrate(dbCtx, db); err != nil {
+			return fmt.Errorf("migrate postgres: %w", err)
 		}
 		store = controlplane.NewPostgresStore(db, nil)
 		log.Print("switchyard control plane using postgres storage")
@@ -36,7 +69,7 @@ func main() {
 		log.Print("switchyard control plane using in-memory storage")
 	}
 	if err := controlplane.SeedDefaults(store); err != nil {
-		log.Fatalf("seed control plane: %v", err)
+		return fmt.Errorf("seed control plane: %w", err)
 	}
 	for _, warning := range controlplane.NewEnvOperatorSafetyStatus().Warnings {
 		log.Printf("switchyard operator safety warning: %s", warning)
@@ -47,14 +80,14 @@ func main() {
 		workers := 1
 		if raw := os.Getenv("SWITCHYARD_WORKER_COUNT"); raw != "" {
 			if _, err := fmt.Sscanf(raw, "%d", &workers); err != nil {
-				log.Fatalf("parse SWITCHYARD_WORKER_COUNT: %v", err)
+				return fmt.Errorf("parse SWITCHYARD_WORKER_COUNT: %w", err)
 			}
 		}
 		lease := 5 * time.Minute
 		if raw := os.Getenv("SWITCHYARD_WORKER_LEASE"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
-				log.Fatalf("parse SWITCHYARD_WORKER_LEASE: %v", err)
+				return fmt.Errorf("parse SWITCHYARD_WORKER_LEASE: %w", err)
 			}
 			lease = parsed
 		}
@@ -62,7 +95,7 @@ func main() {
 		if raw := os.Getenv("SWITCHYARD_WORKER_POLL_INTERVAL"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
-				log.Fatalf("parse SWITCHYARD_WORKER_POLL_INTERVAL: %v", err)
+				return fmt.Errorf("parse SWITCHYARD_WORKER_POLL_INTERVAL: %w", err)
 			}
 			poll = parsed
 		}
@@ -77,7 +110,7 @@ func main() {
 		if raw := os.Getenv("SWITCHYARD_SCHEDULER_INTERVAL"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
-				log.Fatalf("parse SWITCHYARD_SCHEDULER_INTERVAL: %v", err)
+				return fmt.Errorf("parse SWITCHYARD_SCHEDULER_INTERVAL: %w", err)
 			}
 			interval = parsed
 		}
@@ -92,5 +125,27 @@ func main() {
 
 	fmt.Println(app.Greeting("Switchyard"))
 	log.Printf("switchyard control plane listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, api.Handler()))
+	server := &http.Server{Addr: addr, Handler: api.Handler()}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
 }

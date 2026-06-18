@@ -59,6 +59,8 @@ Set `SWITCHYARD_WORKER_ENABLED=true` to enable async worker dispatch for long-ru
 
 For public access, put Switchyard behind reverse-proxy authentication such as Caddy + Authelia or Cloudflare Access. Set `SWITCHYARD_PUBLIC_URL` for operator metadata and set `SWITCHYARD_REVERSE_PROXY_AUTH=true` only after the proxy protects the public URL. `GET /api/operator-safety` reports this assumption and warns when full Open Pilot autonomy is enabled without the reverse-proxy auth flag.
 
+Phoenix / OTLP tracing is optional. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://10.0.0.200:6006`) plus optional `OTEL_EXPORTER_OTLP_HEADERS=x-project-name=switchyard` to export traces over OTLP/HTTP; leave the endpoint unset for no-op tracing.
+
 Workflow execution modules are opt-in while native module parity is built:
 
 - Changemaker: the native `changemaker-daily-digest` workflow-creator template is seeded by default and runs through workflow definitions plus the native model broker.
