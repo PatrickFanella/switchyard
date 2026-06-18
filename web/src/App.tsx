@@ -3,6 +3,7 @@ import { HudErrorState, HudLed, HudLabel, HudPanelStrong, HudTag } from './compo
 import { FeaturePage } from './components/FeaturePage';
 import { ObservabilityPage } from './components/ObservabilityPage';
 import { OverviewDashboard } from './components/OverviewDashboard';
+import { QueuesPage } from './components/QueuesPage';
 import { apiBase } from './api';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useHashNavigation } from './hooks/useHashNavigation';
@@ -15,7 +16,7 @@ function ShellChip({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
-  const { activeView, selectedRunID, setActiveView, setSelectedRunID } = useHashNavigation();
+  const { activeView, selectedRequestID, selectedRunID, setActiveView, setSelectedRequestID, setSelectedRunID } = useHashNavigation();
   const data = useDashboardData({ activeView, selectedRunID, setSelectedRunID });
 
   return (
@@ -105,6 +106,8 @@ export default function App() {
             updatingTriggerID={data.updatingTriggerID}
             workflowDefinitions={data.workflowDefinitions}
           />
+        ) : activeView === 'queues' ? (
+          <QueuesPage selectedRequestID={selectedRequestID} setSelectedRequestID={setSelectedRequestID} />
         ) : activeView === 'observability' ? (
           <ObservabilityPage />
         ) : (

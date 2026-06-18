@@ -40,6 +40,17 @@ function mockDashboardFetch() {
       }
       if (url.includes('/api/scheduler')) return { enabled: false, running: false, interval: 'disabled' };
       if (url.includes('/api/workers')) return { enabled: false, running: false, workers: 0, active: 0 };
+      if (url.includes('/api/history/req-ok')) {
+        return { id: 'req-ok', status: 'completed', model: 'qwen3.5:latest', path: '/api/generate', client: 'test', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z', started_at: '2026-06-17T00:00:00.000Z', finished_at: '2026-06-17T00:00:01.000Z', correlation_ids: { trace_id: 'abc' } };
+      }
+      if (url.includes('/api/history')) {
+        return {
+          requests: [
+            { id: 'req-ok', status: 'completed', model: 'qwen3.5:latest', path: '/api/generate', client: 'test', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z', started_at: '2026-06-17T00:00:00.000Z', finished_at: '2026-06-17T00:00:01.000Z', correlation_ids: { trace_id: 'abc' } },
+            { id: 'req-fail', status: 'failed', model: 'qwen3.5:latest', path: '/api/chat', client: 'test', error: 'upstream unavailable', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z' },
+          ],
+        };
+      }
       if (url.includes('/api/observability/model-broker')) {
         return {
           status: { status: 'healthy', configured: true, backend: 'switchyard-model-broker', queue_depth: 0, active_request: false, upstreams: [{ name: 'ollama', url: 'http://ollama', status: 'healthy' }] },
@@ -81,9 +92,8 @@ describe('App', () => {
 
     const html = renderToString(<App />);
 
-    expect(html).toContain('Queue cockpit');
+    expect(html).toContain('Requests cockpit');
     expect(html).toContain('Queues');
-    expect(html).toContain('Recent requests');
   });
 
   it('falls back safely for malformed run deep links', () => {
@@ -139,5 +149,34 @@ describe('App', () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it('renders request cockpit and supports request deep links', async () => {
+    window.location.hash = '#/queues/requests/req-ok';
+    mockDashboardFetch();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(container.textContent).toContain('Requests cockpit');
+    expect(container.textContent).toContain('req-ok');
+    expect(container.textContent).toContain('trace_id');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('does not crash on malformed request deep links', () => {
+    window.location.hash = '#/queues/requests/%E0%A4%A';
+
+    const html = renderToString(<App />);
+
+    expect(html).toContain('Requests cockpit');
   });
 });

@@ -6,6 +6,8 @@ import {
   type AdapterPayload,
   type DashboardResponse,
   type DashboardState,
+  type ModelBrokerHistoryResponse,
+  type ModelBrokerRequestHistoryItem,
   type ModelBrokerObservability,
   type OpenPilotStateResponse,
   type Run,
@@ -189,6 +191,23 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
 
 export async function loadModelBrokerObservability() {
   return fetchJSON<ModelBrokerObservability>('/api/observability/model-broker');
+}
+
+export async function loadModelBrokerHistory(query = '') {
+  const path = query.trim() ? `/api/history?q=${encodeURIComponent(query.trim())}` : '/api/history';
+  const response = await fetchJSON<ModelBrokerHistoryResponse | ModelBrokerRequestHistoryItem[]>(path);
+  if (Array.isArray(response)) {
+    return response;
+  }
+  return arrayOrEmpty(response.requests ?? response.history);
+}
+
+export async function loadModelBrokerRequest(requestID: string) {
+  return fetchJSON<ModelBrokerRequestHistoryItem>(`/api/history/${encodeURIComponent(requestID)}`);
+}
+
+export async function cancelModelBrokerRequest(requestID: string) {
+  return fetchJSON<{ canceled?: boolean }>(`/admin/queue/${encodeURIComponent(requestID)}`, { method: 'DELETE' });
 }
 
 export async function loadRunDetail(runID: string) {

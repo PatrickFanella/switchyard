@@ -315,6 +315,28 @@ export type ModelBrokerObservabilityRequest = {
   updated_at: string;
 };
 
+export type ModelBrokerRequestHistoryItem = {
+  id: string;
+  status: string;
+  model: string;
+  path: string;
+  client: string;
+  request_body?: string;
+  response_body?: string;
+  error?: string;
+  correlation_ids?: Record<string, string>;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at: string;
+  cancel_requested_at?: string;
+};
+
+export type ModelBrokerHistoryResponse = {
+  requests?: ModelBrokerRequestHistoryItem[];
+  history?: ModelBrokerRequestHistoryItem[];
+};
+
 export type ModelBrokerObservability = {
   status: {
     status: string;
