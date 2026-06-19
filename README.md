@@ -126,6 +126,18 @@ Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented
 
 The deployed operator dashboard is exposed as `https://switchyard.subcult.tv` through Almaz Caddy and Authelia, proxying to the NUC web service on `10.0.0.50:28081`.
 
+## Host service ownership
+
+Switchyard is the owner of the local Ollama/llama-line compatible broker port (`11434`) in the native-runtime deployment. The historical standalone `llama-line.service` should not run alongside Switchyard because both services bind `11434`.
+
+To replace a legacy standalone llama-line systemd unit with Switchyard's Docker Compose stack:
+
+```bash
+sudo ./deploy/install-systemd.sh
+```
+
+The installer renders `/etc/systemd/system/switchyard.service`, disables/removes `/etc/systemd/system/llama-line.service` when present, starts Switchyard with `docker compose up -d --remove-orphans`, and enables it at boot. Use `sudo systemctl reload switchyard` after pulling code when you want a rebuild via `docker compose up -d --build --remove-orphans`.
+
 Model inventory and pulls:
 
 ```bash
