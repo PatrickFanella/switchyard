@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -33,6 +34,38 @@ func TestEnvModelExecutorUsesLlamaLine(t *testing.T) {
 	}
 	if response.Content != "model output" || response.CorrelationIDs["model_broker"] != "switchyard" || response.CorrelationIDs["model_source"] != "llama-line" || response.CorrelationIDs["llama_line_request_id"] != "llama-request-1" {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestEnvModelBrokerLlamaLinePreservesToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Llama-Line-Request-ID", "llama-tool-1")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"web_fetch","arguments":"{\"url\":\"https://example.com\"}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", server.URL)
+
+	response, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "qwen3:14b", Messages: []controlplane.ModelMessage{{Role: "user", Content: "fetch"}}})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if response.Content != "" || len(response.ToolCalls) != 1 || response.CorrelationIDs["llama_line_request_id"] != "llama-tool-1" {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestEnvModelBrokerLlamaLineRejectsEmptyCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
+	t.Setenv("LLAMA_LINE_BASE_URL", server.URL)
+
+	_, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "qwen3:14b", Messages: []controlplane.ModelMessage{{Role: "user", Content: "use a tool"}}})
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("Generate() error = %v, want empty completion error", err)
 	}
 }
 

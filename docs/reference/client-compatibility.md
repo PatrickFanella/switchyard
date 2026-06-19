@@ -30,6 +30,8 @@ Ollama-routed `/api/chat` requests preserve `tools`, `tool_choice`, `options`, t
 
 For non-streaming `/v1/chat/completions`, Ollama native `message.tool_calls` are converted to OpenAI-compatible `message.tool_calls` with `finish_reason: "tool_calls"`.
 
+Switchyard rejects llama-line/OpenAI-compatible chat completions that contain no assistant content and no `message.tool_calls`. Tool-call-only responses are valid and are preserved as `ModelResponse.ToolCalls` internally and as OpenAI-compatible `message.tool_calls` externally. Streaming OpenAI error payloads are terminal errors; streaming tool-call-only payloads should use the non-streaming tool path so structured calls are not silently accepted as empty content.
+
 ## Compatibility and admin endpoints
 
 - `GET /broker/status`

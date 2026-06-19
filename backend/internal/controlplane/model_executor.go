@@ -359,6 +359,10 @@ func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request Model
 	if len(decoded.Choices) == 0 {
 		return ModelResponse{}, fmt.Errorf("model response contained no choices")
 	}
+	choice := decoded.Choices[0]
+	if strings.TrimSpace(choice.Message.Content) == "" && len(choice.Message.ToolCalls) == 0 {
+		return ModelResponse{}, fmt.Errorf("model response was empty and contained no tool calls")
+	}
 	correlation := map[string]string{"model_broker": "switchyard", "model_source": "llama-line", "model_broker_backend": "compat"}
 	if requestID := resp.Header.Get("X-Llama-Line-Request-ID"); requestID != "" {
 		correlation["llama_line_request_id"] = requestID
@@ -369,7 +373,7 @@ func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request Model
 	if sessionID := resp.Header.Get("X-OCQ-Session"); sessionID != "" {
 		correlation["ocq_session_id"] = sessionID
 	}
-	return ModelResponse{Content: decoded.Choices[0].Message.Content, CorrelationIDs: correlation}, nil
+	return ModelResponse{Content: choice.Message.Content, ToolCalls: choice.Message.ToolCalls, CorrelationIDs: correlation}, nil
 }
 
 func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelRequest) (ModelResponse, error) {
@@ -543,7 +547,11 @@ func (e *EnvModelBroker) streamViaLlamaLine(ctx context.Context, request ModelRe
 		if payload == "[DONE]" {
 			break
 		}
-		chunk := openAIStreamPayloadContent(payload)
+		event := classifyOpenAIStreamPayload(payload)
+		if event.Err != nil {
+			return ModelResponse{}, event.Err
+		}
+		chunk := event.Content
 		if chunk == "" {
 			continue
 		}
@@ -555,28 +563,60 @@ func (e *EnvModelBroker) streamViaLlamaLine(ctx context.Context, request ModelRe
 	if err := scanner.Err(); err != nil {
 		return ModelResponse{}, err
 	}
+	if strings.TrimSpace(builder.String()) == "" {
+		return ModelResponse{}, errors.New("model broker stream ended without content")
+	}
 	if err := emit(ModelStreamEvent{Type: "done", Done: true, CorrelationIDs: correlation}); err != nil {
 		return ModelResponse{}, err
 	}
 	return ModelResponse{Content: builder.String(), CorrelationIDs: correlation}, nil
 }
 
-func openAIStreamPayloadContent(payload string) string {
+type openAIStreamPayloadEvent struct {
+	Content string
+	Err     error
+}
+
+func classifyOpenAIStreamPayload(payload string) openAIStreamPayloadEvent {
+	var topLevelErr struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &topLevelErr); err == nil && topLevelErr.Error.Message != "" {
+		return openAIStreamPayloadEvent{Err: errors.New(topLevelErr.Error.Message)}
+	}
+	var status struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Error   any    `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &status); err == nil {
+		if status.Status == "ollama_unavailable" || status.Status == "dropped_by_admin" || status.Status == "failed" {
+			message := firstNonEmpty(strings.TrimSpace(status.Message), stringFromAny(status.Error), "model broker stream ended with status "+status.Status)
+			return openAIStreamPayloadEvent{Err: errors.New(message)}
+		}
+	}
 	var decoded struct {
 		Choices []struct {
 			Delta struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []any  `json:"tool_calls"`
 			} `json:"delta"`
 			Message struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []any  `json:"tool_calls"`
 			} `json:"message"`
 			Text string `json:"text"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil || len(decoded.Choices) == 0 {
-		return ""
+		return openAIStreamPayloadEvent{}
 	}
-	return firstNonEmpty(decoded.Choices[0].Delta.Content, decoded.Choices[0].Message.Content, decoded.Choices[0].Text)
+	if len(decoded.Choices[0].Delta.ToolCalls) > 0 || len(decoded.Choices[0].Message.ToolCalls) > 0 {
+		return openAIStreamPayloadEvent{Err: errors.New("model broker stream returned tool calls without content; use non-streaming tool path")}
+	}
+	return openAIStreamPayloadEvent{Content: firstNonEmpty(decoded.Choices[0].Delta.Content, decoded.Choices[0].Message.Content, decoded.Choices[0].Text)}
 }
 
 func ollamaModelName(model string) string {
@@ -633,9 +673,24 @@ func modelMessagesToPrompt(messages []ModelMessage) string {
 type modelBrokerChatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []any  `json:"tool_calls"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    any    `json:"code"`
+	} `json:"error"`
+}
+
+func (r modelBrokerChatResponse) EmptyNoToolCompletion() bool {
+	if len(r.Choices) == 0 {
+		return false
+	}
+	choice := r.Choices[0]
+	return strings.TrimSpace(choice.Message.Content) == "" && len(choice.Message.ToolCalls) == 0
 }
 
 func decodeModelBrokerChatResponse(body []byte) (modelBrokerChatResponse, error) {
@@ -671,6 +726,13 @@ func decodeModelBrokerChatResponse(body []byte) (modelBrokerChatResponse, error)
 	var decoded modelBrokerChatResponse
 	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
 		return modelBrokerChatResponse{}, err
+	}
+	if decoded.Error != nil {
+		message := strings.TrimSpace(decoded.Error.Message)
+		if message == "" {
+			message = "model broker returned error payload"
+		}
+		return modelBrokerChatResponse{}, errors.New(message)
 	}
 	return decoded, nil
 }
