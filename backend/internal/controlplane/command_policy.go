@@ -114,6 +114,12 @@ func (r *PolicyCommandRunner) Decide(command string) CommandDecision {
 	if r.policy.Mode == "" || r.policy.Mode == CommandPolicyDeny {
 		return CommandDecision{Allowed: false, Reason: "command policy mode is deny"}
 	}
+	if r.policy.Mode == CommandPolicyAllow {
+		if strings.TrimSpace(command) == "" {
+			return CommandDecision{Allowed: false, Reason: "command is empty"}
+		}
+		return CommandDecision{Allowed: true, Reason: "allowed", Command: []string{"sh", "-lc", command}}
+	}
 	if containsShellSyntax(command) {
 		return CommandDecision{Allowed: false, Reason: "command contains shell syntax"}
 	}

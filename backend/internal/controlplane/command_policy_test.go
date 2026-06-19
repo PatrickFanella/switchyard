@@ -76,3 +76,14 @@ func TestOpenPilotAutonomyFullAllowsUnlistedCommands(t *testing.T) {
 		t.Fatalf("decision = %+v", decision)
 	}
 }
+
+func TestCommandPolicyAllowRunsShellSyntax(t *testing.T) {
+	runner := controlplane.NewPolicyCommandRunner(controlplane.CommandPolicy{Mode: controlplane.CommandPolicyAllow, Timeout: time.Second})
+	result, err := runner.Run(t.Context(), "printf hello && printf world")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "helloworld" {
+		t.Fatalf("output = %q, want helloworld", result.Output)
+	}
+}
