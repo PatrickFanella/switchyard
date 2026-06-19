@@ -23,6 +23,7 @@ type llamaLineCompatTrackedRequest struct {
 	Model     string
 	Path      string
 	Client    string
+	Priority  int
 	Status    string
 	CreatedAt time.Time
 	StartedAt time.Time
@@ -40,14 +41,11 @@ func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBod
 	id := firstNonEmpty(r.Header.Get("X-Request-ID"), r.Header.Get("X-Llama-Line-Request-ID"), "llama-"+shortRandomID())
 	ctx, cancel := context.WithCancel(r.Context())
 	now := time.Now().UTC()
-	client := r.RemoteAddr
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		client = forwarded
-	}
+	client := modelBrokerClientIdentityFromRequest(r)
 	t.mu.Lock()
-	t.requests[id] = &llamaLineCompatTrackedRequest{ID: id, Model: model, Path: r.URL.Path, Client: client, Status: "queued", CreatedAt: now, UpdatedAt: now, Cancel: cancel}
+	t.requests[id] = &llamaLineCompatTrackedRequest{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, Status: "queued", CreatedAt: now, UpdatedAt: now, Cancel: cancel}
 	t.mu.Unlock()
-	_, _ = t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client, RequestBody: requestBody})
+	_, _ = t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, RequestBody: requestBody})
 	t.markRunning(id)
 	return id, ctx, func(status string, responseBody string, errorText string, correlation map[string]string) {
 		t.finish(id, status, responseBody, errorText, correlation)
@@ -56,11 +54,8 @@ func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBod
 
 func (t *llamaLineCompatTracker) submitAsync(r *http.Request, model string, messages []ModelMessage, requestBody string) (ModelBrokerRequest, bool) {
 	id := firstNonEmpty(r.Header.Get("X-Request-ID"), r.Header.Get("X-Llama-Line-Request-ID"), "llama-"+shortRandomID())
-	client := r.RemoteAddr
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		client = forwarded
-	}
-	req, _ := t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client, RequestBody: requestBody})
+	client := modelBrokerClientIdentityFromRequest(r)
+	req, _ := t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, RequestBody: requestBody})
 	if isTerminalModelBrokerRequest(req.Status) || req.Status == ModelBrokerRequestRunning {
 		return req, false
 	}
@@ -173,6 +168,7 @@ func (t *llamaLineCompatTracker) snapshot() (queued []map[string]any, inflight [
 			"model":      item.Model,
 			"path":       item.Path,
 			"client":     item.Client,
+			"priority":   item.Priority,
 			"status":     item.Status,
 			"created_at": item.CreatedAt,
 			"updated_at": item.UpdatedAt,
@@ -187,9 +183,7 @@ func (t *llamaLineCompatTracker) snapshot() (queued []map[string]any, inflight [
 			inflight = append(inflight, entry)
 		}
 	}
-	sort.Slice(queued, func(i, j int) bool {
-		return queued[i]["created_at"].(time.Time).Before(queued[j]["created_at"].(time.Time))
-	})
+	sort.Slice(queued, func(i, j int) bool { return compatQueueItemLess(queued[i], queued[j]) })
 	sort.Slice(inflight, func(i, j int) bool {
 		return inflight[i]["created_at"].(time.Time).Before(inflight[j]["created_at"].(time.Time))
 	})
@@ -240,7 +234,7 @@ func (t *llamaLineCompatTracker) inFlightIDs() []string {
 func modelBrokerRequestsAsMaps(requests []ModelBrokerRequest) []map[string]any {
 	out := make([]map[string]any, 0, len(requests))
 	for _, req := range requests {
-		entry := map[string]any{"id": req.ID, "model": req.Model, "path": req.Path, "client": req.Client, "status": req.Status, "created_at": req.CreatedAt, "updated_at": req.UpdatedAt}
+		entry := map[string]any{"id": req.ID, "model": req.Model, "path": req.Path, "client": req.Client, "priority": req.ClientPriority, "status": req.Status, "created_at": req.CreatedAt, "updated_at": req.UpdatedAt}
 		if req.StartedAt != nil {
 			entry["started_at"] = *req.StartedAt
 		}
@@ -252,5 +246,20 @@ func modelBrokerRequestsAsMaps(requests []ModelBrokerRequest) []map[string]any {
 		}
 		out = append(out, entry)
 	}
+	sort.Slice(out, func(i, j int) bool { return compatQueueItemLess(out[i], out[j]) })
 	return out
+}
+
+func compatQueueItemLess(left, right map[string]any) bool {
+	leftPriority, _ := left["priority"].(int)
+	rightPriority, _ := right["priority"].(int)
+	if leftPriority != rightPriority {
+		return leftPriority > rightPriority
+	}
+	leftCreated, leftOK := left["created_at"].(time.Time)
+	rightCreated, rightOK := right["created_at"].(time.Time)
+	if leftOK && rightOK {
+		return leftCreated.Before(rightCreated)
+	}
+	return false
 }

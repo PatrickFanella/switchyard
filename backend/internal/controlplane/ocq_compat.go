@@ -69,6 +69,7 @@ func ocqRequestMap(req ModelBrokerRequest) map[string]any {
 		"model":               req.Model,
 		"path":                req.Path,
 		"client":              req.Client,
+		"priority":            req.ClientPriority,
 		"request_body":        req.RequestBody,
 		"response_body":       req.ResponseBody,
 		"error":               req.Error,

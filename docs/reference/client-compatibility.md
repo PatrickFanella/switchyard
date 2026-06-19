@@ -63,6 +63,16 @@ Switchyard rejects llama-line/OpenAI-compatible chat completions that contain no
 - `X-OCQ-Session`
 - `X-OCQ-Streaming-Mode`
 
+## Client identity and priority
+
+Switchyard restores llama-line-style client attribution for compatible ingress:
+
+- Preferred: configure bearer keys with `MODEL_BROKER_CLIENT_KEYS`, for example `subcorp=subcorp-secret:50,ci=ci-secret:10`. Requests with `Authorization: Bearer subcorp-secret` are recorded as client `subcorp` with priority `50`.
+- Trusted header fallback: `X-Switchyard-Client` or `X-Llama-Line-Client`, with optional `X-Switchyard-Priority` or `X-Llama-Line-Priority`.
+- Last fallback: `X-Forwarded-For`, then remote address.
+
+The resolved `client` and `priority` appear in `/broker/status`, queue/inflight endpoints, `/api/history`, `/api/logs`, `/admin/audit`, and OCQ request compatibility responses. Higher priority sorts ahead of lower priority for queued compatibility views; synchronous compatible requests still start immediately in the current native broker path.
+
 ## Subcorp note
 
 Subcorp should point `OLLAMA_BASE_URL` and embedding URLs at `http://10.0.0.50:11434`. Its `/api/chat` parser must accept plain JSON and not require SSE.

@@ -1131,6 +1131,76 @@ func TestAPILlamaLineCompatRecoversQueuedAsyncRequestOnStartup(t *testing.T) {
 	t.Fatal("recovered queued request did not complete")
 }
 
+func TestAPILlamaLineCompatIdentifiesClientFromBearerKey(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"response": "hello", "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+	t.Setenv("MODEL_BROKER_CLIENT_KEYS", "subcorp=subcorp-secret:50")
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/generate", strings.NewReader(`{"model":"ollama/llama3.2","prompt":"hello"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer subcorp-secret")
+	req.Header.Set("X-Request-ID", "client-key-request")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/generate: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+
+	row, err := store.ModelBrokerRequest("client-key-request")
+	if err != nil {
+		t.Fatalf("model broker request: %v", err)
+	}
+	if row.Client != "subcorp" || row.ClientPriority != 50 {
+		t.Fatalf("client identity = %q/%d, want subcorp/50", row.Client, row.ClientPriority)
+	}
+}
+
+func TestAPILlamaLineCompatStatusOrdersQueuedByPriority(t *testing.T) {
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "low", Model: "qwen3:14b", Path: "/api/generate", Client: "low-client", Priority: 1, RequestBody: `{"prompt":"low"}`}); err != nil {
+		t.Fatalf("create low: %v", err)
+	}
+	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "high", Model: "qwen3:14b", Path: "/api/generate", Client: "high-client", Priority: 99, RequestBody: `{"prompt":"high"}`}); err != nil {
+		t.Fatalf("create high: %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/broker/status")
+	if err != nil {
+		t.Fatalf("GET /broker/status: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Queue []struct {
+			ID       string `json:"id"`
+			Client   string `json:"client"`
+			Priority int    `json:"priority"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(body.Queue) < 2 || body.Queue[0].ID != "high" || body.Queue[0].Priority != 99 {
+		t.Fatalf("queue order = %+v, want high priority first", body.Queue)
+	}
+}
+
 func TestAPILlamaLineCompatRecoveryLeavesFreshRunningRequest(t *testing.T) {
 	t.Setenv("MODEL_BROKER_RECOVERY_STALE_AFTER", "1000000h")
 	store := controlplane.NewStore(nil)

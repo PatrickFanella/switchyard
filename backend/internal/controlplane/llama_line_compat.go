@@ -611,7 +611,7 @@ func (a *API) llamaLineCompatLogs(w http.ResponseWriter, r *http.Request) {
 		if req.Error != "" {
 			message += ": " + req.Error
 		}
-		logs = append(logs, map[string]any{"id": req.ID, "request_id": req.ID, "level": compatLogLevel(req.Status), "message": message, "model": req.Model, "path": req.Path, "created_at": req.CreatedAt, "updated_at": req.UpdatedAt})
+		logs = append(logs, map[string]any{"id": req.ID, "request_id": req.ID, "level": compatLogLevel(req.Status), "message": message, "model": req.Model, "path": req.Path, "client": req.Client, "priority": req.ClientPriority, "created_at": req.CreatedAt, "updated_at": req.UpdatedAt})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "count": len(logs), "backend": "switchyard-native"})
 }
@@ -633,6 +633,7 @@ func (a *API) llamaLineCompatAudit(w http.ResponseWriter, r *http.Request) {
 			"model":           req.Model,
 			"path":            req.Path,
 			"client":          req.Client,
+			"priority":        req.ClientPriority,
 			"correlation_ids": req.CorrelationIDs,
 			"created_at":      req.CreatedAt,
 			"updated_at":      req.UpdatedAt,

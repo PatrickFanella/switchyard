@@ -720,7 +720,7 @@ func (s *MemoryStore) CreateModelBrokerRequest(input CreateModelBrokerRequestInp
 	if existing, ok := s.modelBrokerRequests[input.ID]; ok {
 		return cloneModelBrokerRequest(existing), nil
 	}
-	req := ModelBrokerRequest{ID: input.ID, Status: ModelBrokerRequestQueued, Model: input.Model, Path: input.Path, Client: input.Client, RequestBody: input.RequestBody, CorrelationIDs: map[string]string{}, CreatedAt: now, UpdatedAt: now}
+	req := ModelBrokerRequest{ID: input.ID, Status: ModelBrokerRequestQueued, Model: input.Model, Path: input.Path, Client: input.Client, ClientPriority: input.Priority, RequestBody: input.RequestBody, CorrelationIDs: map[string]string{}, CreatedAt: now, UpdatedAt: now}
 	s.modelBrokerRequests[req.ID] = req
 	return cloneModelBrokerRequest(req), nil
 }
@@ -812,7 +812,15 @@ func (s *MemoryStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilt
 		}
 		out = append(out, cloneModelBrokerRequest(req))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if len(statuses) > 0 && out[i].Status != ModelBrokerRequestCompleted && out[j].Status != ModelBrokerRequestCompleted {
+			if out[i].ClientPriority != out[j].ClientPriority {
+				return out[i].ClientPriority > out[j].ClientPriority
+			}
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
 	limit := filter.Limit
 	if limit <= 0 || limit > 200 {
 		limit = 200

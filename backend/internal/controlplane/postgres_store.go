@@ -19,7 +19,7 @@ type PostgresStore struct {
 
 const openPilotIssueStateColumns = "id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, failing_gate, operator_summary, recommended_next_action, created_at, updated_at"
 const workflowDefinitionColumns = "id, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at"
-const modelBrokerRequestColumns = "id, status, model, path, client, request_body, response_body, error, correlation_ids, created_at, started_at, finished_at, updated_at, cancel_requested_at"
+const modelBrokerRequestColumns = "id, status, model, path, client, client_priority, request_body, response_body, error, correlation_ids, created_at, started_at, finished_at, updated_at, cancel_requested_at"
 
 func NewPostgresStore(db *sql.DB, now func() time.Time) *PostgresStore {
 	if now == nil {
@@ -878,9 +878,9 @@ func (s *PostgresStore) CreateModelBrokerRequest(input CreateModelBrokerRequestI
 	}
 	body := normalizeJSONText(input.RequestBody)
 	if _, err := s.db.ExecContext(context.Background(), `
-		insert into model_broker_requests(id, status, model, path, client, request_body, correlation_ids, created_at, updated_at)
-		values($1,$2,$3,$4,$5,$6::jsonb,'{}'::jsonb,now(),now())
-		on conflict(id) do nothing`, input.ID, ModelBrokerRequestQueued, input.Model, input.Path, input.Client, body); err != nil {
+		insert into model_broker_requests(id, status, model, path, client, client_priority, request_body, correlation_ids, created_at, updated_at)
+		values($1,$2,$3,$4,$5,$6,$7::jsonb,'{}'::jsonb,now(),now())
+		on conflict(id) do nothing`, input.ID, ModelBrokerRequestQueued, input.Model, input.Path, input.Client, input.Priority, body); err != nil {
 		return ModelBrokerRequest{}, err
 	}
 	return s.ModelBrokerRequest(input.ID)
@@ -946,7 +946,11 @@ func (s *PostgresStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFi
 		query += ` where ` + strings.Join(where, ` and `)
 	}
 	args = append(args, limit)
-	query += fmt.Sprintf(` order by created_at desc, id desc limit $%d`, len(args))
+	if len(filter.Statuses) > 0 {
+		query += fmt.Sprintf(` order by client_priority desc, created_at asc, id asc limit $%d`, len(args))
+	} else {
+		query += fmt.Sprintf(` order by created_at desc, id desc limit $%d`, len(args))
+	}
 	rows, err := s.db.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		return nil, err
@@ -988,7 +992,7 @@ func scanModelBrokerRequestRow(row scanner) (ModelBrokerRequest, error) {
 	var requestBody, responseBody, correlation []byte
 	var responseBodyNull sql.NullString
 	var started, finished, cancelRequested sql.NullTime
-	if err := row.Scan(&req.ID, &req.Status, &req.Model, &req.Path, &req.Client, &requestBody, &responseBodyNull, &req.Error, &correlation, &req.CreatedAt, &started, &finished, &req.UpdatedAt, &cancelRequested); err != nil {
+	if err := row.Scan(&req.ID, &req.Status, &req.Model, &req.Path, &req.Client, &req.ClientPriority, &requestBody, &responseBodyNull, &req.Error, &correlation, &req.CreatedAt, &started, &finished, &req.UpdatedAt, &cancelRequested); err != nil {
 		return ModelBrokerRequest{}, err
 	}
 	req.RequestBody = string(requestBody)

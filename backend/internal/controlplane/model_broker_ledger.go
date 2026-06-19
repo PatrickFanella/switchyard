@@ -17,6 +17,7 @@ type ModelBrokerRequest struct {
 	Model             string            `json:"model"`
 	Path              string            `json:"path"`
 	Client            string            `json:"client"`
+	ClientPriority    int               `json:"client_priority"`
 	RequestBody       string            `json:"request_body,omitempty"`
 	ResponseBody      string            `json:"response_body,omitempty"`
 	Error             string            `json:"error,omitempty"`
@@ -33,6 +34,7 @@ type CreateModelBrokerRequestInput struct {
 	Model       string
 	Path        string
 	Client      string
+	Priority    int
 	RequestBody string
 }
 
