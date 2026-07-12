@@ -169,7 +169,7 @@ The API surfaces the same inventory at `GET /api/models` and Ollama pull automat
 
 The web dashboard reads these endpoints directly, shows workflow/trigger/run state, and can dispatch enabled triggers with **Run now**. It also includes HUD-styled module surfaces for queues, sessions, logs/search, prompts, config, agents, and skills so model brokering, OpenCode execution, content workflows, and profiles feel native to Switchyard instead of separate consoles. In Docker, nginx serves the built UI and proxies `/api/*` plus `/healthz` to the internal `api:8080` service.
 
-See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.
+See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture, [`docs/production-user-stories.md`](docs/production-user-stories.md) for release acceptance stories, `docs/roadmap.md` for the next major development phase, and `docs/ui-feature-migration.md` for the imported UI feature map.
 
 ## Open Pilot
 
