@@ -2037,7 +2037,7 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode retry: %v", err)
 	}
-	if body.Run.ID == run.ID || body.Run.TriggerID != run.TriggerID || body.Run.Status != controlplane.RunSucceeded {
+	if body.Run.ID == run.ID || body.Run.TriggerID != run.TriggerID || body.Run.Status != controlplane.RunFailed || !strings.Contains(body.Run.Summary, "not registered") {
 		t.Fatalf("retry run = %+v original = %+v", body.Run, run)
 	}
 }

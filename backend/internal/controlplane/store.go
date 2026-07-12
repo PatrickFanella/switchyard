@@ -77,6 +77,7 @@ type Store interface {
 	AddModelBrokerFeedback(CreateModelBrokerFeedbackInput) (ModelBrokerFeedback, error)
 	ListModelBrokerFeedback(int) ([]ModelBrokerFeedback, error)
 	PruneRetention(time.Time) (RetentionResult, error)
+	RuntimeMetrics() (RuntimeMetrics, error)
 }
 
 type MemoryStore struct {
@@ -1110,6 +1111,23 @@ func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) 
 		result.ModelRequests++
 	}
 	return result, nil
+}
+
+func (s *MemoryStore) RuntimeMetrics() (RuntimeMetrics, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
+	for _, run := range s.runs {
+		metrics.RunStatusCounts[string(run.Status)]++
+	}
+	for _, request := range s.modelBrokerRequests {
+		metrics.ModelRequestStatusCounts[request.Status]++
+		if request.StartedAt != nil && request.FinishedAt != nil {
+			metrics.ModelLatencyCount++
+			metrics.ModelLatencyMilliseconds += float64(request.FinishedAt.Sub(*request.StartedAt).Microseconds()) / 1000
+		}
+	}
+	return metrics, nil
 }
 
 func (s *MemoryStore) listRunStepsLocked(runID string) []RunStep {

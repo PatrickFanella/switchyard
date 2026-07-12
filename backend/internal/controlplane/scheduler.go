@@ -3,7 +3,7 @@ package controlplane
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,7 +83,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		defer ticker.Stop()
 		for {
 			if err := s.Tick(ctx); err != nil {
-				log.Printf("switchyard scheduler tick: %v", err)
+				slog.Error("scheduler tick failed", "error", RedactForLog(err.Error()))
 			}
 			select {
 			case <-ctx.Done():

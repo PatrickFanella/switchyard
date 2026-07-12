@@ -29,7 +29,10 @@ make web-dev          # run the Vite UI
 make switchyard-smoke # smoke-test health/workflow/trigger/run endpoints
 make docker-up        # start the local stack
 make docker-down      # stop the local stack
+make verify-production # run database, race, security, image, smoke, and release gates
 ```
+
+Production releases are pinned OCI archives with BuildKit SBOM and provenance attestations. `make release-verify` writes and verifies `release/SHA256SUMS`; generated release artifacts remain outside git. Runtime logs are newline-delimited JSON with credential-shaped values redacted. `GET /metrics` exports Prometheus-format workflow, model-request, queue, latency, and worker metrics.
 
 Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.
 
@@ -131,7 +134,7 @@ The backend exposes a workflow/run API:
 
 Runs persist the pipeline ID, version hash, and an immutable pipeline snapshot when queued, so later workflow-definition edits cannot change in-flight execution. Run retry creates a new run with the same workflow inputs and pipeline snapshot. Step retry creates a new run with `retry_from_step*` metadata and starts that same versioned pipeline at the requested step, preserving prior step inputs under `resume.<step-name>.*` for operator/audit context. Open Pilot rehydrates its branch plan, issue summary, agent completion, and push plan from that resume metadata so retries from verify/push/PR steps do not recreate earlier work. The Open Pilot state resume endpoint now derives its cursor from persisted DB state and records failure diagnostics (`failing_gate`, `operator_summary`, `recommended_next_action`) on failed or paused runs.
 
-API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintained OpenAPI 3.1 snapshot of the stable local control-plane API; update it when route shapes or response envelopes change.
+API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintained OpenAPI 3.1 snapshot of the stable local control-plane API; a contract test requires registered routes and documented operations to stay in sync.
 
 Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented in [`docs/reference/client-compatibility.md`](docs/reference/client-compatibility.md).
 

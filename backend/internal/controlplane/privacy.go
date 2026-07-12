@@ -8,6 +8,10 @@ import (
 
 var embeddedSecretPattern = regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/=-]+|(sk-(?:proj-)?)[a-z0-9_-]{12,}|((?:api[_-]?key|password|secret|token)\s*[:=]\s*)[^\s,;]+`)
 
+func RedactForLog(message string) string {
+	return embeddedSecretPattern.ReplaceAllString(message, `${1}${2}${3}[REDACTED]`)
+}
+
 func redactPersistedJSON(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

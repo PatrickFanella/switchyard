@@ -27,6 +27,10 @@ servers:
   - url: http://127.0.0.1:18080
     description: Local smoke-test API
 paths:
+  /health:
+    get:
+      summary: Compatibility health check
+      responses: { "200": { description: API is healthy } }
   /healthz:
     get:
       summary: Health check
@@ -56,6 +60,50 @@ paths:
           content:
             application/json:
               schema: { type: object }
+  /v1/chat/completions:
+    post:
+      summary: OpenAI-compatible chat completion
+      responses: { "200": { description: Completion or SSE stream }, "202": { description: Async request accepted } }
+  /v1/completions:
+    post:
+      summary: OpenAI-compatible text completion
+      responses: { "200": { description: Completion }, "202": { description: Async request accepted } }
+  /v1/embeddings:
+    post:
+      summary: OpenAI-compatible embeddings
+      responses: { "200": { description: Embeddings } }
+  /v1/models:
+    get:
+      summary: OpenAI-compatible model list
+      responses: { "200": { description: Model list } }
+  /api/chat:
+    post:
+      summary: Ollama-compatible chat
+      responses: { "200": { description: Chat response }, "202": { description: Async request accepted } }
+  /api/generate:
+    post:
+      summary: Ollama-compatible generation
+      responses: { "200": { description: Generation response }, "202": { description: Async request accepted } }
+  /api/embed:
+    post:
+      summary: Ollama-compatible embeddings alias
+      responses: { "200": { description: Embeddings } }
+  /api/embeddings:
+    post:
+      summary: Ollama-compatible embeddings
+      responses: { "200": { description: Embeddings } }
+  /api/tags:
+    get:
+      summary: Ollama-compatible model tags
+      responses: { "200": { description: Model list } }
+  /metrics:
+    get:
+      summary: Prometheus runtime metrics
+      responses: { "200": { description: Prometheus text exposition } }
+  /api/observability/model-broker:
+    get:
+      summary: Model broker latency, errors, and recent requests
+      responses: { "200": { description: Model broker observability summary } }
   /admin/queue:
     get:
       summary: List queued compatibility requests

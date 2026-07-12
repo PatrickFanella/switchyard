@@ -1,6 +1,6 @@
 # Production Remediation Plan
 
-This plan tracks the release-readiness audit remediation. Each phase is complete only after its acceptance tests pass and its focused commit is recorded.
+This plan tracks the release-readiness audit remediation. Phases 0–5 have focused commits; phase 6 is complete when the final production gate passes and its focused commit is recorded.
 
 ## Phase 0 — containment and safe defaults
 
@@ -51,5 +51,14 @@ This plan tracks the release-readiness audit remediation. Each phase is complete
 - Contract-test OpenAPI against registered routes.
 - Pin images and external installers, generate SBOM/provenance, and keep builds reproducible.
 - Run full Postgres, Docker, lifecycle, cancellation, security, and soak gates.
+
+## Release acceptance evidence
+
+- `make verify`: formatting, static analysis, unit/integration tests, web tests/build, Compose validation, and byte-for-byte Go rebuild comparison.
+- `make api-race`: lifecycle, cancellation, worker, scheduler, and API tests with the race detector.
+- `make postgres-test`: migrations and persistence behavior against an isolated pinned Postgres instance.
+- `make security-audit`: Go vulnerability scan plus high-severity web and OpenCode dependency audits.
+- `make docker-smoke`: isolated authenticated API, readiness, ingress-boundary, model-list, and graceful-shutdown checks.
+- `make release-verify`: pinned OCI archives with SBOM/provenance attestations and verified SHA-256 checksums.
 
 The application is not production-ready until every phase is complete and the security, correctness, durability, and operability release gates pass.

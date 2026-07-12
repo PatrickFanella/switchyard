@@ -3016,18 +3016,9 @@ func createAndStartStep(store Store, input CreateRunStepInput) (RunStep, error) 
 	return store.StartRunStep(step.ID)
 }
 
-func stubWorkflowExecution(workflowID, message string) func(context.Context, Run) (WorkflowExecution, error) {
-	return func(context.Context, Run) (WorkflowExecution, error) {
-		return WorkflowExecution{
-			Summary: "Recorded Switchyard run envelope for " + workflowID,
-			Events:  []WorkflowExecutionEvent{{Type: "workflow.stub", Message: message}},
-		}, nil
-	}
-}
-
 func (e *EnvWorkflowExecutors) executeOpenPilot(ctx context.Context, run Run) (WorkflowExecution, error) {
 	if e.openPilotCommand == "" {
-		return WorkflowExecution{Summary: "Recorded Switchyard run envelope for open-pilot", Events: []WorkflowExecutionEvent{{Type: "workflow.stub", Message: "OPEN_PILOT_COMMAND is not configured; expected command contract: open-pilot run --repo <owner/repo> --issue <number> --json"}}}, nil
+		return WorkflowExecution{}, fmt.Errorf("OPEN_PILOT_COMMAND is not configured")
 	}
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
@@ -3056,10 +3047,7 @@ func (e *EnvWorkflowExecutors) executeOpenPilot(ctx context.Context, run Run) (W
 
 func (e *EnvWorkflowExecutors) executeChangemaker(ctx context.Context, run Run) (WorkflowExecution, error) {
 	if e.changemakerBaseURL == "" {
-		return WorkflowExecution{
-			Summary: "Recorded Switchyard run envelope for changemaker",
-			Events:  []WorkflowExecutionEvent{{Type: "workflow.stub", Message: "CHANGEMAKER_BASE_URL is not configured; Changemaker run was not dispatched"}},
-		}, nil
+		return WorkflowExecution{}, fmt.Errorf("CHANGEMAKER_BASE_URL is not configured")
 	}
 	requestBody := changemakerRunRequest(run.Inputs)
 	body, err := json.Marshal(requestBody)

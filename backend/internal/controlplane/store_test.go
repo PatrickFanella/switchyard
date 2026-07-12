@@ -90,7 +90,7 @@ func TestRunnerRejectsManualOpenPilotWithoutInputs(t *testing.T) {
 	}
 }
 
-func TestRunnerCreatesDevlogRunEnvelope(t *testing.T) {
+func TestRunnerFailsDevlogWithoutRegisteredExecutor(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := controlplane.NewStore(func() time.Time { return now })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -102,7 +102,7 @@ func TestRunnerCreatesDevlogRunEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTrigger() error = %v", err)
 	}
-	if run.WorkflowID != "devlog" || run.TriggerID != "manual-devlog" || run.Status != controlplane.RunSucceeded {
+	if run.WorkflowID != "devlog" || run.TriggerID != "manual-devlog" || run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "not registered") {
 		t.Fatalf("run = %+v", run)
 	}
 	if runs := store.ListRuns(); len(runs) != 1 || runs[0].ID != run.ID {

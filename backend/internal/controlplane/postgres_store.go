@@ -1254,6 +1254,43 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 	return RetentionResult{Runs: int(runs), ModelRequests: int(requests)}, nil
 }
 
+func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
+	ctx := s.operationContext()
+	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
+	rows, err := s.db.QueryContext(ctx, `select status, count(*) from runs group by status`)
+	if err != nil {
+		return RuntimeMetrics{}, err
+	}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			rows.Close()
+			return RuntimeMetrics{}, err
+		}
+		metrics.RunStatusCounts[status] = count
+	}
+	rows.Close()
+	rows, err = s.db.QueryContext(ctx, `select status, count(*) from model_broker_requests group by status`)
+	if err != nil {
+		return RuntimeMetrics{}, err
+	}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			rows.Close()
+			return RuntimeMetrics{}, err
+		}
+		metrics.ModelRequestStatusCounts[status] = count
+	}
+	rows.Close()
+	if err := s.db.QueryRowContext(ctx, `select count(*), coalesce(sum(extract(epoch from (finished_at-started_at))*1000),0) from model_broker_requests where started_at is not null and finished_at is not null`).Scan(&metrics.ModelLatencyCount, &metrics.ModelLatencyMilliseconds); err != nil {
+		return RuntimeMetrics{}, err
+	}
+	return metrics, nil
+}
+
 func normalizeJSONText(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

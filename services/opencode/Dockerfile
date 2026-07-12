@@ -1,14 +1,15 @@
-FROM node:24-alpine
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 
-RUN apk add --no-cache bash build-base curl git go make openssh-client wget \
+RUN apk add --no-cache bash=5.3.9-r1 build-base=0.5-r4 curl=8.21.0-r0 git=2.54.0-r0 go=1.26.3-r0 make=4.4.1-r4 openssh-client-default=10.3_p1-r0 wget=1.25.0-r3 \
 	&& corepack enable
 
-ENV PATH="/root/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:/opt/opencode/node_modules/.bin:${PATH}"
 
 ARG RTK_COMMIT=5a7880d404db8364d602f2ecdc41dd790f64013f
 ARG RTK_INSTALL_SHA256=d6eb73a772903e13ff34ee1be8a8b24e896ba9a978f20d2279a08b4083ea6f77
 
-RUN npm install -g opencode-ai@1.17.18 @tarquinen/opencode-dcp@3.1.14 @slkiser/opencode-quota@3.11.2 opencode-tasks@0.5.0 @opencode-ai/plugin@1.17.18 bun@1.3.14 \
+COPY package.json package-lock.json /opt/opencode/
+RUN cd /opt/opencode && npm ci --omit=dev \
 	&& curl -fsSL "https://raw.githubusercontent.com/rtk-ai/rtk/${RTK_COMMIT}/install.sh" -o /tmp/rtk-install.sh \
 	&& echo "${RTK_INSTALL_SHA256}  /tmp/rtk-install.sh" | sha256sum -c - \
 	&& sh /tmp/rtk-install.sh \

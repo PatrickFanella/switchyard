@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,8 +21,10 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	if err := run(); err != nil {
-		log.Fatal(err)
+		slog.Error("switchyard stopped", "error", controlplane.RedactForLog(err.Error()))
+		os.Exit(1)
 	}
 }
 
@@ -37,11 +39,11 @@ func run() error {
 	if tp != nil {
 		otel.SetTracerProvider(tp)
 		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-			log.Printf("switchyard telemetry export error: %v", err)
+			slog.Error("telemetry export failed", "error", controlplane.RedactForLog(err.Error()))
 		}))
 		_, span := otel.Tracer("git.subcult.tv/PatrickFanella/switchyard/cmd/app").Start(ctx, "switchyard.startup", trace.WithAttributes(attribute.String("service", "switchyard")))
 		span.End()
-		log.Print("switchyard telemetry tracing enabled")
+		slog.Info("telemetry tracing enabled")
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -67,15 +69,15 @@ func run() error {
 			return fmt.Errorf("migrate postgres: %w", err)
 		}
 		store = controlplane.NewPostgresStore(db, nil)
-		log.Print("switchyard control plane using postgres storage")
+		slog.Info("persistence configured", "backend", "postgres")
 	} else {
-		log.Print("switchyard control plane using in-memory storage")
+		slog.Warn("persistence configured", "backend", "memory", "durable", false)
 	}
 	if err := controlplane.SeedDefaults(store); err != nil {
 		return fmt.Errorf("seed control plane: %w", err)
 	}
 	for _, warning := range controlplane.NewEnvOperatorSafetyStatus().Warnings {
-		log.Printf("switchyard operator safety warning: %s", warning)
+		slog.Warn("operator safety", "warning", controlplane.RedactForLog(warning))
 	}
 	runner := controlplane.NewRunner(store)
 	api := controlplane.NewAPI(store, runner)
@@ -108,7 +110,7 @@ func run() error {
 		api.SetWorkerPool(workersPool)
 		api.SetAsyncDispatch(true)
 		workersPool.Start(ctx)
-		log.Printf("switchyard worker pool enabled workers=%d lease=%s poll=%s", workers, lease, poll)
+		slog.Info("worker pool enabled", "workers", workers, "lease", lease.String(), "poll_interval", poll.String())
 	}
 	var scheduler *controlplane.Scheduler
 	if envEnabledByDefault("SWITCHYARD_SCHEDULER_ENABLED") {
@@ -135,7 +137,7 @@ func run() error {
 		}
 		api.SetScheduler(scheduler)
 		scheduler.Start(ctx)
-		log.Printf("switchyard scheduler enabled interval=%s", interval)
+		slog.Info("scheduler enabled", "interval", interval.String(), "timezone", location.String())
 	}
 	retentionWindow := 30 * 24 * time.Hour
 	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION")); raw != "" {
@@ -164,11 +166,11 @@ func run() error {
 	retention.Start(ctx)
 
 	fmt.Println(app.Greeting("Switchyard"))
-	log.Printf("switchyard control plane listening on %s", addr)
+	slog.Info("control plane listening", "address", addr)
 	servers := []*http.Server{{Addr: addr, Handler: api.ControlPlaneHandler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}}
 	if modelAddr := strings.TrimSpace(os.Getenv("LLAMA_LINE_LISTEN_ADDR")); modelAddr != "" && modelAddr != addr {
 		servers = append(servers, &http.Server{Addr: modelAddr, Handler: api.ModelIngressHandler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute})
-		log.Printf("switchyard model ingress listening on %s", modelAddr)
+		slog.Info("model ingress listening", "address", modelAddr)
 	}
 	errCh := make(chan error, len(servers))
 	for _, server := range servers {

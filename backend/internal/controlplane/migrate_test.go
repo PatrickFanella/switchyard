@@ -269,7 +269,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if detail.Run.Status != RunSucceeded || len(detail.Events) != 4 {
+	if detail.Run.Status != RunPaused || len(detail.Events) == 0 || len(detail.Steps) != 4 || len(detail.Artifacts) != 2 {
 		t.Fatalf("detail = %+v", detail)
 	}
 }

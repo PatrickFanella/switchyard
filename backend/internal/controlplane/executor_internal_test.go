@@ -21,6 +21,27 @@ type failingOpenPilotWriteStore struct {
 	*MemoryStore
 }
 
+func TestRunnerFailsWhenWorkflowExecutorIsNotRegistered(t *testing.T) {
+	store := NewStore(nil)
+	if err := store.UpsertWorkflow(Workflow{ID: "unsupported", Kind: "workflow", Name: "Unsupported"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: "unsupported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewRunner(store, MapExecutorRegistry{}).ExecuteRun(t.Context(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != RunFailed {
+		t.Fatalf("status = %q, want %q", got.Status, RunFailed)
+	}
+	if !strings.Contains(got.Summary, "not registered") {
+		t.Fatalf("summary = %q", got.Summary)
+	}
+}
+
 func (s *failingOpenPilotWriteStore) UpsertOpenPilotIssueState(OpenPilotIssueState) (OpenPilotIssueState, error) {
 	return OpenPilotIssueState{}, ErrInvalid
 }

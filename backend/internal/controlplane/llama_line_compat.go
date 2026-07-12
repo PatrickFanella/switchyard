@@ -784,24 +784,38 @@ func compatLogLevel(status string) string {
 
 func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	requests, err := a.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Limit: 200})
+	metrics, err := a.store.RuntimeMetrics()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "model broker metrics unavailable")
 		return
 	}
-	counts := map[string]int{}
-	for _, request := range requests {
-		counts[request.Status]++
-	}
 	queued, inflight := a.compatBroker.snapshot(r.Context())
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintln(w, "# HELP switchyard_model_broker_requests Number of durable model broker requests retained in the metrics window.")
-	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_requests gauge")
+	_, _ = fmt.Fprintln(w, "# HELP switchyard_model_broker_records Durable model broker requests currently retained by status.")
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_records gauge")
 	for _, status := range []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled, ModelBrokerRequestCompleted, ModelBrokerRequestFailed} {
-		_, _ = fmt.Fprintf(w, "switchyard_model_broker_requests{status=%q} %d\n", status, counts[status])
+		_, _ = fmt.Fprintf(w, "switchyard_model_broker_records{status=%q} %d\n", status, metrics.ModelRequestStatusCounts[status])
 	}
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_workflow_runs gauge")
+	for _, status := range []RunStatus{RunQueued, RunRunning, RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut} {
+		_, _ = fmt.Fprintf(w, "switchyard_workflow_runs{status=%q} %d\n", status, metrics.RunStatusCounts[string(status)])
+	}
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_latency_milliseconds summary")
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_latency_milliseconds_count %d\n", metrics.ModelLatencyCount)
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_latency_milliseconds_sum %.3f\n", metrics.ModelLatencyMilliseconds)
 	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_queue_depth gauge")
 	_, _ = fmt.Fprintf(w, "switchyard_model_broker_queue_depth %d\n", len(queued))
 	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_inflight gauge")
 	_, _ = fmt.Fprintf(w, "switchyard_model_broker_inflight %d\n", len(inflight))
+	if a.workerPool != nil {
+		status := a.workerPool.Status()
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_active gauge")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_active %d\n", status.Active)
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_completed_runs_total counter")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_completed_runs_total %d\n", status.CompletedRuns)
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_failed_runs_total counter")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_failed_runs_total %d\n", status.FailedRuns)
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_lease_renewals_total counter")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_lease_renewals_total %d\n", status.LeaseRenewals)
+	}
 }

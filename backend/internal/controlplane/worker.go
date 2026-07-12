@@ -3,7 +3,7 @@ package controlplane
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -268,7 +268,7 @@ func (p *WorkerPool) recoverLeases() {
 	p.failedLeases += failed
 	if err != nil {
 		p.lastErr = err.Error()
-		log.Printf("switchyard worker recovery: %v", err)
+		slog.Error("worker recovery failed", "error", RedactForLog(err.Error()))
 	}
 }
 

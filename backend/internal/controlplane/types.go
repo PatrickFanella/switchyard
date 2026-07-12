@@ -218,6 +218,13 @@ type RetentionResult struct {
 	ModelRequests int `json:"model_requests"`
 }
 
+type RuntimeMetrics struct {
+	RunStatusCounts          map[string]int
+	ModelRequestStatusCounts map[string]int
+	ModelLatencyCount        int
+	ModelLatencyMilliseconds float64
+}
+
 type CreateRunInput struct {
 	WorkflowID       string            `json:"workflow_id"`
 	TriggerID        string            `json:"trigger_id,omitempty"`

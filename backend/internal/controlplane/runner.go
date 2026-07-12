@@ -157,7 +157,7 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	}
 	executor := r.executors.ExecutorFor(run.WorkflowID)
 	if executor == nil {
-		executor = WorkflowExecutorFunc(stubWorkflowExecution(run.WorkflowID, "Workflow execution adapter is not wired yet"))
+		return r.finishRun(run.ID, workerID, RunFailed, "workflow execution adapter is not registered")
 	}
 	if r.pipelines != nil || run.PipelineSnapshot != nil {
 		pipeline, ok := r.pipelineForRun(run)
