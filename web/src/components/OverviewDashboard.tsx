@@ -294,9 +294,9 @@ export function OverviewDashboard({
   return (
     <section className="grid gap-4">
       <HudSection
-        kicker="Command strip"
-        title="Command strip"
-        note="Live API health, scheduler posture, worker pool, and the quickest refresh and routing controls."
+        kicker="Live system"
+        title="System posture"
+        note="Health, scheduling, worker capacity, and current workload at a glance."
         actions={[
           <button
             key="refresh"
@@ -321,7 +321,7 @@ export function OverviewDashboard({
         </div>
       </HudSection>
 
-      <HudSection kicker="Active work" title="Active work" note="Recent runs, trigger controls, and operator inputs grouped for quick scanning.">
+      <HudSection kicker="Dispatch" title="Workflows and triggers" note="Start manual work, manage schedules, and watch recent execution state.">
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-3">
             {dashboard.triggers.length === 0 ? <HudEmptyState>{loading ? 'Loading triggers…' : 'No triggers returned by the API.'}</HudEmptyState> : null}
@@ -373,7 +373,7 @@ export function OverviewDashboard({
         </div>
       </HudSection>
 
-      <HudSection kicker="Selected run" title="Selected run" note="Compact summary with direct cockpit entry and the highest-signal run actions.">
+      <HudSection kicker="Inspection" title="Selected run" note="Review the current run and take the next safe operator action.">
         <SelectedRunSummaryCard
           openPilotState={openPilotState}
           onCancelRun={onCancelRun}

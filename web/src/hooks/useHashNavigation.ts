@@ -64,7 +64,7 @@ export function formatHash(activeView: ViewID, selectedRunID = '', selectedReque
   }
 
   if (activeView === 'runs') {
-    return '#/overview';
+    return '#/runs';
   }
 
   if (activeView === 'overview' && selectedRunID) {

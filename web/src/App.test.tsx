@@ -118,17 +118,19 @@ function mockDashboardFetch() {
 }
 
 describe('App', () => {
-  it('renders the overview scan bands', () => {
+  it('renders the operator shell and overview hierarchy', () => {
     window.location.hash = '#/overview';
 
     const html = renderToString(<App />);
 
-    expect(html).toContain('Switchyard control-plane suite');
-    expect(html).toContain('Command strip');
-    expect(html).toContain('Active work');
+    expect(html).toContain('Automation runtime');
+    expect(html).toContain('Operations overview');
+    expect(html).toContain('System posture');
+    expect(html).toContain('Workflows and triggers');
     expect(html).toContain('Selected run');
     expect(html).toContain('Run posture');
-    expect(html).toContain('UI → Switchyard → ModelBroker → OpenCode executor → Blacktower');
+    expect(html).toContain('Primary navigation');
+    expect(html).toContain('Skip to content');
     expect(openPilotStateFields).toContain('Next action');
   });
 

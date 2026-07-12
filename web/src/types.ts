@@ -419,6 +419,7 @@ export const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode execut
 
 export const views: ViewMeta[] = [
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
+  { id: 'runs', label: 'Runs', source: 'Switchyard' },
   { id: 'queues', label: 'Queues', source: 'ModelBroker' },
   { id: 'observability', label: 'Observability', source: 'Phoenix / ModelBroker' },
   { id: 'sessions', label: 'Sessions', source: 'OpenCode executor / Blacktower' },
