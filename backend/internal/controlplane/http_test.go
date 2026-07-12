@@ -2178,6 +2178,47 @@ func TestAPIAdaptersEndpointShape(t *testing.T) {
 	}
 }
 
+func TestAPIListenerRouteIsolation(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	control := httptest.NewServer(api.ControlPlaneHandler())
+	t.Cleanup(control.Close)
+	model := httptest.NewServer(api.ModelIngressHandler())
+	t.Cleanup(model.Close)
+
+	for _, path := range []string{"/api/runs", "/api/triggers", "/api/workflow-definitions", "/admin/queue", "/api/history"} {
+		resp, err := http.Get(model.URL + path)
+		if err != nil {
+			t.Fatalf("GET model ingress %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("model ingress %s status = %d, want 404", path, resp.StatusCode)
+		}
+	}
+
+	resp, err := http.Get(control.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET control inference route: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("control inference status = %d, want 404", resp.StatusCode)
+	}
+
+	resp, err = http.Get(model.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET model list: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("model list status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestAPIAdaptersProbesOCQWhenConfigured(t *testing.T) {
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

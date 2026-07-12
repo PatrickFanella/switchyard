@@ -4,7 +4,7 @@
 
 This repository is the Switchyard project. Security work here focuses on safe defaults, secret hygiene, and project-specific guidance.
 
-Add stack-specific security policy details before production use.
+Switchyard separates its operator control plane from model-compatible ingress. Production deployments must keep raw listeners private and place the web/control surface behind authenticated access. Setting `SWITCHYARD_REVERSE_PROXY_AUTH=true` is an operator assertion, not an authentication mechanism by itself.
 
 ## Reporting a vulnerability
 
@@ -48,3 +48,5 @@ Switchyard should:
 Open Pilot tasks should include a deterministic `Test Command` and clear scope limits. Do not queue tasks that require secret access, production credentials, destructive data changes, or ambiguous deployment actions.
 
 For risky work, require human review before adding `agent:queued`.
+
+`OPEN_PILOT_COMMAND_POLICY_MODE` defaults to `deny`. The `allow` mode still enforces executable and Git-subcommand allowlists and rejects shell syntax. Do not weaken these controls on a listener reachable by untrusted clients.

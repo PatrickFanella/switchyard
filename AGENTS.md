@@ -22,6 +22,8 @@ Switchyard is one cohesive automation runtime. OCQ, llama-line, and Changemaker 
 
 Compatibility backends and LLAMA_LINE_PORT ingress are cutover aids only. New code should prefer Switchyard-native interfaces over direct service-specific coupling. See `docs/adr/0003-native-switchyard-modules.md`.
 
+Keep the operator control plane and model-compatible ingress on separate listeners. Model ingress must not expose workflow, run, trigger, history, audit, or administrative routes. Published development ports bind to loopback by default, and command execution remains deny-by-default with argv allowlists even in autonomous modes.
+
 ## Verification
 
 Run:

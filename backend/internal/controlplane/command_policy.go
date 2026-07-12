@@ -54,9 +54,9 @@ func NewEnvCommandRunner() *PolicyCommandRunner {
 	deniedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"))
 	if openPilotAutonomyFullEnabled() {
 		mode = CommandPolicyMode(firstNonEmpty(os.Getenv("OPEN_PILOT_COMMAND_POLICY_MODE"), string(CommandPolicyAllow)))
-		allowedCommands = setFromCSV(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"))
-		allowedGitVerbs = setFromCSV(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"))
-		deniedCommands = setFromCSV(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"))
+		allowedCommands = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), "git,go,make,pnpm,npm,cargo"))
+		allowedGitVerbs = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), "status,diff,checkout,switch,branch,add,commit"))
+		deniedCommands = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"))
 	}
 	timeout := 120 * time.Second
 	if raw := os.Getenv("OPEN_PILOT_COMMAND_TIMEOUT"); raw != "" {
@@ -114,12 +114,6 @@ func (r *PolicyCommandRunner) Decide(command string) CommandDecision {
 	if r.policy.Mode == "" || r.policy.Mode == CommandPolicyDeny {
 		return CommandDecision{Allowed: false, Reason: "command policy mode is deny"}
 	}
-	if r.policy.Mode == CommandPolicyAllow {
-		if strings.TrimSpace(command) == "" {
-			return CommandDecision{Allowed: false, Reason: "command is empty"}
-		}
-		return CommandDecision{Allowed: true, Reason: "allowed", Command: []string{"sh", "-lc", command}}
-	}
 	if containsShellSyntax(command) {
 		return CommandDecision{Allowed: false, Reason: "command contains shell syntax"}
 	}
@@ -142,6 +136,9 @@ func (r *PolicyCommandRunner) Decide(command string) CommandDecision {
 		if len(r.policy.AllowedGitVerbs) > 0 && !r.policy.AllowedGitVerbs[verb] {
 			return CommandDecision{Allowed: false, Reason: "git subcommand is not allowed: " + verb, Command: parts}
 		}
+	}
+	if r.policy.Mode != CommandPolicyAllow && r.policy.Mode != CommandPolicyDryRun {
+		return CommandDecision{Allowed: false, Reason: "unsupported command policy mode: " + string(r.policy.Mode), Command: parts}
 	}
 	return CommandDecision{Allowed: true, Reason: "allowed", Command: parts, DryRun: r.policy.Mode == CommandPolicyDryRun}
 }

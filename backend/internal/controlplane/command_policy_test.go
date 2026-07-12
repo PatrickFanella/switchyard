@@ -68,22 +68,33 @@ func TestCommandPolicyDeniesUnsafeCommands(t *testing.T) {
 	}
 }
 
-func TestOpenPilotAutonomyFullAllowsUnlistedCommands(t *testing.T) {
+func TestOpenPilotAutonomyFullStillRequiresAllowedCommand(t *testing.T) {
 	t.Setenv("OPEN_PILOT_AUTONOMY_MODE", "full")
 	runner := controlplane.NewEnvCommandRunner()
 	decision := runner.Decide("python -m pytest")
-	if !decision.Allowed || decision.DryRun {
+	if decision.Allowed {
 		t.Fatalf("decision = %+v", decision)
 	}
 }
 
-func TestCommandPolicyAllowRunsShellSyntax(t *testing.T) {
+func TestCommandPolicyAllowRejectsShellSyntax(t *testing.T) {
 	runner := controlplane.NewPolicyCommandRunner(controlplane.CommandPolicy{Mode: controlplane.CommandPolicyAllow, Timeout: time.Second})
-	result, err := runner.Run(t.Context(), "printf hello && printf world")
-	if err != nil {
+	if _, err := runner.Run(t.Context(), "printf hello && printf world"); err == nil || !strings.Contains(err.Error(), "shell syntax") {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "helloworld" {
-		t.Fatalf("output = %q, want helloworld", result.Output)
+}
+
+func TestCommandPolicyAllowEnforcesExecutableAllowlist(t *testing.T) {
+	runner := controlplane.NewPolicyCommandRunner(controlplane.CommandPolicy{
+		Mode:            controlplane.CommandPolicyAllow,
+		AllowedCommands: map[string]bool{"go": true},
+		DeniedCommands:  map[string]bool{"rm": true},
+		Timeout:         time.Second,
+	})
+	if decision := runner.Decide("python -m pytest"); decision.Allowed {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if decision := runner.Decide("go test ./..."); !decision.Allowed || decision.DryRun {
+		t.Fatalf("decision = %+v", decision)
 	}
 }

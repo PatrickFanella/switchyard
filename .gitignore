@@ -62,6 +62,8 @@ htmlcov/
 
 # Go
 bin/
+/backend/app
+/backend/switchyard
 cover.out
 coverage.out
 

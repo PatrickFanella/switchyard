@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -125,26 +126,47 @@ func run() error {
 
 	fmt.Println(app.Greeting("Switchyard"))
 	log.Printf("switchyard control plane listening on %s", addr)
-	server := &http.Server{Addr: addr, Handler: api.Handler()}
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.ListenAndServe()
-	}()
+	servers := []*http.Server{{Addr: addr, Handler: api.ControlPlaneHandler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}}
+	if modelAddr := strings.TrimSpace(os.Getenv("LLAMA_LINE_LISTEN_ADDR")); modelAddr != "" && modelAddr != addr {
+		servers = append(servers, &http.Server{Addr: modelAddr, Handler: api.ModelIngressHandler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute})
+		log.Printf("switchyard model ingress listening on %s", modelAddr)
+	}
+	errCh := make(chan error, len(servers))
+	for _, server := range servers {
+		server := server
+		go func() {
+			errCh <- server.ListenAndServe()
+		}()
+	}
+	shutdownServers := func(shutdownCtx context.Context) error {
+		var shutdownErr error
+		for _, server := range servers {
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				shutdownErr = errors.Join(shutdownErr, err)
+			}
+		}
+		return shutdownErr
+	}
 
 	select {
 	case err := <-errCh:
 		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = shutdownServers(shutdownCtx)
 		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		if err := shutdownServers(shutdownCtx); err != nil {
 			return err
 		}
-		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+		for range servers {
+			if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return err
+			}
 		}
 		return nil
 	}

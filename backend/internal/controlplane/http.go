@@ -128,6 +128,66 @@ func (a *API) Handler() http.Handler {
 	return withCORS(mux)
 }
 
+// ControlPlaneHandler serves the operator API without exposing model-provider
+// compatible inference routes. Authentication and authorization are layered on
+// this handler so deployments can keep it on a separate trust boundary.
+func (a *API) ControlPlaneHandler() http.Handler {
+	return routeBoundary(a.Handler(), controlPlaneRouteAllowed)
+}
+
+// ModelIngressHandler exposes only the OpenAI/Ollama-compatible inference and
+// status contract. It deliberately excludes run, trigger, workflow, history,
+// audit, and administrative mutation routes.
+func (a *API) ModelIngressHandler() http.Handler {
+	return routeBoundary(a.Handler(), modelIngressRouteAllowed)
+}
+
+func routeBoundary(next http.Handler, allowed func(*http.Request) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			writeError(w, http.StatusNotFound, "route not available on this listener")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func controlPlaneRouteAllowed(r *http.Request) bool {
+	path := r.URL.Path
+	if strings.HasPrefix(path, "/v1/") || path == "/broker/status" {
+		return false
+	}
+	switch path {
+	case "/api/chat", "/api/generate", "/api/embed", "/api/embeddings", "/api/tags":
+		return false
+	default:
+		return true
+	}
+}
+
+func modelIngressRouteAllowed(r *http.Request) bool {
+	path := r.URL.Path
+	if path == "/health" || path == "/healthz" || path == "/metrics" || path == "/broker/status" {
+		return r.Method == http.MethodGet
+	}
+	if strings.HasPrefix(path, "/v1/") {
+		switch path {
+		case "/v1/chat/completions", "/v1/completions", "/v1/embeddings":
+			return r.Method == http.MethodPost
+		case "/v1/models":
+			return r.Method == http.MethodGet
+		}
+	}
+	switch path {
+	case "/api/chat", "/api/generate", "/api/embed", "/api/embeddings":
+		return r.Method == http.MethodPost
+	case "/api/tags":
+		return r.Method == http.MethodGet
+	default:
+		return false
+	}
+}
+
 func (a *API) operatorSafety(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, NewEnvOperatorSafetyStatus())
 }

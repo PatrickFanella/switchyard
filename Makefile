@@ -34,10 +34,12 @@ web-test: ## Run Switchyard web tests
 build: api-build web-build ## Build backend and web
 
 api-build: cli-build ## Build Switchyard API binary
-	cd backend && go build ./cmd/app
+	mkdir -p bin
+	cd backend && go build -o ../bin/switchyard-api ./cmd/app
 
 cli-build: ## Build Switchyard CLI binary
-	cd backend && go build ./cmd/switchyard
+	mkdir -p bin
+	cd backend && go build -o ../bin/switchyard ./cmd/switchyard
 
 web-build: ## Build Switchyard web UI
 	pnpm --dir web run build
@@ -80,7 +82,7 @@ docker-reset: ## Stop stack and remove local Postgres data volume; requires CONF
 	docker compose down -v
 
 clean: ## Remove generated build artifacts
-	rm -rf web/dist backend/app
+	rm -rf web/dist bin
 
 compose-config: ## Validate Docker Compose config
 	docker compose config --quiet
