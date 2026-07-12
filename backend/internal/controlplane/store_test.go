@@ -22,6 +22,11 @@ func TestSeedDefaultsCreatesWorkflowAndTriggerCatalog(t *testing.T) {
 	if workflows[0].ID != "changemaker-daily-digest" || workflows[1].ID != "devlog" || workflows[2].ID != "open-pilot" {
 		t.Fatalf("workflows sorted by id = %+v", workflows)
 	}
+	for _, workflow := range workflows {
+		if workflow.Status != "active" {
+			t.Fatalf("workflow %q status = %q, want active", workflow.ID, workflow.Status)
+		}
+	}
 
 	triggers := store.ListTriggers()
 	if len(triggers) != 4 {

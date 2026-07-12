@@ -125,6 +125,19 @@ func TestWorkflowDefinitionVersionMigrationDeclaresHistory(t *testing.T) {
 	}
 }
 
+func TestNativeWorkflowActivationMigrationCorrectsStaleStatuses(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/018_activate_native_workflows.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"update workflows", "'open-pilot'", "'devlog'", "status = 'planned'", "status = 'active'"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("native workflow activation migration missing %q", field)
+		}
+	}
+}
+
 func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/006_open_pilot_state.sql")
 	if err != nil {

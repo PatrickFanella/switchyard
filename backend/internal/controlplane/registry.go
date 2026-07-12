@@ -2,9 +2,9 @@ package controlplane
 
 func SeedDefaults(store Store) error {
 	workflows := []Workflow{
-		{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot", Description: "Gitea issue selection, branch/PR policy, and agent run workflow.", Owns: []string{"gitea labels", "branches", "pull requests"}, Uses: []string{"opencode", "model-broker", "blacktower"}, Status: "planned"},
+		{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot", Description: "Gitea issue selection, branch/PR policy, and agent run workflow.", Owns: []string{"gitea labels", "branches", "pull requests"}, Uses: []string{"opencode", "model-broker", "blacktower"}, Status: "active"},
 		{ID: "changemaker-daily-digest", Kind: WorkflowChangemaker, Name: "Changemaker Daily Digest", Description: "Native workflow-creator Changemaker template.", Owns: []string{"prompt", "draft artifact", "timer"}, Uses: []string{"model-broker"}, Status: "active"},
-		{ID: "devlog", Kind: WorkflowDevlog, Name: "Devlog", Description: "Repository/activity narrative workflow for periodic development logs.", Owns: []string{"activity collection", "devlog prompts", "draft artifacts"}, Uses: []string{"model-broker", "gitea"}, Status: "planned"},
+		{ID: "devlog", Kind: WorkflowDevlog, Name: "Devlog", Description: "Repository/activity narrative workflow for periodic development logs.", Owns: []string{"activity collection", "devlog prompts", "draft artifacts"}, Uses: []string{"model-broker", "gitea"}, Status: "active"},
 	}
 	existingWorkflows := map[string]struct{}{}
 	for _, workflow := range store.ListWorkflows() {
