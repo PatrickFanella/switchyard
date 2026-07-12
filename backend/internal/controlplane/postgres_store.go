@@ -899,7 +899,24 @@ func (s *PostgresStore) CreateModelBrokerRequest(input CreateModelBrokerRequestI
 }
 
 func (s *PostgresStore) StartModelBrokerRequest(id string) (ModelBrokerRequest, error) {
-	row := s.db.QueryRowContext(context.Background(), `update model_broker_requests set status=$2, started_at=coalesce(started_at, now()), updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, ModelBrokerRequestRunning)
+	row := s.db.QueryRowContext(context.Background(), `update model_broker_requests set status=$2, started_at=coalesce(started_at, now()), updated_at=now() where id=$1 and status=$3 returning `+modelBrokerRequestColumns, id, ModelBrokerRequestRunning, ModelBrokerRequestQueued)
+	req, err := scanModelBrokerRequestRow(row)
+	return req, mapScanErr(err)
+}
+
+func (s *PostgresStore) ClaimNextModelBrokerRequest() (ModelBrokerRequest, error) {
+	row := s.db.QueryRowContext(context.Background(), `
+		with next_request as (
+			select id from model_broker_requests
+			where status=$1
+			order by client_priority desc, created_at asc, id asc
+			for update skip locked
+			limit 1
+		)
+		update model_broker_requests
+		set status=$2, started_at=coalesce(started_at, now()), updated_at=now()
+		where id in (select id from next_request)
+		returning `+modelBrokerRequestColumns, ModelBrokerRequestQueued, ModelBrokerRequestRunning)
 	req, err := scanModelBrokerRequestRow(row)
 	return req, mapScanErr(err)
 }

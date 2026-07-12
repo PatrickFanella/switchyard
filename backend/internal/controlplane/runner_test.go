@@ -113,6 +113,41 @@ func TestRunnerPersistsPipelineStepCorrelationBeforeExecutionCompletes(t *testin
 	}
 }
 
+func TestRunnerCancelRunPropagatesToActiveStep(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := store.UpsertWorkflow(Workflow{ID: "test-workflow", Kind: "test-workflow", Name: "Test Workflow"}); err != nil {
+		t.Fatal(err)
+	}
+	executor := &blockingCorrelatedPipelineExecutor{started: make(chan struct{}), release: make(chan struct{})}
+	runner := NewRunner(store, MapExecutorRegistry{"test-workflow": executor})
+	runner.pipelines = StaticPipelineRegistry{"test-workflow": {ID: "test", WorkflowID: "test-workflow", Steps: []PipelineStep{{ID: "blocking", Position: 1, Name: "test.blocking", Executor: "opencode"}}}}
+	run, err := store.CreateRun(runner.withPipelineSnapshot(CreateRunInput{WorkflowID: "test-workflow"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = store.StartRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan Run, 1)
+	go func() {
+		finished, _ := runner.ExecuteRun(t.Context(), run)
+		done <- finished
+	}()
+	<-executor.started
+	if !runner.CancelRun(run.ID) {
+		t.Fatal("CancelRun() did not find active run")
+	}
+	select {
+	case finished := <-done:
+		if finished.Status != RunCanceled {
+			t.Fatalf("status = %s, want canceled", finished.Status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active run did not stop after cancellation")
+	}
+}
+
 func TestRunnerLimitsPipelineExecutorConcurrency(t *testing.T) {
 	store := NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := store.UpsertWorkflow(Workflow{ID: "test-workflow", Kind: WorkflowKind("test-workflow"), Name: "Test Workflow"}); err != nil {

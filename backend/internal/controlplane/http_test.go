@@ -1169,7 +1169,7 @@ func TestAPILlamaLineCompatIdentifiesClientFromBearerKey(t *testing.T) {
 	}
 }
 
-func TestAPILlamaLineCompatStatusOrdersQueuedByPriority(t *testing.T) {
+func TestModelBrokerQueueClaimsByPriority(t *testing.T) {
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "low", Model: "qwen3:14b", Path: "/api/generate", Client: "low-client", Priority: 1, RequestBody: `{"prompt":"low"}`}); err != nil {
 		t.Fatalf("create low: %v", err)
@@ -1177,27 +1177,60 @@ func TestAPILlamaLineCompatStatusOrdersQueuedByPriority(t *testing.T) {
 	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "high", Model: "qwen3:14b", Path: "/api/generate", Client: "high-client", Priority: 99, RequestBody: `{"prompt":"high"}`}); err != nil {
 		t.Fatalf("create high: %v", err)
 	}
-	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
-	srv := httptest.NewServer(api.Handler())
+	claimed, err := store.ClaimNextModelBrokerRequest()
+	if err != nil {
+		t.Fatalf("ClaimNextModelBrokerRequest() error = %v", err)
+	}
+	if claimed.ID != "high" || claimed.ClientPriority != 99 || claimed.Status != controlplane.ModelBrokerRequestRunning {
+		t.Fatalf("claimed = %+v, want high priority running request", claimed)
+	}
+}
+
+func TestModelBrokerAsyncQueueRejectsRequestsAtCapacity(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "ok"}, "done": true})
+	}))
+	t.Cleanup(func() {
+		close(release)
+		ollama.Close()
+	})
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+	t.Setenv("MODEL_BROKER_QUEUE_MAX_DEPTH", "1")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/broker/status")
-	if err != nil {
-		t.Fatalf("GET /broker/status: %v", err)
+	submit := func(id string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/generate?async=true", strings.NewReader(`{"model":"ollama/llama3.2","prompt":"hello"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", id)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
 	}
-	defer resp.Body.Close()
-	var body struct {
-		Queue []struct {
-			ID       string `json:"id"`
-			Client   string `json:"client"`
-			Priority int    `json:"priority"`
-		} `json:"queue"`
+	first := submit("capacity-first")
+	first.Body.Close()
+	if first.StatusCode != http.StatusAccepted {
+		t.Fatalf("first status = %d", first.StatusCode)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode status: %v", err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first queued request did not start")
 	}
-	if len(body.Queue) < 2 || body.Queue[0].ID != "high" || body.Queue[0].Priority != 99 {
-		t.Fatalf("queue order = %+v, want high priority first", body.Queue)
+	second := submit("capacity-second")
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests || second.Header.Get("Retry-After") == "" {
+		t.Fatalf("second status = %d Retry-After=%q", second.StatusCode, second.Header.Get("Retry-After"))
 	}
 }
 
@@ -2260,6 +2293,91 @@ func TestAPIListenerRouteIsolation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("model list status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestControlPlaneRequiresAuthenticationAndEnforcesReadRole(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-secret")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "read-secret")
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+
+	request := func(method, path, token string) *http.Response {
+		req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(`{"workflow_id":"devlog"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+		return resp
+	}
+	if got := request(http.MethodGet, "/api/runs", "").StatusCode; got != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d", got)
+	}
+	if got := request(http.MethodGet, "/api/runs", "read-secret").StatusCode; got != http.StatusOK {
+		t.Fatalf("read token GET status = %d", got)
+	}
+	if got := request(http.MethodPost, "/api/runs", "read-secret").StatusCode; got != http.StatusForbidden {
+		t.Fatalf("read token POST status = %d", got)
+	}
+	if got := request(http.MethodPost, "/api/runs", "admin-secret").StatusCode; got != http.StatusCreated {
+		t.Fatalf("admin token POST status = %d", got)
+	}
+}
+
+func TestControlPlaneFailsClosedWithoutAuthenticationConfiguration(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "false")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + "/api/runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestAPICORSAllowsOnlyConfiguredOrigins(t *testing.T) {
+	t.Setenv("SWITCHYARD_CORS_ALLOWED_ORIGINS", "https://operator.example")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	request := func(origin string) *http.Response {
+		req, err := http.NewRequest(http.MethodOptions, srv.URL+"/api/runs", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", origin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	allowed := request("https://operator.example")
+	allowed.Body.Close()
+	if allowed.StatusCode != http.StatusNoContent || allowed.Header.Get("Access-Control-Allow-Origin") != "https://operator.example" {
+		t.Fatalf("allowed origin status/header = %d/%q", allowed.StatusCode, allowed.Header.Get("Access-Control-Allow-Origin"))
+	}
+	denied := request("https://evil.example")
+	denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden || denied.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("denied origin status/header = %d/%q", denied.StatusCode, denied.Header.Get("Access-Control-Allow-Origin"))
 	}
 }
 

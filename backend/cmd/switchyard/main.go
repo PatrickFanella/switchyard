@@ -140,7 +140,12 @@ func modelsRefreshOpenCode(args []string, out io.Writer) error {
 func getJSON(apiURL string, path string, jsonOut bool, out io.Writer) error {
 	client := &http.Client{Timeout: 30 * time.Second}
 	base := strings.TrimRight(apiURL, "/")
-	resp, err := client.Get(base + path)
+	req, err := http.NewRequest(http.MethodGet, base+path, nil)
+	if err != nil {
+		return err
+	}
+	setControlPlaneAuthorization(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -199,6 +204,7 @@ func postJSON(apiURL string, path string, body []byte, jsonOut bool, out io.Writ
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setControlPlaneAuthorization(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -241,6 +247,12 @@ func postJSON(apiURL string, path string, body []byte, jsonOut bool, out io.Writ
 	}
 	_, _ = fmt.Fprintf(out, "%s %s\n", decoded.Run.ID, decoded.Run.Status)
 	return nil
+}
+
+func setControlPlaneAuthorization(req *http.Request) {
+	if token := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_API_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 func splitCSV(value string) []string {

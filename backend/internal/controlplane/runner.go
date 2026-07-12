@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type PipelineStepExecution struct {
@@ -48,6 +49,8 @@ type Runner struct {
 	pipelines PipelineRegistry
 	profiles  AgentProfileRegistry
 	limiter   ExecutorLimiter
+	activeMu  sync.Mutex
+	active    map[string]context.CancelFunc
 }
 
 func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
@@ -55,7 +58,7 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if len(executors) > 0 && executors[0] != nil {
 		registry = executors[0]
 	}
-	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter()}
+	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter(), active: map[string]context.CancelFunc{}}
 }
 
 func (r *Runner) SetExecutorLimiter(limiter ExecutorLimiter) {
@@ -121,6 +124,17 @@ func (r *Runner) ExecuteClaimedRun(ctx context.Context, run Run, workerID string
 }
 
 func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run, error) {
+	executionCtx, cancel := context.WithCancel(ctx)
+	r.activeMu.Lock()
+	r.active[run.ID] = cancel
+	r.activeMu.Unlock()
+	defer func() {
+		cancel()
+		r.activeMu.Lock()
+		delete(r.active, run.ID)
+		r.activeMu.Unlock()
+	}()
+	ctx = executionCtx
 	select {
 	case <-ctx.Done():
 		return r.finishRun(run.ID, workerID, RunCanceled, ctx.Err().Error())
@@ -155,6 +169,19 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	}
 	execution, err := executor.Execute(ctx, run)
 	return r.finishSingleStepExecution(run, workerID, step, execution, err)
+}
+
+// CancelRun interrupts an execution hosted by this process. Durable status is
+// updated separately by the store so cancellation remains visible after restart.
+func (r *Runner) CancelRun(id string) bool {
+	r.activeMu.Lock()
+	cancel := r.active[id]
+	r.activeMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 func (r *Runner) pipelineForRun(run Run) (Pipeline, bool) {
@@ -405,10 +432,28 @@ func (r *Runner) finishExecution(run Run, workerID string, execution WorkflowExe
 }
 
 func (r *Runner) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
+	if detail, err := r.store.RunDetail(id); err == nil && isTerminalRunStatus(detail.Run.Status) {
+		return detail.Run, nil
+	}
 	if workerID != "" {
-		return r.store.FinishClaimedRun(id, workerID, status, summary)
+		finished, err := r.store.FinishClaimedRun(id, workerID, status, summary)
+		if err == ErrNotFound {
+			if detail, detailErr := r.store.RunDetail(id); detailErr == nil && isTerminalRunStatus(detail.Run.Status) {
+				return detail.Run, nil
+			}
+		}
+		return finished, err
 	}
 	return r.store.FinishRun(id, status, summary)
+}
+
+func isTerminalRunStatus(status RunStatus) bool {
+	switch status {
+	case RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Runner) RunTrigger(ctx context.Context, triggerID string) (Run, error) {

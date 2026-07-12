@@ -17,7 +17,10 @@ info:
     to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL is
     configured and the model is local or prefixed with ollama/. Requests may be
     submitted durably with `Prefer: respond-async` or `?async=true` and polled at
-    `/api/requests/{id}/result`; queued jobs are recovered on API startup.
+    `/api/requests/{id}/result`; queued jobs are recovered on API startup. On
+    the control-plane listener every non-health request requires an admin or
+    read-only bearer token, or an identity asserted by an explicitly trusted
+    authenticated reverse proxy. Mutating requests require the admin role.
 servers:
   - url: http://127.0.0.1:28080
     description: Local Docker Compose API
@@ -732,6 +735,12 @@ paths:
         "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
         default: { $ref: "#/components/responses/Error" }
 components:
+  securitySchemes:
+    controlPlaneBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: SWITCHYARD_CONTROL_API_TOKEN or SWITCHYARD_CONTROL_READ_TOKEN; the read token permits GET and HEAD only.
   parameters:
     RunID:
       name: runId

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -23,6 +24,8 @@ type API struct {
 	workerPool    *WorkerPool
 	asyncDispatch bool
 }
+
+type controlPlaneActorContextKey struct{}
 
 func NewAPI(store Store, runner *Runner) *API {
 	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), compatBroker: newLlamaLineCompatTracker(store), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
@@ -133,7 +136,7 @@ func (a *API) Handler() http.Handler {
 // compatible inference routes. Authentication and authorization are layered on
 // this handler so deployments can keep it on a separate trust boundary.
 func (a *API) ControlPlaneHandler() http.Handler {
-	return routeBoundary(a.Handler(), controlPlaneRouteAllowed)
+	return routeBoundary(controlPlaneAuth(a.Handler()), controlPlaneRouteAllowed)
 }
 
 // ModelIngressHandler exposes only the OpenAI/Ollama-compatible inference and
@@ -151,6 +154,66 @@ func routeBoundary(next http.Handler, allowed func(*http.Request) bool) http.Han
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func controlPlaneAuth(next http.Handler) http.Handler {
+	adminToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_API_TOKEN"))
+	readToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_READ_TOKEN"))
+	trustProxy := strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz") && r.Method == http.MethodGet) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		role := ""
+		actor := ""
+		token := bearerToken(r.Header.Get("Authorization"))
+		if secureTokenEqual(token, adminToken) {
+			role = "admin"
+			actor = "token:admin"
+		} else if secureTokenEqual(token, readToken) {
+			role = "read"
+			actor = "token:read"
+		} else if proxyUser := firstNonEmpty(strings.TrimSpace(r.Header.Get("X-Forwarded-User")), strings.TrimSpace(r.Header.Get("Remote-User"))); trustProxy && proxyUser != "" {
+			role = "admin"
+			actor = "proxy:" + proxyUser
+		}
+		if role == "" {
+			if adminToken == "" && readToken == "" && !trustProxy {
+				writeError(w, http.StatusServiceUnavailable, "control-plane authentication is not configured")
+				return
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="switchyard-control-plane"`)
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if role != "admin" && !isReadOnlyControlRequest(r) {
+			writeError(w, http.StatusForbidden, "admin authorization required")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), controlPlaneActorContextKey{}, actor)))
+	})
+}
+
+func requestActor(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	if actor, ok := r.Context().Value(controlPlaneActorContextKey{}).(string); ok && actor != "" {
+		return actor
+	}
+	return "internal"
+}
+
+func secureTokenEqual(candidate, configured string) bool {
+	if candidate == "" || configured == "" || len(candidate) != len(configured) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(configured)) == 1
+}
+
+func isReadOnlyControlRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet || r.Method == http.MethodHead
 }
 
 func controlPlaneRouteAllowed(r *http.Request) bool {
@@ -451,6 +514,7 @@ func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, err)
 		return
 	}
+	_, _ = a.store.AddEvent(run.ID, "audit.run.created", "Run created by "+requestActor(r))
 	status := http.StatusCreated
 	if a.asyncDispatch {
 		w.Header().Set("Location", "/api/runs/"+run.ID)
@@ -508,7 +572,7 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 			a.retryRun(w, r, actionRunID)
 			return
 		case r.Method == http.MethodPost && action == "cancel":
-			a.cancelRun(w, actionRunID)
+			a.cancelRun(w, r, actionRunID)
 			return
 		default:
 			writeError(w, http.StatusNotFound, "run action not found")
@@ -568,7 +632,7 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			writeControlError(w, err)
 			return
 		}
-		_, _ = a.store.AddEvent(run.ID, "run.step.retry", "Retried "+step.Name+" from "+runID)
+		_, _ = a.store.AddEvent(run.ID, "run.step.retry", "Retried "+step.Name+" from "+runID+" by "+requestActor(r))
 		status := http.StatusCreated
 		if a.asyncDispatch {
 			w.Header().Set("Location", "/api/runs/"+run.ID)
@@ -590,6 +654,7 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			writeControlError(w, err)
 			return
 		}
+		a.runner.CancelRun(runID)
 		writeJSON(w, http.StatusOK, map[string]RunStep{"step": step})
 	default:
 		writeError(w, http.StatusNotFound, "step action not found")
@@ -665,7 +730,7 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
 		writeControlError(w, err)
 		return
 	}
-	_, _ = a.store.AddEvent(run.ID, "run.retry", "Retried from "+id)
+	_, _ = a.store.AddEvent(run.ID, "run.retry", "Retried from "+id+" by "+requestActor(r))
 	status := http.StatusCreated
 	if a.asyncDispatch {
 		w.Header().Set("Location", "/api/runs/"+run.ID)
@@ -674,7 +739,7 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, status, map[string]Run{"run": run})
 }
 
-func (a *API) cancelRun(w http.ResponseWriter, id string) {
+func (a *API) cancelRun(w http.ResponseWriter, r *http.Request, id string) {
 	detail, err := a.store.RunDetail(id)
 	if err != nil {
 		writeControlError(w, err)
@@ -684,9 +749,10 @@ func (a *API) cancelRun(w http.ResponseWriter, id string) {
 		writeError(w, http.StatusBadRequest, "only queued or running runs can be canceled")
 		return
 	}
-	_, _ = a.store.AddEvent(id, "run.cancel.requested", "Operator requested cancellation")
+	_, _ = a.store.AddEvent(id, "run.cancel.requested", "Cancellation requested by "+requestActor(r))
+	a.runner.CancelRun(id)
 	if a.canceler != nil {
-		for _, event := range cancelRunDetail(context.Background(), a.canceler, detail).Events {
+		for _, event := range cancelRunDetail(r.Context(), a.canceler, detail).Events {
 			_, _ = a.store.AddEvent(id, event.Type, event.Message)
 		}
 	}
@@ -1095,11 +1161,27 @@ func openPilotNextAction(state OpenPilotIssueState) string {
 }
 
 func withCORS(next http.Handler) http.Handler {
+	allowedOrigins := map[string]struct{}{}
+	for _, origin := range strings.Split(os.Getenv("SWITCHYARD_CORS_ALLOWED_ORIGINS"), ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			allowedOrigins[origin] = struct{}{}
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "content-type, authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if _, ok := allowedOrigins[origin]; ok && origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "content-type, authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		}
 		if r.Method == http.MethodOptions {
+			if origin != "" {
+				if _, ok := allowedOrigins[origin]; !ok {
+					writeError(w, http.StatusForbidden, "origin not allowed")
+					return
+				}
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

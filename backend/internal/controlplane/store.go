@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrInvalid  = errors.New("invalid input")
+	ErrNotFound  = errors.New("not found")
+	ErrInvalid   = errors.New("invalid input")
+	ErrQueueFull = errors.New("queue capacity exceeded")
 )
 
 type Store interface {
@@ -51,6 +52,7 @@ type Store interface {
 	ListRuns() []Run
 	RunDetail(string) (RunDetail, error)
 	CreateModelBrokerRequest(CreateModelBrokerRequestInput) (ModelBrokerRequest, error)
+	ClaimNextModelBrokerRequest() (ModelBrokerRequest, error)
 	StartModelBrokerRequest(string) (ModelBrokerRequest, error)
 	FinishModelBrokerRequest(string, FinishModelBrokerRequestInput) (ModelBrokerRequest, error)
 	CancelModelBrokerRequest(string) (ModelBrokerRequest, error)
@@ -738,12 +740,39 @@ func (s *MemoryStore) StartModelBrokerRequest(id string) (ModelBrokerRequest, er
 	if !ok {
 		return ModelBrokerRequest{}, ErrNotFound
 	}
+	if req.Status != ModelBrokerRequestQueued {
+		return ModelBrokerRequest{}, ErrNotFound
+	}
 	now := s.now().UTC()
 	req.Status = ModelBrokerRequestRunning
 	req.StartedAt = &now
 	req.UpdatedAt = now
 	s.modelBrokerRequests[id] = req
 	return cloneModelBrokerRequest(req), nil
+}
+
+func (s *MemoryStore) ClaimNextModelBrokerRequest() (ModelBrokerRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var selected *ModelBrokerRequest
+	for _, candidate := range s.modelBrokerRequests {
+		if candidate.Status != ModelBrokerRequestQueued {
+			continue
+		}
+		if selected == nil || candidate.ClientPriority > selected.ClientPriority || (candidate.ClientPriority == selected.ClientPriority && candidate.CreatedAt.Before(selected.CreatedAt)) || (candidate.ClientPriority == selected.ClientPriority && candidate.CreatedAt.Equal(selected.CreatedAt) && candidate.ID < selected.ID) {
+			copy := candidate
+			selected = &copy
+		}
+	}
+	if selected == nil {
+		return ModelBrokerRequest{}, ErrNotFound
+	}
+	now := s.now().UTC()
+	selected.Status = ModelBrokerRequestRunning
+	selected.StartedAt = &now
+	selected.UpdatedAt = now
+	s.modelBrokerRequests[selected.ID] = *selected
+	return cloneModelBrokerRequest(*selected), nil
 }
 
 func (s *MemoryStore) FinishModelBrokerRequest(id string, input FinishModelBrokerRequestInput) (ModelBrokerRequest, error) {

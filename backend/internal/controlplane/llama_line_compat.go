@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -219,7 +220,16 @@ func (a *API) llamaLineCompatAcceptAsync(w http.ResponseWriter, r *http.Request,
 		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "path": r.URL.Path, "async": true})
-	req, started := a.compatBroker.submitAsync(r, model, messages, string(requestBody))
+	req, started, err := a.compatBroker.submitAsync(r, model, messages, string(requestBody))
+	if err != nil {
+		if errors.Is(err, ErrQueueFull) {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		writeControlError(w, err)
+		return
+	}
 	setCompatRequestHeaders(w.Header(), req.ID, req.CorrelationIDs)
 	w.Header().Set("Location", "/api/requests/"+req.ID+"/result")
 	status := http.StatusAccepted
