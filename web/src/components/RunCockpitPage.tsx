@@ -332,7 +332,7 @@ export function RunCockpitPage({
           <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
             <span className="hud-label text-[hsl(var(--signal))]">Status</span>
             <select className={inputClassName()} onChange={(event) => setStepStatus(event.target.value)} value={stepStatus}>
-              {['all', 'queued', 'running', 'succeeded', 'failed', 'canceled', 'timed_out'].map((item) => (
+              {['all', 'queued', 'running', 'succeeded', 'failed', 'canceled', 'timed_out', 'paused'].map((item) => (
                 <option key={item} value={item}>
                   {item}
                 </option>

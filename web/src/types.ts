@@ -71,7 +71,7 @@ export type Run = {
   id: string;
   workflow_id: string;
   trigger_id?: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'paused' | 'timed_out';
   inputs?: Record<string, string>;
   created_at: string;
   started_at?: string;
@@ -94,7 +94,7 @@ export type RunStep = {
   name: string;
   executor: string;
   model?: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out' | 'paused';
   inputs?: Record<string, string>;
   output_summary?: string;
   error?: string;
@@ -448,7 +448,7 @@ export const emptyScheduler: SchedulerStatus = { enabled: false, running: false,
 export const emptyWorkers: WorkerPoolStatus = { enabled: false, running: false, workers: 0, active: 0 };
 
 export const defaultDashboardState: DashboardState = {
-  workflows: starterWorkflows,
+  workflows: [],
   triggers: [],
   runs: [],
   adapters: emptyAdapters,
@@ -456,4 +456,4 @@ export const defaultDashboardState: DashboardState = {
   workers: emptyWorkers,
 };
 
-export const defaultWorkflowDefinitions = starterWorkflowDefinitions;
+export const defaultWorkflowDefinitions: WorkflowDefinition[] = [];

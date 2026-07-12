@@ -1529,7 +1529,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		Issue:             "123",
 		Phase:             controlplane.OpenPilotPhaseRequested,
 		GateStatus:        controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"},
-		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "8", "resume.open-pilot.prompt": "prompt"},
+		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "9", "resume.open-pilot.prompt": "prompt"},
 		RepairAttempts:    1,
 		MaxRepairAttempts: 2,
 	})
@@ -1634,7 +1634,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resumeResp.Body).Decode(&resumeBody); err != nil {
 		t.Fatalf("decode resume: %v", err)
 	}
-	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "8" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
+	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "9" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
 		t.Fatalf("resume body = %+v", resumeBody)
 	}
 	if resumeBody.State.Phase != controlplane.OpenPilotPhasePRCreated {
@@ -1703,7 +1703,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&agentNoTestBody); err != nil {
 		t.Fatalf("decode agent completed no test resume: %v", err)
 	}
-	if agentNoTestBody.Run.Inputs["retry_from_step"] != "open-pilot.push-branch" || agentNoTestBody.Run.Inputs["retry_from_step_position"] != "6" {
+	if agentNoTestBody.Run.Inputs["retry_from_step"] != "open-pilot.commit-changes" || agentNoTestBody.Run.Inputs["retry_from_step_position"] != "6" {
 		t.Fatalf("agent completed without test command resume = %+v", agentNoTestBody.Run.Inputs)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "127", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
@@ -1763,7 +1763,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&aiReviewedBody); err != nil {
 		t.Fatalf("decode ai reviewed resume: %v", err)
 	}
-	if aiReviewedBody.Run.Inputs["retry_from_step"] != "open-pilot.ci-checks" || aiReviewedBody.Run.Inputs["retry_from_step_position"] != "9" || aiReviewedBody.Run.Inputs["resume.open-pilot.pr-plan.pull_request_number"] != "42" {
+	if aiReviewedBody.Run.Inputs["retry_from_step"] != "open-pilot.ci-checks" || aiReviewedBody.Run.Inputs["retry_from_step_position"] != "10" || aiReviewedBody.Run.Inputs["resume.open-pilot.pr-plan.pull_request_number"] != "42" {
 		t.Fatalf("ai reviewed resume = %+v", aiReviewedBody.Run.Inputs)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "128", Phase: controlplane.OpenPilotPhaseRequested, GateStatus: controlplane.OpenPilotGateStatus{"merge": "merged"}, MergeCommitSHA: "deadbeef"}); err != nil {
@@ -1788,7 +1788,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&mergedBody); err != nil {
 		t.Fatalf("decode merged resume: %v", err)
 	}
-	if mergedBody.Run.Inputs["retry_from_step"] != "open-pilot.close-issue" || mergedBody.Run.Inputs["retry_from_step_position"] != "11" || mergedBody.Run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"] != "deadbeef" {
+	if mergedBody.Run.Inputs["retry_from_step"] != "open-pilot.close-issue" || mergedBody.Run.Inputs["retry_from_step_position"] != "12" || mergedBody.Run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"] != "deadbeef" {
 		t.Fatalf("merged resume = %+v", mergedBody.Run.Inputs)
 	}
 	_, err = store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
@@ -1987,6 +1987,50 @@ func TestAPIRunStepsListRetryAndCancel(t *testing.T) {
 	}
 }
 
+func TestAPIStepActionRejectsCrossRunStepID(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runOne, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun(one) error = %v", err)
+	}
+	runTwo, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun(two) error = %v", err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: runOne.ID, Position: 1, Name: "devlog.test", Executor: "internal"})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	for _, action := range []string{"retry", "cancel"} {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+runTwo.ID+"/steps/"+step.ID+"/"+action, nil)
+		if err != nil {
+			t.Fatalf("new %s request: %v", action, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", action, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", action, resp.StatusCode)
+		}
+	}
+	saved, err := store.RunStep(step.ID)
+	if err != nil {
+		t.Fatalf("RunStep() error = %v", err)
+	}
+	if saved.Status != controlplane.StepQueued {
+		t.Fatalf("step status = %s, want queued", saved.Status)
+	}
+}
+
 func TestAPIRetryOpenPilotAIReviewUsesRepairCursor(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -2143,37 +2187,37 @@ func TestAPIAdaptersEndpointShape(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode adapters: %v", err)
 	}
-	if len(body.Queues) != 1 || body.Queues[0].Status != "healthy" {
+	if len(body.Queues) != 0 {
 		t.Fatalf("queues = %+v", body.Queues)
 	}
-	if len(body.Sessions) != 1 || body.Sessions[0].Surface != "sessions" {
+	if len(body.Sessions) != 0 {
 		t.Fatalf("sessions = %+v", body.Sessions)
 	}
-	if len(body.Logs) != 1 || body.Logs[0].Level != "info" {
+	if len(body.Logs) != 0 {
 		t.Fatalf("logs = %+v", body.Logs)
 	}
-	if len(body.Prompts) != 1 || body.Prompts[0].Name == "" {
+	if len(body.Prompts) != 0 {
 		t.Fatalf("prompts = %+v", body.Prompts)
 	}
-	if body.Config.Environment != "development" || len(body.Config.Features) == 0 {
+	if body.Config.Environment != "unknown" || len(body.Config.Features) == 0 {
 		t.Fatalf("config = %+v", body.Config)
 	}
-	if len(body.Agents) != 1 || len(body.Skills) != 1 {
+	if len(body.Agents) != 0 || len(body.Skills) != 0 {
 		t.Fatalf("agents/skills = %+v %+v", body.Agents, body.Skills)
 	}
 	if body.Health.Status != "healthy" || len(body.Health.Services) != 1 {
 		t.Fatalf("health = %+v", body.Health)
 	}
-	if len(body.LlamaLine.Requests) != 1 || body.LlamaLine.Stats.ActiveRequests == 0 || len(body.LlamaLine.Upstreams) != 1 {
+	if len(body.LlamaLine.Requests) != 0 || body.LlamaLine.Stats.ActiveRequests != 0 || len(body.LlamaLine.Upstreams) != 0 {
 		t.Fatalf("llama_line = %+v", body.LlamaLine)
 	}
-	if len(body.OCQ.Requests) != 1 || len(body.OCQ.Sessions) != 1 || body.OCQ.Settings.Provider == "" {
+	if len(body.OCQ.Requests) != 0 || len(body.OCQ.Sessions) != 0 || body.OCQ.Settings.Provider != "unconfigured" {
 		t.Fatalf("ocq = %+v", body.OCQ)
 	}
-	if len(body.Blacktower.Tasks) != 1 || len(body.Blacktower.Reports) != 1 || body.Blacktower.SchedulerHealth.Status != "healthy" {
+	if len(body.Blacktower.Tasks) != 0 || len(body.Blacktower.Reports) != 0 || body.Blacktower.SchedulerHealth.Status != "unconfigured" {
 		t.Fatalf("blacktower = %+v", body.Blacktower)
 	}
-	if len(body.Changemaker.Posts) != 1 || !body.Changemaker.Service.Healthy || !body.Changemaker.RunControl.Enabled {
+	if len(body.Changemaker.Posts) != 0 || body.Changemaker.Service.Healthy || body.Changemaker.RunControl.Enabled {
 		t.Fatalf("changemaker = %+v", body.Changemaker)
 	}
 }
@@ -2343,7 +2387,7 @@ func TestAPIAdaptersProbesBlacktowerWhenConfigured(t *testing.T) {
 	if body.Blacktower.SchedulerHealth.Status != "healthy" {
 		t.Fatalf("scheduler health = %+v", body.Blacktower.SchedulerHealth)
 	}
-	if len(body.Sessions) < 2 || body.Sessions[len(body.Sessions)-1].Surface != "blacktower" {
+	if len(body.Sessions) != 1 || body.Sessions[0].Surface != "blacktower" {
 		t.Fatalf("sessions = %+v", body.Sessions)
 	}
 }

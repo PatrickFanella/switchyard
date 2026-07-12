@@ -1,5 +1,4 @@
 import {
-  defaultWorkflowDefinitions,
   emptyAdapters,
   emptyScheduler,
   emptyWorkers,
@@ -166,7 +165,7 @@ type DashboardSnapshot = {
 export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
   const [workflowData, workflowDefinitionData, triggerData, runData, adapterData, schedulerData, workerData] = await Promise.all([
     fetchJSON<DashboardResponse<Workflow>>('/api/workflows'),
-    fetchJSON<{ workflow_definitions: WorkflowDefinition[] }>('/api/workflow-definitions').catch(() => ({ workflow_definitions: defaultWorkflowDefinitions })),
+    fetchJSON<{ workflow_definitions: WorkflowDefinition[] }>('/api/workflow-definitions'),
     fetchJSON<DashboardResponse<Trigger>>('/api/triggers'),
     fetchJSON<DashboardResponse<Run>>('/api/runs'),
     fetchJSON<AdapterPayload>('/api/adapters'),
@@ -183,9 +182,7 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
       scheduler: schedulerData ?? emptyScheduler,
       workers: workerData ?? emptyWorkers,
     },
-    workflowDefinitions: arrayOrEmpty(workflowDefinitionData.workflow_definitions).length > 0
-      ? arrayOrEmpty(workflowDefinitionData.workflow_definitions)
-      : defaultWorkflowDefinitions,
+    workflowDefinitions: arrayOrEmpty(workflowDefinitionData.workflow_definitions),
   };
 }
 

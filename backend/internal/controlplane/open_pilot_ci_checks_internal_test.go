@@ -222,7 +222,7 @@ func TestOpenPilotCIChecksFailsOnAggregateFailureWithUnmatchedRequiredNames(t *t
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 10, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
 	_, err = runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env})
 	if err == nil || !strings.Contains(err.Error(), "aggregate status failure") {
 		t.Fatalf("expected aggregate failure, got %v", err)
@@ -260,7 +260,7 @@ func TestOpenPilotCIChecksPassesOnAggregateSuccessWithUnmatchedRequiredNames(t *
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 10, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
 	if _, err := runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env}); err != nil {
 		t.Fatalf("executePipeline() error = %v", err)
 	}
@@ -385,11 +385,11 @@ func TestOpenPilotCIChecksResumeUsesPersistedGateStatus(t *testing.T) {
 	env := newOpenPilotCICheckTestEnv(store)
 	env.giteaReader = reader
 	runner := &Runner{store: store}
-	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.ci-checks", "retry_from_step_position": "9"}})
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.ci-checks", "retry_from_step_position": "10"}})
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 10, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
 	if _, err := runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env}); err != nil {
 		t.Fatalf("executePipeline() error = %v", err)
 	}
@@ -430,11 +430,11 @@ func TestOpenPilotCIChecksResumeFromAIReviewedUsesPersistedGateStatus(t *testing
 	env := newOpenPilotCICheckTestEnv(store)
 	env.giteaReader = reader
 	runner := &Runner{store: store}
-	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.ci-checks", "retry_from_step_position": "9"}})
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.ci-checks", "retry_from_step_position": "10"}})
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ci-checks", Position: 10, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
 	if _, err := runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env}); err != nil {
 		t.Fatalf("executePipeline() error = %v", err)
 	}

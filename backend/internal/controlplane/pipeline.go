@@ -1,9 +1,27 @@
 package controlplane
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 )
+
+func clonePipeline(pipeline Pipeline) Pipeline {
+	out := pipeline
+	out.Steps = append([]PipelineStep(nil), pipeline.Steps...)
+	for i := range out.Steps {
+		out.Steps[i].Inputs = cloneMap(out.Steps[i].Inputs)
+	}
+	return out
+}
+
+func pipelineVersion(pipeline Pipeline) string {
+	encoded, _ := json.Marshal(pipeline)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:8])
+}
 
 type Pipeline struct {
 	ID          string         `json:"id"`

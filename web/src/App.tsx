@@ -32,8 +32,8 @@ export default function App() {
               </ShellChip>
               <ShellChip>API {apiBase || 'local'}</ShellChip>
               <ShellChip>
-                <HudLed className={data.loading ? 'bg-[hsl(var(--warn))]' : 'bg-[hsl(var(--confirm))]'} />
-                {data.loading ? 'Syncing' : data.refreshing ? 'Refreshing' : 'Live'}
+                <HudLed className={data.dashboardError ? 'bg-[hsl(var(--danger))]' : data.loading ? 'bg-[hsl(var(--warn))]' : 'bg-[hsl(var(--confirm))]'} />
+                {data.dashboardError ? 'Degraded' : data.loading ? 'Syncing' : data.refreshing ? 'Refreshing' : 'Live'}
               </ShellChip>
             </div>
 

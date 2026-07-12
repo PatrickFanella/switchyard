@@ -10,8 +10,11 @@ export function statusClasses(status: string) {
       return 'border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] text-[hsl(var(--pulse))]';
     case 'queued':
       return 'border-[hsl(var(--warn))] bg-[hsl(var(--warn-soft))] text-[hsl(var(--warn))]';
-    case 'canceled':
-      return 'border-[hsl(var(--faint))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]';
+	case 'canceled':
+	  return 'border-[hsl(var(--faint))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]';
+	case 'paused':
+	case 'timed_out':
+	  return 'border-[hsl(var(--warn))] bg-[hsl(var(--warn-soft))] text-[hsl(var(--warn))]';
     case 'seeded':
       return 'border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] text-[hsl(var(--signal))]';
     default:

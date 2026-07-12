@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -551,6 +552,10 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			writeControlError(w, err)
 			return
 		}
+		if step.RunID != runID {
+			writeError(w, http.StatusNotFound, "step not found for run")
+			return
+		}
 		detail, err := a.store.RunDetail(runID)
 		if err != nil {
 			writeControlError(w, err)
@@ -558,7 +563,7 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 		}
 		inputs := retryRunInputsFromStep(detail, step)
 		applyOpenPilotRetryInputsFromState(a.store, detail, step, inputs)
-		run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: inputs})
+		run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: inputs, PipelineSnapshot: detail.Run.PipelineSnapshot})
 		if err != nil {
 			writeControlError(w, err)
 			return
@@ -571,7 +576,16 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 		}
 		writeJSON(w, status, map[string]any{"run": run, "step": step})
 	case "cancel":
-		step, err := a.store.CancelRunStep(stepID)
+		step, err := a.store.RunStep(stepID)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		if step.RunID != runID {
+			writeError(w, http.StatusNotFound, "step not found for run")
+			return
+		}
+		step, err = a.store.CancelRunStep(stepID)
 		if err != nil {
 			writeControlError(w, err)
 			return
@@ -646,7 +660,7 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
 			}
 		}
 	}
-	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: detail.Run.Inputs})
+	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: detail.Run.Inputs, PipelineSnapshot: detail.Run.PipelineSnapshot})
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -749,179 +763,58 @@ func stepsOrEmpty(items []RunStep) []RunStep {
 
 func staticAdapterPayload() AdapterPayload {
 	return AdapterPayload{
-		Queues: []AdapterQueue{{
-			ID:        "primary",
-			Name:      "Primary Control Queue",
-			Status:    "healthy",
-			Depth:     0,
-			Capacity:  100,
-			Workers:   1,
-			UpdatedAt: adapterSampleTime,
-		}},
-		Sessions: []AdapterSession{{
-			ID:         "session-1",
-			Name:       "Operator Session",
-			Surface:    "sessions",
-			Status:     "active",
-			WorkflowID: string(WorkflowOpenPilot),
-			StartedAt:  adapterSampleTime,
-			UpdatedAt:  adapterSampleTime,
-		}},
-		Logs: []AdapterLog{{
-			ID:        "log-1",
-			Level:     "info",
-			Source:    "controlplane",
-			Message:   "Adapter surface placeholder loaded",
-			CreatedAt: adapterSampleTime,
-		}},
-		Prompts: []AdapterPrompt{{
-			ID:          "prompt-1",
-			Name:        "Default Operator Prompt",
-			Surface:     "prompts",
-			Template:    "You are operating Switchyard control surfaces.",
-			Variables:   []string{"workflow", "status"},
-			Description: "Placeholder prompt contract for UI wiring.",
-		}},
+		Queues:   []AdapterQueue{},
+		Sessions: []AdapterSession{},
+		Logs:     []AdapterLog{},
+		Prompts:  []AdapterPrompt{},
 		Config: AdapterConfig{
-			Environment: "development",
-			Version:     "0.0.0-placeholder",
+			Environment: firstNonEmpty(strings.TrimSpace(os.Getenv("SWITCHYARD_ENVIRONMENT")), "unknown"),
+			Version:     firstNonEmpty(strings.TrimSpace(os.Getenv("SWITCHYARD_VERSION")), "development"),
 			BaseURL:     "/api",
 			Features:    []string{"queues", "sessions", "logs", "prompts", "config", "agents", "skills", "health"},
-			Limits: map[string]int{
-				"max_concurrent_runs": 1,
-				"max_queue_depth":     100,
-			},
+			Limits:      map[string]int{},
 		},
-		Agents: []AdapterAgent{{
-			ID:           "agent-1",
-			Name:         "Control Plane Agent",
-			Role:         "operator",
-			Status:       "online",
-			Model:        "placeholder",
-			Capabilities: []string{"run dispatch", "queue inspection", "surface rendering"},
-		}},
-		Skills: []AdapterSkill{{
-			ID:          "skill-1",
-			Name:        "Queue Inspector",
-			Category:    "control-plane",
-			Status:      "enabled",
-			Description: "Placeholder skill contract for future UI surfaces.",
-		}},
+		Agents: []AdapterAgent{},
+		Skills: []AdapterSkill{},
 		Health: AdapterHealth{
 			Status: "healthy",
 			Services: []AdapterService{{
 				Name:    "api",
 				Status:  "healthy",
-				Details: "static placeholder payload",
+				Details: "control-plane handler responding",
 			}},
-			CheckedAt: adapterSampleTime,
+			CheckedAt: time.Now().UTC(),
 		},
 		LlamaLine: AdapterLlamaLine{
-			Requests: []AdapterLlamaRequest{{
-				ID:         "llama-request-1",
-				Model:      "llama3.1",
-				Route:      "chat/completions",
-				Status:     "completed",
-				LatencyMS:  184,
-				QueueDepth: 0,
-				CreatedAt:  adapterSampleTime,
-			}},
-			Stats: AdapterLlamaStats{
-				ActiveRequests: 2,
-				QueuedRequests: 1,
-				AvgLatencyMS:   210,
-				SuccessRate:    0.98,
-			},
-			Search: []AdapterLlamaSearchResult{{
-				Query:  "operator prompts",
-				Match:  "Default Operator Prompt",
-				Source: "prompts",
-				Score:  0.93,
-			}},
-			Upstreams: []AdapterLlamaUpstream{{
-				Name:       "ollama-local",
-				URL:        "http://127.0.0.1:11434",
-				Status:     "healthy",
-				Pending:    0,
-				LastSeenAt: adapterSampleTime,
-			}},
+			Requests:  []AdapterLlamaRequest{},
+			Stats:     AdapterLlamaStats{},
+			Search:    []AdapterLlamaSearchResult{},
+			Upstreams: []AdapterLlamaUpstream{},
 		},
 		OCQ: AdapterOCQ{
-			Requests: []AdapterOCQRequest{{
-				ID:        "ocq-request-1",
-				Workflow:  string(WorkflowOpenPilot),
-				Trigger:   "manual-open-pilot",
-				Status:    "running",
-				Actor:     "operator",
-				StartedAt: adapterSampleTime,
-				UpdatedAt: adapterSampleTime,
-			}},
-			Logs: []AdapterOCQLog{{
-				ID:        "ocq-log-1",
-				Level:     "info",
-				Channel:   "adapter",
-				Message:   "OCQ surface placeholder loaded",
-				CreatedAt: adapterSampleTime,
-			}},
-			Sessions: []AdapterOCQSession{{
-				ID:        "ocq-session-1",
-				Title:     "Primary Operator Session",
-				Status:    "active",
-				User:      "operator",
-				StartedAt: adapterSampleTime,
-				UpdatedAt: adapterSampleTime,
-			}},
+			Requests: []AdapterOCQRequest{},
+			Logs:     []AdapterOCQLog{},
+			Sessions: []AdapterOCQSession{},
 			Settings: AdapterOCQSettings{
-				Workspace:     "switchyard",
-				Provider:      "local",
-				RetentionDays: 7,
-				CORSAllowed:   []string{"*"},
+				Provider:    "unconfigured",
+				CORSAllowed: []string{},
 			},
 		},
 		Blacktower: AdapterBlacktower{
-			Tasks: []AdapterBlacktowerTask{{
-				ID:        "bt-task-1",
-				Name:      "Sync operator skills",
-				Status:    "running",
-				Owner:     "blacktower",
-				Progress:  72,
-				UpdatedAt: adapterSampleTime,
-			}},
-			Reports: []AdapterBlacktowerReport{{
-				ID:          "bt-report-1",
-				Title:       "Scheduler health summary",
-				Type:        "health",
-				Status:      "ready",
-				Findings:    []string{"queue lag within limits", "no failed tasks"},
-				GeneratedAt: adapterSampleTime,
-			}},
+			Tasks:   []AdapterBlacktowerTask{},
+			Reports: []AdapterBlacktowerReport{},
 			SchedulerHealth: AdapterSchedulerHealth{
-				Status:      "healthy",
-				NextRunAt:   adapterSampleTime.Add(30 * time.Minute),
-				LastTickAt:  adapterSampleTime,
-				SkewSeconds: 0,
+				Status: "unconfigured",
 			},
 		},
 		Changemaker: AdapterChangemaker{
-			Posts: []AdapterChangemakerPost{{
-				ID:          "cm-post-1",
-				Title:       "Launch checklist",
-				Status:      "published",
-				Tags:        []string{"open-pilot", "release"},
-				PublishedAt: adapterSampleTime,
-			}},
+			Posts: []AdapterChangemakerPost{},
 			Service: AdapterChangemakerService{
-				Name:      "changemaker",
-				Status:    "healthy",
-				Version:   "static-placeholder",
-				Healthy:   true,
-				UpdatedAt: adapterSampleTime,
+				Name:   "changemaker",
+				Status: "unconfigured",
 			},
 			RunControl: AdapterChangemakerRunControl{
-				Enabled:     true,
-				Mode:        "manual",
-				ActiveRunID: "run-1",
-				QueuedRuns:  1,
+				Mode: "disabled",
 			},
 		},
 	}
@@ -1076,6 +969,9 @@ func openPilotResumeCursorForState(state OpenPilotIssueState) (string, string) {
 			}
 		}
 		if step, pos := state.ResumeInputs["retry_from_step"], state.ResumeInputs["retry_from_step_position"]; step != "" && pos != "" {
+			if resolved := openPilotStepPosition(step); resolved != "" {
+				return step, resolved
+			}
 			return step, pos
 		}
 		if state.LastStepName != "" {
@@ -1095,19 +991,21 @@ func openPilotResumeCursorForState(state OpenPilotIssueState) (string, string) {
 		if state.ResumeInputs != nil && strings.TrimSpace(state.ResumeInputs["test_command"]) != "" {
 			return "open-pilot.verify-command", "5"
 		}
-		return "open-pilot.push-branch", "6"
+		return "open-pilot.commit-changes", "6"
 	case OpenPilotPhaseVerified:
-		return "open-pilot.push-branch", "6"
+		return "open-pilot.commit-changes", "6"
+	case OpenPilotPhaseCommitted:
+		return "open-pilot.push-branch", "7"
 	case OpenPilotPhasePushed:
-		return "open-pilot.pr-plan", "7"
+		return "open-pilot.pr-plan", "8"
 	case OpenPilotPhasePRCreated:
-		return "open-pilot.ai-review", "8"
+		return "open-pilot.ai-review", "9"
 	case OpenPilotPhaseAIReviewed:
-		return "open-pilot.ci-checks", "9"
+		return "open-pilot.ci-checks", "10"
 	case OpenPilotPhaseCIPassed, OpenPilotPhaseMergeReady:
-		return "open-pilot.merge-pr", "10"
+		return "open-pilot.merge-pr", "11"
 	case OpenPilotPhaseMerged:
-		return "open-pilot.close-issue", "11"
+		return "open-pilot.close-issue", "12"
 	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
 		return "open-pilot.agent-work", "4"
 	default:
@@ -1134,18 +1032,20 @@ func openPilotStepPosition(name string) string {
 		return "4"
 	case "open-pilot.verify-command":
 		return "5"
-	case "open-pilot.push-branch":
+	case "open-pilot.commit-changes":
 		return "6"
-	case "open-pilot.pr-plan":
+	case "open-pilot.push-branch":
 		return "7"
-	case "open-pilot.ai-review":
+	case "open-pilot.pr-plan":
 		return "8"
-	case "open-pilot.ci-checks":
+	case "open-pilot.ai-review":
 		return "9"
-	case "open-pilot.merge-pr":
+	case "open-pilot.ci-checks":
 		return "10"
-	case "open-pilot.close-issue":
+	case "open-pilot.merge-pr":
 		return "11"
+	case "open-pilot.close-issue":
+		return "12"
 	default:
 		return ""
 	}

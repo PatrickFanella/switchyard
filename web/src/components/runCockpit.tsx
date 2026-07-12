@@ -1,8 +1,8 @@
 import type { Artifact, OpenPilotStateResponse, RunDetail, RunStep } from '../types';
 
-export const terminalRunStatuses = new Set(['succeeded', 'failed', 'canceled']);
+export const terminalRunStatuses = new Set(['succeeded', 'failed', 'canceled', 'paused', 'timed_out']);
 export const activeRunStatuses = new Set(['queued', 'running']);
-export const retryableStepStatuses = new Set(['failed', 'canceled', 'timed_out']);
+export const retryableStepStatuses = new Set(['failed', 'canceled', 'timed_out', 'paused']);
 export const cancelableStepStatuses = new Set(['queued', 'running']);
 
 export function runDurationMS(detail: RunDetail | null) {

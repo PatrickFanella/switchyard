@@ -99,7 +99,7 @@ Goal: turn a run from one opaque executor call into an inspectable series of ste
 Build:
 
 - `RunStep` domain model and Postgres table.
-- Step statuses: `queued`, `running`, `succeeded`, `failed`, `canceled`, `timed_out`.
+- Step statuses: `queued`, `running`, `succeeded`, `failed`, `canceled`, `timed_out`, `paused`.
 - Step fields: run ID, name, executor, model, inputs, output summary, error, attempt count, timestamps, correlation IDs.
 - Store methods for creating, starting, finishing, retrying, and listing steps.
 - API endpoints:

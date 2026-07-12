@@ -702,6 +702,24 @@ func compatLogLevel(status string) string {
 
 func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	requests, err := a.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Limit: 200})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "model broker metrics unavailable")
+		return
+	}
+	counts := map[string]int{}
+	for _, request := range requests {
+		counts[request.Status]++
+	}
+	queued, inflight := a.compatBroker.snapshot()
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("# HELP switchyard_llama_line_compat_requests Native llama-line compatibility surface.\n# TYPE switchyard_llama_line_compat_requests counter\nswitchyard_llama_line_compat_requests 1\n"))
+	_, _ = fmt.Fprintln(w, "# HELP switchyard_model_broker_requests Number of durable model broker requests retained in the metrics window.")
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_requests gauge")
+	for _, status := range []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled, ModelBrokerRequestCompleted, ModelBrokerRequestFailed} {
+		_, _ = fmt.Fprintf(w, "switchyard_model_broker_requests{status=%q} %d\n", status, counts[status])
+	}
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_queue_depth gauge")
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_queue_depth %d\n", len(queued))
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_inflight gauge")
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_inflight %d\n", len(inflight))
 }

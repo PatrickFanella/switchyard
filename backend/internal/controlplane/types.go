@@ -96,25 +96,30 @@ const (
 	RunSucceeded RunStatus = "succeeded"
 	RunFailed    RunStatus = "failed"
 	RunCanceled  RunStatus = "canceled"
+	RunPaused    RunStatus = "paused"
+	RunTimedOut  RunStatus = "timed_out"
 )
 
 type Run struct {
-	ID             string            `json:"id"`
-	WorkflowID     string            `json:"workflow_id"`
-	TriggerID      string            `json:"trigger_id,omitempty"`
-	Status         RunStatus         `json:"status"`
-	Inputs         map[string]string `json:"inputs,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	QueuedAt       time.Time         `json:"queued_at"`
-	AvailableAt    time.Time         `json:"available_at"`
-	StartedAt      *time.Time        `json:"started_at,omitempty"`
-	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
-	ClaimedAt      *time.Time        `json:"claimed_at,omitempty"`
-	ClaimedBy      string            `json:"claimed_by,omitempty"`
-	LeaseExpiresAt *time.Time        `json:"lease_expires_at,omitempty"`
-	AttemptCount   int               `json:"attempt_count"`
-	MaxAttempts    int               `json:"max_attempts"`
-	Summary        string            `json:"summary,omitempty"`
+	ID               string            `json:"id"`
+	WorkflowID       string            `json:"workflow_id"`
+	TriggerID        string            `json:"trigger_id,omitempty"`
+	Status           RunStatus         `json:"status"`
+	Inputs           map[string]string `json:"inputs,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	QueuedAt         time.Time         `json:"queued_at"`
+	AvailableAt      time.Time         `json:"available_at"`
+	StartedAt        *time.Time        `json:"started_at,omitempty"`
+	FinishedAt       *time.Time        `json:"finished_at,omitempty"`
+	ClaimedAt        *time.Time        `json:"claimed_at,omitempty"`
+	ClaimedBy        string            `json:"claimed_by,omitempty"`
+	LeaseExpiresAt   *time.Time        `json:"lease_expires_at,omitempty"`
+	AttemptCount     int               `json:"attempt_count"`
+	MaxAttempts      int               `json:"max_attempts"`
+	Summary          string            `json:"summary,omitempty"`
+	PipelineID       string            `json:"pipeline_id,omitempty"`
+	PipelineVersion  string            `json:"pipeline_version,omitempty"`
+	PipelineSnapshot *Pipeline         `json:"-"`
 }
 
 type RunStepStatus string
@@ -126,6 +131,7 @@ const (
 	StepFailed    RunStepStatus = "failed"
 	StepCanceled  RunStepStatus = "canceled"
 	StepTimedOut  RunStepStatus = "timed_out"
+	StepPaused    RunStepStatus = "paused"
 )
 
 type RunStep struct {
@@ -192,7 +198,8 @@ type RunDetail struct {
 }
 
 type CreateRunInput struct {
-	WorkflowID string            `json:"workflow_id"`
-	TriggerID  string            `json:"trigger_id,omitempty"`
-	Inputs     map[string]string `json:"inputs,omitempty"`
+	WorkflowID       string            `json:"workflow_id"`
+	TriggerID        string            `json:"trigger_id,omitempty"`
+	Inputs           map[string]string `json:"inputs,omitempty"`
+	PipelineSnapshot *Pipeline         `json:"-"`
 }

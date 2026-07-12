@@ -40,12 +40,12 @@ type OverviewDashboardProps = {
 function runSummary(runs: DashboardState['runs']) {
   const active = runs.filter((run) => run.status === 'queued' || run.status === 'running').length;
   const succeeded = runs.filter((run) => run.status === 'succeeded').length;
-  const blocked = runs.filter((run) => run.status === 'failed' || run.status === 'canceled').length;
+  const blocked = runs.filter((run) => ['failed', 'canceled', 'paused', 'timed_out'].includes(run.status)).length;
 
   return [
     { label: 'Active runs', value: String(active), detail: 'Queued or running now' },
     { label: 'Succeeded', value: String(succeeded), detail: 'Recorded control-plane wins' },
-    { label: 'Needs input', value: String(blocked), detail: 'Failed or canceled runs' },
+    { label: 'Needs input', value: String(blocked), detail: 'Failed, canceled, paused, or timed out' },
   ];
 }
 

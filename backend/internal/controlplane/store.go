@@ -368,6 +368,12 @@ func (s *MemoryStore) CreateRun(input CreateRunInput) (Run, error) {
 	}
 	now := s.now().UTC()
 	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: 1}
+	if input.PipelineSnapshot != nil {
+		snapshot := clonePipeline(*input.PipelineSnapshot)
+		r.PipelineID = snapshot.ID
+		r.PipelineVersion = pipelineVersion(snapshot)
+		r.PipelineSnapshot = &snapshot
+	}
 	s.runs[r.ID] = r
 	s.events[r.ID] = append(s.events[r.ID], RunEvent{ID: newID("evt"), RunID: r.ID, Type: "run.created", Message: "Run queued", CreatedAt: now})
 	return r, nil
@@ -606,7 +612,7 @@ func (s *MemoryStore) RetryRunStep(id string) (RunStep, error) {
 	if !ok {
 		return RunStep{}, ErrNotFound
 	}
-	if step.Status != StepFailed && step.Status != StepCanceled && step.Status != StepTimedOut {
+	if step.Status != StepFailed && step.Status != StepCanceled && step.Status != StepTimedOut && step.Status != StepPaused {
 		return RunStep{}, ErrInvalid
 	}
 	now := s.now().UTC()
@@ -853,7 +859,7 @@ func (s *MemoryStore) listRunStepsLocked(runID string) []RunStep {
 }
 
 func isTerminalStepStatus(status RunStepStatus) bool {
-	return status == StepSucceeded || status == StepFailed || status == StepCanceled || status == StepTimedOut
+	return status == StepSucceeded || status == StepFailed || status == StepCanceled || status == StepTimedOut || status == StepPaused
 }
 
 func cloneMap(in map[string]string) map[string]string {

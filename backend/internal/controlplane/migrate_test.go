@@ -73,6 +73,19 @@ func TestRunQueueMigrationDeclaresLeaseFields(t *testing.T) {
 	}
 }
 
+func TestRunPipelineSnapshotMigrationDeclaresVersionedSnapshotFields(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/014_run_pipeline_snapshot.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"pipeline_id", "pipeline_version", "pipeline_snapshot", "runs_pipeline_version_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("run pipeline snapshot migration missing %q", field)
+		}
+	}
+}
+
 func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/006_open_pilot_state.sql")
 	if err != nil {

@@ -20,6 +20,7 @@ type WorkflowExecution struct {
 	Summary   string
 	Events    []WorkflowExecutionEvent
 	Artifacts []CreateArtifactInput
+	Status    RunStatus
 }
 
 type WorkflowExecutionEvent struct {

@@ -1088,7 +1088,7 @@ components:
         id: { type: string }
         workflow_id: { type: string }
         trigger_id: { type: string }
-        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, paused, timed_out] }
         inputs: { $ref: "#/components/schemas/StringMap" }
         created_at: { type: string, format: date-time }
         queued_at: { type: string, format: date-time }
@@ -1101,6 +1101,8 @@ components:
         attempt_count: { type: integer }
         max_attempts: { type: integer }
         summary: { type: string }
+        pipeline_id: { type: string }
+        pipeline_version: { type: string, description: Stable hash of the immutable pipeline snapshot used by this run. }
       required: [id, workflow_id, status, created_at, queued_at, available_at, attempt_count, max_attempts]
     RunStep:
       type: object
@@ -1111,7 +1113,7 @@ components:
         name: { type: string }
         executor: { type: string }
         model: { type: string }
-        status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out] }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out, paused] }
         inputs: { $ref: "#/components/schemas/StringMap" }
         output_summary: { type: string }
         error: { type: string }

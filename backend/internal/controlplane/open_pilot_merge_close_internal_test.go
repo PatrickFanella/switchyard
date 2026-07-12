@@ -314,11 +314,11 @@ func TestOpenPilotCloseIssueResumesAfterMergedState(t *testing.T) {
 	env.giteaMerger = merger
 	env.openPilotCloseIssueMode = "allow"
 	runner := &Runner{store: store}
-	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.close-issue", "retry_from_step_position": "11"}})
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step": "open-pilot.close-issue", "retry_from_step_position": "12"}})
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "close-issue", Position: 11, Name: "open-pilot.close-issue", Executor: "gitea"}}}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "close-issue", Position: 12, Name: "open-pilot.close-issue", Executor: "gitea"}}}
 	execution, err := runner.executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env})
 	if err != nil {
 		t.Fatalf("executePipeline() error = %v", err)

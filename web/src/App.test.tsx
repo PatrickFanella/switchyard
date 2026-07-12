@@ -132,6 +132,30 @@ describe('App', () => {
     expect(openPilotStateFields).toContain('Next action');
   });
 
+  it('shows a degraded state without seeded production data when loading fails', async () => {
+    window.location.hash = '#/overview';
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('api unavailable');
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<App />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Degraded');
+    expect(container.textContent).toContain('api unavailable');
+    expect(container.textContent).toContain('No triggers returned by the API.');
+    expect(container.textContent).not.toContain('Guided execution for high-signal Gitea issues');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it('opens the cockpit from overview', async () => {
     window.location.hash = '#/overview';
     mockDashboardFetch();
