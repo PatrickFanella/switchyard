@@ -22,7 +22,7 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 - `ss -ltnp 'sport = :11434'` shows Docker publishing `11434`.
 - `systemctl show ollama -p Environment` includes `OLLAMA_HOST=0.0.0.0:11435` when Docker must reach host Ollama.
 - UFW allows Docker bridge traffic to host Ollama on `11435`.
-- `.env` sets `LLAMA_LINE_PORT=11434` and points `OLLAMA_BASE_URL` at the real Ollama upstream, not Switchyard itself.
+- `.env` sets `LLAMA_LINE_PORT=11434`, sets `SWITCHYARD_MODEL_BIND_HOST` to the NUC LAN address when remote clients need ingress, and points `OLLAMA_BASE_URL` at the real Ollama upstream, not Switchyard itself.
 
 ## Smoke tests
 

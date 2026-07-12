@@ -109,7 +109,7 @@ services:
         condition: service_healthy
     ports:
       - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${API_PORT:-18080}:8080"
-      - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${LLAMA_LINE_PORT:-11434}:11434"
+      - "${SWITCHYARD_MODEL_BIND_HOST:-${SWITCHYARD_BIND_HOST:-127.0.0.1}}:${LLAMA_LINE_PORT:-11434}:11434"
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
     extra_hosts:

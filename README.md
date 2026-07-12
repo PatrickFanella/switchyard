@@ -44,7 +44,7 @@ Docker port defaults are configurable through `.env` or inline variables:
 WEB_PORT=8081 API_PORT=18080 POSTGRES_PORT=5432 make docker-up
 ```
 
-Published ports bind to `127.0.0.1` by default. Set `SWITCHYARD_BIND_HOST` only when a host firewall and authenticated reverse proxy deliberately protect the exposed listener. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
+Published ports bind to `127.0.0.1` by default. Set `SWITCHYARD_BIND_HOST` only when a host firewall and authenticated reverse proxy deliberately protect every exposed listener. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress while leaving the control API, web UI, and Postgres loopback-bound. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
 
 ## Control-plane storage
 
