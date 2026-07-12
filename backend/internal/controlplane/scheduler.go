@@ -28,6 +28,7 @@ type Scheduler struct {
 	running  bool
 	lastTick time.Time
 	lastErr  string
+	done     chan struct{}
 }
 
 func (s *Scheduler) SetAsyncDispatch(enabled bool) {
@@ -57,12 +58,14 @@ func (s *Scheduler) Start(ctx context.Context) {
 		return
 	}
 	s.running = true
+	s.done = make(chan struct{})
 	s.mu.Unlock()
 
 	go func() {
 		defer func() {
 			s.mu.Lock()
 			s.running = false
+			close(s.done)
 			s.mu.Unlock()
 		}()
 		ticker := time.NewTicker(s.interval)
@@ -78,6 +81,21 @@ func (s *Scheduler) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (s *Scheduler) Wait(ctx context.Context) error {
+	s.mu.RLock()
+	done := s.done
+	s.mu.RUnlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Scheduler) Tick(ctx context.Context) error {

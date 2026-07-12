@@ -1165,6 +1165,7 @@ components:
         workflow_id: { type: string }
         trigger_id: { type: string }
         inputs: { $ref: "#/components/schemas/StringMap" }
+        max_attempts: { type: integer, minimum: 1, maximum: 10, default: 3 }
       required: [workflow_id]
     Pipeline:
       type: object

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,6 +106,9 @@ func (r *Runner) Enqueue(input CreateRunInput) (Run, error) {
 }
 
 func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
+	if input.MaxAttempts == 0 {
+		input.MaxAttempts = defaultRunMaxAttempts()
+	}
 	if input.PipelineSnapshot != nil || r.pipelines == nil {
 		return input
 	}
@@ -113,6 +117,13 @@ func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
 		input.PipelineSnapshot = &snapshot
 	}
 	return input
+}
+
+func defaultRunMaxAttempts() int {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_RUN_MAX_ATTEMPTS"))); err == nil && value >= 1 && value <= 10 {
+		return value
+	}
+	return 3
 }
 
 func (r *Runner) ExecuteRun(ctx context.Context, run Run) (Run, error) {
@@ -157,10 +168,13 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 		execution, err := stepwise.ExecuteSteps(ctx, run, r.store)
 		return r.finishExecution(run, workerID, execution, err)
 	}
-	step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
+	step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
 	if err != nil {
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
 		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
+	}
+	if skip {
+		return r.finishRun(run.ID, workerID, RunSucceeded, firstNonEmpty(step.OutputSummary, "Workflow already completed"))
 	}
 	step, err = r.store.StartRunStep(step.ID)
 	if err != nil {
@@ -223,7 +237,7 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, pipelineStep, run.Inputs)
 			if err != nil {
 				model = ""
-				step, createErr := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+				step, _, createErr := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
 				if createErr != nil {
 					return execution, createErr
 				}
@@ -246,9 +260,15 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		if provider, ok := executor.(PipelineStepCorrelationProvider); ok {
 			correlationIDs = provider.PipelineStepCorrelationIDs(run, pipelineStep, state)
 		}
-		step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
+		step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
 		if err != nil {
 			return execution, err
+		}
+		if skip {
+			if step.OutputSummary != "" {
+				execution.Summary = step.OutputSummary
+			}
+			continue
 		}
 		release, err := r.acquireExecutorSlot(ctx, pipelineStep.Executor)
 		if err != nil {
@@ -320,6 +340,30 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		execution.Summary = summary
 	}
 	return execution, nil
+}
+
+func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error) {
+	for _, existing := range r.store.ListRunSteps(input.RunID) {
+		if existing.Position != input.Position {
+			continue
+		}
+		if existing.Name != input.Name || existing.Executor != input.Executor {
+			return RunStep{}, false, ErrInvalid
+		}
+		switch existing.Status {
+		case StepSucceeded:
+			return existing, true, nil
+		case StepFailed, StepCanceled, StepTimedOut, StepPaused:
+			retried, err := r.store.RetryRunStep(existing.ID)
+			return retried, false, err
+		case StepQueued:
+			return existing, false, nil
+		default:
+			return RunStep{}, false, ErrInvalid
+		}
+	}
+	created, err := r.store.CreateRunStep(input)
+	return created, false, err
 }
 
 func (r *Runner) acquireExecutorSlot(ctx context.Context, executor string) (func(), error) {
@@ -473,6 +517,9 @@ func (r *Runner) EnqueueTrigger(triggerID string) (Run, error) {
 }
 
 func validateCreateRunInput(input CreateRunInput) error {
+	if input.MaxAttempts < 0 || input.MaxAttempts > 10 {
+		return ErrInvalid
+	}
 	if input.WorkflowID != string(WorkflowOpenPilot) {
 		return nil
 	}

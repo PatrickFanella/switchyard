@@ -201,5 +201,6 @@ type CreateRunInput struct {
 	WorkflowID       string            `json:"workflow_id"`
 	TriggerID        string            `json:"trigger_id,omitempty"`
 	Inputs           map[string]string `json:"inputs,omitempty"`
+	MaxAttempts      int               `json:"max_attempts,omitempty"`
 	PipelineSnapshot *Pipeline         `json:"-"`
 }

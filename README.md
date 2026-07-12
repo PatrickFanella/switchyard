@@ -59,9 +59,9 @@ The local stack now runs Switchyard-native workflow, model-broker, and OpenCode 
 
 For live cutover operation, rollback, and smoke commands, see [`docs/runbooks/native-model-broker-cutover.md`](docs/runbooks/native-model-broker-cutover.md).
 
-Set `SWITCHYARD_SCHEDULER_ENABLED=true` to enable the in-process trigger scheduler. `SWITCHYARD_SCHEDULER_INTERVAL` defaults to `1m`.
+The in-process trigger scheduler is enabled by default; set `SWITCHYARD_SCHEDULER_ENABLED=false` to disable it. `SWITCHYARD_SCHEDULER_INTERVAL` defaults to `1m`.
 
-Set `SWITCHYARD_WORKER_ENABLED=true` to enable async worker dispatch for long-running workflows. When enabled, `POST /api/runs`, trigger runs, retries, and Open Pilot dispatch return `202 Accepted` with queued run state; workers claim runs using durable leases. Configure with `SWITCHYARD_WORKER_COUNT`, `SWITCHYARD_WORKER_LEASE`, and `SWITCHYARD_WORKER_POLL_INTERVAL`. Use `SWITCHYARD_EXECUTOR_LIMITS` for optional per-executor pipeline concurrency caps such as `model=1,opencode=1,command=2,git=1,gitea=2,http=2`; omitted or invalid entries are ignored.
+Async worker dispatch is enabled by default, so `POST /api/runs`, trigger runs, retries, and Open Pilot dispatch return `202 Accepted` with queued state. Set `SWITCHYARD_WORKER_ENABLED=false` only for local synchronous debugging. Workers claim runs using durable leases and retry failed or timed-out runs up to `SWITCHYARD_RUN_MAX_ATTEMPTS` (default `3`) with exponential backoff bounded by `SWITCHYARD_RUN_RETRY_MAX_BACKOFF`; `SWITCHYARD_RUN_TIMEOUT` defaults to `10m`. Configure concurrency with `SWITCHYARD_WORKER_COUNT`, `SWITCHYARD_WORKER_LEASE`, and `SWITCHYARD_WORKER_POLL_INTERVAL`. On termination, new claims stop and active work drains for `SWITCHYARD_SHUTDOWN_GRACE` before forced cancellation. Use `SWITCHYARD_EXECUTOR_LIMITS` for optional per-executor pipeline concurrency caps such as `model=1,opencode=1,command=2,git=1,gitea=2,http=2`; omitted or invalid entries are ignored.
 
 Asynchronous model-compatible requests use a durable priority queue. `MODEL_BROKER_QUEUE_MAX_DEPTH` (default `100`, maximum `200`) bounds queued, running, and cancel-requested work; full queues return `429` with `Retry-After`. `MODEL_BROKER_QUEUE_WORKERS` controls concurrent claims. Claims order higher client priority first and FIFO within equal priority, using atomic row locking under Postgres.
 
@@ -87,6 +87,8 @@ Switchyard also ships its own CLI contract:
 switchyard open-pilot run --repo OWNER/REPO --issue 123 --json --api-url http://127.0.0.1:8080
 switchyard open-pilot cancel --run RUN_ID --json --api-url http://127.0.0.1:8080
 ```
+
+The run command waits up to 15 minutes for a terminal result, matching long-running workflow defaults. Pass `--detach` to return immediately after queueing or adjust `--wait-timeout`; the CLI authenticates with `SWITCHYARD_CONTROL_API_TOKEN`.
 
 Run cancellation is Switchyard-side plus best-effort upstream cancellation. Switchyard uses historical compatibility IDs only when a cutover run still carries them, and `OPEN_PILOT_COMMAND cancel --run <id> --json` when configured.
 

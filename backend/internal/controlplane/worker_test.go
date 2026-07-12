@@ -2,6 +2,8 @@ package controlplane_test
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,6 +46,86 @@ func TestWorkerPoolClaimsAndExecutesQueuedRun(t *testing.T) {
 	status := pool.Status()
 	if status.CompletedRuns < 1 {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestWorkerPoolRetriesFailedRunWithBackoff(t *testing.T) {
+	t.Setenv("SWITCHYARD_RUN_RETRY_BACKOFF", "1ms")
+	store := controlplane.NewStore(time.Now)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{
+		"devlog": controlplane.WorkflowExecutorFunc(func(context.Context, controlplane.Run) (controlplane.WorkflowExecution, error) {
+			if attempts.Add(1) == 1 {
+				return controlplane.WorkflowExecution{}, errors.New("transient failure")
+			}
+			return controlplane.WorkflowExecution{Summary: "retry complete"}, nil
+		}),
+	})
+	run, err := runner.Enqueue(controlplane.CreateRunInput{WorkflowID: "devlog", MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pool := controlplane.NewWorkerPool(store, runner, 1, time.Minute, time.Millisecond, time.Now)
+	pool.Start(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		detail, detailErr := store.RunDetail(run.ID)
+		if detailErr != nil {
+			t.Fatal(detailErr)
+		}
+		if detail.Run.Status == controlplane.RunSucceeded {
+			if detail.Run.AttemptCount != 2 || attempts.Load() != 2 {
+				t.Fatalf("run/attempts = %+v/%d", detail.Run, attempts.Load())
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	detail, _ := store.RunDetail(run.ID)
+	t.Fatalf("run did not succeed after retry: run=%+v attempts=%d events=%+v", detail.Run, attempts.Load(), detail.Events)
+}
+
+func TestWorkerPoolDrainsActiveRunAfterIntakeStops(t *testing.T) {
+	store := controlplane.NewStore(time.Now)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{
+		"devlog": controlplane.WorkflowExecutorFunc(func(ctx context.Context, _ controlplane.Run) (controlplane.WorkflowExecution, error) {
+			close(started)
+			select {
+			case <-release:
+				return controlplane.WorkflowExecution{Summary: "drained"}, nil
+			case <-ctx.Done():
+				return controlplane.WorkflowExecution{}, ctx.Err()
+			}
+		}),
+	})
+	if _, err := runner.Enqueue(controlplane.CreateRunInput{WorkflowID: "devlog"}); err != nil {
+		t.Fatal(err)
+	}
+	intakeCtx, stopIntake := context.WithCancel(t.Context())
+	pool := controlplane.NewWorkerPool(store, runner, 1, time.Minute, time.Millisecond, time.Now)
+	pool.Start(intakeCtx)
+	<-started
+	stopIntake()
+	shortCtx, shortCancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer shortCancel()
+	if err := pool.Wait(shortCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait() before release = %v", err)
+	}
+	close(release)
+	longCtx, longCancel := context.WithTimeout(t.Context(), time.Second)
+	defer longCancel()
+	if err := pool.Wait(longCtx); err != nil {
+		t.Fatalf("Wait() after release = %v", err)
 	}
 }
 

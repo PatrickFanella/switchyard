@@ -21,6 +21,9 @@ type llamaLineCompatTracker struct {
 	notify    chan struct{}
 	workers   int
 	enqueueMu sync.Mutex
+	ctx       context.Context
+	cancelCtx context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 type llamaLineCompatTrackedRequest struct {
@@ -38,9 +41,11 @@ type llamaLineCompatTrackedRequest struct {
 
 func newLlamaLineCompatTracker(store Store) *llamaLineCompatTracker {
 	workers := modelBrokerQueueWorkers()
-	tracker := &llamaLineCompatTracker{requests: map[string]*llamaLineCompatTrackedRequest{}, maxDepth: modelBrokerQueueDepth(), workers: workers, store: store, notify: make(chan struct{}, workers)}
+	ctx, cancel := context.WithCancel(context.Background())
+	tracker := &llamaLineCompatTracker{requests: map[string]*llamaLineCompatTrackedRequest{}, maxDepth: modelBrokerQueueDepth(), workers: workers, store: store, notify: make(chan struct{}, workers), ctx: ctx, cancelCtx: cancel}
 	tracker.recoverQueuedAsync()
 	for i := 0; i < tracker.workers; i++ {
+		tracker.wg.Add(1)
 		go tracker.queueWorker()
 	}
 	tracker.signalQueue()
@@ -146,7 +151,13 @@ func (t *llamaLineCompatTracker) signalQueue() {
 }
 
 func (t *llamaLineCompatTracker) queueWorker() {
-	for range t.notify {
+	defer t.wg.Done()
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-t.notify:
+		}
 		for {
 			row, err := t.store.ClaimNextModelBrokerRequest()
 			if err != nil {
@@ -157,6 +168,21 @@ func (t *llamaLineCompatTracker) queueWorker() {
 	}
 }
 
+func (t *llamaLineCompatTracker) close(ctx context.Context) error {
+	t.cancelCtx()
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (t *llamaLineCompatTracker) runClaimedAsync(row ModelBrokerRequest) {
 	id := row.ID
 	model, messages, ok := decodeModelBrokerRequestPayload(row)
@@ -164,7 +190,7 @@ func (t *llamaLineCompatTracker) runClaimedAsync(row ModelBrokerRequest) {
 		_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: ModelBrokerRequestFailed, Error: "invalid queued request payload"})
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.ctx)
 	now := time.Now().UTC()
 	t.mu.Lock()
 	t.requests[id] = &llamaLineCompatTrackedRequest{ID: id, Model: model, Path: row.Path, Client: row.Client, Priority: row.ClientPriority, Status: ModelBrokerRequestRunning, CreatedAt: row.CreatedAt, StartedAt: now, UpdatedAt: now, Cancel: cancel}

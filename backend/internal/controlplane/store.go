@@ -37,6 +37,7 @@ type Store interface {
 	ClaimNextRun(string, time.Duration) (Run, error)
 	ExtendRunLease(string, string, time.Duration) (Run, error)
 	RecoverLeasedRuns(time.Time) (int, int, error)
+	RequeueFailedRun(string, time.Time, string) (Run, error)
 	FinishRun(string, RunStatus, string) (Run, error)
 	FinishClaimedRun(string, string, RunStatus, string) (Run, error)
 	CreateRunStep(CreateRunStepInput) (RunStep, error)
@@ -369,7 +370,11 @@ func (s *MemoryStore) CreateRun(input CreateRunInput) (Run, error) {
 		}
 	}
 	now := s.now().UTC()
-	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: 1}
+	maxAttempts := input.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: maxAttempts}
 	if input.PipelineSnapshot != nil {
 		snapshot := clonePipeline(*input.PipelineSnapshot)
 		r.PipelineID = snapshot.ID
@@ -482,6 +487,28 @@ func (s *MemoryStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 		s.runs[id] = run
 	}
 	return requeued, failed, nil
+}
+
+func (s *MemoryStore) RequeueFailedRun(id string, availableAt time.Time, summary string) (Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok {
+		return Run{}, ErrNotFound
+	}
+	if (run.Status != RunFailed && run.Status != RunTimedOut) || run.AttemptCount >= run.MaxAttempts {
+		return Run{}, ErrInvalid
+	}
+	run.Status = RunQueued
+	run.AvailableAt = availableAt.UTC()
+	run.FinishedAt = nil
+	run.Summary = summary
+	run.ClaimedAt = nil
+	run.ClaimedBy = ""
+	run.LeaseExpiresAt = nil
+	s.runs[id] = run
+	s.events[id] = append(s.events[id], RunEvent{ID: newID("evt"), RunID: id, Type: "run.retry.scheduled", Message: summary, CreatedAt: s.now().UTC()})
+	return run, nil
 }
 
 func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {

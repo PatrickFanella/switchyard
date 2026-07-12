@@ -47,6 +47,13 @@ func (a *API) SetAsyncDispatch(enabled bool) {
 	a.asyncDispatch = enabled
 }
 
+func (a *API) Shutdown(ctx context.Context) error {
+	if a.compatBroker == nil {
+		return nil
+	}
+	return a.compatBroker.close(ctx)
+}
+
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })

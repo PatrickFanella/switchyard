@@ -59,6 +59,8 @@ func openPilotRun(args []string, out io.Writer) error {
 	repo := flags.String("repo", "", "repository owner/name")
 	issue := flags.String("issue", "", "issue number")
 	jsonOut := flags.Bool("json", false, "print JSON response")
+	detach := flags.Bool("detach", false, "return after the run is queued")
+	waitTimeout := flags.Duration("wait-timeout", 15*time.Minute, "maximum time to wait for a terminal run")
 	apiURL := flags.String("api-url", defaultAPIURL(), "Switchyard API URL")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -67,7 +69,7 @@ func openPilotRun(args []string, out io.Writer) error {
 		return fmt.Errorf("repo and issue are required")
 	}
 	body, _ := json.Marshal(map[string]string{"repo": *repo, "issue": *issue})
-	return postJSON(*apiURL, "/api/workflows/open-pilot/run", body, *jsonOut, out)
+	return postRunAndWait(*apiURL, "/api/workflows/open-pilot/run", body, *jsonOut, *detach, *waitTimeout, out)
 }
 
 func openPilotCancel(args []string, out io.Writer) error {
@@ -247,6 +249,91 @@ func postJSON(apiURL string, path string, body []byte, jsonOut bool, out io.Writ
 	}
 	_, _ = fmt.Fprintf(out, "%s %s\n", decoded.Run.ID, decoded.Run.Status)
 	return nil
+}
+
+func postRunAndWait(apiURL string, path string, body []byte, jsonOut bool, detach bool, waitTimeout time.Duration, out io.Writer) error {
+	data, err := requestJSON(http.MethodPost, apiURL, path, body)
+	if err != nil {
+		return err
+	}
+	var envelope struct {
+		Run struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Run.ID == "" {
+		return fmt.Errorf("switchyard API returned an invalid run response")
+	}
+	if detach || isTerminalCLIStatus(envelope.Run.Status) {
+		return writeRunResponse(data, envelope.Run.ID, envelope.Run.Status, jsonOut, out)
+	}
+	if waitTimeout <= 0 {
+		return fmt.Errorf("wait-timeout must be positive")
+	}
+	deadline := time.Now().Add(waitTimeout)
+	pollInterval := 2 * time.Second
+	if parsed, err := time.ParseDuration(strings.TrimSpace(os.Getenv("SWITCHYARD_CLI_POLL_INTERVAL"))); err == nil && parsed > 0 {
+		pollInterval = parsed
+	}
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+		detail, requestErr := requestJSON(http.MethodGet, apiURL, "/api/runs/"+envelope.Run.ID, nil)
+		if requestErr != nil {
+			return requestErr
+		}
+		if err := json.Unmarshal(detail, &envelope); err != nil {
+			return fmt.Errorf("decode run status: %w", err)
+		}
+		if isTerminalCLIStatus(envelope.Run.Status) {
+			return writeRunResponse(detail, envelope.Run.ID, envelope.Run.Status, jsonOut, out)
+		}
+	}
+	return fmt.Errorf("timed out waiting for run %s after %s; use --detach to avoid waiting", envelope.Run.ID, waitTimeout)
+}
+
+func requestJSON(method, apiURL, path string, body []byte) ([]byte, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, strings.TrimRight(apiURL, "/")+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	setControlPlaneAuthorization(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("switchyard API returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	return data, nil
+}
+
+func writeRunResponse(data []byte, id, status string, jsonOut bool, out io.Writer) error {
+	if jsonOut {
+		_, _ = out.Write(data)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s %s\n", id, status)
+	return nil
+}
+
+func isTerminalCLIStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "canceled", "paused", "timed_out":
+		return true
+	default:
+		return false
+	}
 }
 
 func setControlPlaneAuthorization(req *http.Request) {

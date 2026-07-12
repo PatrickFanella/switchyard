@@ -438,7 +438,11 @@ func (s *PostgresStore) CreateRun(input CreateRunInput) (Run, error) {
 		return Run{}, err
 	}
 	now := s.now().UTC()
-	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: 1}
+	maxAttempts := input.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	r := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: maxAttempts}
 	var pipelineSnapshot any
 	if input.PipelineSnapshot != nil {
 		snapshot := clonePipeline(*input.PipelineSnapshot)
@@ -602,6 +606,28 @@ func (s *PostgresStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 		return 0, 0, err
 	}
 	return len(requeuedIDs), len(failedIDs), nil
+}
+
+func (s *PostgresStore) RequeueFailedRun(id string, availableAt time.Time, summary string) (Run, error) {
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return Run{}, err
+	}
+	row := tx.QueryRowContext(context.Background(), `update runs set status=$2, available_at=$3, finished_at=null, summary=$4, claimed_at=null, claimed_by='', lease_expires_at=null where id=$1 and status in ($5,$6) and attempt_count < max_attempts returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary, pipeline_id, pipeline_version, pipeline_snapshot`, id, RunQueued, availableAt.UTC(), summary, RunFailed, RunTimedOut)
+	run, err := scanRunRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return Run{}, mapScanErr(err)
+	}
+	if _, err := tx.ExecContext(context.Background(), `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, newID("evt"), id, "run.retry.scheduled", summary, now); err != nil {
+		_ = tx.Rollback()
+		return Run{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	return run, nil
 }
 
 func (s *PostgresStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
