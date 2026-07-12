@@ -40,6 +40,12 @@ paths:
                 properties:
                   ok: { type: boolean }
                 required: [ok]
+  /readyz:
+    get:
+      summary: Storage-backed readiness check
+      responses:
+        "200": { description: API and persistence are ready }
+        "503": { description: Persistence is unavailable }
   /broker/status:
     get:
       summary: Llama-line-compatible broker status
@@ -429,6 +435,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WorkerPoolStatus" }
+  /api/retention:
+    get:
+      summary: Get retention manager status and last prune counts
+      responses:
+        "200": { description: Retention status }
   /api/operator-safety:
     get:
       summary: Get operator safety status
@@ -619,6 +630,13 @@ paths:
   /api/runs:
     get:
       summary: List runs
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
       responses:
         "200":
           description: Run list
@@ -630,6 +648,7 @@ paths:
                   runs:
                     type: array
                     items: { $ref: "#/components/schemas/Run" }
+                  next_cursor: { type: string }
                 required: [runs]
     post:
       summary: Create and dispatch a run

@@ -87,7 +87,7 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 	if err := validateCreateRunInput(input); err != nil {
 		return Run{}, err
 	}
-	run, err := r.store.CreateRun(r.withPipelineSnapshot(input))
+	run, err := r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
 	if err != nil {
 		return Run{}, err
 	}
@@ -99,10 +99,14 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 }
 
 func (r *Runner) Enqueue(input CreateRunInput) (Run, error) {
+	return r.EnqueueContext(context.Background(), input)
+}
+
+func (r *Runner) EnqueueContext(ctx context.Context, input CreateRunInput) (Run, error) {
 	if err := validateCreateRunInput(input); err != nil {
 		return Run{}, err
 	}
-	return r.store.CreateRun(r.withPipelineSnapshot(input))
+	return r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
 }
 
 func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
@@ -519,6 +523,11 @@ func (r *Runner) EnqueueTrigger(triggerID string) (Run, error) {
 func validateCreateRunInput(input CreateRunInput) error {
 	if input.MaxAttempts < 0 || input.MaxAttempts > 10 {
 		return ErrInvalid
+	}
+	for key := range input.Inputs {
+		if sensitiveJSONKey(key) {
+			return ErrInvalid
+		}
 	}
 	if input.WorkflowID != string(WorkflowOpenPilot) {
 		return nil

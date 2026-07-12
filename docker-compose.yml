@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-switchyard}
       POSTGRES_USER: ${POSTGRES_USER:-switchyard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong random value}
     ports:
       - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -20,7 +20,7 @@ services:
     build: ./backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
+      DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong random value} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
       MODEL_BROKER_TIMEOUT: ${MODEL_BROKER_TIMEOUT:-10m}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       MODEL_BROKER_OLLAMA_MODELS: ${MODEL_BROKER_OLLAMA_MODELS:-llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes}
@@ -49,6 +49,13 @@ services:
       SWITCHYARD_RUN_RETRY_MAX_BACKOFF: ${SWITCHYARD_RUN_RETRY_MAX_BACKOFF:-5m}
       SWITCHYARD_RUN_TIMEOUT: ${SWITCHYARD_RUN_TIMEOUT:-10m}
       SWITCHYARD_SHUTDOWN_GRACE: ${SWITCHYARD_SHUTDOWN_GRACE:-30s}
+      SWITCHYARD_RETENTION: ${SWITCHYARD_RETENTION:-720h}
+      SWITCHYARD_RETENTION_INTERVAL: ${SWITCHYARD_RETENTION_INTERVAL:-24h}
+      SWITCHYARD_MAX_REQUEST_BYTES: ${SWITCHYARD_MAX_REQUEST_BYTES:-1048576}
+      SWITCHYARD_MAX_PROMPT_BYTES: ${SWITCHYARD_MAX_PROMPT_BYTES:-65536}
+      SWITCHYARD_MAX_MODEL_RESPONSE_BYTES: ${SWITCHYARD_MAX_MODEL_RESPONSE_BYTES:-1048576}
+      SWITCHYARD_MAX_ARTIFACT_BYTES: ${SWITCHYARD_MAX_ARTIFACT_BYTES:-1048576}
+      SWITCHYARD_RATE_LIMIT_PER_SECOND: ${SWITCHYARD_RATE_LIMIT_PER_SECOND:-50}
       SWITCHYARD_EXECUTOR_LIMITS: ${SWITCHYARD_EXECUTOR_LIMITS:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-x-project-name=switchyard}
@@ -103,6 +110,11 @@ services:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   opencode:
     build: ./services/opencode

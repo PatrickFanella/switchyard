@@ -197,6 +197,22 @@ type RunDetail struct {
 	Artifacts []Artifact `json:"artifacts"`
 }
 
+type ListRunsPageInput struct {
+	Limit         int
+	BeforeCreated *time.Time
+	BeforeID      string
+}
+
+type RunPage struct {
+	Runs    []Run
+	HasMore bool
+}
+
+type RetentionResult struct {
+	Runs          int `json:"runs"`
+	ModelRequests int `json:"model_requests"`
+}
+
 type CreateRunInput struct {
 	WorkflowID       string            `json:"workflow_id"`
 	TriggerID        string            `json:"trigger_id,omitempty"`

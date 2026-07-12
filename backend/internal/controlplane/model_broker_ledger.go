@@ -46,9 +46,11 @@ type FinishModelBrokerRequestInput struct {
 }
 
 type ListModelBrokerRequestsFilter struct {
-	Statuses []string
-	Query    string
-	Limit    int
+	Statuses      []string
+	Query         string
+	Limit         int
+	BeforeCreated *time.Time
+	BeforeID      string
 }
 
 func cloneModelBrokerRequest(in ModelBrokerRequest) ModelBrokerRequest {

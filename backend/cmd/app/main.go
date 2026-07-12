@@ -128,6 +128,31 @@ func run() error {
 		scheduler.Start(ctx)
 		log.Printf("switchyard scheduler enabled interval=%s", interval)
 	}
+	retentionWindow := 30 * 24 * time.Hour
+	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("parse SWITCHYARD_RETENTION: %w", err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("SWITCHYARD_RETENTION must be positive")
+		}
+		retentionWindow = parsed
+	}
+	retentionInterval := 24 * time.Hour
+	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION_INTERVAL")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("parse SWITCHYARD_RETENTION_INTERVAL: %w", err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("SWITCHYARD_RETENTION_INTERVAL must be positive")
+		}
+		retentionInterval = parsed
+	}
+	retention := controlplane.NewRetentionManager(store, retentionWindow, retentionInterval, nil)
+	api.SetRetentionManager(retention)
+	retention.Start(ctx)
 
 	fmt.Println(app.Greeting("Switchyard"))
 	log.Printf("switchyard control plane listening on %s", addr)
@@ -170,6 +195,7 @@ func run() error {
 		if scheduler != nil {
 			runtimeErr = errors.Join(runtimeErr, scheduler.Wait(drainCtx))
 		}
+		runtimeErr = errors.Join(runtimeErr, retention.Wait(drainCtx))
 		if workersPool != nil {
 			if err := workersPool.Wait(drainCtx); err != nil {
 				workersPool.CancelActive()

@@ -2,6 +2,7 @@ package controlplane_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,5 +344,38 @@ func TestStoreRecoversExpiredLeases(t *testing.T) {
 	}
 	if detail.Run.Status != controlplane.RunFailed || detail.Run.Summary != "Worker lease expired" {
 		t.Fatalf("run = %+v", detail.Run)
+	}
+}
+
+func TestStoreRedactsSecretsFromPersistedModelContent(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "secret-request", Model: "test", RequestBody: `{"messages":[{"role":"user","content":"use Bearer top-secret-token"}],"api_key":"sk-proj-abcdefghijklmnop"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(req.RequestBody, "top-secret-token") || strings.Contains(req.RequestBody, "abcdefghijklmnop") || !strings.Contains(req.RequestBody, "[REDACTED]") {
+		t.Fatalf("request body was not redacted: %s", req.RequestBody)
+	}
+	finished, err := store.FinishModelBrokerRequest(req.ID, controlplane.FinishModelBrokerRequestInput{ResponseBody: `{"content":"password=hunter2"}`, Error: "authorization: bearer another-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(finished.ResponseBody+finished.Error, "hunter2") || strings.Contains(finished.ResponseBody+finished.Error, "another-secret") {
+		t.Fatalf("response/error was not redacted: %+v", finished)
+	}
+}
+
+func TestStoreRejectsOversizedArtifacts(t *testing.T) {
+	t.Setenv("SWITCHYARD_MAX_ARTIFACT_BYTES", "1024")
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "large", Kind: "text", URI: "data:text/plain," + strings.Repeat("x", 1024)}); err != controlplane.ErrInvalid {
+		t.Fatalf("AddArtifact() error = %v", err)
 	}
 }

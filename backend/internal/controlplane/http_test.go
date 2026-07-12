@@ -2296,6 +2296,54 @@ func TestAPIListenerRouteIsolation(t *testing.T) {
 	}
 }
 
+func TestAPIRunsUsesBoundedCursorPagination(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	})
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	var first struct {
+		Runs       []controlplane.Run `json:"runs"`
+		NextCursor string             `json:"next_cursor"`
+	}
+	resp, err := http.Get(srv.URL + "/api/runs?limit=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(first.Runs) != 2 || first.NextCursor == "" {
+		t.Fatalf("first page = %+v", first)
+	}
+	var second struct {
+		Runs       []controlplane.Run `json:"runs"`
+		NextCursor string             `json:"next_cursor"`
+	}
+	resp, err = http.Get(srv.URL + "/api/runs?limit=2&cursor=" + first.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Runs) != 1 || second.NextCursor != "" || second.Runs[0].ID == first.Runs[0].ID || second.Runs[0].ID == first.Runs[1].ID {
+		t.Fatalf("second page = %+v", second)
+	}
+}
+
 func TestControlPlaneRequiresAuthenticationAndEnforcesReadRole(t *testing.T) {
 	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-secret")
 	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "read-secret")
@@ -2379,6 +2427,64 @@ func TestAPICORSAllowsOnlyConfiguredOrigins(t *testing.T) {
 	if denied.StatusCode != http.StatusForbidden || denied.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("denied origin status/header = %d/%q", denied.StatusCode, denied.Header.Get("Access-Control-Allow-Origin"))
 	}
+}
+
+func TestAPIEnforcesBodyPromptAndRateLimits(t *testing.T) {
+	t.Run("body", func(t *testing.T) {
+		t.Setenv("SWITCHYARD_MAX_REQUEST_BYTES", "1024")
+		store := controlplane.NewStore(nil)
+		srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+		t.Cleanup(srv.Close)
+		resp, err := http.Post(srv.URL+"/api/runs", "application/json", strings.NewReader(strings.Repeat("x", 1025)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	})
+	t.Run("prompt", func(t *testing.T) {
+		t.Setenv("SWITCHYARD_MAX_PROMPT_BYTES", "1024")
+		store := controlplane.NewStore(nil)
+		srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+		t.Cleanup(srv.Close)
+		body := `{"model":"test","messages":[{"role":"user","content":"` + strings.Repeat("x", 1025) + `"}]}`
+		resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	})
+	t.Run("rate", func(t *testing.T) {
+		t.Setenv("SWITCHYARD_RATE_LIMIT_PER_SECOND", "1")
+		store := controlplane.NewStore(nil)
+		srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+		t.Cleanup(srv.Close)
+		first, err := http.Get(srv.URL + "/api/runs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		first.Body.Close()
+		limited := false
+		for i := 0; i < 3; i++ {
+			response, err := http.Get(srv.URL + "/api/runs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode == http.StatusTooManyRequests && response.Header.Get("Retry-After") != "" {
+				limited = true
+				break
+			}
+		}
+		if !limited {
+			t.Fatal("requests were not rate limited")
+		}
+	})
 }
 
 func TestAPIAdaptersProbesOCQWhenConfigured(t *testing.T) {

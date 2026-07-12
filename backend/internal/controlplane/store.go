@@ -1,10 +1,13 @@
 package controlplane
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,8 @@ var (
 )
 
 type Store interface {
+	WithContext(context.Context) Store
+	Ready(context.Context) error
 	UpsertWorkflowDefinition(WorkflowDefinition) (WorkflowDefinition, error)
 	WorkflowDefinition(string) (WorkflowDefinition, error)
 	ListWorkflowDefinitions() ([]WorkflowDefinition, error)
@@ -33,6 +38,7 @@ type Store interface {
 	SetTriggerEnabled(string, bool) (Trigger, error)
 	UpdateTriggerScheduleState(string, *time.Time, *time.Time, string) (Trigger, error)
 	CreateRun(CreateRunInput) (Run, error)
+	CreateRunContext(context.Context, CreateRunInput) (Run, error)
 	StartRun(string) (Run, error)
 	ClaimNextRun(string, time.Duration) (Run, error)
 	ExtendRunLease(string, string, time.Duration) (Run, error)
@@ -51,7 +57,10 @@ type Store interface {
 	AddEvent(string, string, string) (RunEvent, error)
 	AddArtifact(CreateArtifactInput) (Artifact, error)
 	ListRuns() []Run
+	ListRunsPage(ListRunsPageInput) (RunPage, error)
+	ListRunsPageContext(context.Context, ListRunsPageInput) (RunPage, error)
 	RunDetail(string) (RunDetail, error)
+	RunDetailContext(context.Context, string) (RunDetail, error)
 	CreateModelBrokerRequest(CreateModelBrokerRequestInput) (ModelBrokerRequest, error)
 	ClaimNextModelBrokerRequest() (ModelBrokerRequest, error)
 	StartModelBrokerRequest(string) (ModelBrokerRequest, error)
@@ -59,7 +68,10 @@ type Store interface {
 	CancelModelBrokerRequest(string) (ModelBrokerRequest, error)
 	CancelAllModelBrokerRequests() (int, error)
 	ListModelBrokerRequests(ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error)
+	ListModelBrokerRequestsContext(context.Context, ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error)
 	ModelBrokerRequest(string) (ModelBrokerRequest, error)
+	ModelBrokerRequestContext(context.Context, string) (ModelBrokerRequest, error)
+	PruneRetention(time.Time) (RetentionResult, error)
 }
 
 type MemoryStore struct {
@@ -93,6 +105,10 @@ func NewStore(now func() time.Time) *MemoryStore {
 		modelBrokerRequests:  map[string]ModelBrokerRequest{},
 	}
 }
+
+func (s *MemoryStore) Ready(context.Context) error { return nil }
+
+func (s *MemoryStore) WithContext(context.Context) Store { return s }
 
 func newID(prefix string) string {
 	var b [8]byte
@@ -384,6 +400,10 @@ func (s *MemoryStore) CreateRun(input CreateRunInput) (Run, error) {
 	s.runs[r.ID] = r
 	s.events[r.ID] = append(s.events[r.ID], RunEvent{ID: newID("evt"), RunID: r.ID, Type: "run.created", Message: "Run queued", CreatedAt: now})
 	return r, nil
+}
+
+func (s *MemoryStore) CreateRunContext(_ context.Context, input CreateRunInput) (Run, error) {
+	return s.CreateRun(input)
 }
 
 func (s *MemoryStore) StartRun(id string) (Run, error) {
@@ -709,7 +729,7 @@ func (s *MemoryStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 }
 
 func (s *MemoryStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
-	if input.RunID == "" || input.Name == "" || input.Kind == "" || input.URI == "" {
+	if err := validateArtifactInput(input); err != nil {
 		return Artifact{}, ErrInvalid
 	}
 	s.mu.Lock()
@@ -724,6 +744,20 @@ func (s *MemoryStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
 	return artifact, nil
 }
 
+func validateArtifactInput(input CreateArtifactInput) error {
+	if input.RunID == "" || input.Name == "" || input.Kind == "" || input.URI == "" || len(input.Name) > 256 || len(input.Kind) > 64 {
+		return ErrInvalid
+	}
+	maxBytes := 1 << 20
+	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_MAX_ARTIFACT_BYTES"))); err == nil && parsed >= 1024 && parsed <= 16<<20 {
+		maxBytes = parsed
+	}
+	if len(input.URI) > maxBytes {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func (s *MemoryStore) ListRuns() []Run {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -733,6 +767,36 @@ func (s *MemoryStore) ListRuns() []Run {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
+}
+
+func (s *MemoryStore) ListRunsPage(input ListRunsPageInput) (RunPage, error) {
+	limit := input.Limit
+	if limit < 1 || limit > 100 {
+		return RunPage{}, ErrInvalid
+	}
+	runs := s.ListRuns()
+	filtered := make([]Run, 0, min(len(runs), limit+1))
+	for _, run := range runs {
+		if input.BeforeCreated != nil {
+			if run.CreatedAt.After(*input.BeforeCreated) || (run.CreatedAt.Equal(*input.BeforeCreated) && run.ID >= input.BeforeID) {
+				continue
+			}
+		}
+		filtered = append(filtered, run)
+		if len(filtered) == limit+1 {
+			break
+		}
+	}
+	page := RunPage{Runs: filtered}
+	if len(page.Runs) > limit {
+		page.HasMore = true
+		page.Runs = page.Runs[:limit]
+	}
+	return page, nil
+}
+
+func (s *MemoryStore) ListRunsPageContext(_ context.Context, input ListRunsPageInput) (RunPage, error) {
+	return s.ListRunsPage(input)
 }
 
 func (s *MemoryStore) RunDetail(id string) (RunDetail, error) {
@@ -745,6 +809,10 @@ func (s *MemoryStore) RunDetail(id string) (RunDetail, error) {
 	return RunDetail{Run: r, Steps: s.listRunStepsLocked(id), Events: append([]RunEvent(nil), s.events[id]...), Artifacts: append([]Artifact(nil), s.artifacts[id]...)}, nil
 }
 
+func (s *MemoryStore) RunDetailContext(_ context.Context, id string) (RunDetail, error) {
+	return s.RunDetail(id)
+}
+
 func (s *MemoryStore) CreateModelBrokerRequest(input CreateModelBrokerRequestInput) (ModelBrokerRequest, error) {
 	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Model) == "" {
 		return ModelBrokerRequest{}, ErrInvalid
@@ -755,7 +823,7 @@ func (s *MemoryStore) CreateModelBrokerRequest(input CreateModelBrokerRequestInp
 	if existing, ok := s.modelBrokerRequests[input.ID]; ok {
 		return cloneModelBrokerRequest(existing), nil
 	}
-	req := ModelBrokerRequest{ID: input.ID, Status: ModelBrokerRequestQueued, Model: input.Model, Path: input.Path, Client: input.Client, ClientPriority: input.Priority, RequestBody: input.RequestBody, CorrelationIDs: map[string]string{}, CreatedAt: now, UpdatedAt: now}
+	req := ModelBrokerRequest{ID: input.ID, Status: ModelBrokerRequestQueued, Model: input.Model, Path: input.Path, Client: input.Client, ClientPriority: input.Priority, RequestBody: redactPersistedJSON(input.RequestBody), CorrelationIDs: map[string]string{}, CreatedAt: now, UpdatedAt: now}
 	s.modelBrokerRequests[req.ID] = req
 	return cloneModelBrokerRequest(req), nil
 }
@@ -815,8 +883,8 @@ func (s *MemoryStore) FinishModelBrokerRequest(id string, input FinishModelBroke
 		status = ModelBrokerRequestCompleted
 	}
 	req.Status = status
-	req.ResponseBody = input.ResponseBody
-	req.Error = input.Error
+	req.ResponseBody = redactPersistedJSON(input.ResponseBody)
+	req.Error = embeddedSecretPattern.ReplaceAllString(input.Error, `${1}${2}${3}[REDACTED]`)
 	req.CorrelationIDs = cloneMap(input.CorrelationIDs)
 	req.FinishedAt = &now
 	req.UpdatedAt = now
@@ -872,6 +940,9 @@ func (s *MemoryStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilt
 		if query != "" && !strings.Contains(strings.ToLower(req.ID+" "+req.Model+" "+req.Path+" "+req.Client+" "+req.RequestBody+" "+req.ResponseBody+" "+req.Error), query) {
 			continue
 		}
+		if filter.BeforeCreated != nil && (req.CreatedAt.After(*filter.BeforeCreated) || (req.CreatedAt.Equal(*filter.BeforeCreated) && req.ID >= filter.BeforeID)) {
+			continue
+		}
 		out = append(out, cloneModelBrokerRequest(req))
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -884,13 +955,17 @@ func (s *MemoryStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilt
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	limit := filter.Limit
-	if limit <= 0 || limit > 200 {
+	if limit <= 0 || limit > 201 {
 		limit = 200
 	}
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *MemoryStore) ListModelBrokerRequestsContext(_ context.Context, filter ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error) {
+	return s.ListModelBrokerRequests(filter)
 }
 
 func (s *MemoryStore) ModelBrokerRequest(id string) (ModelBrokerRequest, error) {
@@ -901,6 +976,38 @@ func (s *MemoryStore) ModelBrokerRequest(id string) (ModelBrokerRequest, error) 
 		return ModelBrokerRequest{}, ErrNotFound
 	}
 	return cloneModelBrokerRequest(req), nil
+}
+
+func (s *MemoryStore) ModelBrokerRequestContext(_ context.Context, id string) (ModelBrokerRequest, error) {
+	return s.ModelBrokerRequest(id)
+}
+
+func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := RetentionResult{}
+	for id, run := range s.runs {
+		if !isTerminalRunStatus(run.Status) || !run.CreatedAt.Before(before) {
+			continue
+		}
+		delete(s.runs, id)
+		delete(s.events, id)
+		delete(s.artifacts, id)
+		for stepID, step := range s.steps {
+			if step.RunID == id {
+				delete(s.steps, stepID)
+			}
+		}
+		result.Runs++
+	}
+	for id, req := range s.modelBrokerRequests {
+		if !isTerminalModelBrokerRequest(req.Status) || !req.CreatedAt.Before(before) {
+			continue
+		}
+		delete(s.modelBrokerRequests, id)
+		result.ModelRequests++
+	}
+	return result, nil
 }
 
 func (s *MemoryStore) listRunStepsLocked(runID string) []RunStep {

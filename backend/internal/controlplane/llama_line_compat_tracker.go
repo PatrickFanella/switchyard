@@ -74,8 +74,9 @@ func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBod
 	t.mu.Lock()
 	t.requests[id] = &llamaLineCompatTrackedRequest{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, Status: "queued", CreatedAt: now, UpdatedAt: now, Cancel: cancel}
 	t.mu.Unlock()
-	_, _ = t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, RequestBody: requestBody})
-	t.markRunning(id)
+	store := t.store.WithContext(r.Context())
+	_, _ = store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, RequestBody: requestBody})
+	t.markRunning(store, id)
 	return id, ctx, func(status string, responseBody string, errorText string, correlation map[string]string) {
 		t.finish(id, status, responseBody, errorText, correlation)
 	}
@@ -84,19 +85,20 @@ func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBod
 func (t *llamaLineCompatTracker) submitAsync(r *http.Request, model string, messages []ModelMessage, requestBody string) (ModelBrokerRequest, bool, error) {
 	id := firstNonEmpty(r.Header.Get("X-Request-ID"), r.Header.Get("X-Llama-Line-Request-ID"), "llama-"+shortRandomID())
 	client := modelBrokerClientIdentityFromRequest(r)
+	store := t.store.WithContext(r.Context())
 	t.enqueueMu.Lock()
 	defer t.enqueueMu.Unlock()
-	if existing, err := t.store.ModelBrokerRequest(id); err == nil {
+	if existing, err := store.ModelBrokerRequest(id); err == nil {
 		return existing, false, nil
 	}
-	active, err := t.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested}, Limit: t.maxDepth + 1})
+	active, err := store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested}, Limit: t.maxDepth + 1})
 	if err != nil {
 		return ModelBrokerRequest{}, false, err
 	}
 	if len(active) >= t.maxDepth {
 		return ModelBrokerRequest{}, false, ErrQueueFull
 	}
-	req, err := t.store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, RequestBody: requestBody})
+	req, err := store.CreateModelBrokerRequest(CreateModelBrokerRequestInput{ID: id, Model: model, Path: r.URL.Path, Client: client.Name, Priority: client.Priority, RequestBody: requestBody})
 	if err != nil {
 		return ModelBrokerRequest{}, false, err
 	}
@@ -225,7 +227,7 @@ func decodeModelBrokerRequestPayload(req ModelBrokerRequest) (string, []ModelMes
 	return model, input.Messages, model != "" && len(input.Messages) > 0
 }
 
-func (t *llamaLineCompatTracker) markRunning(id string) {
+func (t *llamaLineCompatTracker) markRunning(store Store, id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if item := t.requests[id]; item != nil {
@@ -233,7 +235,7 @@ func (t *llamaLineCompatTracker) markRunning(id string) {
 		item.StartedAt = time.Now().UTC()
 		item.UpdatedAt = item.StartedAt
 	}
-	_, _ = t.store.StartModelBrokerRequest(id)
+	_, _ = store.StartModelBrokerRequest(id)
 }
 
 func (t *llamaLineCompatTracker) finish(id string, status string, responseBody string, errorText string, correlation map[string]string) {
@@ -247,9 +249,10 @@ func (t *llamaLineCompatTracker) finish(id string, status string, responseBody s
 	_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: status, ResponseBody: responseBody, Error: errorText, CorrelationIDs: correlation})
 }
 
-func (t *llamaLineCompatTracker) snapshot() (queued []map[string]any, inflight []map[string]any) {
-	queuedRows, _ := t.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestQueued, ModelBrokerRequestCancelRequested}, Limit: t.maxDepth})
-	inflightRows, _ := t.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestRunning}, Limit: t.maxDepth})
+func (t *llamaLineCompatTracker) snapshot(ctx context.Context) (queued []map[string]any, inflight []map[string]any) {
+	store := t.store.WithContext(ctx)
+	queuedRows, _ := store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestQueued, ModelBrokerRequestCancelRequested}, Limit: t.maxDepth})
+	inflightRows, _ := store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Statuses: []string{ModelBrokerRequestRunning}, Limit: t.maxDepth})
 	if len(queuedRows) > 0 || len(inflightRows) > 0 {
 		return modelBrokerRequestsAsMaps(queuedRows), modelBrokerRequestsAsMaps(inflightRows)
 	}
@@ -283,16 +286,17 @@ func (t *llamaLineCompatTracker) snapshot() (queued []map[string]any, inflight [
 	return queued, inflight
 }
 
-func (t *llamaLineCompatTracker) cancel(id string) bool {
-	before, err := t.store.ModelBrokerRequest(id)
+func (t *llamaLineCompatTracker) cancel(ctx context.Context, id string) bool {
+	store := t.store.WithContext(ctx)
+	before, err := store.ModelBrokerRequest(id)
 	if err != nil {
 		return false
 	}
-	if _, err := t.store.CancelModelBrokerRequest(id); err != nil {
+	if _, err := store.CancelModelBrokerRequest(id); err != nil {
 		return false
 	}
 	if before.Status == ModelBrokerRequestQueued {
-		_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: ModelBrokerRequestCanceled, Error: "request canceled before execution", CorrelationIDs: map[string]string{"llama_line_request_id": id}})
+		_, _ = store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: ModelBrokerRequestCanceled, Error: "request canceled before execution", CorrelationIDs: map[string]string{"llama_line_request_id": id}})
 	}
 	t.mu.Lock()
 	item := t.requests[id]
@@ -303,14 +307,14 @@ func (t *llamaLineCompatTracker) cancel(id string) bool {
 	return true
 }
 
-func (t *llamaLineCompatTracker) cancelAll(status string) int {
+func (t *llamaLineCompatTracker) cancelAll(ctx context.Context, status string) int {
 	t.mu.Lock()
 	items := make([]*llamaLineCompatTrackedRequest, 0, len(t.requests))
 	for _, item := range t.requests {
 		items = append(items, item)
 	}
 	t.mu.Unlock()
-	count, _ := t.store.CancelAllModelBrokerRequests()
+	count, _ := t.store.WithContext(ctx).CancelAllModelBrokerRequests()
 	for _, item := range items {
 		item.Cancel()
 	}
@@ -320,8 +324,8 @@ func (t *llamaLineCompatTracker) cancelAll(status string) int {
 	return len(items)
 }
 
-func (t *llamaLineCompatTracker) inFlightIDs() []string {
-	_, inflight := t.snapshot()
+func (t *llamaLineCompatTracker) inFlightIDs(ctx context.Context) []string {
+	_, inflight := t.snapshot(ctx)
 	ids := make([]string, 0, len(inflight))
 	for _, item := range inflight {
 		if id, ok := item["id"].(string); ok {

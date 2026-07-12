@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -234,7 +233,7 @@ func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directo
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readModelResponseBody(resp.Body)
 		return "", fmt.Errorf("opencode session create failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var decoded struct {
@@ -277,10 +276,10 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readModelResponseBody(resp.Body)
 		return "", fmt.Errorf("opencode message failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := readModelResponseBody(resp.Body)
 	if err != nil {
 		return "", err
 	}

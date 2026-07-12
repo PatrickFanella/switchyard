@@ -65,6 +65,8 @@ Async worker dispatch is enabled by default, so `POST /api/runs`, trigger runs, 
 
 Asynchronous model-compatible requests use a durable priority queue. `MODEL_BROKER_QUEUE_MAX_DEPTH` (default `100`, maximum `200`) bounds queued, running, and cancel-requested work; full queues return `429` with `Retry-After`. `MODEL_BROKER_QUEUE_WORKERS` controls concurrent claims. Claims order higher client priority first and FIFO within equal priority, using atomic row locking under Postgres.
 
+List runs with bounded cursor pagination using `GET /api/runs?limit=50&cursor=...`; the response includes `next_cursor`. `GET /readyz` checks persistence rather than only process liveness. Terminal runs and model requests are pruned after `SWITCHYARD_RETENTION` (default `720h`) on `SWITCHYARD_RETENTION_INTERVAL`. Request, prompt, model-response, and artifact sizes are bounded by the corresponding `SWITCHYARD_MAX_*_BYTES` settings, model history redacts credential-shaped values before persistence, and per-client request rate is capped by `SWITCHYARD_RATE_LIMIT_PER_SECOND`.
+
 Every control-plane request except health checks requires authentication. Set `SWITCHYARD_CONTROL_API_TOKEN` to a long random bearer token; the CLI reads the same variable automatically. `SWITCHYARD_CONTROL_READ_TOKEN` optionally grants GET/HEAD-only access. Browser deployments may instead set `SWITCHYARD_REVERSE_PROXY_AUTH=true` after an authenticated proxy reliably supplies `X-Forwarded-User` or `Remote-User`; never enable that trust flag on an independently reachable listener. Cross-origin access is disabled by default and may be allowlisted with comma-separated `SWITCHYARD_CORS_ALLOWED_ORIGINS`. Set `SWITCHYARD_PUBLIC_URL` for operator metadata. `GET /api/operator-safety` reports the proxy assumption and warns when full Open Pilot autonomy is enabled without it.
 
 Phoenix / OTLP tracing is optional. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://10.0.0.200:6006`) plus optional `OTEL_EXPORTER_OTLP_HEADERS=x-project-name=switchyard` to export traces over OTLP/HTTP; leave the endpoint unset for no-op tracing.
@@ -92,7 +94,7 @@ The run command waits up to 15 minutes for a terminal result, matching long-runn
 
 Run cancellation is Switchyard-side plus best-effort upstream cancellation. Switchyard uses historical compatibility IDs only when a cutover run still carries them, and `OPEN_PILOT_COMMAND cancel --run <id> --json` when configured.
 
-Postgres stores its initial credentials in the Docker volume. If you change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` after the volume already exists and see password authentication failures, reset the local database volume:
+Docker Compose requires an explicit `POSTGRES_PASSWORD`; generate a strong random value before startup. Postgres stores its initial credentials in the Docker volume. If you later change `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` and see authentication failures, reset the local database volume:
 
 ```bash
 CONFIRM=1 make docker-reset

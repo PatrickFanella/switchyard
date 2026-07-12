@@ -86,6 +86,19 @@ func TestRunPipelineSnapshotMigrationDeclaresVersionedSnapshotFields(t *testing.
 	}
 }
 
+func TestRetentionMigrationDeclaresPartialIndexes(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/015_retention_indexes.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"runs_retention_idx", "model_broker_requests_retention_idx", "where status in"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("retention migration missing %q", field)
+		}
+	}
+}
+
 func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/006_open_pilot_state.sql")
 	if err != nil {

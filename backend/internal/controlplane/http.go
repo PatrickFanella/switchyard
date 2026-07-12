@@ -3,12 +3,16 @@ package controlplane
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +26,7 @@ type API struct {
 	canceler      CancelDispatcher
 	scheduler     *Scheduler
 	workerPool    *WorkerPool
+	retention     *RetentionManager
 	asyncDispatch bool
 }
 
@@ -43,6 +48,10 @@ func (a *API) SetWorkerPool(workerPool *WorkerPool) {
 	a.workerPool = workerPool
 }
 
+func (a *API) SetRetentionManager(retention *RetentionManager) {
+	a.retention = retention
+}
+
 func (a *API) SetAsyncDispatch(enabled bool) {
 	a.asyncDispatch = enabled
 }
@@ -55,9 +64,18 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func (a *API) Handler() http.Handler {
+	return withCORS(withRequestLimits(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scoped := *a
+		scoped.store = a.store.WithContext(r.Context())
+		scoped.routes().ServeHTTP(w, r)
+	})))
+}
+
+func (a *API) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
+	mux.HandleFunc("GET /readyz", a.readiness)
 	mux.HandleFunc("GET /broker/status", a.llamaLineCompatStatus)
 	mux.HandleFunc("POST /v1/chat/completions", a.llamaLineCompatChatCompletions)
 	mux.HandleFunc("POST /v1/completions", a.llamaLineCompatCompletions)
@@ -115,6 +133,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/open-pilot/state/resume", a.resumeOpenPilotState)
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workers", a.workerStatus)
+	mux.HandleFunc("GET /api/retention", a.retentionStatus)
 	mux.HandleFunc("GET /api/operator-safety", a.operatorSafety)
 	mux.HandleFunc("GET /api/pipelines", a.pipelines)
 	mux.HandleFunc("GET /api/agent-profiles", a.agentProfiles)
@@ -128,15 +147,144 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/triggers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"triggers": triggersOrEmpty(a.store.ListTriggers())})
 	})
-	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"runs": runsOrEmpty(a.store.ListRuns())})
-	})
+	mux.HandleFunc("GET /api/runs", a.listRuns)
 	mux.HandleFunc("POST /api/runs", a.createRun)
 	mux.HandleFunc("GET /api/runs/", a.runAction)
 	mux.HandleFunc("POST /api/runs/", a.runAction)
 	mux.HandleFunc("POST /api/triggers/", a.triggerAction)
 	mux.HandleFunc("PATCH /api/triggers/", a.triggerAction)
-	return withCORS(mux)
+	return mux
+}
+
+type requestWindow struct {
+	second int64
+	count  int
+}
+
+type requestLimiter struct {
+	mu      sync.Mutex
+	windows map[string]requestWindow
+	limit   int
+}
+
+func withRequestLimits(next http.Handler) http.Handler {
+	maxBody := int64(1 << 20)
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("SWITCHYARD_MAX_REQUEST_BYTES")), 10, 64); err == nil && parsed >= 1024 && parsed <= 16<<20 {
+		maxBody = parsed
+	}
+	rate := 50
+	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_RATE_LIMIT_PER_SECOND"))); err == nil && parsed >= 1 && parsed <= 10000 {
+		rate = parsed
+	}
+	limiter := &requestLimiter{windows: map[string]requestWindow{}, limit: rate}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" && r.URL.Path != "/healthz" && !limiter.allow(requestClientIP(r), time.Now()) {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, "request rate limit exceeded")
+			return
+		}
+		if r.Body != nil {
+			if r.ContentLength > maxBody {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds configured limit")
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (l *requestLimiter) allow(key string, now time.Time) bool {
+	second := now.Unix()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	window := l.windows[key]
+	if window.second != second {
+		window = requestWindow{second: second}
+	}
+	window.count++
+	l.windows[key] = window
+	if len(l.windows) > 10000 {
+		for existingKey, existing := range l.windows {
+			if existing.second < second-1 {
+				delete(l.windows, existingKey)
+			}
+		}
+	}
+	return window.count <= l.limit
+}
+
+func requestClientIP(r *http.Request) string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true") {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+			return forwarded
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func (a *API) listRuns(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	input := ListRunsPageInput{Limit: limit}
+	if raw := strings.TrimSpace(r.URL.Query().Get("cursor")); raw != "" {
+		created, id, err := decodeRunCursor(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		input.BeforeCreated = &created
+		input.BeforeID = id
+	}
+	page, err := a.store.ListRunsPageContext(r.Context(), input)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	nextCursor := ""
+	if page.HasMore && len(page.Runs) > 0 {
+		last := page.Runs[len(page.Runs)-1]
+		nextCursor = encodeRunCursor(last.CreatedAt, last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runsOrEmpty(page.Runs), "next_cursor": nextCursor})
+}
+
+func (a *API) readiness(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := a.store.Ready(ctx); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "storage unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ready": true})
+}
+
+func encodeRunCursor(created time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(created.UTC().Format(time.RFC3339Nano) + "\n" + id))
+}
+
+func decodeRunCursor(cursor string) (time.Time, string, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	createdText, id, ok := strings.Cut(string(decoded), "\n")
+	if !ok || strings.TrimSpace(id) == "" {
+		return time.Time{}, "", fmt.Errorf("malformed cursor")
+	}
+	created, err := time.Parse(time.RFC3339Nano, createdText)
+	return created, id, err
 }
 
 // ControlPlaneHandler serves the operator API without exposing model-provider
@@ -168,7 +316,7 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 	readToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_READ_TOKEN"))
 	trustProxy := strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz") && r.Method == http.MethodGet) {
+		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && r.Method == http.MethodGet) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -238,7 +386,7 @@ func controlPlaneRouteAllowed(r *http.Request) bool {
 
 func modelIngressRouteAllowed(r *http.Request) bool {
 	path := r.URL.Path
-	if path == "/health" || path == "/healthz" || path == "/metrics" || path == "/broker/status" {
+	if path == "/health" || path == "/healthz" || path == "/readyz" || path == "/metrics" || path == "/broker/status" {
 		return r.Method == http.MethodGet
 	}
 	if strings.HasPrefix(path, "/v1/") {
@@ -308,7 +456,7 @@ func (a *API) getWorkflowDefinition(w http.ResponseWriter, r *http.Request, id s
 func (a *API) updateWorkflowDefinition(w http.ResponseWriter, r *http.Request, id string) {
 	var definition WorkflowDefinition
 	if err := json.NewDecoder(r.Body).Decode(&definition); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	definition.ID = id
@@ -510,10 +658,18 @@ func (a *API) workerStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.workerPool.Status())
 }
 
+func (a *API) retentionStatus(w http.ResponseWriter, r *http.Request) {
+	if a.retention == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"retention": RetentionStatus{Running: false}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"retention": a.retention.Status()})
+}
+
 func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 	var input CreateRunInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	run, err := a.dispatchRun(r.Context(), input)
@@ -536,7 +692,7 @@ func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
 		Issue string `json:"issue"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if input.Repo == "" || input.Issue == "" {
@@ -558,7 +714,7 @@ func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) dispatchRun(ctx context.Context, input CreateRunInput) (Run, error) {
 	if a.asyncDispatch {
-		return a.runner.Enqueue(input)
+		return a.runner.EnqueueContext(ctx, input)
 	}
 	return a.runner.RunOnce(ctx, input)
 }
@@ -590,7 +746,7 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run action not found")
 		return
 	}
-	detail, err := a.store.RunDetail(id)
+	detail, err := a.store.RunDetailContext(r.Context(), id)
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -598,7 +754,20 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 	detail.Events = eventsOrEmpty(detail.Events)
 	detail.Artifacts = artifactsOrEmpty(detail.Artifacts)
 	detail.Steps = stepsOrEmpty(detail.Steps)
-	writeJSON(w, http.StatusOK, detail)
+	truncated := map[string]bool{}
+	if len(detail.Events) > 500 {
+		detail.Events = detail.Events[len(detail.Events)-500:]
+		truncated["events"] = true
+	}
+	if len(detail.Artifacts) > 200 {
+		detail.Artifacts = detail.Artifacts[len(detail.Artifacts)-200:]
+		truncated["artifacts"] = true
+	}
+	if len(detail.Steps) > 200 {
+		detail.Steps = detail.Steps[len(detail.Steps)-200:]
+		truncated["steps"] = true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run": detail.Run, "steps": detail.Steps, "events": detail.Events, "artifacts": detail.Artifacts, "truncated": truncated})
 }
 
 func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, path string) {
@@ -607,7 +776,11 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			writeError(w, http.StatusNotFound, "step action not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string][]RunStep{"steps": stepsOrEmpty(a.store.ListRunSteps(runID))})
+		steps := stepsOrEmpty(a.store.ListRunSteps(runID))
+		if len(steps) > 200 {
+			steps = steps[len(steps)-200:]
+		}
+		writeJSON(w, http.StatusOK, map[string][]RunStep{"steps": steps})
 		return
 	}
 	path = strings.TrimPrefix(path, "/")
@@ -627,7 +800,7 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			writeError(w, http.StatusNotFound, "step not found for run")
 			return
 		}
-		detail, err := a.store.RunDetail(runID)
+		detail, err := a.store.RunDetailContext(r.Context(), runID)
 		if err != nil {
 			writeControlError(w, err)
 			return
@@ -719,7 +892,7 @@ func applyOpenPilotRetryInputsFromState(store Store, detail RunDetail, step RunS
 }
 
 func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
-	detail, err := a.store.RunDetail(id)
+	detail, err := a.store.RunDetailContext(r.Context(), id)
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -747,7 +920,7 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (a *API) cancelRun(w http.ResponseWriter, r *http.Request, id string) {
-	detail, err := a.store.RunDetail(id)
+	detail, err := a.store.RunDetailContext(r.Context(), id)
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -932,7 +1105,7 @@ func (a *API) updateTrigger(w http.ResponseWriter, r *http.Request, triggerID st
 		Enabled *bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if input.Enabled == nil {
@@ -966,6 +1139,15 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]map[string]string{"error": {"message": message}})
+}
+
+func writeJSONDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds configured limit")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid JSON body")
 }
 
 type openPilotStateResponse struct {

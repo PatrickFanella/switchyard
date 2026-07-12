@@ -158,6 +158,9 @@ func NewEnvModelExecutor() *EnvModelBroker {
 }
 
 func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (response ModelResponse, err error) {
+	if err := validateModelRequestSize(request.Model, request.Messages); err != nil {
+		return ModelResponse{}, err
+	}
 	backend := "opencode"
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")), "llama-line") {
 		backend = "llama-line"
@@ -180,7 +183,11 @@ func (e *EnvModelBroker) Generate(ctx context.Context, request ModelRequest) (re
 			attribute.String("request_id", request.RequestID),
 		)
 	}()
-	return e.generateWithRetry(ctx, backend, request)
+	response, err = e.generateWithRetry(ctx, backend, request)
+	if err == nil {
+		err = validateModelResponse(response)
+	}
+	return response, err
 }
 
 func (e *EnvModelBroker) generateWithRetry(ctx context.Context, backend string, request ModelRequest) (ModelResponse, error) {
@@ -348,7 +355,7 @@ func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request Model
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return ModelResponse{}, modelBrokerHTTPError{StatusCode: resp.StatusCode, Status: "model request failed: " + resp.Status}
 	}
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readModelResponseBody(resp.Body)
 	if err != nil {
 		return ModelResponse{}, err
 	}
@@ -411,7 +418,7 @@ func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelReq
 		} `json:"message"`
 		Response string `json:"response"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, int64(maxModelResponseBytes())+1)).Decode(&decoded); err != nil {
 		return ModelResponse{}, err
 	}
 	content := firstNonEmpty(decoded.Message.Content, decoded.Response)
@@ -473,6 +480,9 @@ func (e *EnvModelBroker) streamViaOllama(ctx context.Context, request ModelReque
 		}
 		chunk := firstNonEmpty(decoded.Message.Content, decoded.Response)
 		if chunk != "" {
+			if builder.Len()+len(chunk) > maxModelResponseBytes() {
+				return ModelResponse{}, fmt.Errorf("model stream exceeds configured response limit")
+			}
 			builder.WriteString(chunk)
 			if err := emit(ModelStreamEvent{Type: "content", Content: chunk, CorrelationIDs: correlation}); err != nil {
 				return ModelResponse{}, err
@@ -554,6 +564,9 @@ func (e *EnvModelBroker) streamViaLlamaLine(ctx context.Context, request ModelRe
 		chunk := event.Content
 		if chunk == "" {
 			continue
+		}
+		if builder.Len()+len(chunk) > maxModelResponseBytes() {
+			return ModelResponse{}, fmt.Errorf("model stream exceeds configured response limit")
 		}
 		builder.WriteString(chunk)
 		if err := emit(ModelStreamEvent{Type: "content", Content: chunk, CorrelationIDs: correlation}); err != nil {
