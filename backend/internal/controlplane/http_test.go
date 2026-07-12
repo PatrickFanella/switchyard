@@ -112,6 +112,82 @@ func TestAPIWorkflowDefinitionCRUD(t *testing.T) {
 	}
 }
 
+func TestAPIWorkflowDefinitionActivationVersionsAndRollback(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := store.UpsertWorkflow(controlplane.Workflow{ID: "versioned", Kind: "versioned", Name: "Versioned"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	put := func(name, summary string) controlplane.WorkflowDefinition {
+		body := `{"name":"` + name + `","status":"draft","pipeline":{"id":"versioned-pipeline","workflow_id":"versioned","name":"Versioned Pipeline","steps":[{"id":"prepare","position":1,"name":"versioned.prepare","executor":"internal","inputs":{"summary":"` + summary + `"}}]}}`
+		req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/versioned", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT status = %d body=%s", resp.StatusCode, mustReadBody(t, resp.Body))
+		}
+		var envelope struct {
+			Definition controlplane.WorkflowDefinition `json:"workflow_definition"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		return envelope.Definition
+	}
+	first := put("First", "first")
+	if first.Version != 1 || first.Status != "draft" {
+		t.Fatalf("first = %+v", first)
+	}
+	activate, err := http.NewRequest(http.MethodPost, srv.URL+"/api/workflow-definitions/versioned/activate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(activate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("activate status = %d", resp.StatusCode)
+	}
+	second := put("Second", "second")
+	if second.Version != 2 || second.Status != "draft" {
+		t.Fatalf("second = %+v", second)
+	}
+	rollback, err := http.NewRequest(http.MethodPost, srv.URL+"/api/workflow-definitions/versioned/rollback", strings.NewReader(`{"version":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(rollback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	var rollbackEnvelope struct {
+		Definition controlplane.WorkflowDefinition `json:"workflow_definition"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rollbackEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if rollbackEnvelope.Definition.Version != 3 || rollbackEnvelope.Definition.Status != "active" || rollbackEnvelope.Definition.Name != "First" {
+		t.Fatalf("rollback = %+v", rollbackEnvelope.Definition)
+	}
+	versions, err := store.ListWorkflowDefinitionVersions("versioned")
+	if err != nil || len(versions) != 3 {
+		t.Fatalf("versions = %+v err=%v", versions, err)
+	}
+}
+
 func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
@@ -294,7 +370,6 @@ func TestAPIWorkflowDefinitionWritesAreDraftOnlyAndValidated(t *testing.T) {
 	for name, body := range map[string]string{
 		"active status":     `{"name":"Custom Digest","description":"Daily custom digest","status":"active","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model"}]}}`,
 		"duplicate step id": `{"name":"Custom Digest","description":"Daily custom digest","status":"draft","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model"},{"id":"generate","position":2,"name":"custom.generate-again","executor":"internal"}]}}`,
-		"http executor":     `{"name":"Custom Digest","description":"Daily custom digest","status":"draft","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"call","position":1,"name":"custom.call","executor":"http"}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/custom-digest", bytes.NewBufferString(body))
@@ -1255,6 +1330,32 @@ func TestAPILlamaLineCompatRecoveryLeavesFreshRunningRequest(t *testing.T) {
 	}
 	if row.Status != controlplane.ModelBrokerRequestRunning {
 		t.Fatalf("status = %s", row.Status)
+	}
+}
+
+func TestAPIModelBrokerFeedbackIsPersistedAndRedacted(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "feedback-request", Model: "test", RequestBody: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	resp, err := http.Post(srv.URL+"/admin/feedback", "application/json", strings.NewReader(`{"request_id":"feedback-request","rating":1,"comment":"Bearer super-secret-token"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST status = %d", resp.StatusCode)
+	}
+	resp, err = http.Get(srv.URL + "/admin/feedback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := mustReadBody(t, resp.Body)
+	if !strings.Contains(body, "feedback-request") || !strings.Contains(body, "[REDACTED]") || strings.Contains(body, "super-secret-token") {
+		t.Fatalf("feedback body = %s", body)
 	}
 }
 

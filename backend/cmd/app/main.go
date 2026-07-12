@@ -121,6 +121,15 @@ func run() error {
 			interval = parsed
 		}
 		scheduler = controlplane.NewScheduler(store, runner, interval, nil)
+		timezone := strings.TrimSpace(os.Getenv("SWITCHYARD_SCHEDULER_TIMEZONE"))
+		if timezone == "" {
+			timezone = "UTC"
+		}
+		location, err := time.LoadLocation(timezone)
+		if err != nil {
+			return fmt.Errorf("load SWITCHYARD_SCHEDULER_TIMEZONE: %w", err)
+		}
+		scheduler.SetLocation(location)
 		if workerEnabled {
 			scheduler.SetAsyncDispatch(true)
 		}

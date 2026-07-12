@@ -37,12 +37,17 @@ type WorkflowDefinition struct {
 	Name        string             `json:"name"`
 	Description string             `json:"description"`
 	Status      string             `json:"status"`
+	Version     int                `json:"version"`
 	Owns        []string           `json:"owns,omitempty"`
 	Uses        []string           `json:"uses,omitempty"`
 	InputShape  JSONShape          `json:"input_shape,omitempty"`
 	Pipeline    PipelineDefinition `json:"pipeline"`
 	CreatedAt   time.Time          `json:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
+type WorkflowDefinitionRollbackInput struct {
+	Version int `json:"version"`
 }
 
 type PipelineDefinition struct {

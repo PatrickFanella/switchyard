@@ -147,14 +147,24 @@ paths:
         "200": { description: Stats summary }
   /admin/feedback:
     get:
-      summary: Legacy feedback compatibility status
+      summary: List persisted model feedback
       responses:
-        "200": { description: Feedback compatibility status }
+        "200": { description: Persisted feedback list }
     post:
-      summary: Accept legacy feedback compatibility payloads
-      description: Accepts feedback for compatibility but does not persist it.
+      summary: Persist model feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                request_id: { type: string }
+                rating: { type: integer, minimum: -1, maximum: 1 }
+                comment: { type: string, maxLength: 4096 }
+              required: [request_id, rating]
       responses:
-        "202": { description: Feedback accepted }
+        "201": { description: Feedback persisted }
   /ui/:
     get:
       summary: Lightweight legacy broker UI landing page
@@ -511,7 +521,7 @@ paths:
                 required: [workflow_definition]
         default: { $ref: "#/components/responses/Error" }
     put:
-      summary: Create or update a workflow definition
+      summary: Create or update a workflow definition draft
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
       requestBody:
@@ -530,6 +540,36 @@ paths:
                   workflow_definition: { $ref: "#/components/schemas/WorkflowDefinition" }
                 required: [workflow_definition]
         default: { $ref: "#/components/responses/Error" }
+  /api/workflow-definitions/{id}/versions:
+    get:
+      summary: List immutable workflow-definition versions
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      responses:
+        "200": { description: Version history }
+  /api/workflow-definitions/{id}/activate:
+    post:
+      summary: Validate and activate the latest draft version
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      responses:
+        "200": { description: Activated workflow definition }
+  /api/workflow-definitions/{id}/rollback:
+    post:
+      summary: Restore a historical snapshot as a new active version
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: integer, minimum: 1 }
+              required: [version]
+      responses:
+        "200": { description: Rolled-back workflow definition }
   /api/open-pilot/states:
     get:
       summary: List Open Pilot issue states
@@ -1004,6 +1044,7 @@ components:
         id: { type: string }
         title: { type: string }
         status: { type: string }
+        version: { type: integer, minimum: 1, readOnly: true }
         user: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -1077,10 +1118,10 @@ components:
         pipeline: { $ref: "#/components/schemas/PipelineDefinition" }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
-      required: [id, name, status, pipeline]
+      required: [id, name, status, version, pipeline]
     WorkflowDefinitionUpsertRequest:
       type: object
-      description: Request body for creating or updating a draft workflow definition. The path ID is authoritative; activation is intentionally not exposed by this endpoint.
+      description: Request body for creating an immutable draft version. The path ID is authoritative; activate through the dedicated action after validation.
       properties:
         name: { type: string }
         description: { type: string }
@@ -1109,6 +1150,8 @@ components:
         last_run_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         last_error: { type: string }
+        timezone: { type: string }
+        missed_run_policy: { type: string, enum: [coalesce_once] }
       required: [id, workflow_id, type, name, description, enabled]
     Run:
       type: object

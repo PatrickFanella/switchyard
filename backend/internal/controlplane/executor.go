@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -278,7 +279,7 @@ func (g genericWorkflowExecutor) ExecutePipelineStep(ctx context.Context, run Ru
 	case "command":
 		return g.executeGenericCommandStep(ctx, run, step, renderedInputs, state)
 	case "http":
-		return g.executeGenericHTTPStep(step, renderedInputs)
+		return g.executeGenericHTTPStep(ctx, step, renderedInputs)
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported pipeline step executor %q", step.Executor)
 	}
@@ -376,12 +377,79 @@ func (g genericWorkflowExecutor) executeGenericCommandStep(ctx context.Context, 
 	return out, nil
 }
 
-func (g genericWorkflowExecutor) executeGenericHTTPStep(step PipelineStep, inputs map[string]string) (PipelineStepExecution, error) {
+func (g genericWorkflowExecutor) executeGenericHTTPStep(ctx context.Context, step PipelineStep, inputs map[string]string) (PipelineStepExecution, error) {
 	allowHTTP, _ := strconv.ParseBool(strings.TrimSpace(inputs["allow_http"]))
 	if !allowHTTP {
 		return PipelineStepExecution{}, fmt.Errorf("http executor requires allow_http=true for step %q", step.ID)
 	}
-	return PipelineStepExecution{}, fmt.Errorf("http executor is not implemented yet")
+	target, err := url.Parse(strings.TrimSpace(inputs["url"]))
+	if err != nil || target.Hostname() == "" || target.User != nil {
+		return PipelineStepExecution{}, fmt.Errorf("http executor requires a valid URL without userinfo")
+	}
+	if target.Scheme != "https" && !(target.Scheme == "http" && strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_HTTP_ALLOW_INSECURE")), "true")) {
+		return PipelineStepExecution{}, fmt.Errorf("http executor requires HTTPS")
+	}
+	if !httpExecutorHostAllowed(target.Hostname()) {
+		return PipelineStepExecution{}, fmt.Errorf("http executor host %q is not allowlisted", target.Hostname())
+	}
+	method := strings.ToUpper(strings.TrimSpace(firstNonEmpty(inputs["method"], http.MethodGet)))
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch:
+	default:
+		return PipelineStepExecution{}, fmt.Errorf("http executor method %q is not allowed", method)
+	}
+	body := strings.NewReader(inputs["body"])
+	request, err := http.NewRequestWithContext(ctx, method, target.String(), body)
+	if err != nil {
+		return PipelineStepExecution{}, err
+	}
+	request.Header.Set("Accept", firstNonEmpty(strings.TrimSpace(inputs["accept"]), "application/json"))
+	if method != http.MethodGet {
+		request.Header.Set("Content-Type", firstNonEmpty(strings.TrimSpace(inputs["content_type"]), "application/json"))
+	}
+	timeout := 15 * time.Second
+	if parsed, parseErr := time.ParseDuration(strings.TrimSpace(os.Getenv("SWITCHYARD_HTTP_TIMEOUT"))); parseErr == nil && parsed > 0 && parsed <= 2*time.Minute {
+		timeout = parsed
+	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(next *http.Request, via []*http.Request) error {
+		if len(via) >= 3 || next.URL.Scheme != target.Scheme || !httpExecutorHostAllowed(next.URL.Hostname()) {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}}
+	response, err := client.Do(request)
+	if err != nil {
+		return PipelineStepExecution{}, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, int64(artifactMaxBytes())+1))
+	if err != nil {
+		return PipelineStepExecution{}, err
+	}
+	if len(responseBody) > artifactMaxBytes() {
+		return PipelineStepExecution{}, fmt.Errorf("http executor response exceeds artifact limit")
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return PipelineStepExecution{}, fmt.Errorf("http executor returned %s", response.Status)
+	}
+	artifactName := firstNonEmpty(strings.TrimSpace(inputs["artifact_name"]), step.ID+".response")
+	artifactKind := firstNonEmpty(strings.TrimSpace(inputs["artifact_kind"]), "http-response")
+	uri := "data:application/octet-stream," + url.QueryEscape(string(responseBody))
+	if len(uri) > artifactMaxBytes() {
+		return PipelineStepExecution{}, fmt.Errorf("encoded http response exceeds artifact limit")
+	}
+	return PipelineStepExecution{Summary: fmt.Sprintf("HTTP %s returned %d", method, response.StatusCode), Inputs: map[string]string{"url": target.Redacted(), "method": method, "status": strconv.Itoa(response.StatusCode)}, Artifacts: []CreateArtifactInput{{Name: artifactName, Kind: artifactKind, URI: uri}}}, nil
+}
+
+func httpExecutorHostAllowed(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, allowed := range strings.Split(os.Getenv("SWITCHYARD_HTTP_ALLOWED_HOSTS"), ",") {
+		allowed = strings.ToLower(strings.TrimSpace(allowed))
+		if allowed == host || (strings.HasPrefix(allowed, "*.") && strings.HasSuffix(host, strings.TrimPrefix(allowed, "*"))) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderPipelineStepInputs(inputs, runInputs map[string]string) map[string]string {

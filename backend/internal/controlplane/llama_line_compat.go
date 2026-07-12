@@ -722,12 +722,34 @@ func (a *API) llamaLineCompatStatsSummary(w http.ResponseWriter, r *http.Request
 
 func (a *API) llamaLineCompatFeedback(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
-		var input map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&input)
-		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "feedback": input, "backend": "switchyard-native"})
+		var input CreateModelBrokerFeedbackInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSONDecodeError(w, err)
+			return
+		}
+		feedback, err := a.store.AddModelBrokerFeedback(input)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"status": "created", "feedback": feedback, "backend": "switchyard-native"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"feedback": []any{}, "backend": "switchyard-native", "message": "feedback is accepted for compatibility but not persisted"})
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	feedback, err := a.store.ListModelBrokerFeedback(limit)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"feedback": feedback, "count": len(feedback), "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatUI(w http.ResponseWriter, r *http.Request) {

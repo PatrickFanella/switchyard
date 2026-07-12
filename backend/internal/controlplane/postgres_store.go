@@ -36,7 +36,7 @@ func (s *PostgresStore) Ready(ctx context.Context) error {
 }
 
 const openPilotIssueStateColumns = "id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, failing_gate, operator_summary, recommended_next_action, created_at, updated_at"
-const workflowDefinitionColumns = "id, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at"
+const workflowDefinitionColumns = "id, name, description, status, version, owns, uses, input_shape, pipeline, created_at, updated_at"
 const modelBrokerRequestColumns = "id, status, model, path, client, client_priority, request_body, response_body, error, correlation_ids, created_at, started_at, finished_at, updated_at, cancel_requested_at"
 
 func NewPostgresStore(db *sql.DB, now func() time.Time) *PostgresStore {
@@ -67,14 +67,44 @@ func (s *PostgresStore) UpsertWorkflowDefinition(definition WorkflowDefinition) 
 	if err != nil {
 		return WorkflowDefinition{}, err
 	}
-	row := s.db.QueryRowContext(s.operationContext(), `
-		insert into workflow_definitions(id, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at)
-		values($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb, now(), now())
-		on conflict(id) do update set name=excluded.name, description=excluded.description, status=excluded.status, owns=excluded.owns, uses=excluded.uses, input_shape=excluded.input_shape, pipeline=excluded.pipeline, updated_at=now()
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	var currentVersion int
+	var createdAt time.Time
+	err = tx.QueryRowContext(ctx, `select version, created_at from workflow_definitions where id=$1 for update`, definition.ID).Scan(&currentVersion, &createdAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return WorkflowDefinition{}, err
+	}
+	definition.Version = currentVersion + 1
+	if currentVersion == 0 {
+		definition.Version = 1
+		createdAt = s.now().UTC()
+	}
+	definition.CreatedAt = createdAt
+	definition.UpdatedAt = s.now().UTC()
+	row := tx.QueryRowContext(ctx, `
+		insert into workflow_definitions(id, name, description, status, version, owns, uses, input_shape, pipeline, created_at, updated_at)
+		values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)
+		on conflict(id) do update set name=excluded.name, description=excluded.description, status=excluded.status, version=excluded.version, owns=excluded.owns, uses=excluded.uses, input_shape=excluded.input_shape, pipeline=excluded.pipeline, updated_at=excluded.updated_at
 		returning `+workflowDefinitionColumns,
-		definition.ID, definition.Name, definition.Description, definition.Status, string(owns), string(uses), string(inputShape), string(pipeline))
+		definition.ID, definition.Name, definition.Description, definition.Status, definition.Version, string(owns), string(uses), string(inputShape), string(pipeline), definition.CreatedAt, definition.UpdatedAt)
 	saved, err := scanWorkflowDefinitionRow(row)
-	return saved, mapScanErr(err)
+	if err != nil {
+		_ = tx.Rollback()
+		return WorkflowDefinition{}, mapScanErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `insert into workflow_definition_versions(id, version, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at) values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)`, saved.ID, saved.Version, saved.Name, saved.Description, saved.Status, string(owns), string(uses), string(inputShape), string(pipeline), saved.CreatedAt, saved.UpdatedAt); err != nil {
+		_ = tx.Rollback()
+		return WorkflowDefinition{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return saved, nil
 }
 
 func (s *PostgresStore) WorkflowDefinition(id string) (WorkflowDefinition, error) {
@@ -101,6 +131,60 @@ func (s *PostgresStore) ListWorkflowDefinitions() ([]WorkflowDefinition, error) 
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s *PostgresStore) ListWorkflowDefinitionVersions(id string) ([]WorkflowDefinition, error) {
+	rows, err := s.db.QueryContext(s.operationContext(), `select `+workflowDefinitionColumns+` from workflow_definition_versions where id=$1 order by version desc`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []WorkflowDefinition{}
+	for rows.Next() {
+		definition, err := scanWorkflowDefinitionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, definition)
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) ActivateWorkflowDefinition(id string) (WorkflowDefinition, error) {
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	row := tx.QueryRowContext(ctx, `update workflow_definitions set status='active', updated_at=now() where id=$1 returning `+workflowDefinitionColumns, id)
+	definition, err := scanWorkflowDefinitionRow(row)
+	if err != nil {
+		_ = tx.Rollback()
+		return WorkflowDefinition{}, mapScanErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `update workflow_definition_versions set status='active', updated_at=$3 where id=$1 and version=$2`, id, definition.Version, definition.UpdatedAt); err != nil {
+		_ = tx.Rollback()
+		return WorkflowDefinition{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return definition, nil
+}
+
+func (s *PostgresStore) RollbackWorkflowDefinition(id string, version int) (WorkflowDefinition, error) {
+	if version < 1 {
+		return WorkflowDefinition{}, ErrInvalid
+	}
+	target, err := scanWorkflowDefinitionRow(s.db.QueryRowContext(s.operationContext(), `select `+workflowDefinitionColumns+` from workflow_definition_versions where id=$1 and version=$2`, id, version))
+	if err != nil {
+		return WorkflowDefinition{}, mapScanErr(err)
+	}
+	target.Status = "active"
+	return s.UpsertWorkflowDefinition(target)
 }
 
 func OpenPostgres(ctx context.Context, databaseURL string) (*sql.DB, error) {
@@ -373,7 +457,7 @@ func (s *PostgresStore) ListWorkflows() []Workflow {
 func scanWorkflowDefinitionRow(row scanner) (WorkflowDefinition, error) {
 	var definition WorkflowDefinition
 	var ownsBytes, usesBytes, inputShapeBytes, pipelineBytes []byte
-	if err := row.Scan(&definition.ID, &definition.Name, &definition.Description, &definition.Status, &ownsBytes, &usesBytes, &inputShapeBytes, &pipelineBytes, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
+	if err := row.Scan(&definition.ID, &definition.Name, &definition.Description, &definition.Status, &definition.Version, &ownsBytes, &usesBytes, &inputShapeBytes, &pipelineBytes, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
 		return WorkflowDefinition{}, err
 	}
 	if err := json.Unmarshal(ownsBytes, &definition.Owns); err != nil {
@@ -1116,6 +1200,35 @@ func (s *PostgresStore) ModelBrokerRequest(id string) (ModelBrokerRequest, error
 func (s *PostgresStore) ModelBrokerRequestContext(ctx context.Context, id string) (ModelBrokerRequest, error) {
 	req, err := scanModelBrokerRequestRow(s.db.QueryRowContext(ctx, `select `+modelBrokerRequestColumns+` from model_broker_requests where id=$1`, id))
 	return req, mapScanErr(err)
+}
+
+func (s *PostgresStore) AddModelBrokerFeedback(input CreateModelBrokerFeedbackInput) (ModelBrokerFeedback, error) {
+	if strings.TrimSpace(input.RequestID) == "" || input.Rating < -1 || input.Rating > 1 || len(input.Comment) > 4096 {
+		return ModelBrokerFeedback{}, ErrInvalid
+	}
+	feedback := ModelBrokerFeedback{ID: newID("feedback"), RequestID: input.RequestID, Rating: input.Rating, Comment: embeddedSecretPattern.ReplaceAllString(input.Comment, `${1}${2}${3}[REDACTED]`), CreatedAt: s.now().UTC()}
+	err := s.db.QueryRowContext(s.operationContext(), `insert into model_broker_feedback(id, request_id, rating, comment, created_at) values($1,$2,$3,$4,$5) returning id, request_id, rating, comment, created_at`, feedback.ID, feedback.RequestID, feedback.Rating, feedback.Comment, feedback.CreatedAt).Scan(&feedback.ID, &feedback.RequestID, &feedback.Rating, &feedback.Comment, &feedback.CreatedAt)
+	return feedback, mapPgErr(err)
+}
+
+func (s *PostgresStore) ListModelBrokerFeedback(limit int) ([]ModelBrokerFeedback, error) {
+	if limit < 1 || limit > 200 {
+		return nil, ErrInvalid
+	}
+	rows, err := s.db.QueryContext(s.operationContext(), `select id, request_id, rating, comment, created_at from model_broker_feedback order by created_at desc, id desc limit $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ModelBrokerFeedback{}
+	for rows.Next() {
+		var feedback ModelBrokerFeedback
+		if err := rows.Scan(&feedback.ID, &feedback.RequestID, &feedback.Rating, &feedback.Comment, &feedback.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, feedback)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error) {

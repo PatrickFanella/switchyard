@@ -99,6 +99,32 @@ func TestRetentionMigrationDeclaresPartialIndexes(t *testing.T) {
 	}
 }
 
+func TestModelBrokerFeedbackMigrationDeclaresDurableFeedback(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/016_model_broker_feedback.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"create table if not exists model_broker_feedback", "references model_broker_requests", "rating between -1 and 1", "model_broker_feedback_request_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("feedback migration missing %q", field)
+		}
+	}
+}
+
+func TestWorkflowDefinitionVersionMigrationDeclaresHistory(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/017_workflow_definition_versions.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"add column if not exists version", "create table if not exists workflow_definition_versions", "primary key(id, version)", "on conflict(id, version) do nothing"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("workflow version migration missing %q", field)
+		}
+	}
+}
+
 func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/006_open_pilot_state.sql")
 	if err != nil {

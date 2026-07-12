@@ -25,6 +25,9 @@ type Store interface {
 	UpsertWorkflowDefinition(WorkflowDefinition) (WorkflowDefinition, error)
 	WorkflowDefinition(string) (WorkflowDefinition, error)
 	ListWorkflowDefinitions() ([]WorkflowDefinition, error)
+	ListWorkflowDefinitionVersions(string) ([]WorkflowDefinition, error)
+	ActivateWorkflowDefinition(string) (WorkflowDefinition, error)
+	RollbackWorkflowDefinition(string, int) (WorkflowDefinition, error)
 	UpsertWorkflow(Workflow) error
 	UpsertTrigger(Trigger) error
 	OpenPilotIssueState(repo, issue string) (OpenPilotIssueState, error)
@@ -71,21 +74,25 @@ type Store interface {
 	ListModelBrokerRequestsContext(context.Context, ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error)
 	ModelBrokerRequest(string) (ModelBrokerRequest, error)
 	ModelBrokerRequestContext(context.Context, string) (ModelBrokerRequest, error)
+	AddModelBrokerFeedback(CreateModelBrokerFeedbackInput) (ModelBrokerFeedback, error)
+	ListModelBrokerFeedback(int) ([]ModelBrokerFeedback, error)
 	PruneRetention(time.Time) (RetentionResult, error)
 }
 
 type MemoryStore struct {
-	mu                   sync.RWMutex
-	now                  func() time.Time
-	workflowDefinitions  map[string]WorkflowDefinition
-	workflows            map[string]Workflow
-	triggers             map[string]Trigger
-	openPilotIssueStates map[string]OpenPilotIssueState
-	runs                 map[string]Run
-	steps                map[string]RunStep
-	events               map[string][]RunEvent
-	artifacts            map[string][]Artifact
-	modelBrokerRequests  map[string]ModelBrokerRequest
+	mu                         sync.RWMutex
+	now                        func() time.Time
+	workflowDefinitions        map[string]WorkflowDefinition
+	workflowDefinitionVersions map[string]map[int]WorkflowDefinition
+	workflows                  map[string]Workflow
+	triggers                   map[string]Trigger
+	openPilotIssueStates       map[string]OpenPilotIssueState
+	runs                       map[string]Run
+	steps                      map[string]RunStep
+	events                     map[string][]RunEvent
+	artifacts                  map[string][]Artifact
+	modelBrokerRequests        map[string]ModelBrokerRequest
+	modelBrokerFeedback        []ModelBrokerFeedback
 }
 
 func NewStore(now func() time.Time) *MemoryStore {
@@ -93,16 +100,18 @@ func NewStore(now func() time.Time) *MemoryStore {
 		now = time.Now
 	}
 	return &MemoryStore{
-		now:                  now,
-		workflowDefinitions:  map[string]WorkflowDefinition{},
-		workflows:            map[string]Workflow{},
-		triggers:             map[string]Trigger{},
-		openPilotIssueStates: map[string]OpenPilotIssueState{},
-		runs:                 map[string]Run{},
-		steps:                map[string]RunStep{},
-		events:               map[string][]RunEvent{},
-		artifacts:            map[string][]Artifact{},
-		modelBrokerRequests:  map[string]ModelBrokerRequest{},
+		now:                        now,
+		workflowDefinitions:        map[string]WorkflowDefinition{},
+		workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{},
+		workflows:                  map[string]Workflow{},
+		triggers:                   map[string]Trigger{},
+		openPilotIssueStates:       map[string]OpenPilotIssueState{},
+		runs:                       map[string]Run{},
+		steps:                      map[string]RunStep{},
+		events:                     map[string][]RunEvent{},
+		artifacts:                  map[string][]Artifact{},
+		modelBrokerRequests:        map[string]ModelBrokerRequest{},
+		modelBrokerFeedback:        []ModelBrokerFeedback{},
 	}
 }
 
@@ -138,12 +147,67 @@ func (s *MemoryStore) UpsertWorkflowDefinition(definition WorkflowDefinition) (W
 	now := s.now().UTC()
 	if existing, ok := s.workflowDefinitions[definition.ID]; ok {
 		definition.CreatedAt = existing.CreatedAt
+		definition.Version = existing.Version + 1
 	} else {
 		definition.CreatedAt = now
+		definition.Version = 1
 	}
 	definition.UpdatedAt = now
 	s.workflowDefinitions[definition.ID] = cloneWorkflowDefinition(definition)
+	if s.workflowDefinitionVersions[definition.ID] == nil {
+		s.workflowDefinitionVersions[definition.ID] = map[int]WorkflowDefinition{}
+	}
+	s.workflowDefinitionVersions[definition.ID][definition.Version] = cloneWorkflowDefinition(definition)
 	return cloneWorkflowDefinition(definition), nil
+}
+
+func (s *MemoryStore) ListWorkflowDefinitionVersions(id string) ([]WorkflowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	versions, ok := s.workflowDefinitionVersions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]WorkflowDefinition, 0, len(versions))
+	for _, definition := range versions {
+		out = append(out, cloneWorkflowDefinition(definition))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version > out[j].Version })
+	return out, nil
+}
+
+func (s *MemoryStore) ActivateWorkflowDefinition(id string) (WorkflowDefinition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	definition, ok := s.workflowDefinitions[id]
+	if !ok {
+		return WorkflowDefinition{}, ErrNotFound
+	}
+	definition.Status = "active"
+	definition.UpdatedAt = s.now().UTC()
+	s.workflowDefinitions[id] = definition
+	s.workflowDefinitionVersions[id][definition.Version] = definition
+	return cloneWorkflowDefinition(definition), nil
+}
+
+func (s *MemoryStore) RollbackWorkflowDefinition(id string, version int) (WorkflowDefinition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.workflowDefinitions[id]
+	if !ok {
+		return WorkflowDefinition{}, ErrNotFound
+	}
+	target, ok := s.workflowDefinitionVersions[id][version]
+	if !ok {
+		return WorkflowDefinition{}, ErrNotFound
+	}
+	target.Version = current.Version + 1
+	target.Status = "active"
+	target.CreatedAt = current.CreatedAt
+	target.UpdatedAt = s.now().UTC()
+	s.workflowDefinitions[id] = cloneWorkflowDefinition(target)
+	s.workflowDefinitionVersions[id][target.Version] = cloneWorkflowDefinition(target)
+	return cloneWorkflowDefinition(target), nil
 }
 
 func (s *MemoryStore) WorkflowDefinition(id string) (WorkflowDefinition, error) {
@@ -748,14 +812,19 @@ func validateArtifactInput(input CreateArtifactInput) error {
 	if input.RunID == "" || input.Name == "" || input.Kind == "" || input.URI == "" || len(input.Name) > 256 || len(input.Kind) > 64 {
 		return ErrInvalid
 	}
-	maxBytes := 1 << 20
-	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_MAX_ARTIFACT_BYTES"))); err == nil && parsed >= 1024 && parsed <= 16<<20 {
-		maxBytes = parsed
-	}
+	maxBytes := artifactMaxBytes()
 	if len(input.URI) > maxBytes {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func artifactMaxBytes() int {
+	maxBytes := 1 << 20
+	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_MAX_ARTIFACT_BYTES"))); err == nil && parsed >= 1024 && parsed <= 16<<20 {
+		maxBytes = parsed
+	}
+	return maxBytes
 }
 
 func (s *MemoryStore) ListRuns() []Run {
@@ -982,6 +1051,32 @@ func (s *MemoryStore) ModelBrokerRequestContext(_ context.Context, id string) (M
 	return s.ModelBrokerRequest(id)
 }
 
+func (s *MemoryStore) AddModelBrokerFeedback(input CreateModelBrokerFeedbackInput) (ModelBrokerFeedback, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(input.RequestID) == "" || input.Rating < -1 || input.Rating > 1 || len(input.Comment) > 4096 {
+		return ModelBrokerFeedback{}, ErrInvalid
+	}
+	if _, ok := s.modelBrokerRequests[input.RequestID]; !ok {
+		return ModelBrokerFeedback{}, ErrNotFound
+	}
+	feedback := ModelBrokerFeedback{ID: newID("feedback"), RequestID: input.RequestID, Rating: input.Rating, Comment: embeddedSecretPattern.ReplaceAllString(input.Comment, `${1}${2}${3}[REDACTED]`), CreatedAt: s.now().UTC()}
+	s.modelBrokerFeedback = append(s.modelBrokerFeedback, feedback)
+	return feedback, nil
+}
+
+func (s *MemoryStore) ListModelBrokerFeedback(limit int) ([]ModelBrokerFeedback, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit < 1 || limit > 200 {
+		return nil, ErrInvalid
+	}
+	start := max(0, len(s.modelBrokerFeedback)-limit)
+	out := append([]ModelBrokerFeedback(nil), s.modelBrokerFeedback[start:]...)
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1005,6 +1100,13 @@ func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) 
 			continue
 		}
 		delete(s.modelBrokerRequests, id)
+		keptFeedback := s.modelBrokerFeedback[:0]
+		for _, feedback := range s.modelBrokerFeedback {
+			if feedback.RequestID != id {
+				keptFeedback = append(keptFeedback, feedback)
+			}
+		}
+		s.modelBrokerFeedback = keptFeedback
 		result.ModelRequests++
 	}
 	return result, nil
@@ -1052,6 +1154,9 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinit
 	if definition.Status == "" {
 		definition.Status = "draft"
 	}
+	if definition.Status != "draft" && definition.Status != "active" {
+		return WorkflowDefinition{}, ErrInvalid
+	}
 	if definition.Owns == nil {
 		definition.Owns = []string{}
 	}
@@ -1064,6 +1169,8 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinit
 	if definition.Pipeline.WorkflowID != definition.ID {
 		return WorkflowDefinition{}, ErrInvalid
 	}
+	seenIDs := map[string]bool{}
+	seenPositions := map[int]bool{}
 	for i := range definition.Pipeline.Steps {
 		step := &definition.Pipeline.Steps[i]
 		step.ID = strings.TrimSpace(step.ID)
@@ -1071,7 +1178,14 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinit
 		step.Executor = strings.TrimSpace(step.Executor)
 		step.Profile = strings.TrimSpace(step.Profile)
 		step.Model = strings.TrimSpace(step.Model)
-		if step.ID == "" || step.Position < 1 || step.Name == "" || step.Executor == "" {
+		if step.ID == "" || step.Position < 1 || step.Name == "" || step.Executor == "" || seenIDs[step.ID] || seenPositions[step.Position] {
+			return WorkflowDefinition{}, ErrInvalid
+		}
+		seenIDs[step.ID] = true
+		seenPositions[step.Position] = true
+	}
+	for position := 1; position <= len(definition.Pipeline.Steps); position++ {
+		if !seenPositions[position] {
 			return WorkflowDefinition{}, ErrInvalid
 		}
 	}

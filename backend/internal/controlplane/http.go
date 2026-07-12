@@ -140,6 +140,9 @@ func (a *API) routes() http.Handler {
 	mux.HandleFunc("GET /api/workflow-definitions", a.workflowDefinitions)
 	mux.HandleFunc("GET /api/workflow-definitions/{id}", a.workflowDefinitionAction)
 	mux.HandleFunc("PUT /api/workflow-definitions/{id}", a.workflowDefinitionAction)
+	mux.HandleFunc("GET /api/workflow-definitions/{id}/versions", a.workflowDefinitionVersions)
+	mux.HandleFunc("POST /api/workflow-definitions/{id}/activate", a.activateWorkflowDefinition)
+	mux.HandleFunc("POST /api/workflow-definitions/{id}/rollback", a.rollbackWorkflowDefinition)
 	mux.HandleFunc("GET /api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
@@ -453,6 +456,82 @@ func (a *API) getWorkflowDefinition(w http.ResponseWriter, r *http.Request, id s
 	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": definition})
 }
 
+func (a *API) workflowDefinitionVersions(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	versions, err := a.store.ListWorkflowDefinitionVersions(id)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_definitions": versions})
+}
+
+func (a *API) activateWorkflowDefinition(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	definition, err := a.store.WorkflowDefinition(id)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	if err := validateWorkflowDefinitionForActivation(definition); err != nil {
+		writeControlError(w, err)
+		return
+	}
+	activated, err := a.store.ActivateWorkflowDefinition(id)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	if err := a.store.UpsertWorkflow(workflowFromDefinition(activated)); err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": activated})
+}
+
+func (a *API) rollbackWorkflowDefinition(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	var input WorkflowDefinitionRollbackInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	versions, err := a.store.ListWorkflowDefinitionVersions(id)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	var target *WorkflowDefinition
+	for index := range versions {
+		if versions[index].Version == input.Version {
+			target = &versions[index]
+			break
+		}
+	}
+	if target == nil {
+		writeControlError(w, ErrNotFound)
+		return
+	}
+	if err := validateWorkflowDefinitionForActivation(*target); err != nil {
+		writeControlError(w, err)
+		return
+	}
+	rolledBack, err := a.store.RollbackWorkflowDefinition(id, input.Version)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	if err := a.store.UpsertWorkflow(workflowFromDefinition(rolledBack)); err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": rolledBack, "rolled_back_from_version": input.Version})
+}
+
+func workflowFromDefinition(definition WorkflowDefinition) Workflow {
+	return Workflow{ID: definition.ID, Kind: WorkflowKind(definition.ID), Name: definition.Name, Description: definition.Description, Owns: append([]string(nil), definition.Owns...), Uses: append([]string(nil), definition.Uses...), Status: definition.Status}
+}
+
 func (a *API) updateWorkflowDefinition(w http.ResponseWriter, r *http.Request, id string) {
 	var definition WorkflowDefinition
 	if err := json.NewDecoder(r.Body).Decode(&definition); err != nil {
@@ -478,6 +557,14 @@ func validateWorkflowDefinitionWrite(definition WorkflowDefinition) error {
 	if definition.Status != "" && !strings.EqualFold(definition.Status, "draft") {
 		return ErrInvalid
 	}
+	return validateWorkflowDefinitionStructure(definition, false)
+}
+
+func validateWorkflowDefinitionForActivation(definition WorkflowDefinition) error {
+	return validateWorkflowDefinitionStructure(definition, true)
+}
+
+func validateWorkflowDefinitionStructure(definition WorkflowDefinition, requireExecutable bool) error {
 	seenIDs := map[string]bool{}
 	seenPositions := map[int]bool{}
 	for _, step := range definition.Pipeline.Steps {
@@ -491,9 +578,39 @@ func validateWorkflowDefinitionWrite(definition WorkflowDefinition) error {
 		}
 		seenPositions[step.Position] = true
 		switch strings.TrimSpace(step.Executor) {
-		case "internal", "model", "command":
+		case "internal":
+		case "model":
+			if requireExecutable && strings.TrimSpace(firstNonEmpty(step.Inputs["prompt"], step.Inputs["template"])) == "" {
+				return ErrInvalid
+			}
+		case "command":
+			if requireExecutable && strings.TrimSpace(step.Inputs["command"]) == "" {
+				return ErrInvalid
+			}
 		case "http":
+			if requireExecutable && (strings.TrimSpace(step.Inputs["url"]) == "" || !strings.EqualFold(strings.TrimSpace(step.Inputs["allow_http"]), "true")) {
+				return ErrInvalid
+			}
+		default:
 			return ErrInvalid
+		}
+	}
+	for position := 1; position <= len(definition.Pipeline.Steps); position++ {
+		if !seenPositions[position] {
+			return ErrInvalid
+		}
+	}
+	if definition.InputShape.Type != "" && definition.InputShape.Type != "object" {
+		return ErrInvalid
+	}
+	for _, required := range definition.InputShape.Required {
+		if _, ok := definition.InputShape.Properties[required]; !ok {
+			return ErrInvalid
+		}
+	}
+	for _, property := range definition.InputShape.Properties {
+		switch property.Type {
+		case "string", "number", "integer", "boolean", "array", "object":
 		default:
 			return ErrInvalid
 		}
