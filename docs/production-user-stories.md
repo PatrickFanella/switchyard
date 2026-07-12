@@ -57,4 +57,4 @@ These stories define the release behavior behind the production remediation plan
 - Go binaries reproduce byte-for-byte; base images, OS packages, JavaScript packages, installers, and the SBOM generator are pinned.
 - OCI archives include SBOM and provenance attestations plus verified SHA-256 checksums.
 - OpenAPI route coverage, vulnerability scans, race tests, isolated Postgres tests, and authenticated container smoke tests are release gates.
-- Acceptance: every command in `docs/production-remediation-plan.md` under “Release acceptance evidence” passes.
+- Acceptance: every command in `docs/production-remediation-plan.md` under “Release acceptance evidence” passes, including the sustained API soak gate.

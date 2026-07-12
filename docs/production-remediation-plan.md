@@ -56,6 +56,7 @@ This plan tracks the release-readiness audit remediation. Phases 0–5 have focu
 
 - `make verify`: formatting, static analysis, unit/integration tests, web tests/build, Compose validation, and byte-for-byte Go rebuild comparison.
 - `make api-race`: lifecycle, cancellation, worker, scheduler, and API tests with the race detector.
+- `make api-soak`: sustained concurrent authenticated API, readiness, metrics, process-survival, and graceful-shutdown checks (30 seconds by default; configurable for longer release qualification).
 - `make postgres-test`: migrations and persistence behavior against an isolated pinned Postgres instance.
 - `make security-audit`: Go vulnerability scan plus high-severity web and OpenCode dependency audits.
 - `make docker-smoke`: isolated authenticated API, readiness, ingress-boundary, model-list, and graceful-shutdown checks.

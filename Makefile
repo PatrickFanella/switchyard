@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config open-pilot-check api-run api-build cli-build api-test api-race postgres-test security-audit docker-build docker-smoke api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config open-pilot-check api-run api-build cli-build api-test api-race api-soak postgres-test security-audit docker-build docker-smoke api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -30,6 +30,9 @@ api-test: ## Run Switchyard backend tests
 
 api-race: ## Run backend tests under the race detector
 	cd backend && go test -race ./...
+
+api-soak: ## Exercise sustained concurrent authenticated API traffic and graceful shutdown
+	./scripts/test-api-soak.sh
 
 postgres-test: ## Run integration tests against an isolated pinned Postgres container
 	./scripts/test-postgres.sh
@@ -126,4 +129,4 @@ reproducible-build-check: ## Build Go binaries twice and compare bytes
 	CGO_ENABLED=0 go build -trimpath -ldflags='-buildid=' -o "$$tmp/cli-2" ./cmd/switchyard; \
 	cmp "$$tmp/api-1" "$$tmp/api-2"; cmp "$$tmp/cli-1" "$$tmp/cli-2"
 
-verify-production: verify api-race postgres-test security-audit docker-smoke release-verify ## Run all production release gates
+verify-production: verify api-race api-soak postgres-test security-audit docker-smoke release-verify ## Run all production release gates

@@ -34,6 +34,8 @@ make verify-production # run database, race, security, image, smoke, and release
 
 Production releases are pinned OCI archives with BuildKit SBOM and provenance attestations. `make release-verify` writes and verifies `release/SHA256SUMS`; generated release artifacts remain outside git. Runtime logs are newline-delimited JSON with credential-shaped values redacted. `GET /metrics` exports Prometheus-format workflow, model-request, queue, latency, and worker metrics.
 
+`make api-soak` runs a 30-second concurrent authenticated API soak by default. Increase `SWITCHYARD_SOAK_DURATION`, `SWITCHYARD_SOAK_CLIENTS`, and `SWITCHYARD_SOAK_MIN_REQUESTS` for extended release qualification.
+
 Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.
 
 Docker port defaults are configurable through `.env` or inline variables:
