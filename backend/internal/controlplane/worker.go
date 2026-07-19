@@ -165,7 +165,20 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 	defer stopHeartbeat()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			_, _ = p.store.FinishClaimedRun(run.ID, workerID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
+			finished, finishErr := p.store.FinishClaimedRun(run.ID, workerID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
+			if finishErr == nil && finished.AttemptCount < finished.MaxAttempts {
+				backoff := runRetryBackoff(finished.AttemptCount)
+				if _, retryErr := p.store.RequeueFailedRun(finished.ID, p.now().UTC().Add(backoff), fmt.Sprintf("Retry %d/%d scheduled after worker panic", finished.AttemptCount+1, finished.MaxAttempts)); retryErr == nil {
+					p.mu.Lock()
+					p.active--
+					p.mu.Unlock()
+					return
+				} else {
+					p.recordError(retryErr)
+				}
+			} else if finishErr != nil {
+				p.recordError(finishErr)
+			}
 			p.mu.Lock()
 			p.failedRuns++
 			p.active--

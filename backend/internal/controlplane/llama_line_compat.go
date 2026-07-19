@@ -37,20 +37,26 @@ func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
 		status.InFlightRequestIDs = inFlightIDs
 		status.ActiveRequest = true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            status.Status,
-		"backend":           "switchyard-native",
-		"queue_depth":       len(queued),
-		"max_depth":         status.MaxDepth,
-		"active_request":    len(inflight) > 0 || status.ActiveRequest,
-		"connected_clients": status.ConnectedClients,
-		"in_flight_ids":     status.InFlightRequestIDs,
-		"queue":             queued,
-		"inflight":          inflight,
-		"upstreams":         status.Upstreams,
-		"checked_at":        status.CheckedAt,
-		"error":             status.Error,
-	})
+	body := map[string]any{
+		"status":                status.Status,
+		"backend":               "switchyard-native",
+		"effective_selector":    status.EffectiveSelector,
+		"compatibility_warning": status.CompatibilityWarning,
+		"queue_depth":           len(queued),
+		"max_depth":             status.MaxDepth,
+		"active_request":        len(inflight) > 0 || status.ActiveRequest,
+		"connected_clients":     status.ConnectedClients,
+		"in_flight_ids":         status.InFlightRequestIDs,
+		"queue":                 queued,
+		"inflight":              inflight,
+		"upstreams":             status.Upstreams,
+		"checked_at":            status.CheckedAt,
+		"error":                 status.Error,
+	}
+	if status.ConfiguredSelector != "" {
+		body["configured_selector"] = status.ConfiguredSelector
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (a *API) llamaLineCompatChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +110,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
+	setDeprecatedBackendHeaders(w.Header(), resolveModelExecutionRoute(model, strings.TrimSpace(broker.ollamaBaseURL) != ""))
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -116,7 +123,10 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 
 	var streamed strings.Builder
 	var correlation map[string]string
-	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID}, func(event ModelStreamEvent) error {
+	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := a.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(requestID, decision.CorrelationIDs())
+		return mergeErr
+	}}, func(event ModelStreamEvent) error {
 		if event.CorrelationIDs != nil {
 			correlation = event.CorrelationIDs
 		}
@@ -130,7 +140,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	})
 	if err != nil {
 		spanErr = err
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
 		writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		return
@@ -273,10 +283,14 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
-	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID})
+	setDeprecatedBackendHeaders(w.Header(), resolveModelExecutionRoute(model, strings.TrimSpace(broker.ollamaBaseURL) != ""))
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := a.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(requestID, decision.CorrelationIDs())
+		return mergeErr
+	}})
 	if err != nil {
 		spanErr = err
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
 		w.Header().Set("X-OCQ-Status", "failed")
 		writeError(w, http.StatusBadGateway, err.Error())
 		return ModelResponse{}, false
@@ -392,6 +406,14 @@ func setCompatRequestHeaders(header http.Header, requestID string, correlation m
 	if sessionID := firstNonEmpty(correlation["ocq_session_id"], correlation["opencode_session_id"]); sessionID != "" {
 		header.Set("X-OCQ-Session", sessionID)
 	}
+}
+
+func setDeprecatedBackendHeaders(header http.Header, decision BackendDecision) {
+	if decision.DeprecatedBackend == "" {
+		return
+	}
+	header.Set("X-Switchyard-Backend", decision.DeprecatedBackend)
+	header.Set("X-Switchyard-Compatibility-Warning", decision.CompatibilityWarning)
 }
 
 func writeCompatSSE(w http.ResponseWriter, event string, payload map[string]any) {
@@ -759,15 +781,26 @@ func (a *API) llamaLineCompatUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) llamaLineCompatConfig(w http.ResponseWriter, r *http.Request) {
+	broker := resolveModelBrokerBackend("", strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "")
+	executor := resolveOpenCodeExecutorBackend()
+	configuredBrokerSelector := strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND"))
+	configuredExecutorSelector := strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_BACKEND"))
+	brokerSelector := effectiveModelBrokerSelector(broker.ConfiguredSelector)
+	executorSelector := effectiveOpenCodeExecutorSelector(executor.ConfiguredSelector)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":                    "switchyard-native",
-		"llama_line_port":            firstNonEmpty(os.Getenv("LLAMA_LINE_PORT"), "11434"),
-		"ollama_base_url_configured": strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "",
-		"opencode_server_url":        firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
-		"model_broker_timeout":       modelBrokerTimeout().String(),
-		"ollama_model_prefixes":      strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes"), ","),
-		"max_depth":                  a.compatBroker.maxDepth,
-		"durable_history":            true,
+		"backend":                               "switchyard-native",
+		"llama_line_port":                       firstNonEmpty(os.Getenv("LLAMA_LINE_PORT"), "11434"),
+		"ollama_base_url_configured":            strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "",
+		"opencode_server_url":                   firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
+		"model_broker_timeout":                  modelBrokerTimeout().String(),
+		"ollama_model_prefixes":                 strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes"), ","),
+		"max_depth":                             a.compatBroker.maxDepth,
+		"durable_history":                       true,
+		"model_broker_selector":                 brokerSelector,
+		"opencode_executor_selector":            executorSelector,
+		"model_broker_configured_selector":      configuredBrokerSelector,
+		"opencode_executor_configured_selector": configuredExecutorSelector,
+		"compatibility_warning":                 firstNonEmpty(broker.CompatibilityWarning, executor.CompatibilityWarning),
 	})
 }
 

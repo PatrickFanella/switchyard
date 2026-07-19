@@ -6,7 +6,9 @@ Switchyard owns the native model-broker runtime and exposes llama-line/Ollama/Op
 
 - Local host: `http://127.0.0.1:11434`
 - LAN clients: `http://10.0.0.50:11434`
-- Compose-internal API: `http://api:8080`
+- Authenticated control API: `http://127.0.0.1:18080` (host) or `http://api:8080` (Compose)
+
+The model base URLs serve only model-compatible routes and `/broker/status`. Use the authenticated control API for durable history, search, logs, configuration, queue/inflight administration, and OCQ compatibility administration.
 
 ## Ollama-compatible endpoints
 
@@ -33,6 +35,8 @@ For non-streaming `/v1/chat/completions`, Ollama native `message.tool_calls` are
 Switchyard rejects llama-line/OpenAI-compatible chat completions that contain no assistant content and no `message.tool_calls`. Tool-call-only responses are valid and are preserved as `ModelResponse.ToolCalls` internally and as OpenAI-compatible `message.tool_calls` externally. Streaming OpenAI error payloads are terminal errors; streaming tool-call-only payloads should use the non-streaming tool path so structured calls are not silently accepted as empty content.
 
 ## Compatibility and admin endpoints
+
+`GET /broker/status` is available on model ingress. Every other endpoint in this section is restricted to the authenticated control listener.
 
 - `GET /broker/status`
 - `GET /api/history`
@@ -62,6 +66,16 @@ Switchyard rejects llama-line/OpenAI-compatible chat completions that contain no
 - `X-OCQ-Request-ID`
 - `X-OCQ-Session`
 - `X-OCQ-Streaming-Mode`
+- `X-Switchyard-Backend` (deprecated external generation routes only)
+- `X-Switchyard-Compatibility-Warning` (deprecated external generation routes only)
+
+## Compatibility lifecycle
+
+Compatibility ingress remains supported: existing llama-line/Ollama/OpenAI client endpoints continue to be served by Switchyard. The external selectors `MODEL_BROKER_BACKEND=llama-line` and `OPENCODE_EXECUTOR_BACKEND=ocq` are deprecated cutover choices; native routing remains the default and Ollama routing remains supported.
+
+When a synchronous generation request selects a deprecated external route (`llama-line`, or nested `ocq` through the native broker), Switchyard sets `X-Switchyard-Backend` to that route and `X-Switchyard-Compatibility-Warning: deprecated-external-backend` before JSON or SSE response commitment, including upstream errors. Native, Ollama, and non-generation routes do not receive either header. Durable records use only `switchyard.backend`, `switchyard.deprecated_backend`, and `switchyard.compatibility_warning` for this decision; workflow attempts emit `compatibility.deprecated_backend_attempted`. `/broker/status` exposes `effective_selector` and optional raw `configured_selector`; `/api/config` exposes effective broker/executor selectors and optional raw configured values. Blank or unknown selectors resolve to `native`, and warnings appear only for deprecated llama-line or nested OCQ selection.
+
+Selectors will not be removed before v1.0. Removal requires migration documentation, at least 90 days, and two consecutive releases with zero observed deprecated-backend correlations/events; it may then occur in v1.0 or a later major release. This policy does not remove supported ingress. External Changemaker adapter probes are migration visibility only and do not select the native Changemaker pipeline.
 
 ## Client identity and priority
 

@@ -28,5 +28,6 @@ docker logs "$name" 2>&1 | grep -q 'PostgreSQL init process complete'
 docker exec "$name" pg_isready --username switchyard_test --dbname switchyard_test >/dev/null
 
 export SWITCHYARD_TEST_DATABASE_URL="host=127.0.0.1 port=$port user=switchyard_test password=$password dbname=switchyard_test sslmode=disable"
+export SWITCHYARD_TEST_POSTGRES_ISOLATED=1
 cd backend
-go test ./internal/controlplane -run 'TestPostgresStore.*Integration' -count=1
+go test ./internal/controlplane -v -run 'TestPostgresStore.*Integration|TestStoreLifecycleContract/postgres' -count=1

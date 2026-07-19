@@ -117,6 +117,17 @@ func TestEnvOpenCodeExecutorKeepsClientRequestIDWhenOCQOmitsHeader(t *testing.T)
 	}
 }
 
+func TestEnvOpenCodeExecutorReturnsOCQCorrelationOnUpstreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "bad gateway", http.StatusBadGateway) }))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "ocq")
+	t.Setenv("OCQ_BASE_URL", server.URL)
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "test", Prompt: "work", RequestID: "failed-request"})
+	if err == nil || response.CorrelationIDs["ocq_request_id"] != "failed-request" || response.CorrelationIDs[controlplane.CorrelationDeprecatedBackend] != "ocq" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+}
+
 func TestEnvOpenCodeExecutorHonorsConfiguredTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(25 * time.Millisecond)

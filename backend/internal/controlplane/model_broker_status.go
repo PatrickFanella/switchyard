@@ -15,20 +15,23 @@ type ModelBrokerStatusProvider interface {
 }
 
 type ModelBrokerStatus struct {
-	ID                  string                      `json:"id"`
-	Status              string                      `json:"status"`
-	Configured          bool                        `json:"configured"`
-	Backend             string                      `json:"backend"`
-	TransitionalBackend string                      `json:"transitional_backend,omitempty"`
-	BaseURL             string                      `json:"base_url,omitempty"`
-	QueueDepth          int                         `json:"queue_depth"`
-	MaxDepth            int                         `json:"max_depth"`
-	ActiveRequest       bool                        `json:"active_request"`
-	ConnectedClients    int                         `json:"connected_clients"`
-	InFlightRequestIDs  []string                    `json:"in_flight_request_ids"`
-	Upstreams           []ModelBrokerStatusUpstream `json:"upstreams"`
-	CheckedAt           time.Time                   `json:"checked_at"`
-	Error               string                      `json:"error,omitempty"`
+	ID                   string                      `json:"id"`
+	Status               string                      `json:"status"`
+	Configured           bool                        `json:"configured"`
+	Backend              string                      `json:"backend"`
+	TransitionalBackend  string                      `json:"transitional_backend,omitempty"`
+	EffectiveSelector    string                      `json:"effective_selector"`
+	ConfiguredSelector   string                      `json:"configured_selector,omitempty"`
+	CompatibilityWarning string                      `json:"compatibility_warning,omitempty"`
+	BaseURL              string                      `json:"base_url,omitempty"`
+	QueueDepth           int                         `json:"queue_depth"`
+	MaxDepth             int                         `json:"max_depth"`
+	ActiveRequest        bool                        `json:"active_request"`
+	ConnectedClients     int                         `json:"connected_clients"`
+	InFlightRequestIDs   []string                    `json:"in_flight_request_ids"`
+	Upstreams            []ModelBrokerStatusUpstream `json:"upstreams"`
+	CheckedAt            time.Time                   `json:"checked_at"`
+	Error                string                      `json:"error,omitempty"`
 }
 
 type ModelBrokerStatusUpstream struct {
@@ -42,24 +45,26 @@ type ModelBrokerStatusUpstream struct {
 }
 
 type EnvModelBrokerStatusProvider struct {
-	llamaLineBaseURL string
-	ollamaBaseURL    string
-	openCodeBaseURL  string
-	username         string
-	password         string
-	backend          string
-	client           *http.Client
+	llamaLineBaseURL   string
+	ollamaBaseURL      string
+	openCodeBaseURL    string
+	username           string
+	password           string
+	backend            string
+	configuredSelector string
+	client             *http.Client
 }
 
 func NewEnvModelBrokerStatusProvider() *EnvModelBrokerStatusProvider {
 	return &EnvModelBrokerStatusProvider{
-		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
-		ollamaBaseURL:    strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/"),
-		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
-		username:         os.Getenv("OPENCODE_SERVER_USERNAME"),
-		password:         os.Getenv("OPENCODE_SERVER_PASSWORD"),
-		backend:          firstNonEmpty(os.Getenv("MODEL_BROKER_BACKEND"), "native"),
-		client:           &http.Client{Timeout: 2 * time.Second},
+		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
+		ollamaBaseURL:      strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/"),
+		openCodeBaseURL:    strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		username:           os.Getenv("OPENCODE_SERVER_USERNAME"),
+		password:           os.Getenv("OPENCODE_SERVER_PASSWORD"),
+		backend:            effectiveModelBrokerSelector(os.Getenv("MODEL_BROKER_BACKEND")),
+		configuredSelector: strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND")),
+		client:             &http.Client{Timeout: 2 * time.Second},
 	}
 }
 
@@ -72,15 +77,18 @@ func (p *EnvModelBrokerStatusProvider) Status(ctx context.Context) ModelBrokerSt
 		return p.nativeStatus(ctx, now)
 	}
 	status := ModelBrokerStatus{
-		ID:                  "switchyard-model-broker",
-		Status:              "not_configured",
-		Configured:          strings.TrimSpace(p.llamaLineBaseURL) != "",
-		Backend:             "switchyard-model-broker",
-		TransitionalBackend: "llama-line",
-		BaseURL:             p.llamaLineBaseURL,
-		InFlightRequestIDs:  []string{},
-		Upstreams:           []ModelBrokerStatusUpstream{},
-		CheckedAt:           now,
+		ID:                   "switchyard-model-broker",
+		Status:               "not_configured",
+		Configured:           strings.TrimSpace(p.llamaLineBaseURL) != "",
+		Backend:              "switchyard-model-broker",
+		TransitionalBackend:  "llama-line",
+		EffectiveSelector:    "llama-line",
+		ConfiguredSelector:   p.configuredSelector,
+		CompatibilityWarning: "deprecated-external-backend",
+		BaseURL:              p.llamaLineBaseURL,
+		InFlightRequestIDs:   []string{},
+		Upstreams:            []ModelBrokerStatusUpstream{},
+		CheckedAt:            now,
 	}
 	if !status.Configured {
 		status.Error = "LLAMA_LINE_BASE_URL is not configured"
@@ -144,7 +152,7 @@ func (p *EnvModelBrokerStatusProvider) Status(ctx context.Context) ModelBrokerSt
 }
 
 func (p *EnvModelBrokerStatusProvider) ollamaStatus(ctx context.Context, now time.Time) ModelBrokerStatus {
-	status := ModelBrokerStatus{ID: "switchyard-model-broker", Status: "not_configured", Configured: strings.TrimSpace(p.ollamaBaseURL) != "", Backend: "switchyard-model-broker", BaseURL: p.ollamaBaseURL, InFlightRequestIDs: []string{}, Upstreams: []ModelBrokerStatusUpstream{}, CheckedAt: now}
+	status := ModelBrokerStatus{ID: "switchyard-model-broker", Status: "not_configured", Configured: strings.TrimSpace(p.ollamaBaseURL) != "", Backend: "switchyard-model-broker", EffectiveSelector: "ollama", ConfiguredSelector: p.configuredSelector, BaseURL: p.ollamaBaseURL, InFlightRequestIDs: []string{}, Upstreams: []ModelBrokerStatusUpstream{}, CheckedAt: now}
 	if !status.Configured {
 		status.Error = "OLLAMA_BASE_URL is not configured"
 		return status
@@ -180,7 +188,20 @@ func (p *EnvModelBrokerStatusProvider) ollamaStatus(ctx context.Context, now tim
 }
 
 func (p *EnvModelBrokerStatusProvider) nativeStatus(ctx context.Context, now time.Time) ModelBrokerStatus {
-	status := ModelBrokerStatus{ID: "switchyard-model-broker", Status: "not_configured", Configured: strings.TrimSpace(p.openCodeBaseURL) != "", Backend: "switchyard-model-broker", BaseURL: p.openCodeBaseURL, InFlightRequestIDs: []string{}, Upstreams: []ModelBrokerStatusUpstream{}, CheckedAt: now}
+	status := ModelBrokerStatus{ID: "switchyard-model-broker", Status: "not_configured", Configured: strings.TrimSpace(p.openCodeBaseURL) != "", Backend: "switchyard-model-broker", EffectiveSelector: "native", ConfiguredSelector: p.configuredSelector, BaseURL: p.openCodeBaseURL, InFlightRequestIDs: []string{}, Upstreams: []ModelBrokerStatusUpstream{}, CheckedAt: now}
+	if nested := resolveOpenCodeExecutorBackend(); nested.Backend == "ocq" {
+		status.TransitionalBackend = nested.Backend
+		status.EffectiveSelector = nested.Backend
+		status.CompatibilityWarning = nested.CompatibilityWarning
+		status.BaseURL = strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/")
+		status.Configured = status.BaseURL != ""
+		executorStatus := NewEnvOpenCodeExecutorStatusProvider().Status(ctx)
+		status.Status = executorStatus.Status
+		status.Error = executorStatus.Error
+		status.ConnectedClients = executorStatus.SessionCount
+		status.Upstreams = []ModelBrokerStatusUpstream{{Name: "ocq", URL: status.BaseURL, Status: executorStatus.Status}}
+		return status
+	}
 	if !status.Configured {
 		status.Error = "OPENCODE_SERVER_URL is not configured"
 		return status

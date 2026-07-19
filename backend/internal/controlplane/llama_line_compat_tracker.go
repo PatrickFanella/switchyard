@@ -198,13 +198,19 @@ func (t *llamaLineCompatTracker) runClaimedAsync(row ModelBrokerRequest) {
 	t.requests[id] = &llamaLineCompatTrackedRequest{ID: id, Model: model, Path: row.Path, Client: row.Client, Priority: row.ClientPriority, Status: ModelBrokerRequestRunning, CreatedAt: row.CreatedAt, StartedAt: now, UpdatedAt: now, Cancel: cancel}
 	t.mu.Unlock()
 	defer cancel()
-	response, err := NewEnvModelBroker().Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: id})
+	broker := NewEnvModelBroker()
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: id, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := t.store.MergeModelBrokerRequestCorrelationIDs(id, decision.CorrelationIDs())
+		return mergeErr
+	}})
 	if err != nil {
 		status := ModelBrokerRequestFailed
 		if errors.Is(err, context.Canceled) {
 			status = ModelBrokerRequestCanceled
 		}
-		t.finish(id, status, `{}`, err.Error(), map[string]string{"llama_line_request_id": id})
+		correlation := mergeStringMaps(response.CorrelationIDs, nil)
+		correlation["llama_line_request_id"] = id
+		t.finish(id, status, `{}`, err.Error(), correlation)
 		return
 	}
 	if response.CorrelationIDs == nil {
@@ -246,7 +252,23 @@ func (t *llamaLineCompatTracker) finish(id string, status string, responseBody s
 		item.UpdatedAt = time.Now().UTC()
 		delete(t.requests, id)
 	}
+	if existing, err := t.store.ModelBrokerRequest(id); err == nil {
+		correlation = mergeStringMaps(existing.CorrelationIDs, correlation)
+	}
 	_, _ = t.store.FinishModelBrokerRequest(id, FinishModelBrokerRequestInput{Status: status, ResponseBody: responseBody, Error: errorText, CorrelationIDs: correlation})
+}
+
+func mergeStringMaps(base, updates map[string]string) map[string]string {
+	merged := cloneMap(base)
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	for key, value := range updates {
+		if value != "" {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 func (t *llamaLineCompatTracker) snapshot(ctx context.Context) (queued []map[string]any, inflight []map[string]any) {

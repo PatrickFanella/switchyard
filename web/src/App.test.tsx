@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App, { openPilotStateFields } from './App';
+import { button, controlByLabel, expectText, jsonResponse, mockDashboardFetch, openPilotStateResponse, renderApp, unmount, waitFor } from './test-utils';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -13,109 +14,6 @@ afterEach(() => {
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
 });
-
-function mockDashboardFetch() {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    const payload = (() => {
-      if (url.includes('/api/workflow-definitions')) return { workflow_definitions: [] };
-      if (url.includes('/api/workflows')) return { workflows: [{ id: 'open-pilot', kind: 'open-pilot', name: 'Open Pilot', description: 'Open Pilot', owns: [], uses: [], status: 'seeded' }] };
-      if (url.includes('/api/triggers')) return { triggers: [{ id: 'trigger-1', workflow_id: 'open-pilot', type: 'manual', name: 'Open Pilot trigger', description: 'Trigger for cockpit tests', enabled: true }] };
-      if (url.endsWith('/api/runs')) {
-        return {
-          runs: [
-            { id: 'run-1', workflow_id: 'open-pilot', trigger_id: 'trigger-1', status: 'running', inputs: { repo: 'OWNER/REPO', issue: '123' }, created_at: '2026-06-17T00:00:00.000Z', started_at: '2026-06-17T00:01:00.000Z', summary: 'Open Pilot run 1' },
-          ],
-        };
-      }
-      if (url.includes('/api/runs/run-1')) {
-        return {
-          run: { id: 'run-1', workflow_id: 'open-pilot', trigger_id: 'trigger-1', status: 'running', inputs: { repo: 'OWNER/REPO', issue: '123' }, created_at: '2026-06-17T00:00:00.000Z', started_at: '2026-06-17T00:01:00.000Z', summary: 'Open Pilot run 1' },
-          steps: [
-            { id: 'step-1', run_id: 'run-1', position: 1, name: 'plan', executor: 'internal', status: 'succeeded', attempt_count: 1, output_summary: 'Planning complete', correlation_ids: { trace_id: 'trace-1', model_broker_request_id: 'req-1' }, created_at: '2026-06-17T00:01:00.000Z', started_at: '2026-06-17T00:01:02.000Z', finished_at: '2026-06-17T00:01:05.000Z' },
-            { id: 'step-2', run_id: 'run-1', position: 2, name: 'implement', executor: 'model', model: 'qwen3.5:latest', status: 'failed', attempt_count: 2, output_summary: 'Implementation stalled', error: 'model refused to continue', correlation_ids: { trace_id: 'trace-2', span_id: 'span-2', ocq_request_id: 'ocq-9' }, created_at: '2026-06-17T00:01:10.000Z', started_at: '2026-06-17T00:01:12.000Z', finished_at: '2026-06-17T00:01:20.000Z' },
-          ],
-          events: [
-            { id: 'event-1', run_id: 'run-1', type: 'run.started', message: 'Run started for cockpit testing', created_at: '2026-06-17T00:01:00.000Z' },
-            { id: 'event-2', run_id: 'run-1', type: 'artifact.created', message: 'artifact bundle.zip attached', created_at: '2026-06-17T00:01:30.000Z' },
-          ],
-          artifacts: [
-            { id: 'artifact-1', run_id: 'run-1', name: 'bundle.zip', kind: 'artifact', uri: 'https://example.test/bundle.zip', created_at: '2026-06-17T00:01:30.000Z' },
-            { id: 'artifact-2', run_id: 'run-1', name: 'trace.json', kind: 'evidence', uri: 'https://example.test/trace.json', created_at: '2026-06-17T00:01:40.000Z' },
-          ],
-        };
-      }
-      if (url.includes('/api/adapters')) {
-        return {
-          queues: [],
-          sessions: [],
-          logs: [],
-          prompts: [],
-          config: { environment: 'test', version: 'test', base_url: '', features: [], limits: {} },
-          agents: [],
-          skills: [],
-          health: { status: 'ok', services: [], checked_at: '2026-06-17T00:00:00.000Z' },
-          llama_line: { requests: [], stats: { active_requests: 0, queued_requests: 0, avg_latency_ms: 0, success_rate: 1 }, search: [], upstreams: [] },
-          ocq: { requests: [], logs: [], sessions: [], settings: { workspace: 'test', provider: 'test', retention_days: 0, cors_allowed: [] } },
-          blacktower: { tasks: [], reports: [], scheduler_health: { status: 'ok', next_run_at: '', last_tick_at: '', skew_seconds: 0 } },
-          changemaker: { posts: [], service: { name: 'test', status: 'ok', version: 'test', healthy: true, updated_at: '2026-06-17T00:00:00.000Z' }, run_control: { enabled: false, mode: 'manual', queued_runs: 0 } },
-        };
-      }
-      if (url.includes('/api/scheduler')) return { enabled: false, running: false, interval: 'disabled' };
-      if (url.includes('/api/workers')) return { enabled: false, running: false, workers: 0, active: 0 };
-      if (url.includes('/api/open-pilot/state?repo=OWNER%2FREPO&issue=123')) {
-        return {
-          state: {
-            id: 'open-pilot-state-1',
-            repo: 'OWNER/REPO',
-            issue: '123',
-            phase: 'paused',
-            branch: 'open-pilot/run-1',
-            base: 'main',
-            worktree_path: '/tmp/open-pilot/run-1',
-            pull_request_url: 'https://example.test/pr/1',
-            merge_commit_sha: 'abc123',
-            issue_closed: false,
-            gate_status: { review: 'pass', tests: 'blocked' },
-            repair_attempts: 1,
-            max_repair_attempts: 3,
-            last_error: 'Need another attempt',
-            updated_at: '2026-06-17T00:02:00.000Z',
-            created_at: '2026-06-17T00:01:00.000Z',
-          },
-          next_action: 'resume',
-        };
-      }
-      if (url.includes('/api/history/req-ok')) {
-        return { id: 'req-ok', status: 'completed', model: 'qwen3.5:latest', path: '/api/generate', client: 'test', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z', started_at: '2026-06-17T00:00:00.000Z', finished_at: '2026-06-17T00:00:01.000Z', correlation_ids: { trace_id: 'abc' } };
-      }
-      if (url.includes('/api/history')) {
-        return {
-          requests: [
-            { id: 'req-ok', status: 'completed', model: 'qwen3.5:latest', path: '/api/generate', client: 'test', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z', started_at: '2026-06-17T00:00:00.000Z', finished_at: '2026-06-17T00:00:01.000Z', correlation_ids: { trace_id: 'abc' } },
-            { id: 'req-fail', status: 'failed', model: 'qwen3.5:latest', path: '/api/chat', client: 'test', error: 'upstream unavailable', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z' },
-          ],
-        };
-      }
-      if (url.includes('/api/observability/model-broker')) {
-        return {
-          status: { status: 'healthy', configured: true, backend: 'switchyard-model-broker', queue_depth: 0, active_request: false, upstreams: [{ name: 'ollama', url: 'http://ollama', status: 'healthy' }] },
-          totals: { completed: 1, failed: 0 },
-          recent_requests: [{ id: 'req-1', status: 'completed', model: 'qwen3.5:latest', path: '/api/generate', client: 'test', duration_ms: 42, correlation_ids: { trace_id: 'abc' }, created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z' }],
-          recent_errors: [],
-          latency_ms: { count: 1, avg: 42, max: 42 },
-          checked_at: '2026-06-17T00:00:01.000Z',
-        };
-      }
-      return {};
-    })();
-
-    return {
-      ok: true,
-      json: async () => payload,
-    } as Response;
-  }));
-}
 
 describe('App', () => {
   it('renders the operator shell and overview hierarchy', () => {
@@ -145,8 +43,8 @@ describe('App', () => {
 
     await act(async () => {
       root.render(<App />);
-      await Promise.resolve();
     });
+    await waitFor(() => expectText(container, 'Degraded'), container);
 
     expect(container.textContent).toContain('Degraded');
     expect(container.textContent).toContain('api unavailable');
@@ -170,9 +68,7 @@ describe('App', () => {
       root.render(<App />);
     });
 
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await waitFor(() => expectText(container, 'Open cockpit'), container);
 
     const cockpitButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Open cockpit')) as HTMLButtonElement | undefined;
     expect(cockpitButton).toBeDefined();
@@ -209,9 +105,7 @@ describe('App', () => {
       root.render(<App />);
     });
 
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await waitFor(() => expectText(container, 'Resume Open Pilot'), container);
 
     expect(container.textContent).toContain('Run cockpit');
     expect(container.textContent).toContain('Open Pilot lifecycle');
@@ -246,9 +140,7 @@ describe('App', () => {
       root.render(<App />);
     });
 
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await waitFor(() => expectText(container, 'Queues'), container);
 
     const queuesButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Queues')) as HTMLButtonElement | undefined;
     expect(queuesButton).toBeDefined();
@@ -347,8 +239,8 @@ describe('App', () => {
         searchInput.dispatchEvent(new Event('input', { bubbles: true }));
         searchInput.dispatchEvent(new Event('change', { bubbles: true }));
       }
-      await Promise.resolve();
     });
+    await waitFor(() => expectText(container, 'trace.json'), container);
 
     expect(container.textContent).toContain('trace.json');
     expect(container.textContent).not.toContain('bundle.zip attached');
@@ -356,5 +248,109 @@ describe('App', () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it('dispatches Open Pilot with the entered repository and issue', async () => {
+    window.location.hash = '#/overview';
+    const fetch = mockDashboardFetch((url, init) => {
+      if (url.pathname === '/api/runs' && init.method === 'POST') {
+        return jsonResponse({ run: { id: 'run-1' } });
+      }
+      return undefined;
+    });
+    const { container, root } = await renderApp();
+    const repo = controlByLabel(container, 'Repo') as HTMLInputElement;
+    const issue = controlByLabel(container, 'Issue') as HTMLInputElement;
+
+    await act(async () => {
+      for (const [input, value] of [[repo, 'acme/widget'], [issue, '42']] as const) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    await act(async () => { button(container, 'Run now').click(); });
+    await waitFor(() => expect(window.location.hash).toBe('#/overview/runs/run-1'), container);
+
+    const call = fetch.mock.calls.find(([url, init]) => new URL(String(url), 'http://switchyard.test').pathname === '/api/runs' && (init as RequestInit | undefined)?.method === 'POST');
+    expect(call?.[1]?.body).toBe(JSON.stringify({ workflow_id: 'open-pilot', trigger_id: 'trigger-1', inputs: { repo: 'acme/widget', issue: '42' } }));
+    expect(window.location.hash).toBe('#/overview/runs/run-1');
+    await unmount(root);
+  });
+
+  it('retries a run and retains the selected run', async () => {
+    window.location.hash = '#/runs/run-1';
+    let retried = false;
+    const fetch = mockDashboardFetch((url, init) => {
+      if (retried && url.pathname === '/api/runs/run-1') return jsonResponse({ run: { id: 'run-1', workflow_id: 'open-pilot', trigger_id: 'trigger-1', status: 'succeeded', inputs: { repo: 'OWNER/REPO', issue: '123' }, created_at: '2026-06-17T00:00:00.000Z', summary: 'Open Pilot run 1' }, steps: [], events: [], artifacts: [] });
+      if (url.pathname === '/api/open-pilot/state') return jsonResponse(openPilotStateResponse({ phase: 'succeeded', gate_status: {}, resume_inputs: {} }, 'done'));
+      if (url.pathname === '/api/runs/run-1/retry' && init.method === 'POST') { retried = true; return jsonResponse({ run: { id: 'run-1', status: 'succeeded' } }); }
+      return undefined;
+    });
+    const { container, root } = await renderApp('Run cockpit');
+    await act(async () => { button(container, 'Retry run').click(); });
+    await waitFor(() => expectText(container, 'succeeded'), container);
+
+    expect(fetch.mock.calls.some(([url, init]) => new URL(String(url), 'http://switchyard.test').pathname === '/api/runs/run-1/retry' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true);
+    expect(window.location.hash).toBe('#/overview/runs/run-1');
+    await unmount(root);
+  });
+
+  it('cancels a run and retains the selected run', async () => {
+    window.location.hash = '#/runs/run-1';
+    let canceled = false;
+    const fetch = mockDashboardFetch((url, init) => {
+      if (url.pathname === '/api/runs/run-1/cancel' && init.method === 'POST') { canceled = true; return jsonResponse({ run: { id: 'run-1', status: 'canceled' } }); }
+      if (canceled && url.pathname === '/api/runs/run-1') return jsonResponse({ run: { id: 'run-1', workflow_id: 'open-pilot', trigger_id: 'trigger-1', status: 'canceled', inputs: { repo: 'OWNER/REPO', issue: '123' }, created_at: '2026-06-17T00:00:00.000Z', summary: 'Open Pilot run 1' }, steps: [], events: [], artifacts: [] });
+      return undefined;
+    });
+    const { container, root } = await renderApp('Run cockpit');
+    await act(async () => { button(container, 'Cancel run').click(); });
+    await waitFor(() => expectText(container, 'canceled'), container);
+
+    expect(fetch.mock.calls.some(([url, init]) => new URL(String(url), 'http://switchyard.test').pathname === '/api/runs/run-1/cancel' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true);
+    expect(window.location.hash).toBe('#/overview/runs/run-1');
+    await unmount(root);
+  });
+
+  it('resumes Open Pilot from the lifecycle action', async () => {
+    window.location.hash = '#/runs/run-1';
+    let resumed = false;
+    const fetch = mockDashboardFetch((url, init) => {
+      if (url.pathname === '/api/open-pilot/state/resume' && url.searchParams.get('repo') === 'OWNER/REPO' && url.searchParams.get('issue') === '123' && init.method === 'POST') {
+        resumed = true;
+        return jsonResponse({ run: { id: 'run-2' } });
+      }
+      if (resumed && (init.method ?? 'GET') === 'GET' && url.pathname === '/api/runs/run-2') return jsonResponse({ run: { id: 'run-2', workflow_id: 'open-pilot', trigger_id: 'trigger-1', status: 'running', inputs: { repo: 'OWNER/REPO', issue: '123' }, created_at: '2026-06-17T00:03:00.000Z', summary: 'Resumed Open Pilot run' }, steps: [], events: [], artifacts: [] });
+      if (resumed && (init.method ?? 'GET') === 'GET' && url.pathname === '/api/open-pilot/state' && url.searchParams.get('repo') === 'OWNER/REPO' && url.searchParams.get('issue') === '123') return jsonResponse(openPilotStateResponse({ id: 'open-pilot-state-2', phase: 'running', gate_status: {} }, 'monitor'));
+      return undefined;
+    });
+    const { container, root } = await renderApp('Run cockpit');
+    await act(async () => { button(container, 'Resume Open Pilot').click(); });
+    await waitFor(() => {
+      expectText(container, 'Resumed Open Pilot run');
+      expectText(container, 'Selected runrun-2');
+      expectText(container, 'monitor');
+    }, container);
+
+    expect(fetch.mock.calls.some(([url, init]) => {
+      const request = new URL(String(url), 'http://switchyard.test');
+      return request.pathname === '/api/open-pilot/state/resume' && request.searchParams.get('repo') === 'OWNER/REPO' && request.searchParams.get('issue') === '123' && (init as RequestInit | undefined)?.method === 'POST';
+    })).toBe(true);
+    await unmount(root);
+  });
+
+  it('keeps the selected run visible when a mutation fails', async () => {
+    window.location.hash = '#/runs/run-1';
+    mockDashboardFetch((url, init) => url.pathname === '/api/runs/run-1/cancel' && init.method === 'POST' ? jsonResponse({}, { status: 503 }) : undefined);
+    const { container, root } = await renderApp('Run cockpit');
+    await act(async () => { button(container, 'Cancel run').click(); });
+    await waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain('Switchyard API returned 503'), container);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Switchyard API returned 503');
+    expect(container.textContent).toContain('Open Pilot run 1');
+    expect(window.location.hash).toBe('#/runs/run-1');
+    await unmount(root);
   });
 });

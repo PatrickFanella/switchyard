@@ -54,6 +54,19 @@ type Runner struct {
 	active    map[string]context.CancelFunc
 }
 
+type preAttemptContextKey struct{}
+
+func withRunStepPreAttempt(ctx context.Context, store Store, runID, stepID string) context.Context {
+	return context.WithValue(ctx, preAttemptContextKey{}, PreAttemptCallback(func(decision BackendDecision) error {
+		return store.RecordRunStepBackendDecision(runID, stepID, decision)
+	}))
+}
+
+func preAttemptFromContext(ctx context.Context) PreAttemptCallback {
+	callback, _ := ctx.Value(preAttemptContextKey{}).(PreAttemptCallback)
+	return callback
+}
+
 func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	registry := ExecutorRegistry(NewEnvWorkflowExecutors(store))
 	if len(executors) > 0 && executors[0] != nil {
@@ -296,7 +309,7 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		var stepResult PipelineStepExecution
 		func() {
 			defer release()
-			stepResult, err = stepExecutor.ExecutePipelineStep(ctx, run, resolvedStep, state)
+			stepResult, err = stepExecutor.ExecutePipelineStep(withRunStepPreAttempt(ctx, r.store, run.ID, step.ID), run, resolvedStep, state)
 		}()
 		if stepResult.Inputs != nil {
 			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
@@ -359,7 +372,16 @@ func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error)
 			return existing, true, nil
 		case StepFailed, StepCanceled, StepTimedOut, StepPaused:
 			retried, err := r.store.RetryRunStep(existing.ID)
+			if err == nil && len(input.CorrelationIDs) > 0 {
+				retried, err = r.store.MergeRunStepCorrelationIDs(retried.ID, input.CorrelationIDs)
+			}
 			return retried, false, err
+		case StepRunning:
+			recovered, err := r.store.RecoverRunStep(existing.ID)
+			if err == nil && len(input.CorrelationIDs) > 0 {
+				recovered, err = r.store.MergeRunStepCorrelationIDs(recovered.ID, input.CorrelationIDs)
+			}
+			return recovered, false, err
 		case StepQueued:
 			return existing, false, nil
 		default:

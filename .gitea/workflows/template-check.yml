@@ -4,10 +4,39 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # CI-only Compose validation value; never use for a deployed database.
+      POSTGRES_PASSWORD: switchyard-ci-only-not-a-secret
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify baseline runner tool contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "Runner contract failure: $*" >&2; exit 1; }
+          command -v go >/dev/null || fail "Go 1.26.5 is required"
+          [ "$(go version | awk '{print $3}')" = "go1.26.5" ] || fail "expected Go 1.26.5; found $(go version)"
+          command -v node >/dev/null || fail "Node.js 24 is required"
+          [ "$(node -p 'process.versions.node.split(".")[0]')" = "24" ] || fail "expected Node.js major 24; found $(node --version)"
+          command -v corepack >/dev/null || fail "Corepack is required to provide pnpm 10.33.0"
+          corepack enable || fail "could not enable Corepack"
+          corepack prepare pnpm@10.33.0 --activate || fail "could not activate pnpm 10.33.0 with Corepack"
+          command -v pnpm >/dev/null || fail "pnpm 10.33.0 was not activated by Corepack"
+          [ "$(pnpm --version)" = "10.33.0" ] || fail "expected pnpm 10.33.0 via Corepack; found $(pnpm --version)"
+          command -v make >/dev/null || fail "Make is required"
+          make --version >/dev/null || fail "Make is not runnable"
+          command -v docker >/dev/null || fail "Docker Engine is required"
+          docker --version >/dev/null || fail "Docker Engine is not runnable"
+          docker compose version >/dev/null || fail "Docker Compose plugin is required"
       - name: Verify Switchyard baseline
-        run: make verify
+        run: |
+          make verify
+          git diff --exit-code -- ':(glob)backend/**/*.go'

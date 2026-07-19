@@ -14,6 +14,7 @@ id_ed25519
 .open-pilot/
 .opencode/
 opencode-data/
+.blacktower/deepwork/
 
 # Optional external Blacktower checkout and temporary reference services
 /blacktower/

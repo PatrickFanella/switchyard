@@ -88,14 +88,15 @@ func TestHandlePipelineStepFailureLogsPersistenceFailure(t *testing.T) {
 }
 
 func TestOpenPilotAgentWorkCorrelationProvidesAbortHandle(t *testing.T) {
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "")
 	run := Run{ID: "run-123", Inputs: map[string]string{"opencode_session_id": "ses-native"}}
 	step := PipelineStep{ID: "agent-work", Name: "open-pilot.agent-work", Executor: "opencode"}
 	correlation := (openPilotExecutor{}).PipelineStepCorrelationIDs(run, step, map[string]any{})
-	if correlation["opencode_executor"] != "switchyard" || correlation["opencode_executor_backend"] != "ocq" {
+	if correlation["opencode_request_id"] == "" || correlation["opencode_session_id"] != "ses-native" || correlation["ocq_request_id"] != "" {
 		t.Fatalf("correlation = %+v", correlation)
 	}
-	if correlation["ocq_request_id"] == "" || correlation["ocq_session_id"] != "ses-native" {
-		t.Fatalf("correlation = %+v", correlation)
+	if correlation[CorrelationDeprecatedBackend] != "" || correlation["opencode_executor_backend"] != "" {
+		t.Fatalf("planning must not claim an attempt: %+v", correlation)
 	}
 }
 

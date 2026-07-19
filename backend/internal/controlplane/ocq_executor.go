@@ -15,11 +15,12 @@ import (
 )
 
 type OpenCodeRequest struct {
-	Model     string
-	Prompt    string
-	SessionID string
-	RequestID string
-	WorkDir   string
+	Model      string
+	Prompt     string
+	SessionID  string
+	RequestID  string
+	WorkDir    string
+	PreAttempt PreAttemptCallback
 }
 
 type OpenCodeResponse struct {
@@ -49,7 +50,7 @@ type EnvOCQExecutor = EnvOpenCodeExecutor
 
 func NewEnvOpenCodeExecutor() *EnvOpenCodeExecutor {
 	baseURL := strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/")
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_BACKEND")), "ocq") {
+	if resolveOpenCodeExecutorBackend().Backend == "ocq" {
 		baseURL = strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/")
 	}
 	return &EnvOpenCodeExecutor{baseURL: baseURL, gatewayKey: os.Getenv("OCQ_GATEWAY_KEY"), username: os.Getenv("OPENCODE_SERVER_USERNAME"), password: os.Getenv("OPENCODE_SERVER_PASSWORD"), client: &http.Client{Timeout: openCodeExecutorTimeout()}}
@@ -90,19 +91,25 @@ func NewEnvOCQExecutor() *EnvOpenCodeExecutor {
 }
 
 func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_BACKEND")), "ocq") {
-		return e.sendPromptViaOCQ(ctx, request)
+	decision := resolveOpenCodeExecutorBackend()
+	var response OpenCodeResponse
+	var err error
+	if decision.Backend == "ocq" {
+		response, err = e.sendPromptViaOCQ(ctx, request)
+	} else {
+		response, err = e.sendPromptViaOpenCode(ctx, request)
 	}
-	return e.sendPromptViaOpenCode(ctx, request)
+	response.CorrelationIDs = mergeStringMaps(response.CorrelationIDs, decision.CorrelationIDs())
+	return response, err
 }
 
 func (e *EnvOpenCodeExecutor) sendPromptViaOCQ(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
 	if e.baseURL == "" {
-		return OpenCodeResponse{}, fmt.Errorf("OCQ_BASE_URL is not configured")
+		return OpenCodeResponse{CorrelationIDs: map[string]string{"ocq_request_id": request.RequestID}}, fmt.Errorf("OCQ_BASE_URL is not configured")
 	}
 	endpoint, err := url.JoinPath(e.baseURL, "/v1/chat/completions")
 	if err != nil {
-		return OpenCodeResponse{}, err
+		return OpenCodeResponse{RequestID: request.RequestID, CorrelationIDs: map[string]string{"ocq_request_id": request.RequestID}}, err
 	}
 	body := map[string]any{"model": request.Model, "stream": false, "messages": []map[string]string{{"role": "user", "content": request.Prompt}}}
 	if request.SessionID != "" {
@@ -126,13 +133,19 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOCQ(ctx context.Context, request Open
 	if e.gatewayKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.gatewayKey)
 	}
+	if request.PreAttempt != nil {
+		decision := resolveOpenCodeExecutorBackend()
+		if callbackErr := request.PreAttempt(decision); callbackErr != nil {
+			return OpenCodeResponse{RequestID: request.RequestID, CorrelationIDs: decision.CorrelationIDs()}, callbackErr
+		}
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return OpenCodeResponse{}, err
+		return OpenCodeResponse{RequestID: request.RequestID, CorrelationIDs: map[string]string{"ocq_request_id": request.RequestID}}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return OpenCodeResponse{}, fmt.Errorf("opencode request failed through ocq: %s", resp.Status)
+		return OpenCodeResponse{RequestID: request.RequestID, CorrelationIDs: map[string]string{"ocq_request_id": request.RequestID}}, fmt.Errorf("opencode request failed through ocq: %s", resp.Status)
 	}
 	var decoded struct {
 		OCQSessionID string `json:"ocq_session_id"`
@@ -170,12 +183,13 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 	sessionID := request.SessionID
 	if sessionID == "" {
 		createCtx, cancel := context.WithTimeout(ctx, openCodeSessionCreateTimeout())
-		created, err := e.createOpenCodeSession(createCtx, directory)
+		created, err := e.createOpenCodeSession(createCtx, directory, request.PreAttempt)
 		cancel()
 		if err != nil {
-			return OpenCodeResponse{}, err
+			return OpenCodeResponse{RequestID: request.RequestID, CorrelationIDs: map[string]string{"opencode_request_id": request.RequestID}}, err
 		}
 		sessionID = created
+		request.PreAttempt = nil
 	}
 	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
 	content, err := e.postOpenCodeMessage(messageCtx, sessionID, request)
@@ -184,7 +198,7 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
 			e.abortOpenCodeSession(context.Background(), sessionID)
 		}
-		return OpenCodeResponse{}, err
+		return OpenCodeResponse{SessionID: sessionID, RequestID: request.RequestID, CorrelationIDs: map[string]string{"opencode_session_id": sessionID, "opencode_request_id": request.RequestID}}, err
 	}
 	requestID := firstNonEmpty(request.RequestID, "opencode-"+shortRandomID())
 	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: map[string]string{"opencode_executor": "switchyard", "opencode_executor_backend": "native", "opencode_session_id": sessionID, "opencode_request_id": requestID}}, nil
@@ -213,7 +227,7 @@ func (e *EnvOpenCodeExecutor) abortOpenCodeSession(ctx context.Context, sessionI
 	defer resp.Body.Close()
 }
 
-func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directory string) (string, error) {
+func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directory string, preAttempt ...PreAttemptCallback) (string, error) {
 	endpoint, err := url.Parse(e.baseURL + "/session")
 	if err != nil {
 		return "", err
@@ -227,6 +241,12 @@ func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	e.applyOpenCodeAuth(req)
+	if len(preAttempt) > 0 && preAttempt[0] != nil {
+		decision := resolveOpenCodeExecutorBackend()
+		if err := preAttempt[0](decision); err != nil {
+			return "", err
+		}
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return "", err
@@ -270,6 +290,12 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 		req.Header.Set("X-Request-ID", request.RequestID)
 	}
 	e.applyOpenCodeAuth(req)
+	if request.PreAttempt != nil {
+		decision := resolveOpenCodeExecutorBackend()
+		if err := request.PreAttempt(decision); err != nil {
+			return "", err
+		}
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return "", err

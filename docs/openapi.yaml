@@ -5,11 +5,12 @@ info:
   description: >-
     Local control-plane API for workflows, runs, triggers, pipelines, workers,
     adapter status, and compatibility ingress. Switchyard also exposes
-    llama-line/Ollama-compatible cutover endpoints on LLAMA_LINE_PORT:
+    llama-line/Ollama-compatible model endpoints on LLAMA_LINE_PORT:
     /broker/status, /v1/chat/completions, /api/chat, /api/generate, /api/tags,
-    /v1/models, /api/embed, /v1/embeddings, admin queue/inflight endpoints,
-    and durable /api/history, /api/search, /api/logs, /api/config compatibility
-    surfaces. The compatibility ingress preserves llama-line/OCQ correlation
+    /v1/models, /api/embed, and /v1/embeddings. Admin queue/inflight and durable
+    history/search/log/config compatibility surfaces remain on the authenticated
+    control listener and are excluded from model ingress. Compatibility routes
+    preserve llama-line/OCQ correlation
     headers (`X-Request-ID`, `X-Llama-Line-Request-ID`, `X-OCQ-Request-ID`,
     `X-OCQ-Session` when available) and serves OpenAI streaming requests as
     native SSE chunks when upstream streaming is available, with buffered
@@ -59,15 +60,38 @@ paths:
           description: Broker status
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                $ref: "#/components/schemas/CompatBrokerStatus"
   /v1/chat/completions:
     post:
       summary: OpenAI-compatible chat completion
-      responses: { "200": { description: Completion or SSE stream }, "202": { description: Async request accepted } }
+      responses:
+        "200":
+          description: Completion or SSE stream
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
   /v1/completions:
     post:
       summary: OpenAI-compatible text completion
-      responses: { "200": { description: Completion }, "202": { description: Async request accepted } }
+      responses:
+        "200":
+          description: Completion
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
   /v1/embeddings:
     post:
       summary: OpenAI-compatible embeddings
@@ -79,11 +103,33 @@ paths:
   /api/chat:
     post:
       summary: Ollama-compatible chat
-      responses: { "200": { description: Chat response }, "202": { description: Async request accepted } }
+      responses:
+        "200":
+          description: Chat response
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
   /api/generate:
     post:
       summary: Ollama-compatible generation
-      responses: { "200": { description: Generation response }, "202": { description: Async request accepted } }
+      responses:
+        "200":
+          description: Generation response
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
   /api/embed:
     post:
       summary: Ollama-compatible embeddings alias
@@ -309,7 +355,14 @@ paths:
           description: Compatibility config
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                type: object
+                properties:
+                  model_broker_selector: { type: string, description: Effective selector; native when unset. }
+                  opencode_executor_selector: { type: string, description: Effective selector; native when unset. }
+                  model_broker_configured_selector: { type: string, description: Explicit MODEL_BROKER_BACKEND value, when configured. }
+                  opencode_executor_configured_selector: { type: string, description: Explicit OPENCODE_EXECUTOR_BACKEND value, when configured. }
+                  compatibility_warning: { type: string, description: Present only when a deprecated external selector is active. }
   /api/requests/{id}/result:
     get:
       summary: Poll a durable model broker request result
@@ -1043,6 +1096,9 @@ components:
         configured: { type: boolean }
         backend: { type: string }
         transitional_backend: { type: string }
+        effective_selector: { type: string, description: Effective request route; native when selectors are unset or unknown. }
+        configured_selector: { type: string }
+        compatibility_warning: { type: string, example: deprecated-external-backend }
         base_url: { type: string }
         queue_depth: { type: integer }
         max_depth: { type: integer }
@@ -1056,7 +1112,26 @@ components:
           items: { $ref: "#/components/schemas/ModelBrokerStatusUpstream" }
         checked_at: { type: string, format: date-time }
         error: { type: string }
-      required: [id, status, configured, backend, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+      required: [id, status, configured, backend, effective_selector, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+    CompatBrokerStatus:
+      type: object
+      properties:
+        status: { type: string }
+        backend: { type: string, enum: [switchyard-native] }
+        effective_selector: { type: string, description: Effective request route; native when selectors are unset or unknown. }
+        configured_selector: { type: string, description: Explicit MODEL_BROKER_BACKEND value when set. }
+        compatibility_warning: { type: string, example: deprecated-external-backend }
+        queue_depth: { type: integer }
+        max_depth: { type: integer }
+        active_request: { type: boolean }
+        connected_clients: { type: integer }
+        in_flight_ids: { type: array, items: { type: string } }
+        queue: { type: array, items: { type: object } }
+        inflight: { type: array, items: { type: object } }
+        upstreams: { type: array, items: { $ref: "#/components/schemas/ModelBrokerStatusUpstream" } }
+        checked_at: { type: string, format: date-time }
+        error: { type: string }
+      required: [status, backend, effective_selector, queue_depth, max_depth, active_request, connected_clients, in_flight_ids, queue, inflight, upstreams, checked_at]
     ModelBrokerStatusUpstream:
       type: object
       properties:
@@ -1076,6 +1151,8 @@ components:
         configured: { type: boolean }
         backend: { type: string }
         transitional_backend: { type: string }
+        configured_selector: { type: string }
+        compatibility_warning: { type: string, example: deprecated-external-backend }
         base_url: { type: string }
         healthy: { type: boolean }
         session_count: { type: integer }

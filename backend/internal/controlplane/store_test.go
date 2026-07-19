@@ -370,6 +370,39 @@ func TestStoreRedactsSecretsFromPersistedModelContent(t *testing.T) {
 	}
 }
 
+func TestStoreMergesModelBrokerAndStepCorrelations(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "merge-request", Model: "test", RequestBody: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MergeModelBrokerRequestCorrelationIDs(req.ID, map[string]string{"request_id": "initial", controlplane.CorrelationDeprecatedBackend: "ocq"}); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := store.FinishModelBrokerRequest(req.ID, controlplane.FinishModelBrokerRequestInput{CorrelationIDs: map[string]string{"ocq_session_id": "session"}})
+	if err != nil || finished.CorrelationIDs["request_id"] != "initial" || finished.CorrelationIDs["ocq_session_id"] != "session" {
+		t.Fatalf("finished=%+v err=%v", finished, err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "merge", Executor: "model", CorrelationIDs: map[string]string{"request_id": "initial"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartRunStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	finishedStep, err := store.FinishRunStep(step.ID, controlplane.StepSucceeded, "done", "", map[string]string{"ocq_session_id": "session"})
+	if err != nil || finishedStep.CorrelationIDs["request_id"] != "initial" || finishedStep.CorrelationIDs["ocq_session_id"] != "session" {
+		t.Fatalf("step=%+v err=%v", finishedStep, err)
+	}
+}
+
 func TestStoreRejectsOversizedArtifacts(t *testing.T) {
 	t.Setenv("SWITCHYARD_MAX_ARTIFACT_BYTES", "1024")
 	store := controlplane.NewStore(nil)
