@@ -6,6 +6,7 @@ This plan tracks the release-readiness audit remediation. Phases 0–5 have focu
 
 - `switchyard-check` runs `make verify` for every push and pull request. Its runner contract is Go `1.26.5`, Node.js major `24`, Corepack-provided pnpm `10.33.0`, Make, Docker Engine, and the Docker Compose plugin.
 - `switchyard-production-verify` runs `make verify-production` manually or weekly for release qualification. It requires the baseline contract plus Docker Buildx and a bootstrappable BuildKit builder.
+- Both workflows target the dedicated `switchyard-production` label. `deploy/runner/Dockerfile` pins its base job image and Go toolchain by digest; the runner configuration must reference the published image by immutable digest.
 
 Both workflows fail before Make when the runner contract does not match. After Make, they also fail if `gofmt` changed any checked-out Go source, so formatting cannot be silently repaired in CI. The production preflight performs a temporary OCI build using the exact pinned SBOM generator and `--provenance=mode=max` options from `make release-artifacts`, then removes its temporary output. CI sets only `POSTGRES_PASSWORD=switchyard-ci-only-not-a-secret` so clean-checkout Compose validation and test scripts can run; it is not a deployment credential. The workflows intentionally rely on the runner toolchain rather than unpinned setup actions.
 

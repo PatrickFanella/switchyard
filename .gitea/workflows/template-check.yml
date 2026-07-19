@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: switchyard-production
     timeout-minutes: 30
     env:
       # CI-only Compose validation value; never use for a deployed database.

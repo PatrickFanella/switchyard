@@ -1,11 +1,12 @@
 # deploy/
 
 ## Responsibility
-Installs the Docker Compose stack as a host-managed systemd service.
+Installs the Docker Compose stack as a host-managed systemd service and defines the pinned Gitea Actions job image used by Switchyard verification.
 
 ## Design
 - `switchyard.service` is a template with repository/user/group placeholders.
 - `install-systemd.sh` requires root, validates Docker/Compose inputs, renders atomically through a temporary file, and enables the unit.
+- `runner/Dockerfile` composes the digest-pinned Gitea runner image with the exact Go toolchain required by CI; `runner/README.md` documents publishing and label configuration.
 - The installer removes a legacy standalone llama-line service during native cutover.
 
 ## Flow
