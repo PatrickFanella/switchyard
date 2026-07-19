@@ -6,6 +6,8 @@ This repository is the Switchyard project. Security work here focuses on safe de
 
 Switchyard separates its operator control plane from model-compatible ingress. Production deployments must keep raw listeners private and place the web/control surface behind authenticated access. Setting `SWITCHYARD_REVERSE_PROXY_AUTH=true` is an operator assertion, not an authentication mechanism by itself.
 
+When the web listener must cross a host boundary, set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR` to the authenticated proxy's exact `/32`. The nginx gateway denies other sources and clears client-supplied `X-Forwarded-User`; do not broaden this allowlist to a LAN CIDR. Prefer an authenticated encrypted proxy hop over the current trusted-LAN fallback.
+
 ## Reporting a vulnerability
 
 Do not publish sensitive vulnerabilities in public issues.
