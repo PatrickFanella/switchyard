@@ -162,8 +162,11 @@ services:
     restart: unless-stopped
     depends_on:
       - api
+    environment:
+      SWITCHYARD_WEB_TRUSTED_PROXY_CIDR: ${SWITCHYARD_WEB_TRUSTED_PROXY_CIDR:-172.16.0.0/12}
+      NGINX_ENVSUBST_FILTER: "^SWITCHYARD_WEB_TRUSTED_PROXY_CIDR$$"
     ports:
-      - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8081}:80"
+      - "${SWITCHYARD_WEB_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8081}:80"
 
 volumes:
   postgres-data:
