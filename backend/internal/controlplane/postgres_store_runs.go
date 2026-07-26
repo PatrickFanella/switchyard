@@ -437,6 +437,10 @@ func (s *PostgresStore) RecordRunStepBackendDecision(runID, stepID string, decis
 			_ = tx.Rollback()
 			return err
 		}
+		if _, err := tx.ExecContext(s.operationContext(), `insert into compatibility_usage_daily(usage_date, backend, attempts, first_attempt_at, last_attempt_at) values($1,$2,1,$3,$3) on conflict(usage_date, backend) do update set attempts=compatibility_usage_daily.attempts+1, first_attempt_at=least(compatibility_usage_daily.first_attempt_at, excluded.first_attempt_at), last_attempt_at=greatest(compatibility_usage_daily.last_attempt_at, excluded.last_attempt_at)`, s.now().UTC().Format("2006-01-02"), decision.DeprecatedBackend, s.now().UTC()); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -517,12 +521,16 @@ func (s *PostgresStore) AddArtifact(input CreateArtifactInput) (Artifact, error)
 		return Artifact{}, ErrInvalid
 	}
 	now := s.now().UTC()
-	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, CreatedAt: now}
+	metadata, err := artifactMetadata(input.URI, now)
+	if err != nil {
+		return Artifact{}, ErrInvalid
+	}
+	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, StorageClass: metadata.StorageClass, ContentType: metadata.ContentType, ByteSize: metadata.ByteSize, SHA256: metadata.SHA256, RetentionUntil: metadata.RetentionUntil, CreatedAt: now}
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
 		return Artifact{}, err
 	}
-	if _, err := tx.ExecContext(s.operationContext(), `insert into artifacts(id, run_id, name, kind, uri, created_at) values($1,$2,$3,$4,$5,$6)`, artifact.ID, artifact.RunID, artifact.Name, artifact.Kind, artifact.URI, artifact.CreatedAt); err != nil {
+	if _, err := tx.ExecContext(s.operationContext(), `insert into artifacts(id, run_id, name, kind, uri, storage_class, content_type, byte_size, sha256, retention_until, created_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, artifact.ID, artifact.RunID, artifact.Name, artifact.Kind, artifact.URI, artifact.StorageClass, artifact.ContentType, artifact.ByteSize, artifact.SHA256, artifact.RetentionUntil, artifact.CreatedAt); err != nil {
 		_ = tx.Rollback()
 		return Artifact{}, mapPgErr(err)
 	}
@@ -624,14 +632,19 @@ func (s *PostgresStore) RunDetailContext(ctx context.Context, id string) (RunDet
 		}
 	}
 	rows.Close()
-	rows, err = s.db.QueryContext(ctx, `select id, run_id, name, kind, uri, created_at from artifacts where run_id=$1 order by created_at, id`, id)
+	rows, err = s.db.QueryContext(ctx, `select id, run_id, name, kind, uri, storage_class, content_type, byte_size, sha256, retention_until, created_at from artifacts where run_id=$1 order by created_at, id`, id)
 	if err != nil {
 		return RunDetail{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var a Artifact
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Name, &a.Kind, &a.URI, &a.CreatedAt); err == nil {
+		var retention sql.NullTime
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Name, &a.Kind, &a.URI, &a.StorageClass, &a.ContentType, &a.ByteSize, &a.SHA256, &retention, &a.CreatedAt); err == nil {
+			if retention.Valid {
+				value := retention.Time.UTC()
+				a.RetentionUntil = &value
+			}
 			detail.Artifacts = append(detail.Artifacts, a)
 		}
 	}

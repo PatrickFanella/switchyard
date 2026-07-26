@@ -1,5 +1,7 @@
 # UI Queues + Requests Sprint Implementation Plan
 
+> **Historical plan:** The request-centric queue cockpit was subsequently implemented. Unchecked boxes do not represent current delivery status.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

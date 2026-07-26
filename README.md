@@ -30,7 +30,10 @@ make switchyard-smoke # smoke-test health/workflow/trigger/run endpoints
 make docker-up        # start the local stack
 make docker-down      # stop the local stack
 make verify-production # run database, race, security, image, smoke, and release gates
+make api-soak-extended # run the release-grade 15-minute API soak
 ```
+
+See [`docs/status.md`](docs/status.md) for the current capability and release-evidence state. Dated readiness reports prove only the revision they name.
 
 ## Verification gates
 
@@ -38,9 +41,19 @@ make verify-production # run database, race, security, image, smoke, and release
 
 Both workflows target the dedicated `switchyard-production` runner label. Its reproducible job image is defined in `deploy/runner/Dockerfile` and must be published and configured by immutable digest. The baseline CI runner contract is Go `1.26.5`, Node.js major `24`, Corepack-provided pnpm `10.33.0`, Make, Docker Engine, and the Docker Compose plugin. The production runner contract adds Docker Buildx with a bootstrappable BuildKit builder that can produce an OCI archive with the pinned SBOM generator and `--provenance=mode=max` options used by `make release-artifacts`. Both workflows validate these contracts before running Make; CI supplies only the non-secret `POSTGRES_PASSWORD=switchyard-ci-only-not-a-secret` needed for clean-checkout Compose validation. No CI setup action supplies these tools.
 
-Production releases are pinned OCI archives with BuildKit SBOM and provenance attestations. `make release-verify` writes and verifies `release/SHA256SUMS`; generated release artifacts remain outside git. Runtime logs are newline-delimited JSON with credential-shaped values redacted. `GET /metrics` exports Prometheus-format workflow, model-request, queue, latency, and worker metrics.
+Production releases are pinned OCI archives with BuildKit SBOM and provenance attestations. `make release-verify` writes and verifies `release/SHA256SUMS` and records the source revision in `release/manifest.json`; generated release artifacts remain outside git. Runtime logs are newline-delimited JSON with credential-shaped values redacted. `GET /metrics` exports Prometheus-format workflow, model-request, queue, latency, and worker metrics.
 
 `make api-soak` runs a 30-second concurrent authenticated API soak by default. Increase `SWITCHYARD_SOAK_DURATION`, `SWITCHYARD_SOAK_CLIENTS`, and `SWITCHYARD_SOAK_MIN_REQUESTS` for extended release qualification.
+
+Production promotion also requires a verified backup/restore drill and the real target contract smoke:
+
+```bash
+SWITCHYARD_BACKUP_DIR=/approved/encrypted/path make postgres-backup
+BACKUP=/approved/encrypted/path/<backup>.dump make postgres-restore-drill
+make production-smoke
+```
+
+Follow [`docs/runbooks/release-and-rollback.md`](docs/runbooks/release-and-rollback.md); do not infer production health from a local checkout or a running container.
 
 Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.
 
@@ -69,7 +82,8 @@ The local stack now runs Switchyard-native workflow, model-broker, and OpenCode 
 ### Compatibility lifecycle
 
 The llama-line/Ollama/OpenAI-compatible ingress is supported. Only external cutover selectors are deprecated: `MODEL_BROKER_BACKEND=llama-line` and nested `OPENCODE_EXECUTOR_BACKEND=ocq`; native defaults and Ollama routing remain supported. Actual deprecated generation attempts expose `X-Switchyard-Backend` and `X-Switchyard-Compatibility-Warning: deprecated-external-backend` before JSON/SSE commitment, while async/workflow attempts persist namespaced decision correlations and events. `/broker/status` reports `effective_selector` plus the optional raw `configured_selector`; `/api/config` reports effective broker/executor selectors plus their optional raw configured values. Unknown or blank selectors route as `native`, and warnings appear only for llama-line or nested OCQ selection; no standard HTTP deprecation headers are emitted from status/config. Selectors will not be removed before v1.0 and require migration docs, at least 90 days, and two consecutive releases with zero observed deprecated-backend correlations/events; removal may then occur in v1.0 or a later major release. Ingress remains supported. External Changemaker adapter probes remain read-only migration visibility and do not affect the native Changemaker pipeline.
-- The OpenCode image includes the basic Switchyard toolchain (`git`, Go, Make, Node/npm/Corepack, shell utilities), installs the latest `opencode-ai`, RTK, DCP/quota/tasks plugins, and materializes Switchyard-managed OpenCode defaults at container start. It mounts `OPENCODE_WORKSPACE` (default `.`) at `/workspace`, mounts `OPENCODE_CONFIG_DIR` (default ignored `./.opencode`) at `/root/.config/opencode`, and mounts `OPENCODE_DATA_DIR` (default ignored `./opencode-data`) at `/root/.local/share/opencode` for auth data such as `auth.json`. The API mounts the same `OPENCODE_WORKSPACE` at `/workspace` so Open Pilot can create isolated worktrees that OpenCode can edit; API/OpenCode containers mark mounted workspaces as Git safe directories to avoid UID-mismatch failures. Set those paths to your host OpenCode directories to reuse `opencode auth login` credentials. Override `OPENCODE_SERVER_URL=http://host.docker.internal:4096` only when deliberately using a host-run OpenCode server. `OPENCODE_EXECUTOR_TIMEOUT` and `MODEL_BROKER_TIMEOUT` default to `10m` for long-running agent prompts and model-broker gates; `OPENCODE_SESSION_CREATE_TIMEOUT`, `OPENCODE_MESSAGE_TIMEOUT`, and `OPENCODE_ABORT_TIMEOUT` tune native session control.
+- The OpenCode image includes the basic Switchyard toolchain (`git`, Go, Make, Node/npm/Corepack, and shell utilities) with pinned OpenCode/plugin versions. The server runs as `OPENCODE_RUNTIME_UID:OPENCODE_RUNTIME_GID`, with a read-only root filesystem, dropped capabilities, scoped Git safe directories, persistent XDG state volumes, and no MCP services, sharing, automatic updates, floating packages, or global command allow by default. `OPENCODE_SECURITY_MODE=strict` prevents an older persisted config from restoring those capabilities; `development` is an explicit local-only escape hatch.
+- The API and OpenCode sidecar share `OPENCODE_WORKSPACE` at `/workspace`. In production this must be a dedicated worktree root owned by the configured runtime UID/GID, not a parent directory containing unrelated repositories or credentials. `OPENCODE_CONFIG_DIR` (default ignored `./.opencode`) is mounted at `/home/opencode/.config/opencode`, and `OPENCODE_DATA_DIR` (default ignored `./opencode-data`) is mounted at `/home/opencode/.local/share/opencode` for provider authentication. Override `OPENCODE_SERVER_URL=http://host.docker.internal:4096` only when deliberately using a separately hardened host server. `OPENCODE_EXECUTOR_TIMEOUT` and `MODEL_BROKER_TIMEOUT` default to `10m`; `OPENCODE_SESSION_CREATE_TIMEOUT`, `OPENCODE_MESSAGE_TIMEOUT`, and `OPENCODE_ABORT_TIMEOUT` tune native session control.
 - External `BLACKTOWER_BASE_URL` probes remain optional/reference-only. Changemaker is now native workflow-template policy, not an external runtime dependency.
 
 For live cutover operation, rollback, and smoke commands, see [`docs/runbooks/native-model-broker-cutover.md`](docs/runbooks/native-model-broker-cutover.md).
@@ -132,6 +146,8 @@ The backend exposes a workflow/run API:
 - `GET /api/adapters`
 - `GET /api/model-broker/status`
 - `GET /api/opencode-executor/status`
+- `GET /api/operator-summary`
+- `GET /api/operator-safety`
 - `GET /api/pipelines`
 - `GET /api/agent-profiles`
 - `GET /api/scheduler`

@@ -413,7 +413,10 @@ func TestStoreRejectsOversizedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "large", Kind: "text", URI: "data:text/plain," + strings.Repeat("x", 1024)}); err != controlplane.ErrInvalid {
+	if _, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "at-limit", Kind: "text", URI: "data:text/plain," + strings.Repeat("x", 1024)}); err != nil {
+		t.Fatalf("AddArtifact() at limit error = %v", err)
+	}
+	if _, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "large", Kind: "text", URI: "data:text/plain," + strings.Repeat("x", 1025)}); err != controlplane.ErrInvalid {
 		t.Fatalf("AddArtifact() error = %v", err)
 	}
 }

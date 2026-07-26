@@ -95,13 +95,14 @@ type MemoryStore struct {
 	artifacts                  map[string][]Artifact
 	modelBrokerRequests        map[string]ModelBrokerRequest
 	modelBrokerFeedback        []ModelBrokerFeedback
+	compatibilityUsage         map[string]CompatibilityUsageDaily
 }
 
 func NewStore(now func() time.Time) *MemoryStore {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}}
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}}
 }
 
 func (s *MemoryStore) Ready(context.Context) error       { return nil }
@@ -160,6 +161,15 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinit
 		step.Profile, step.Model = strings.TrimSpace(step.Profile), strings.TrimSpace(step.Model)
 		if step.ID == "" || step.Position < 1 || step.Name == "" || step.Executor == "" || seenIDs[step.ID] || seenPositions[step.Position] {
 			return WorkflowDefinition{}, ErrInvalid
+		}
+		if step.Profile != "" {
+			profile, ok := DefaultAgentProfileRegistry().Profile(step.Profile)
+			if !ok || !profileAllowsExecutor(profile, step.Executor) {
+				return WorkflowDefinition{}, ErrInvalid
+			}
+			if step.Model != "" && step.Model != "${model}" && !profileAllowsModel(profile, step.Model) {
+				return WorkflowDefinition{}, ErrInvalid
+			}
 		}
 		seenIDs[step.ID], seenPositions[step.Position] = true, true
 	}

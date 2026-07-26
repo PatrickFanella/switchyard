@@ -55,15 +55,25 @@ type Runner struct {
 }
 
 type preAttemptContextKey struct{}
+type runStepCorrelationContextKey struct{}
 
 func withRunStepPreAttempt(ctx context.Context, store Store, runID, stepID string) context.Context {
-	return context.WithValue(ctx, preAttemptContextKey{}, PreAttemptCallback(func(decision BackendDecision) error {
+	ctx = context.WithValue(ctx, preAttemptContextKey{}, PreAttemptCallback(func(decision BackendDecision) error {
 		return store.RecordRunStepBackendDecision(runID, stepID, decision)
 	}))
+	return context.WithValue(ctx, runStepCorrelationContextKey{}, func(correlationIDs map[string]string) error {
+		_, err := store.MergeRunStepCorrelationIDs(stepID, correlationIDs)
+		return err
+	})
 }
 
 func preAttemptFromContext(ctx context.Context) PreAttemptCallback {
 	callback, _ := ctx.Value(preAttemptContextKey{}).(PreAttemptCallback)
+	return callback
+}
+
+func runStepCorrelationFromContext(ctx context.Context) func(map[string]string) error {
+	callback, _ := ctx.Value(runStepCorrelationContextKey{}).(func(map[string]string) error)
 	return callback
 }
 
@@ -94,6 +104,13 @@ func (r *Runner) AgentProfiles() []AgentProfile {
 		return nil
 	}
 	return r.profiles.ListProfiles()
+}
+
+func (r *Runner) SetAgentProfileRegistry(profiles AgentProfileRegistry) {
+	if profiles == nil {
+		profiles = DefaultAgentProfileRegistry()
+	}
+	r.profiles = profiles
 }
 
 func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error) {
@@ -249,33 +266,36 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		if decider, ok := executor.(PipelineStepDecider); ok && !decider.ShouldExecutePipelineStep(run, pipelineStep, state) {
 			continue
 		}
-		model := pipelineStep.Model
-		if resolver, ok := executor.(PipelineStepModelResolver); ok {
-			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, pipelineStep, run.Inputs)
-			if err != nil {
-				model = ""
-				step, _, createErr := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
-				if createErr != nil {
-					return execution, createErr
-				}
-				step, startErr := r.store.StartRunStep(step.ID)
-				if startErr != nil {
-					if reporter, ok := executor.(PipelineStepFailureReporter); ok {
-						reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, startErr)
-					}
-					return execution, startErr
-				}
-				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
-					reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
-				}
-				_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
-				return execution, err
+		profile, hasProfile, profileErr := r.profileForPipelineStep(pipelineStep)
+		if profileErr != nil {
+			return execution, profileErr
+		}
+		model, err := r.resolvePipelineStepModel(run, pipelineStep, executor, profile, hasProfile)
+		if err != nil {
+			step, _, createErr := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+			if createErr != nil {
+				return execution, createErr
 			}
-			model = resolved
+			step, startErr := r.store.StartRunStep(step.ID)
+			if startErr != nil {
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, startErr)
+				}
+				return execution, startErr
+			}
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
+			}
+			_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
+			return execution, err
 		}
 		correlationIDs := map[string]string(nil)
 		if provider, ok := executor.(PipelineStepCorrelationProvider); ok {
 			correlationIDs = provider.PipelineStepCorrelationIDs(run, pipelineStep, state)
+		}
+		if hasProfile {
+			correlationIDs = mergeStringMaps(correlationIDs, profileAuditCorrelation(profile, model))
+			_, _ = r.store.AddEvent(run.ID, "agent-profile.resolved", profile.ID+" for "+pipelineStep.Name)
 		}
 		step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
 		if err != nil {
@@ -306,6 +326,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		}
 		resolvedStep := pipelineStep
 		resolvedStep.Model = model
+		if hasProfile {
+			resolvedStep.profileContract = profile.PromptContract
+		}
 		var stepResult PipelineStepExecution
 		func() {
 			defer release()
@@ -357,6 +380,61 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		execution.Summary = summary
 	}
 	return execution, nil
+}
+
+func (r *Runner) profileForPipelineStep(step PipelineStep) (AgentProfile, bool, error) {
+	profileID := strings.TrimSpace(step.Profile)
+	if profileID == "" {
+		return AgentProfile{}, false, nil
+	}
+	profiles := r.profiles
+	if profiles == nil {
+		profiles = DefaultAgentProfileRegistry()
+	}
+	profile, ok := profiles.Profile(profileID)
+	if !ok {
+		return AgentProfile{}, false, fmt.Errorf("unknown agent profile %q", profileID)
+	}
+	if !profileAllowsExecutor(profile, step.Executor) {
+		return AgentProfile{}, false, fmt.Errorf("agent profile %q does not allow executor %q", profileID, step.Executor)
+	}
+	return profile, true, nil
+}
+
+func (r *Runner) resolvePipelineStepModel(run Run, step PipelineStep, executor WorkflowExecutor, profile AgentProfile, hasProfile bool) (string, error) {
+	model := strings.TrimSpace(step.Model)
+	if hasProfile && model == "" {
+		if override := strings.TrimSpace(run.Inputs["model"]); override != "" {
+			model = override
+		} else if strings.TrimSpace(profile.DefaultModel) != "" && (step.Executor == "model" || step.Executor == "opencode") {
+			model = strings.TrimSpace(profile.DefaultModel)
+		}
+	}
+	if model == "" || model == "${model}" {
+		if resolver, ok := executor.(PipelineStepModelResolver); ok {
+			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, step, run.Inputs)
+			if err != nil {
+				return "", err
+			}
+			model = strings.TrimSpace(resolved)
+		}
+	}
+	if hasProfile && model != "" && !profileAllowsModel(profile, model) {
+		return "", fmt.Errorf("agent profile %q does not allow model %q", profile.ID, model)
+	}
+	return model, nil
+}
+
+func profileAuditCorrelation(profile AgentProfile, model string) map[string]string {
+	correlation := map[string]string{
+		"agent_profile_id":              profile.ID,
+		"agent_profile_role":            profile.Role,
+		"agent_profile_contract_sha256": profileContractHash(profile),
+	}
+	if model != "" {
+		correlation["agent_profile_model"] = model
+	}
+	return correlation
 }
 
 func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error) {

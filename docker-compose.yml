@@ -17,7 +17,10 @@ services:
       retries: 5
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
     environment:
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong random value} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
@@ -109,9 +112,11 @@ services:
       OPEN_PILOT_REPO_PATH: ${OPEN_PILOT_REPO_PATH:-}
       OPEN_PILOT_WORKTREE_ROOT: ${OPEN_PILOT_WORKTREE_ROOT:-}
       OPEN_PILOT_WORKTREE_TIMEOUT: ${OPEN_PILOT_WORKTREE_TIMEOUT:-300s}
-      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: safe.directory
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_VALUE_0: /workspace
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /workspace/*
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,18 +136,47 @@ services:
       retries: 5
 
   opencode:
-    build: ./services/opencode
+    build:
+      context: ./services/opencode
+      args:
+        SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
+    # The entrypoint uses this minimal bootstrap identity only to prepare its
+    # state volumes, then execs the OpenCode server as OPENCODE_RUNTIME_UID:GID.
+    user: "0:0"
     environment:
+      HOME: /home/opencode
+      XDG_CONFIG_HOME: /home/opencode/.config
+      XDG_DATA_HOME: /home/opencode/.local/share
+      XDG_CACHE_HOME: /home/opencode/.cache
+      XDG_STATE_HOME: /home/opencode/.local/state
       OPENCODE_SERVER_HOSTNAME: 0.0.0.0
       OPENCODE_SERVER_PORT: 4096
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
       OPENCODE_SESSION_CREATE_TIMEOUT_MS: ${OPENCODE_SESSION_CREATE_TIMEOUT_MS:-300000}
       OPENCODE_MESSAGE_TIMEOUT_MS: ${OPENCODE_MESSAGE_TIMEOUT_MS:-600000}
-      GIT_CONFIG_COUNT: 1
+      OPENCODE_SECURITY_MODE: ${OPENCODE_SECURITY_MODE:-strict}
+      OPENCODE_RUNTIME_UID: ${OPENCODE_RUNTIME_UID:-1000}
+      OPENCODE_RUNTIME_GID: ${OPENCODE_RUNTIME_GID:-1000}
+      GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: safe.directory
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_VALUE_0: /workspace
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /workspace/*
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Needed only by the short root bootstrap before it drops to the runtime user.
+      - CHOWN
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /run:rw,noexec,nosuid,size=16m
     healthcheck:
       test:
         [
@@ -154,11 +188,16 @@ services:
       retries: 12
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
-      - ${OPENCODE_CONFIG_DIR:-./.opencode}:/root/.config/opencode
-      - ${OPENCODE_DATA_DIR:-./opencode-data}:/root/.local/share/opencode
+      - ${OPENCODE_CONFIG_DIR:-./.opencode}:/home/opencode/.config/opencode
+      - ${OPENCODE_DATA_DIR:-./opencode-data}:/home/opencode/.local/share/opencode
+      - opencode-state:/home/opencode/.local/state
+      - opencode-cache:/home/opencode/.cache
 
   web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
     depends_on:
       - api
@@ -171,3 +210,5 @@ services:
 
 volumes:
   postgres-data:
+  opencode-cache:
+  opencode-state:

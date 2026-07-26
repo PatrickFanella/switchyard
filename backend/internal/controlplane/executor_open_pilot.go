@@ -1003,8 +1003,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 			return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
 		}
-		request := OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
+		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
 		request.PreAttempt = preAttemptFromContext(ctx)
+		request.OnCorrelation = runStepCorrelationFromContext(ctx)
 		response, err := o.env.openCodeExecutor.SendPrompt(ctx, request)
 		if err != nil {
 			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}

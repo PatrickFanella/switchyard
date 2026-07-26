@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { AdapterPayload, ViewID } from '../types';
+import type { AdapterPayload, AgentProfile, ViewID } from '../types';
 import {
   formatTime,
   statusClasses,
@@ -15,7 +15,7 @@ function FeatureCard({ children }: { children: ReactNode }) {
   return <HudPanelStrong className="p-4">{children}</HudPanelStrong>;
 }
 
-export function FeaturePage({ view, adapters }: { view: ViewID; adapters: AdapterPayload }) {
+export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; adapters: AdapterPayload; agentProfiles: AgentProfile[] }) {
   if (view === 'queues') {
     return (
       <HudSection
@@ -86,7 +86,7 @@ export function FeaturePage({ view, adapters }: { view: ViewID; adapters: Adapte
 
   if (view === 'sessions') {
     return (
-      <HudSection kicker="OpenCode executor" title="Session console" note="OpenCode executor/Blacktower session list, transcript targets, and future send-prompt controls.">
+      <HudSection kicker="OpenCode executor" title="Session console" note="Read-only OpenCode session inventory and workflow correlation. Session prompting and editing are not dashboard controls.">
         <div className="mb-4 grid gap-3 md:grid-cols-4">
           <HudField label="Workspace" value={adapters.ocq.settings.workspace || 'unknown'} />
           <HudField label="Provider" value={adapters.ocq.settings.provider || 'unknown'} />
@@ -166,7 +166,7 @@ export function FeaturePage({ view, adapters }: { view: ViewID; adapters: Adapte
 
   if (view === 'prompts') {
     return (
-      <HudSection kicker="Workflow policy" title="Prompt workbench" note="Editable workflow prompt inventory, variables, and future review controls.">
+      <HudSection kicker="Workflow policy" title="Prompt contracts" note="Read-only workflow prompt inventory, variables, and generated content references. Prompt editing is managed through workflow policy, not this dashboard.">
         <div className="mb-4 grid gap-3 md:grid-cols-4">
           <HudField label="Run mode" value={adapters.changemaker.run_control.mode} />
           <HudField label="Run control" value={adapters.changemaker.run_control.enabled ? 'enabled' : 'disabled'} />
@@ -205,7 +205,7 @@ export function FeaturePage({ view, adapters }: { view: ViewID; adapters: Adapte
 
   if (view === 'config') {
     return (
-      <HudSection kicker="Workflow policy / broker" title="Configuration matrix" note="Runtime config, feature flags, limits, and future adapter edit surfaces.">
+      <HudSection kicker="Workflow policy / broker" title="Configuration matrix" note="Read-only runtime configuration, feature flags, limits, and module health. Secrets and runtime edits are intentionally excluded.">
         <div className="grid gap-3 md:grid-cols-3">
           <HudField label="Environment" value={adapters.config.environment} />
           <HudField label="Version" value={adapters.config.version} />
@@ -254,76 +254,41 @@ export function FeaturePage({ view, adapters }: { view: ViewID; adapters: Adapte
 
   if (view === 'agents') {
     return (
-      <HudSection kicker="Blacktower" title="Agent board" note="Agent roles, model bindings, board controls, and capability inventory.">
-        {adapters.agents.length === 0 ? <HudEmptyState>No agents have been reported yet.</HudEmptyState> : null}
+      <HudSection kicker="Native profiles" title="Agent profiles" note="Control-plane profile contracts, default models, and allowed executors. These are read-only policy records, not adapter-reported agents.">
+        {agentProfiles.length === 0 ? <HudEmptyState>No agent profiles have been returned by the control plane.</HudEmptyState> : null}
         <div className="grid gap-4 lg:grid-cols-2">
-          {adapters.agents.map((agent) => (
-            <FeatureCard key={agent.id}>
+          {agentProfiles.map((profile) => (
+            <FeatureCard key={profile.id}>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <HudLabel className="text-[hsl(var(--faint))]">{agent.role}</HudLabel>
-                  <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{agent.name}</h3>
+                  <HudLabel className="text-[hsl(var(--faint))]">{profile.role}</HudLabel>
+                  <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{profile.name}</h3>
                 </div>
-                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(agent.status)}`}>{agent.status}</span>
+                <span className="hud-chip border-[hsl(var(--confirm))] bg-[hsl(var(--confirm-soft))] px-2.5 py-1 text-[0.62rem] text-[hsl(var(--confirm))]">native</span>
               </div>
-              <HudField className="mt-4" label="Model" value={agent.model} />
-              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Capabilities: {agent.capabilities.join(', ') || 'none'}</p>
+              <HudField className="mt-4" label="Default model" value={profile.default_model || 'not configured'} />
+              <p className="mt-4 text-sm leading-6 text-[hsl(var(--muted))]">{profile.prompt_contract || 'No prompt contract recorded.'}</p>
+              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Allowed executors: {profile.allowed_executors.join(', ') || 'none'}</p>
             </FeatureCard>
           ))}
         </div>
-        <FeatureCard>
-          <h3 className="hud-label text-[hsl(var(--signal))]">Control-center tasks</h3>
-          <div className="mt-4 grid gap-3">
-            {adapters.blacktower.tasks.map((task) => (
-              <HudPanel key={task.id} className="bg-[hsl(var(--panel-soft))] p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{task.name}</span>
-                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(task.status)}`}>{task.progress}%</span>
-                </div>
-                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{task.owner} · {formatTime(task.updated_at)}</p>
-              </HudPanel>
-            ))}
-          </div>
-        </FeatureCard>
       </HudSection>
     );
   }
 
   return (
-    <HudSection kicker="Blacktower" title="Skill registry" note="Installed skills, categories, status, and future editing/sync controls.">
-      <div className="mb-4 grid gap-3 md:grid-cols-4">
-        <HudField label="Scheduler" value={adapters.blacktower.scheduler_health.status} />
-        <HudField label="Next run" value={formatTime(adapters.blacktower.scheduler_health.next_run_at)} />
-        <HudField label="Last tick" value={formatTime(adapters.blacktower.scheduler_health.last_tick_at)} />
-        <HudField label="Skew" value={`${adapters.blacktower.scheduler_health.skew_seconds}s`} />
-      </div>
-      {adapters.skills.length === 0 ? <HudEmptyState>No skills have been reported yet.</HudEmptyState> : null}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {adapters.skills.map((skill) => (
-          <FeatureCard key={skill.id}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <HudLabel className="text-[hsl(var(--faint))]">{skill.category}</HudLabel>
-                <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{skill.name}</h3>
-              </div>
-              <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(skill.status)}`}>{skill.status}</span>
-            </div>
-            <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{skill.description}</p>
-          </FeatureCard>
-        ))}
-      </div>
+    <HudSection kicker="Native policy" title="Runtime capabilities" note="Switchyard does not install, edit, or synchronize skills from the dashboard. Agent profiles expose the executable capabilities used by workflow policy.">
       <FeatureCard>
-        <h3 className="hud-label text-[hsl(var(--signal))]">Reports</h3>
+        <h3 className="hud-label text-[hsl(var(--signal))]">Profile capabilities</h3>
+        {agentProfiles.length === 0 ? <HudEmptyState>No native profiles are available to describe runtime capabilities.</HudEmptyState> : null}
         <div className="mt-4 grid gap-3">
-          {adapters.blacktower.reports.map((report) => (
-            <HudPanel key={report.id} className="bg-[hsl(var(--panel-soft))] p-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-semibold text-[hsl(var(--ink))]">{report.title}</span>
-                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(report.status)}`}>{report.type}</span>
+          {agentProfiles.map((profile) => (
+            <HudPanel key={profile.id} className="bg-[hsl(var(--panel-soft))] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-[hsl(var(--ink))]">{profile.name}</span>
+                <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{profile.role}</span>
               </div>
-              <ul className="mt-3 list-inside list-disc text-sm leading-6 text-[hsl(var(--muted))]">
-                {report.findings.map((finding) => <li key={finding}>{finding}</li>)}
-              </ul>
+              <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{profile.allowed_executors.join(', ') || 'no executors declared'}</p>
             </HudPanel>
           ))}
         </div>

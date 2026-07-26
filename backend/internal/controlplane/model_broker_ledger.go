@@ -51,6 +51,7 @@ type ListModelBrokerRequestsFilter struct {
 	Limit         int
 	BeforeCreated *time.Time
 	BeforeID      string
+	SinceCreated  *time.Time
 }
 
 type ModelBrokerFeedback struct {

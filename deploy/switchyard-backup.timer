@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Switchyard PostgreSQL backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=switchyard-backup.service
+
+[Install]
+WantedBy=timers.target

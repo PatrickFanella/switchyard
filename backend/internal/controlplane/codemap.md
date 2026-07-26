@@ -12,6 +12,8 @@ Owns Switchyard's automation runtime: workflows, definitions, pipelines, trigger
 - Open Pilot and Devlog executors live in `executor_open_pilot.go` and `executor_devlog.go`; the unreachable external Changemaker executor is removed, while adapter migration probing remains read-only.
 - HTTP registration is in `http_routes.go`; run/trigger, workflow-definition, Open Pilot lifecycle, and CORS handling are in `http_runs.go`, `http_workflow_definitions.go`, `http_open_pilot.go`, and `http_middleware.go`.
 - Status providers expose configured versus effective selector and transitional compatibility metadata; listener boundaries prevent model ingress from exposing operator/admin routes.
+- Operator and broker observability use bounded storage projections: PostgreSQL aggregates counts/latency and returns only capped recent rows, while memory mirrors the contract for local use.
+- Artifacts are validated inline data URIs with persisted storage, MIME, decoded-size, SHA-256, and retention metadata; deprecated backend usage is retained as aggregate UTC daily counts for retirement decisions.
 
 ## Flow
 1. `SeedDefaults` creates first-party workflows, triggers, and workflow definitions.

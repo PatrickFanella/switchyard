@@ -551,6 +551,16 @@ paths:
       summary: Get retention manager status and last prune counts
       responses:
         "200": { description: Retention status }
+  /api/compatibility/retirement:
+    get:
+      summary: Get durable deprecated-backend retirement status
+      description: Aggregate-only UTC daily usage for deprecated llama-line and OCQ compatibility routes. A backend is eligible only after 90 days of zero attempts; two-release evidence remains an external qualification record.
+      responses:
+        "200":
+          description: Compatibility retirement status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompatibilityRetirementStatus" }
   /api/operator-safety:
     get:
       summary: Get operator safety status
@@ -1346,8 +1356,13 @@ components:
         name: { type: string }
         kind: { type: string }
         uri: { type: string }
+        storage_class: { type: string, enum: [inline-data-uri, legacy-inline] }
+        content_type: { type: string }
+        byte_size: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        retention_until: { type: [string, "null"], format: date-time }
         created_at: { type: string, format: date-time }
-      required: [id, run_id, name, kind, uri, created_at]
+      required: [id, run_id, name, kind, uri, storage_class, byte_size, created_at]
     RunDetail:
       type: object
       properties:
@@ -1430,6 +1445,26 @@ components:
         open_pilot_autonomy_mode: { type: string }
         warnings: { type: array, items: { type: string } }
       required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
+    CompatibilityRetirementStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        backends:
+          type: array
+          items: { $ref: "#/components/schemas/CompatibilityRetirementBackend" }
+      required: [backends]
+    CompatibilityRetirementBackend:
+      type: object
+      additionalProperties: false
+      properties:
+        backend: { type: string }
+        attempts_90d: { type: integer, minimum: 0 }
+        first_observed_at: { type: string, format: date-time }
+        last_observed_at: { type: string, format: date-time }
+        configured_selector: { type: string }
+        effective_selector: { type: string }
+        eligibility: { type: string, enum: [in_use, eligible_pending_two_release_evidence] }
+      required: [backend, attempts_90d, configured_selector, effective_selector, eligibility]
     OperatorSummary:
       type: object
       additionalProperties: false

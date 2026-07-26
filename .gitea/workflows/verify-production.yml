@@ -61,4 +61,6 @@ jobs:
       - name: Verify production qualification
         run: |
           make verify-production
+          make api-soak-extended
+          test "$(node -p 'require("./release/manifest.json").source_revision')" = "$(git rev-parse HEAD)"
           git diff --exit-code -- ':(glob)backend/**/*.go'

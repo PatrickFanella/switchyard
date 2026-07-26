@@ -3,12 +3,14 @@ import {
   emptyScheduler,
   emptyWorkers,
   type AdapterPayload,
+  type AgentProfile,
   type DashboardResponse,
   type DashboardState,
   type ModelBrokerHistoryResponse,
   type ModelBrokerRequestHistoryItem,
   type ModelBrokerObservability,
   type OpenPilotStateResponse,
+  type OperatorSummary,
   type Run,
   type RunDetail,
   type RunStep,
@@ -157,13 +159,26 @@ export function normalizeAdapters(adapters: AdapterPayload): AdapterPayload {
   };
 }
 
+export function normalizeOperatorSummary(summary: OperatorSummary): OperatorSummary {
+  return {
+    ...summary,
+    alerts: arrayOrEmpty(summary.alerts),
+    capabilities: { ...summary.capabilities, actions: arrayOrEmpty(summary.capabilities?.actions) },
+    data: {
+      ...summary.data,
+      runs: { ...summary.data.runs, recent: arrayOrEmpty(summary.data?.runs?.recent) },
+      components: arrayOrEmpty(summary.data?.components),
+    },
+  };
+}
+
 type DashboardSnapshot = {
   dashboard: DashboardState;
   workflowDefinitions: WorkflowDefinition[];
 };
 
 export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
-  const [workflowData, workflowDefinitionData, triggerData, runData, adapterData, schedulerData, workerData] = await Promise.all([
+  const [workflowData, workflowDefinitionData, triggerData, runData, adapterData, schedulerData, workerData, operatorSummary, agentProfiles] = await Promise.all([
     fetchJSON<DashboardResponse<Workflow>>('/api/workflows'),
     fetchJSON<{ workflow_definitions: WorkflowDefinition[] }>('/api/workflow-definitions'),
     fetchJSON<DashboardResponse<Trigger>>('/api/triggers'),
@@ -171,6 +186,8 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
     fetchJSON<AdapterPayload>('/api/adapters'),
     fetchJSON<SchedulerStatus>('/api/scheduler'),
     fetchJSON<WorkerPoolStatus>('/api/workers'),
+    fetchJSON<OperatorSummary>('/api/operator-summary'),
+    fetchJSON<{ profiles: AgentProfile[] }>('/api/agent-profiles'),
   ]);
 
   return {
@@ -178,6 +195,8 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
       workflows: arrayOrEmpty(workflowData.workflows as Workflow[] | null | undefined),
       triggers: arrayOrEmpty(triggerData.triggers as Trigger[] | null | undefined),
       runs: arrayOrEmpty(runData.runs as Run[] | null | undefined),
+      operatorSummary: normalizeOperatorSummary(operatorSummary),
+      agentProfiles: arrayOrEmpty(agentProfiles.profiles),
       adapters: normalizeAdapters(adapterData),
       scheduler: schedulerData ?? emptyScheduler,
       workers: workerData ?? emptyWorkers,

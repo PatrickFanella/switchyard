@@ -65,6 +65,7 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workers", a.workerStatus)
 	mux.HandleFunc("GET /api/retention", a.retentionStatus)
+	mux.HandleFunc("GET /api/compatibility/retirement", a.compatibilityRetirement)
 	mux.HandleFunc("GET /api/operator-safety", a.operatorSafety)
 	mux.HandleFunc("GET /api/operator-summary", a.operatorSummary)
 	mux.HandleFunc("GET /api/pipelines", a.pipelines)

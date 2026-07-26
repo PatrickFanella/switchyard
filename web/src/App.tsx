@@ -29,7 +29,7 @@ const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: st
   prompts: { eyebrow: 'Workflow policy', title: 'Prompt library', description: 'Review prompt contracts, inputs, and generated outputs.' },
   config: { eyebrow: 'Runtime', title: 'Configuration', description: 'Understand active features, limits, and module health.' },
   agents: { eyebrow: 'Profiles', title: 'Agent roster', description: 'Inspect roles, model assignments, and capabilities.' },
-  skills: { eyebrow: 'Capabilities', title: 'Skill registry', description: 'Browse available skills and their operational status.' },
+  skills: { eyebrow: 'Capabilities', title: 'Runtime capabilities', description: 'Review profile-scoped executors; capability management is not a dashboard control.' },
 };
 
 function SwitchyardMark() {
@@ -126,7 +126,7 @@ export default function App() {
             <RunCockpitPage selectedRunID={selectedRunID} selectedRunDetail={data.selectedRunDetail} openPilotState={data.openPilotState} runActionID={data.runActionID} onRetryRun={data.retryRun} onCancelRun={data.cancelRun} onResumeOpenPilotState={data.resumeOpenPilotState} onStepAction={data.stepAction} onBackToOverview={() => setActiveView('overview')} onRefresh={data.refresh} />
           ) : activeView === 'queues' ? (
             <QueuesPage selectedRequestID={selectedRequestID} setSelectedRequestID={setSelectedRequestID} />
-          ) : activeView === 'observability' ? <ObservabilityPage /> : <FeaturePage view={activeView} adapters={data.dashboard.adapters} />}
+          ) : activeView === 'observability' ? <ObservabilityPage /> : <FeaturePage view={activeView} adapters={data.dashboard.adapters} agentProfiles={data.dashboard.agentProfiles} />}
         </main>
       </div>
     </div>

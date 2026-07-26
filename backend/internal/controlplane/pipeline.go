@@ -32,13 +32,14 @@ type Pipeline struct {
 }
 
 type PipelineStep struct {
-	ID       string            `json:"id"`
-	Position int               `json:"position"`
-	Name     string            `json:"name"`
-	Executor string            `json:"executor"`
-	Profile  string            `json:"profile,omitempty"`
-	Model    string            `json:"model,omitempty"`
-	Inputs   map[string]string `json:"inputs,omitempty"`
+	ID              string            `json:"id"`
+	Position        int               `json:"position"`
+	Name            string            `json:"name"`
+	Executor        string            `json:"executor"`
+	Profile         string            `json:"profile,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Inputs          map[string]string `json:"inputs,omitempty"`
+	profileContract string
 }
 
 type PipelineRegistry interface {

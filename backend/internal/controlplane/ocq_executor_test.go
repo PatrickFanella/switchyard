@@ -175,3 +175,55 @@ func TestEnvOpenCodeExecutorAbortsNativeSessionOnMessageTimeout(t *testing.T) {
 		t.Fatalf("expected native session abort after timeout")
 	}
 }
+
+func TestEnvOpenCodeExecutorPersistsNativeSessionCorrelationBeforeMessageCompletes(t *testing.T) {
+	messageStarted := make(chan struct{})
+	releaseMessage := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session":
+			_, _ = w.Write([]byte(`{"id":"ses-early"}`))
+		case "/session/ses-early/message":
+			close(messageStarted)
+			<-releaseMessage
+			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"done"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+
+	correlations := make(chan map[string]string, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(context.Background(), controlplane.OpenCodeRequest{
+			Model:     "openai/gpt-test",
+			Prompt:    "work",
+			RequestID: "request-early",
+			OnCorrelation: func(correlation map[string]string) error {
+				correlations <- correlation
+				return nil
+			},
+		})
+		done <- err
+	}()
+	select {
+	case correlation := <-correlations:
+		if correlation["opencode_session_id"] != "ses-early" || correlation["opencode_request_id"] != "request-early" {
+			t.Fatalf("correlation = %+v", correlation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session correlation was not published")
+	}
+	select {
+	case <-messageStarted:
+	case <-time.After(time.Second):
+		t.Fatal("message did not start")
+	}
+	close(releaseMessage)
+	if err := <-done; err != nil {
+		t.Fatalf("SendPrompt() error = %v", err)
+	}
+}

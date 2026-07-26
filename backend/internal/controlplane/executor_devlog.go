@@ -89,7 +89,7 @@ func (d devlogExecutor) ExecutePipelineStep(ctx context.Context, run Run, step P
 		}
 		markdown := seed
 		model := firstNonEmpty(step.Model, d.env.devlogModel)
-		generated, genErr := d.env.generateDevlogWithModel(ctx, seed, model)
+		generated, genErr := d.env.generateDevlogWithModel(ctx, applyPipelineProfilePrompt(step, seed), model)
 		if genErr == nil && strings.TrimSpace(generated.Content) != "" {
 			markdown = generated.Content
 			state["devlog.markdown"] = markdown

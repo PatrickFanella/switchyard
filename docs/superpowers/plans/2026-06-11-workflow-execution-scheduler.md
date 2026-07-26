@@ -1,5 +1,7 @@
 # Workflow Execution Scheduler Implementation Plan
 
+> **Historical plan:** The runtime described here was subsequently implemented and hardened. Unchecked boxes are original planning notation, not current status. Use `docs/roadmap.md` and the latest release qualification record for current state.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

@@ -95,6 +95,11 @@ func (s *MemoryStore) MergeModelBrokerRequestCorrelationIDs(id string, correlati
 	}
 	req.CorrelationIDs = mergeStringMaps(req.CorrelationIDs, correlationIDs)
 	req.UpdatedAt = s.now().UTC()
+	if backend := strings.TrimSpace(correlationIDs[CorrelationDeprecatedBackend]); backend != "" {
+		if err := s.recordCompatibilityUsageLocked(backend, req.UpdatedAt); err != nil {
+			return ModelBrokerRequest{}, err
+		}
+	}
 	s.modelBrokerRequests[id] = req
 	return cloneModelBrokerRequest(req), nil
 }
@@ -148,6 +153,9 @@ func (s *MemoryStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilt
 			continue
 		}
 		if filter.BeforeCreated != nil && (req.CreatedAt.After(*filter.BeforeCreated) || (req.CreatedAt.Equal(*filter.BeforeCreated) && req.ID >= filter.BeforeID)) {
+			continue
+		}
+		if filter.SinceCreated != nil && req.CreatedAt.Before(*filter.SinceCreated) {
 			continue
 		}
 		out = append(out, cloneModelBrokerRequest(req))
@@ -225,6 +233,10 @@ func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) 
 		}
 		delete(s.runs, id)
 		delete(s.events, id)
+		for _, artifact := range s.artifacts[id] {
+			result.Artifacts++
+			result.ArtifactBytes += int64(artifact.ByteSize)
+		}
 		delete(s.artifacts, id)
 		for stepID, step := range s.steps {
 			if step.RunID == id {
@@ -251,6 +263,10 @@ func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) 
 }
 
 func (s *MemoryStore) RuntimeMetrics() (RuntimeMetrics, error) {
+	return s.RuntimeMetricsSince(context.Background(), time.Time{})
+}
+
+func (s *MemoryStore) RuntimeMetricsSince(_ context.Context, since time.Time) (RuntimeMetrics, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
@@ -258,10 +274,17 @@ func (s *MemoryStore) RuntimeMetrics() (RuntimeMetrics, error) {
 		metrics.RunStatusCounts[string(run.Status)]++
 	}
 	for _, request := range s.modelBrokerRequests {
+		if !since.IsZero() && request.CreatedAt.Before(since) {
+			continue
+		}
 		metrics.ModelRequestStatusCounts[request.Status]++
 		if request.StartedAt != nil && request.FinishedAt != nil {
 			metrics.ModelLatencyCount++
-			metrics.ModelLatencyMilliseconds += float64(request.FinishedAt.Sub(*request.StartedAt).Microseconds()) / 1000
+			milliseconds := float64(request.FinishedAt.Sub(*request.StartedAt).Microseconds()) / 1000
+			metrics.ModelLatencyMilliseconds += milliseconds
+			if milliseconds > metrics.ModelLatencyMaxMilliseconds {
+				metrics.ModelLatencyMaxMilliseconds = milliseconds
+			}
 		}
 	}
 	return metrics, nil

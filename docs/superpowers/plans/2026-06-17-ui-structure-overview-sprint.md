@@ -1,5 +1,7 @@
 # UI Structure + Overview Sprint Implementation Plan
 
+> **Historical completed plan:** The modular shell, hash navigation, and overview redesign were delivered. Retained for implementation history.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

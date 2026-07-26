@@ -21,6 +21,9 @@ type OpenCodeRequest struct {
 	RequestID  string
 	WorkDir    string
 	PreAttempt PreAttemptCallback
+	// OnCorrelation is called as soon as an upstream session identity exists,
+	// before a potentially long-running message request starts.
+	OnCorrelation func(map[string]string) error
 }
 
 type OpenCodeResponse struct {
@@ -180,6 +183,8 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		return OpenCodeResponse{}, fmt.Errorf("OPENCODE_SERVER_URL is not configured")
 	}
 	directory := firstNonEmpty(request.WorkDir, os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace")
+	requestID := firstNonEmpty(request.RequestID, "opencode-"+shortRandomID())
+	request.RequestID = requestID
 	sessionID := request.SessionID
 	if sessionID == "" {
 		createCtx, cancel := context.WithTimeout(ctx, openCodeSessionCreateTimeout())
@@ -191,17 +196,32 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		sessionID = created
 		request.PreAttempt = nil
 	}
+	correlation := nativeOpenCodeCorrelation(sessionID, requestID)
+	if request.OnCorrelation != nil {
+		if err := request.OnCorrelation(correlation); err != nil {
+			e.abortOpenCodeSession(context.Background(), sessionID)
+			return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
+		}
+	}
 	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
 	content, err := e.postOpenCodeMessage(messageCtx, sessionID, request)
 	cancel()
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
 			e.abortOpenCodeSession(context.Background(), sessionID)
 		}
-		return OpenCodeResponse{SessionID: sessionID, RequestID: request.RequestID, CorrelationIDs: map[string]string{"opencode_session_id": sessionID, "opencode_request_id": request.RequestID}}, err
+		return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
 	}
-	requestID := firstNonEmpty(request.RequestID, "opencode-"+shortRandomID())
-	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: map[string]string{"opencode_executor": "switchyard", "opencode_executor_backend": "native", "opencode_session_id": sessionID, "opencode_request_id": requestID}}, nil
+	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
+}
+
+func nativeOpenCodeCorrelation(sessionID, requestID string) map[string]string {
+	return map[string]string{
+		"opencode_executor":         "switchyard",
+		"opencode_executor_backend": "native",
+		"opencode_session_id":       sessionID,
+		"opencode_request_id":       requestID,
+	}
 }
 
 func (e *EnvOpenCodeExecutor) abortOpenCodeSession(ctx context.Context, sessionID string) {

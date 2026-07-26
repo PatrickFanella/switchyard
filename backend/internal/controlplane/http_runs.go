@@ -198,12 +198,29 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 			writeError(w, http.StatusNotFound, "step not found for run")
 			return
 		}
+		if step.Status == StepCanceled {
+			writeJSON(w, http.StatusOK, map[string]RunStep{"step": step})
+			return
+		}
+		detail, err := a.store.RunDetailContext(r.Context(), runID)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
 		step, err = a.store.CancelRunStep(stepID)
 		if err != nil {
 			writeControlError(w, err)
 			return
 		}
 		a.runner.CancelRun(runID)
+		if a.canceler != nil {
+			for _, event := range cancelRunDetail(r.Context(), a.canceler, detail).Events {
+				_, _ = a.store.AddEvent(runID, event.Type, event.Message)
+			}
+		}
+		if detail.Run.Status == RunQueued || detail.Run.Status == RunRunning {
+			_, _ = a.store.FinishRun(runID, RunCanceled, "Canceled by operator")
+		}
 		writeJSON(w, http.StatusOK, map[string]RunStep{"step": step})
 	default:
 		writeError(w, http.StatusNotFound, "step action not found")
@@ -266,6 +283,10 @@ func (a *API) cancelRun(w http.ResponseWriter, r *http.Request, id string) {
 	detail, err := a.store.RunDetailContext(r.Context(), id)
 	if err != nil {
 		writeControlError(w, err)
+		return
+	}
+	if detail.Run.Status == RunCanceled {
+		writeJSON(w, http.StatusOK, map[string]Run{"run": detail.Run})
 		return
 	}
 	if detail.Run.Status != RunQueued && detail.Run.Status != RunRunning {

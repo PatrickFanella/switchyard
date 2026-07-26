@@ -1,5 +1,7 @@
 # Development Readiness Implementation Plan
 
+> **Historical completed plan:** The checked work was qualified for the revision named in `docs/development-readiness-report-2026-07-19.md`. That evidence does not automatically apply to later commits.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. Steps use checkbox (`- [ ]`) syntax for tracking.

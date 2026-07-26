@@ -285,4 +285,18 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if detail.Run.Status != RunPaused || len(detail.Events) == 0 || len(detail.Steps) != 4 || len(detail.Artifacts) != 2 {
 		t.Fatalf("detail = %+v", detail)
 	}
+	if detail.Artifacts[0].StorageClass != "inline-data-uri" || detail.Artifacts[0].ByteSize == 0 || detail.Artifacts[0].SHA256 == "" || detail.Artifacts[0].RetentionUntil == nil {
+		t.Fatalf("artifact lifecycle metadata = %+v", detail.Artifacts[0])
+	}
+	if err := store.RecordCompatibilityUsage(ctx, "ocq", time.Unix(100, 0)); err != nil {
+		t.Fatalf("RecordCompatibilityUsage() error = %v", err)
+	}
+	retirement, err := store.CompatibilityRetirementStatus(ctx, time.Unix(100, 0))
+	if err != nil || len(retirement.Backends) != 2 || retirement.Backends[1].Backend != "ocq" || retirement.Backends[1].Attempts90D != 1 {
+		t.Fatalf("retirement = %+v err=%v", retirement, err)
+	}
+	snapshot, err := store.OperatorRunSnapshot(ctx, time.Unix(100, 0), 5)
+	if err != nil || len(snapshot.Recent) == 0 {
+		t.Fatalf("snapshot = %+v err=%v", snapshot, err)
+	}
 }

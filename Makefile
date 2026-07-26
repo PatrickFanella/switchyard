@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config open-pilot-check api-run api-build cli-build api-test api-race api-soak postgres-test security-audit docker-build docker-smoke api-smoke web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup postgres-restore-drill security-audit docker-build docker-smoke api-smoke production-smoke compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config open-pilot-check ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config docs-check open-pilot-check ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -34,8 +34,18 @@ api-race: ## Run backend tests under the race detector
 api-soak: ## Exercise sustained concurrent authenticated API traffic and graceful shutdown
 	./scripts/test-api-soak.sh
 
+api-soak-extended: ## Run the release-grade 15-minute authenticated API soak
+	SWITCHYARD_SOAK_DURATION=900 SWITCHYARD_SOAK_CLIENTS=16 SWITCHYARD_SOAK_MIN_REQUESTS=10000 ./scripts/test-api-soak.sh
+
 postgres-test: ## Run integration tests against an isolated pinned Postgres container
 	./scripts/test-postgres.sh
+
+postgres-backup: ## Create and verify a custom-format backup in SWITCHYARD_BACKUP_DIR
+	./scripts/backup-postgres.sh
+
+postgres-restore-drill: ## Restore BACKUP into an isolated PostgreSQL container and prove API readiness
+	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/switchyard.dump is required" >&2; exit 2)
+	./scripts/restore-postgres-drill.sh "$(BACKUP)"
 
 security-audit: ## Audit Go and web dependencies for known vulnerabilities
 	cd backend && govulncheck ./...
@@ -90,6 +100,12 @@ api-smoke: api-build ## Start API temporarily and check core control-plane endpo
 
 switchyard-smoke: api-smoke ## Run Switchyard control-plane smoke checks
 
+production-smoke: ## Verify the real production control, model, isolation, and public-web contracts
+	./scripts/smoke-production-contract.sh
+
+compatibility-report: ## Summarize deprecated backend attempts from durable broker history
+	./scripts/report-compatibility-usage.sh
+
 docker-up: ## Start local Switchyard stack
 	docker compose up --build
 
@@ -106,16 +122,20 @@ clean: ## Remove generated build artifacts
 compose-config: ## Validate Docker Compose config
 	docker compose config --quiet
 
+docs-check: ## Verify current-status documents and stable API references agree
+	./scripts/check-docs-consistency.sh
+
 open-pilot-check: ## Verify Open Pilot templates are present
 	@test -f .gitea/ISSUE_TEMPLATE/open-pilot-task.yaml
 	@grep -q 'Test Command' .gitea/ISSUE_TEMPLATE/open-pilot-task.yaml
 
-release-artifacts: ## Build pinned OCI archives with BuildKit SBOM and provenance attestations
+release-artifacts: ## Build pinned OCI archives with BuildKit SBOM, provenance, and source manifest
 	mkdir -p release
-	docker buildx build --platform linux/amd64 --attest type=sbom,generator=docker.io/docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68 --provenance=mode=max --output type=oci,dest=release/switchyard-api.oci.tar backend
-	docker buildx build --platform linux/amd64 --attest type=sbom,generator=docker.io/docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68 --provenance=mode=max --output type=oci,dest=release/switchyard-web.oci.tar web
-	docker buildx build --platform linux/amd64 --attest type=sbom,generator=docker.io/docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68 --provenance=mode=max --output type=oci,dest=release/switchyard-opencode.oci.tar services/opencode
+	docker buildx build --build-arg SWITCHYARD_SOURCE_REVISION=$$(git rev-parse HEAD) --platform linux/amd64 --attest type=sbom,generator=docker.io/docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68 --provenance=mode=max --output type=oci,dest=release/switchyard-api.oci.tar backend
+	docker buildx build --build-arg SWITCHYARD_SOURCE_REVISION=$$(git rev-parse HEAD) --platform linux/amd64 --attest type=sbom,generator=docker.io/docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68 --provenance=mode=max --output type=oci,dest=release/switchyard-web.oci.tar web
+	docker buildx build --build-arg SWITCHYARD_SOURCE_REVISION=$$(git rev-parse HEAD) --platform linux/amd64 --attest type=sbom,generator=docker.io/docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68 --provenance=mode=max --output type=oci,dest=release/switchyard-opencode.oci.tar services/opencode
 	cd release && sha256sum *.oci.tar > SHA256SUMS
+	./scripts/write-release-manifest.sh
 
 release-verify: release-artifacts ## Verify release archives and checksums
 	cd release && sha256sum -c SHA256SUMS

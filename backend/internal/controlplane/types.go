@@ -180,12 +180,17 @@ type RunEvent struct {
 }
 
 type Artifact struct {
-	ID        string    `json:"id"`
-	RunID     string    `json:"run_id"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	URI       string    `json:"uri"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             string     `json:"id"`
+	RunID          string     `json:"run_id"`
+	Name           string     `json:"name"`
+	Kind           string     `json:"kind"`
+	URI            string     `json:"uri"`
+	StorageClass   string     `json:"storage_class"`
+	ContentType    string     `json:"content_type,omitempty"`
+	ByteSize       int        `json:"byte_size"`
+	SHA256         string     `json:"sha256,omitempty"`
+	RetentionUntil *time.Time `json:"retention_until,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 type CreateArtifactInput struct {
@@ -214,15 +219,18 @@ type RunPage struct {
 }
 
 type RetentionResult struct {
-	Runs          int `json:"runs"`
-	ModelRequests int `json:"model_requests"`
+	Runs          int   `json:"runs"`
+	ModelRequests int   `json:"model_requests"`
+	Artifacts     int   `json:"artifacts"`
+	ArtifactBytes int64 `json:"artifact_bytes"`
 }
 
 type RuntimeMetrics struct {
-	RunStatusCounts          map[string]int
-	ModelRequestStatusCounts map[string]int
-	ModelLatencyCount        int
-	ModelLatencyMilliseconds float64
+	RunStatusCounts             map[string]int
+	ModelRequestStatusCounts    map[string]int
+	ModelLatencyCount           int
+	ModelLatencyMilliseconds    float64
+	ModelLatencyMaxMilliseconds float64
 }
 
 type CreateRunInput struct {

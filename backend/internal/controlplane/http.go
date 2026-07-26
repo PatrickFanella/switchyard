@@ -324,6 +324,15 @@ func (a *API) retentionStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"retention": a.retention.Status()})
 }
 
+func (a *API) compatibilityRetirement(w http.ResponseWriter, r *http.Request) {
+	status, err := compatibilityRetirementStatus(a.store, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 func pipelinesOrEmpty(items []Pipeline) []Pipeline {
 	if items == nil {
 		return []Pipeline{}

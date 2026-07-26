@@ -1,5 +1,7 @@
 # Open Pilot Autonomy v1 Implementation Plan
 
+> **Historical plan:** The lifecycle and policy path described here was subsequently implemented behind safe configuration gates. Unchecked boxes are not current status; use `docs/roadmap.md` for the remaining Open Pilot backlog.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

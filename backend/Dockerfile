@@ -5,6 +5,9 @@ COPY . ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-buildid=' -o /out/api ./cmd/app
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+ARG SWITCHYARD_SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.source="https://git.subcult.tv/subculture-collective/switchyard" \
+      org.opencontainers.image.revision="${SWITCHYARD_SOURCE_REVISION}"
 WORKDIR /app
 RUN apk add --no-cache git=2.49.1-r0
 COPY --from=build /out/api /app/api

@@ -112,7 +112,10 @@ func (a *API) buildOperatorSummary(ctx context.Context, now time.Time) OperatorS
 	}
 	broker := a.modelBroker.Status(ctx)
 	executor := a.openCode.Status(ctx)
-	runs := a.store.ListRuns()
+	runSnapshot, snapshotErr := operatorRunSnapshot(ctx, a.store, now, 10)
+	if snapshotErr != nil {
+		runSnapshot = OperatorRunSnapshot{Recent: []Run{}}
+	}
 	workflows := a.store.ListWorkflows()
 
 	workflowNames := make(map[string]string, len(workflows))
@@ -143,26 +146,14 @@ func (a *API) buildOperatorSummary(ctx context.Context, now time.Time) OperatorS
 			},
 		},
 	}
+	summary.Partial = snapshotErr != nil
 
-	cutoff := now.Add(-24 * time.Hour)
-	for _, run := range runs {
-		switch run.Status {
-		case RunQueued:
-			summary.Data.Runs.Queued++
-		case RunRunning:
-			summary.Data.Runs.Running++
-		}
+	summary.Data.Runs.Queued, summary.Data.Runs.Running = runSnapshot.Queued, runSnapshot.Running
+	summary.Data.Runs.Failed24H, summary.Data.Runs.Succeeded24H = runSnapshot.Failed24H, runSnapshot.Succeeded24H
+	for _, run := range runSnapshot.Recent {
 		reference := run.CreatedAt
 		if run.FinishedAt != nil {
 			reference = *run.FinishedAt
-		}
-		if !reference.Before(cutoff) {
-			switch run.Status {
-			case RunFailed, RunTimedOut:
-				summary.Data.Runs.Failed24H++
-			case RunSucceeded:
-				summary.Data.Runs.Succeeded24H++
-			}
 		}
 		if len(summary.Data.Runs.Recent) < 5 {
 			summary.Data.Runs.Recent = append(summary.Data.Runs.Recent, OperatorSummaryRecentRun{

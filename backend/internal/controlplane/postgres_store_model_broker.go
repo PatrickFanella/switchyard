@@ -67,9 +67,26 @@ func (s *PostgresStore) MergeModelBrokerRequestCorrelationIDs(id string, correla
 	if err != nil {
 		return ModelBrokerRequest{}, err
 	}
-	row := s.db.QueryRowContext(s.operationContext(), `update model_broker_requests set correlation_ids=correlation_ids || $2::jsonb, updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, string(correlation))
+	tx, err := s.db.BeginTx(s.operationContext(), nil)
+	if err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	row := tx.QueryRowContext(s.operationContext(), `update model_broker_requests set correlation_ids=correlation_ids || $2::jsonb, updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, string(correlation))
 	req, err := scanModelBrokerRequestRow(row)
-	return req, mapScanErr(err)
+	if err != nil {
+		_ = tx.Rollback()
+		return ModelBrokerRequest{}, mapScanErr(err)
+	}
+	if backend := strings.TrimSpace(correlationIDs[CorrelationDeprecatedBackend]); backend != "" {
+		if _, err := tx.ExecContext(s.operationContext(), `insert into compatibility_usage_daily(usage_date, backend, attempts, first_attempt_at, last_attempt_at) values(current_date,$1,1,now(),now()) on conflict(usage_date, backend) do update set attempts=compatibility_usage_daily.attempts+1, first_attempt_at=least(compatibility_usage_daily.first_attempt_at, excluded.first_attempt_at), last_attempt_at=greatest(compatibility_usage_daily.last_attempt_at, excluded.last_attempt_at)`, backend); err != nil {
+			_ = tx.Rollback()
+			return ModelBrokerRequest{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	return req, nil
 }
 
 func (s *PostgresStore) CancelModelBrokerRequest(id string) (ModelBrokerRequest, error) {
@@ -113,6 +130,10 @@ func (s *PostgresStore) ListModelBrokerRequestsContext(ctx context.Context, filt
 	if filter.BeforeCreated != nil {
 		args = append(args, filter.BeforeCreated.UTC(), filter.BeforeID)
 		where = append(where, fmt.Sprintf("(created_at, id) < ($%d, $%d)", len(args)-1, len(args)))
+	}
+	if filter.SinceCreated != nil {
+		args = append(args, filter.SinceCreated.UTC())
+		where = append(where, fmt.Sprintf("created_at >= $%d", len(args)))
 	}
 	query := `select ` + modelBrokerRequestColumns + ` from model_broker_requests`
 	if len(where) > 0 {
@@ -183,6 +204,11 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 	if err != nil {
 		return RetentionResult{}, err
 	}
+	var artifacts, artifactBytes int64
+	if err := tx.QueryRowContext(s.operationContext(), `with expired as (select id from runs where created_at < $1 and status in ($2,$3,$4,$5,$6)), removed as (delete from artifacts where run_id in (select id from expired) returning byte_size) select count(*), coalesce(sum(byte_size),0) from removed`, before.UTC(), RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut).Scan(&artifacts, &artifactBytes); err != nil {
+		_ = tx.Rollback()
+		return RetentionResult{}, err
+	}
 	runResult, err := tx.ExecContext(s.operationContext(), `delete from runs where created_at < $1 and status in ($2,$3,$4,$5,$6)`, before.UTC(), RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut)
 	if err != nil {
 		_ = tx.Rollback()
@@ -198,11 +224,14 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 	}
 	runs, _ := runResult.RowsAffected()
 	requests, _ := requestResult.RowsAffected()
-	return RetentionResult{Runs: int(runs), ModelRequests: int(requests)}, nil
+	return RetentionResult{Runs: int(runs), ModelRequests: int(requests), Artifacts: int(artifacts), ArtifactBytes: artifactBytes}, nil
 }
 
 func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
-	ctx := s.operationContext()
+	return s.RuntimeMetricsSince(s.operationContext(), time.Time{})
+}
+
+func (s *PostgresStore) RuntimeMetricsSince(ctx context.Context, since time.Time) (RuntimeMetrics, error) {
 	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
 	rows, err := s.db.QueryContext(ctx, `select status, count(*) from runs group by status`)
 	if err != nil {
@@ -218,7 +247,12 @@ func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
 		metrics.RunStatusCounts[status] = count
 	}
 	rows.Close()
-	rows, err = s.db.QueryContext(ctx, `select status, count(*) from model_broker_requests group by status`)
+	where, args := "", []any{}
+	if !since.IsZero() {
+		where = " where created_at >= $1"
+		args = append(args, since.UTC())
+	}
+	rows, err = s.db.QueryContext(ctx, `select status, count(*) from model_broker_requests`+where+` group by status`, args...)
 	if err != nil {
 		return RuntimeMetrics{}, err
 	}
@@ -232,7 +266,11 @@ func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
 		metrics.ModelRequestStatusCounts[status] = count
 	}
 	rows.Close()
-	if err := s.db.QueryRowContext(ctx, `select count(*), coalesce(sum(extract(epoch from (finished_at-started_at))*1000),0) from model_broker_requests where started_at is not null and finished_at is not null`).Scan(&metrics.ModelLatencyCount, &metrics.ModelLatencyMilliseconds); err != nil {
+	latencyWhere := ` where started_at is not null and finished_at is not null`
+	if !since.IsZero() {
+		latencyWhere += ` and created_at >= $1`
+	}
+	if err := s.db.QueryRowContext(ctx, `select count(*), coalesce(sum(extract(epoch from (finished_at-started_at))*1000),0), coalesce(max(extract(epoch from (finished_at-started_at))*1000),0) from model_broker_requests`+latencyWhere, args...).Scan(&metrics.ModelLatencyCount, &metrics.ModelLatencyMilliseconds, &metrics.ModelLatencyMaxMilliseconds); err != nil {
 		return RuntimeMetrics{}, err
 	}
 	return metrics, nil

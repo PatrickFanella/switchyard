@@ -84,6 +84,26 @@ describe('App', () => {
     });
   });
 
+  it('uses the native operator summary and agent profile contracts', async () => {
+    window.location.hash = '#/overview';
+    const fetch = mockDashboardFetch();
+    const { container, root } = await renderApp('Runtime operating normally');
+
+    expect(container.textContent).toContain('Succeeded (24h)');
+    expect(container.textContent).toContain('Model broker: healthy');
+    expect(fetch).toHaveBeenCalledWith('/api/operator-summary', expect.anything());
+
+    const agentButton = Array.from(container.querySelectorAll('button')).find((item) => item.textContent?.trim() === 'Agents');
+    await act(async () => {
+      agentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => expectText(container, 'Open Pilot Executor'), container);
+    expect(container.textContent).toContain('Implement the smallest safe change.');
+    expect(container.textContent).toContain('Allowed executors: opencode, command, git, gitea');
+
+    await unmount(root);
+  });
+
   it('honors hash navigation on initial render', () => {
     window.location.hash = '#/queues';
 

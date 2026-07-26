@@ -189,7 +189,7 @@ func TestAPIWorkflowDefinitionActivationVersionsAndRollback(t *testing.T) {
 }
 
 func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
-	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	store := controlplane.NewStore(time.Now)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
@@ -593,11 +593,60 @@ func TestAPIRetryOpenPilotPausedRunRequiresLifecycleResume(t *testing.T) {
 	}
 }
 
-type fakeCanceler struct{ called bool }
+type fakeCanceler struct {
+	called bool
+	calls  int
+}
 
 func (f *fakeCanceler) Cancel(context.Context, controlplane.Run) controlplane.CancelResult {
 	f.called = true
+	f.calls++
 	return controlplane.CancelResult{Events: []controlplane.WorkflowExecutionEvent{{Type: "fake.cancel", Message: "called"}}}
+}
+
+func TestAPIStepCancellationDispatchesUpstreamOnceAndTerminalizesRun(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := store.UpsertWorkflow(controlplane.Workflow{ID: "test", Kind: "test", Name: "Test"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "test.agent", Executor: "opencode", CorrelationIDs: map[string]string{"opencode_session_id": "ses-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceler := &fakeCanceler{}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetCancelDispatcher(canceler)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		request, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/steps/"+step.ID+"/cancel", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("attempt %d status = %d", attempt, response.StatusCode)
+		}
+	}
+	if canceler.calls != 1 {
+		t.Fatalf("upstream cancellation calls = %d, want 1", canceler.calls)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Run.Status != controlplane.RunCanceled || detail.Steps[0].Status != controlplane.StepCanceled {
+		t.Fatalf("detail = %+v", detail)
+	}
 }
 
 func TestAPIUpdatesTriggerEnabled(t *testing.T) {
@@ -672,7 +721,7 @@ func TestAPIAgentProfilesListsNativeProfiles(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode profiles: %v", err)
 	}
-	if len(body.Profiles) != 3 || body.Profiles[0].ID == "" || len(body.Profiles[0].AllowedExecutors) == 0 {
+	if len(body.Profiles) != 4 || body.Profiles[0].ID != "content-writer" || len(body.Profiles[0].AllowedExecutors) == 0 {
 		t.Fatalf("profiles = %+v", body.Profiles)
 	}
 }

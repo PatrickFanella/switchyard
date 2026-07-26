@@ -279,6 +279,7 @@ func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, ru
 		}
 		model = resolved
 	}
+	prompt = applyPipelineProfilePrompt(step, prompt)
 	response, err := g.env.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "user", Content: prompt}}, PreAttempt: preAttemptFromContext(ctx)})
 	if err != nil {
 		return PipelineStepExecution{CorrelationIDs: response.CorrelationIDs, Inputs: map[string]string{"model": model, "prompt": prompt}}, err

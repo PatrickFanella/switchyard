@@ -333,6 +333,9 @@ func (s *MemoryStore) RecordRunStepBackendDecision(runID, stepID string, decisio
 	s.steps[stepID] = step
 	if decision.DeprecatedBackend != "" {
 		s.events[runID] = append(s.events[runID], RunEvent{ID: newID("evt"), RunID: runID, Type: DeprecatedBackendAttemptedEvent, Message: decision.DeprecatedBackend, CreatedAt: s.now().UTC()})
+		if err := s.recordCompatibilityUsageLocked(decision.DeprecatedBackend, s.now().UTC()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -442,7 +445,11 @@ func (s *MemoryStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
 		return Artifact{}, ErrNotFound
 	}
 	now := s.now().UTC()
-	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, CreatedAt: now}
+	metadata, err := artifactMetadata(input.URI, now)
+	if err != nil {
+		return Artifact{}, ErrInvalid
+	}
+	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, StorageClass: metadata.StorageClass, ContentType: metadata.ContentType, ByteSize: metadata.ByteSize, SHA256: metadata.SHA256, RetentionUntil: metadata.RetentionUntil, CreatedAt: now}
 	s.artifacts[input.RunID] = append(s.artifacts[input.RunID], artifact)
 	s.events[input.RunID] = append(s.events[input.RunID], RunEvent{ID: newID("evt"), RunID: input.RunID, Type: "artifact.created", Message: input.Name + " (" + input.Kind + ")", CreatedAt: now})
 	return artifact, nil

@@ -1,5 +1,7 @@
 # Docs Migration Closeout Implementation Plan
 
+> **Historical plan:** The native-module documentation migration is complete. This file is retained for decision history only.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

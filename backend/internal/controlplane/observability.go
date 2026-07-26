@@ -1,8 +1,8 @@
 package controlplane
 
 import (
+	"context"
 	"net/http"
-	"sort"
 	"time"
 )
 
@@ -35,52 +35,53 @@ type modelBrokerLatencySummary struct {
 }
 
 func (a *API) modelBrokerObservability(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Limit: 100})
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	metrics, err := modelBrokerRuntimeMetrics(a.store, r.Context(), since)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	totals := map[string]int{}
-	recent := make([]modelBrokerObservabilityRequest, 0, len(rows))
-	errors := []modelBrokerObservabilityRequest{}
-	latency := modelBrokerLatencySummary{}
-	for _, row := range rows {
-		totals[row.Status]++
-		item := modelBrokerObservabilityItem(row)
-		recent = append(recent, item)
-		if row.Error != "" || row.Status == ModelBrokerRequestFailed || row.Status == ModelBrokerRequestCanceled {
-			errors = append(errors, item)
-		}
-		if item.DurationMS > 0 {
-			latency.Count++
-			latency.Avg += item.DurationMS
-			if item.DurationMS > latency.Max {
-				latency.Max = item.DurationMS
-			}
-		}
+	recentRows, err := a.store.ListModelBrokerRequestsContext(r.Context(), ListModelBrokerRequestsFilter{SinceCreated: &since, Limit: 20})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
+	errorRows, err := a.store.ListModelBrokerRequestsContext(r.Context(), ListModelBrokerRequestsFilter{SinceCreated: &since, Statuses: []string{ModelBrokerRequestFailed, ModelBrokerRequestCanceled}, Limit: 10})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	recent, errors := make([]modelBrokerObservabilityRequest, 0, len(recentRows)), make([]modelBrokerObservabilityRequest, 0, len(errorRows))
+	for _, row := range recentRows {
+		recent = append(recent, modelBrokerObservabilityItem(row))
+	}
+	for _, row := range errorRows {
+		errors = append(errors, modelBrokerObservabilityItem(row))
+	}
+	latency := modelBrokerLatencySummary{Count: metrics.ModelLatencyCount, Avg: int64(metrics.ModelLatencyMilliseconds), Max: int64(metrics.ModelLatencyMaxMilliseconds)}
 	if latency.Count > 0 {
-		latency.Avg = latency.Avg / int64(latency.Count)
-	}
-
-	sort.Slice(recent, func(i, j int) bool { return recent[i].CreatedAt.After(recent[j].CreatedAt) })
-	sort.Slice(errors, func(i, j int) bool { return errors[i].CreatedAt.After(errors[j].CreatedAt) })
-	if len(recent) > 20 {
-		recent = recent[:20]
-	}
-	if len(errors) > 10 {
-		errors = errors[:10]
+		latency.Avg /= int64(latency.Count)
 	}
 
 	writeJSON(w, http.StatusOK, modelBrokerObservabilityResponse{
 		Status:         NewEnvModelBrokerStatusProvider().Status(r.Context()),
-		Totals:         totals,
+		Totals:         metrics.ModelRequestStatusCounts,
 		RecentRequests: recent,
 		RecentErrors:   errors,
 		LatencyMS:      latency,
 		CheckedAt:      time.Now().UTC(),
 	})
+}
+
+type windowedRuntimeMetricsStore interface {
+	RuntimeMetricsSince(context.Context, time.Time) (RuntimeMetrics, error)
+}
+
+func modelBrokerRuntimeMetrics(store Store, ctx context.Context, since time.Time) (RuntimeMetrics, error) {
+	if source, ok := store.(windowedRuntimeMetricsStore); ok {
+		return source.RuntimeMetricsSince(ctx, since)
+	}
+	return store.RuntimeMetrics()
 }
 
 func modelBrokerObservabilityItem(row ModelBrokerRequest) modelBrokerObservabilityRequest {
