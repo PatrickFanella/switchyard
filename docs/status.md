@@ -7,8 +7,8 @@ qualification record.
 ## Development target
 
 - Authoritative branch target: `main`
-- Current deployed release: `v0.1.1`
-- Current deployed revision: `66fb60a8789ca9c58bc56d70b40fceeeea145a03`
+- Current deployed release: `v0.1.2`
+- Current deployed revision: `7d90c065c05bfa93eb380ff071036d61c1f965e2`
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
 - Required deployment proof: `make production-smoke` on the resolved target
@@ -27,23 +27,22 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Agent profiles | test-verified | Registry/API, executor/model validation, default resolution, prompt contracts, and run-step audit correlation |
 | Operator UI | test-verified selected scope | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
-| Release qualification | qualified with exceptions | `v0.1.1` is deployed with revision-matched CI and production-contract evidence; see `docs/releases/v0.1.1-qualification.md` |
-| Production recovery | partial | A scheduled production backup and isolated restore drill are proven; a safe live application rollback still requires a qualified successor release |
+| Release qualification | qualified with exceptions | `v0.1.2` is deployed with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md` |
+| Production recovery | verified | A scheduled production backup, isolated restore drill, and live application-only rollback to `v0.1.1` are proven |
 
 ## Active release blockers
 
 Do not increase unattended Open Pilot autonomy until all of the following are
 proven for one immutable revision:
 
-1. rehearsed application rollback from a qualified successor to `v0.1.1`;
-2. working alert delivery, acknowledgement, recovery notification, and ownership;
-3. encrypted authenticated Almaz-to-Kvant proxy transport.
+1. working alert delivery, acknowledgement, recovery notification, and ownership;
+2. encrypted authenticated Almaz-to-Kvant proxy transport.
 
 ## Operational evidence
 
 `docs/development-readiness-report-2026-07-19.md` is historical evidence for
 commit `41813c9`. It must not be used as evidence for a later commit. Current
-production evidence is recorded in `docs/releases/v0.1.1-qualification.md`.
+production evidence is recorded in `docs/releases/v0.1.2-qualification.md`.
 
 ## Active references
 
