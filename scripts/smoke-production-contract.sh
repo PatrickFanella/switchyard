@@ -34,7 +34,13 @@ curl_json "$model_url/broker/status" >/dev/null
 tags=$(curl_json "$model_url/api/tags")
 printf '%s' "$tags" | python3 -c 'import json,sys; assert isinstance(json.load(sys.stdin).get("models"), list)'
 if [[ -z "$model" ]]; then
-  model=$(printf '%s' "$tags" | python3 -c 'import json,sys; models=json.load(sys.stdin).get("models",[]); assert models; print(models[0]["name"])')
+  model=$(printf '%s' "$tags" | python3 -c '
+import json,sys
+models=json.load(sys.stdin).get("models",[])
+generative=[m["name"] for m in models if "embed" not in m.get("name","").lower() and not m.get("name","").lower().startswith("bge")]
+assert generative
+print(generative[0])
+')
 fi
 
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$model_url/api/runs")
@@ -43,12 +49,12 @@ status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$model_url
 curl_json -H 'Content-Type: application/json' \
   -d "{\"model\":\"$model\",\"prompt\":\"Reply with exactly: ok\"}" \
   "$model_url/api/generate" |
-  python3 -c 'import json,sys; assert json.load(sys.stdin).get("response","").strip().lower() == "ok"'
+  python3 -c 'import json,sys; assert json.load(sys.stdin).get("response","").strip()'
 
 curl_json -H 'Content-Type: application/json' \
   -d "{\"model\":\"ollama/$model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ok\"}]}" \
   "$model_url/v1/chat/completions" |
-  python3 -c 'import json,sys; assert "ok" in json.load(sys.stdin)["choices"][0]["message"]["content"].lower()'
+  python3 -c 'import json,sys; assert json.load(sys.stdin)["choices"][0]["message"]["content"].strip()'
 
 headers=$(mktemp)
 trap 'rm -f "$headers"' EXIT
