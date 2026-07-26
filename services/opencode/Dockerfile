@@ -25,7 +25,8 @@ COPY default-config/ /opt/switchyard-opencode/default-config/
 RUN addgroup -S -g 10001 opencode \
 	&& adduser -S -D -H -u 10001 -G opencode opencode \
 	&& install -d -o opencode -g opencode /home/opencode/.config/opencode /home/opencode/.local/share/opencode /home/opencode/.cache \
-	&& chmod +x /usr/local/bin/switchyard-opencode-install /usr/local/bin/switchyard-opencode-entrypoint
+	&& chmod 0755 /usr/local/bin/switchyard-opencode-install /usr/local/bin/switchyard-opencode-entrypoint \
+	&& chmod -R a+rX /opt/switchyard-opencode/default-config
 
 WORKDIR /workspace
 
