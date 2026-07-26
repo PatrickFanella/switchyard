@@ -112,6 +112,7 @@ services:
       OPEN_PILOT_REPO_PATH: ${OPEN_PILOT_REPO_PATH:-}
       OPEN_PILOT_WORKTREE_ROOT: ${OPEN_PILOT_WORKTREE_ROOT:-}
       OPEN_PILOT_WORKTREE_TIMEOUT: ${OPEN_PILOT_WORKTREE_TIMEOUT:-300s}
+      SWITCHYARD_BACKUP_METRICS_FILE: /var/lib/switchyard-metrics/backup.prom
       GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /workspace
@@ -127,6 +128,7 @@ services:
       - "${SWITCHYARD_MODEL_BIND_HOST:-${SWITCHYARD_BIND_HOST:-127.0.0.1}}:${LLAMA_LINE_PORT:-11434}:11434"
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
+      - ${SWITCHYARD_BACKUP_METRICS_FILE:-/dev/null}:/var/lib/switchyard-metrics/backup.prom:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -851,4 +852,35 @@ func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_lease_renewals_total counter")
 		_, _ = fmt.Fprintf(w, "switchyard_worker_lease_renewals_total %d\n", status.LeaseRenewals)
 	}
+	if timestamp, ok := backupSuccessTimestamp(os.Getenv("SWITCHYARD_BACKUP_METRICS_FILE")); ok {
+		_, _ = fmt.Fprintln(w, "# HELP switchyard_postgres_backup_last_success_timestamp_seconds Unix timestamp of the newest successful PostgreSQL backup.")
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_postgres_backup_last_success_timestamp_seconds gauge")
+		_, _ = fmt.Fprintf(w, "switchyard_postgres_backup_last_success_timestamp_seconds %.0f\n", timestamp)
+	}
+}
+
+func backupSuccessTimestamp(path string) (float64, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return 0, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 || fields[0] != "switchyard_postgres_backup_last_success_timestamp_seconds" {
+			continue
+		}
+		timestamp, err := strconv.ParseFloat(fields[1], 64)
+		if err == nil && timestamp > 0 {
+			return timestamp, true
+		}
+		return 0, false
+	}
+	return 0, false
 }

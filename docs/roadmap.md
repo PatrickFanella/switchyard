@@ -279,7 +279,9 @@ Exit criteria:
 
 ## Phase 6 — runtime hardening
 
-Status: code-complete for the documented release gate. Backup restore, rollback rehearsal, alert delivery, and encrypted proxy transport remain operational prerequisites.
+Status: code-complete and deployed at `v0.1.1`. Production backup and isolated
+restore are proven. Live application rollback, acknowledged alert delivery, and
+encrypted proxy transport remain operational prerequisites.
 
 Goal: make Switchyard Runtime reliable enough for unattended scheduled workflows.
 
@@ -370,12 +372,14 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Qualify and promote one immutable mainline release with complete CI,
-   provenance, restore, rollback, and production-contract evidence.
+1. Promote a qualified successor to `v0.1.1`, then rehearse an application-only
+   rollback to `v0.1.1` without a database restore.
 2. Deploy and test backup freshness, runtime health, queue, and failure alerts
    with an assigned receiver and escalation owner.
 3. Replace the Almaz-to-Kvant plaintext dashboard hop with the approved
-   encrypted Tailscale path while preserving the control/model listener split.
+   encrypted Tailscale path after the central policy permits Almaz
+   (`100.77.128.80`) to reach Kvant (`100.65.164.66`) on TCP/28081, while
+   preserving the control/model listener split.
 4. Observe durable deprecated-selector usage for 90 days and require two
    qualifying zero-use releases before selector removal.
 5. Measure retained inline-artifact growth before funding an object-storage
