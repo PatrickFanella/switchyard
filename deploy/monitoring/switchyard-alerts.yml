@@ -1,13 +1,13 @@
 groups:
   - name: switchyard
     rules:
-      - alert: SwitchyardControlPlaneDown
-        expr: up{job="switchyard-control"} == 0
+      - alert: SwitchyardModelIngressDown
+        expr: up{job="switchyard-model"} == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: Switchyard control-plane readiness is unavailable
+          summary: Switchyard model ingress is unavailable
 
       - alert: SwitchyardModelBrokerBacklog
         expr: switchyard_model_broker_queue_depth > 50
@@ -26,7 +26,7 @@ groups:
           summary: Switchyard workers have failed more than five runs in fifteen minutes
 
       - alert: SwitchyardNoRecentBackup
-        expr: time() - switchyard_postgres_backup_last_success_timestamp_seconds > 93600
+        expr: absent(switchyard_postgres_backup_last_success_timestamp_seconds{job="switchyard-model"}) or time() - switchyard_postgres_backup_last_success_timestamp_seconds{job="switchyard-model"} > 93600
         for: 5m
         labels:
           severity: critical

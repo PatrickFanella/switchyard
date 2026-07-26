@@ -30,6 +30,12 @@ identity, pinned plugins, a read-only root filesystem, and no inherited MCP or
 global permission configuration. Development-only capability expansion must be
 explicit and must not become the production default.
 
+Keep production monitoring external to the application Compose stack. Scrape
+the canonical model listener for shared runtime metrics, keep the control API
+loopback-only, and republish backup freshness through the protected
+`SWITCHYARD_BACKUP_METRICS_FILE` mount rather than exposing private control
+routes.
+
 ## Verification
 
 Run:

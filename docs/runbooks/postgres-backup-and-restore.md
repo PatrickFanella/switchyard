@@ -30,6 +30,11 @@ The command:
 - writes a SHA-256 and source-revision metadata file;
 - never prints database credentials.
 
+When `SWITCHYARD_BACKUP_METRICS_FILE` is set, the command also atomically writes
+the successful backup timestamp in Prometheus text format. Compose mounts that
+single file read-only into the API and republishes it on `/metrics`; create one
+successful backup before reloading Compose with a non-empty metrics-file path.
+
 Backups must live outside the Docker volume and repository.
 
 ## Restore drill

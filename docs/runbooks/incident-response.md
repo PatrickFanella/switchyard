@@ -24,9 +24,33 @@ The repository includes starter Prometheus rules in
 `deploy/monitoring/switchyard-alerts.yml`. Before enabling them, assign an alert
 receiver and escalation owner and validate the actual metric labels.
 
+The production monitoring stack is external to this repository. Its
+Switchyard scrape must use the canonical model listener, not the loopback-only
+control listener:
+
+```yaml
+- job_name: switchyard-model
+  metrics_path: /metrics
+  static_configs:
+    - targets: ['10.0.0.50:11434']
+      labels:
+        project: switchyard
+        host: kvant
+```
+
+This target proves model-ingress and shared runtime metrics only. It does not
+authorize remote access to the private control plane. Keep the control listener
+loopback-only and use a Kvant-local probe/exporter for private readiness.
+
+Backup freshness also requires the backup service to publish
+`switchyard_postgres_backup_last_success_timestamp_seconds` to the file named by
+`SWITCHYARD_BACKUP_METRICS_FILE`. Compose mounts that file read-only into the
+API, which republishes the timestamp on the canonical `/metrics` route. The
+freshness rule treats a missing series as a failure.
+
 Initial thresholds:
 
-- readiness unavailable for five minutes: critical;
+- model ingress unavailable for five minutes: critical;
 - model-broker queue above 50 for ten minutes: warning;
 - more than five worker failures in fifteen minutes: warning;
 - newest successful PostgreSQL backup older than 26 hours: critical;

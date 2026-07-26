@@ -7,7 +7,8 @@ qualification record.
 ## Development target
 
 - Authoritative branch target: `main`
-- Current integration source: `codex/production-remediation`
+- Current deployed release: `v0.1.1`
+- Current deployed revision: `66fb60a8789ca9c58bc56d70b40fceeeea145a03`
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
 - Required deployment proof: `make production-smoke` on the resolved target
@@ -26,26 +27,23 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Agent profiles | test-verified | Registry/API, executor/model validation, default resolution, prompt contracts, and run-step audit correlation |
 | Operator UI | test-verified selected scope | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
-| Release qualification | implemented | Baseline and production Make gates, runner CI, reproducible artifacts and source manifest |
-| Production recovery | partial | Backup/restore/rollback assets exist; real target drills and alert delivery must be recorded |
+| Release qualification | qualified with exceptions | `v0.1.1` is deployed with revision-matched CI and production-contract evidence; see `docs/releases/v0.1.1-qualification.md` |
+| Production recovery | partial | A scheduled production backup and isolated restore drill are proven; a safe live application rollback still requires a qualified successor release |
 
 ## Active release blockers
 
 Do not increase unattended Open Pilot autonomy until all of the following are
 proven for one immutable revision:
 
-1. full `make verify-production` for the immutable release commit;
-2. verified production backup and isolated restore;
-3. rehearsed application rollback;
-4. working alert delivery and ownership;
-5. encrypted authenticated Almaz-to-Kvant proxy transport;
-6. production contract smoke from host, public route, and affected remote client.
+1. rehearsed application rollback from a qualified successor to `v0.1.1`;
+2. working alert delivery, acknowledgement, recovery notification, and ownership;
+3. encrypted authenticated Almaz-to-Kvant proxy transport.
 
 ## Operational evidence
 
 `docs/development-readiness-report-2026-07-19.md` is historical evidence for
-commit `41813c9`. It must not be used as evidence for a later commit. New
-promotion evidence belongs in `docs/releases/<version>-qualification.md`.
+commit `41813c9`. It must not be used as evidence for a later commit. Current
+production evidence is recorded in `docs/releases/v0.1.1-qualification.md`.
 
 ## Active references
 
