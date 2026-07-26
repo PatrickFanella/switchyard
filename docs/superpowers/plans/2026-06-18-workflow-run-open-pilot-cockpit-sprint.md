@@ -1,5 +1,7 @@
 # Workflow Run Detail + Open Pilot Cockpit Sprint Implementation Plan
 
+> **Historical completed plan:** The run cockpit, filters, evidence views, and Open Pilot lifecycle controls were delivered. Retained for implementation history.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

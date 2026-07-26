@@ -8,9 +8,9 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 
 | Component | Owner | Expected endpoint | Notes |
 | --- | --- | --- | --- |
-| Switchyard compat ingress | NUC / Switchyard Compose | `http://127.0.0.1:11434` and `http://10.0.0.50:11434` | Replaces the old llama-line process. |
+| Switchyard compat ingress | Kvant / Switchyard Compose | `http://10.0.0.50:11434` | Replaces the old llama-line process; the production listener is bound to Kvant's LAN address. |
 | Switchyard API | NUC / Switchyard Compose | `http://127.0.0.1:28080` or internal `api:8080` | Native control plane. |
-| Switchyard frontend | NUC / Switchyard Compose via Almaz Caddy | `https://switchyard.subcult.tv` | Authelia-protected, proxied by Almaz to `http://10.0.0.50:28081`. |
+| Switchyard frontend | Kvant / Switchyard Compose via Almaz Caddy | `https://switchyard.subcult.tv` | Authelia-protected; Kvant binds web on `10.0.0.50`, and Almaz Caddy proxies to `http://10.0.0.50:28081`. |
 | Ollama upstream | NUC host | `http://127.0.0.1:11435` on the host, `http://host.docker.internal:11435` from Compose | Real model server; never point `OLLAMA_BASE_URL` at `11434`. |
 | Phoenix | Almaz | `http://10.0.0.200:6006` | OTLP/HTTP traces with `x-project-name=switchyard`. |
 | Subcorp clients | `10.0.0.56` containers | `http://10.0.0.50:11434` | `/api/chat` returns plain Ollama JSON; `/v1/chat/completions` supports OpenAI JSON/SSE. |
@@ -22,22 +22,23 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 - `ss -ltnp 'sport = :11434'` shows Docker publishing `11434`.
 - `systemctl show ollama -p Environment` includes `OLLAMA_HOST=0.0.0.0:11435` when Docker must reach host Ollama.
 - UFW allows Docker bridge traffic to host Ollama on `11435`.
-- `.env` sets `LLAMA_LINE_PORT=11434` and points `OLLAMA_BASE_URL` at the real Ollama upstream, not Switchyard itself.
+- `.env` sets `LLAMA_LINE_PORT=11434`, sets `SWITCHYARD_MODEL_BIND_HOST` to the NUC LAN address when remote clients need ingress, and points `OLLAMA_BASE_URL` at the real Ollama upstream, not Switchyard itself.
+- Keep `SWITCHYARD_BIND_HOST=127.0.0.1` so API/control and Postgres remain loopback-bound. Set `SWITCHYARD_WEB_BIND_HOST=10.0.0.50` and `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR=10.0.0.200/32`; nginx denies direct web access and accepts only Almaz's exact LAN address. Treat this as a trusted-LAN fallback and migrate to an authenticated encrypted proxy hop when available.
 
 ## Smoke tests
 
 Run from the Switchyard host:
 
 ```bash
-curl -fsS http://127.0.0.1:11434/health
-curl -fsS http://127.0.0.1:11434/broker/status
-curl -fsS http://127.0.0.1:11434/api/tags
+curl -fsS http://10.0.0.50:11434/health
+curl -fsS http://10.0.0.50:11434/broker/status
+curl -fsS http://10.0.0.50:11434/api/tags
 curl -fsS -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.5:latest","prompt":"Reply with exactly: ok"}' \
-  http://127.0.0.1:11434/api/generate
+  http://10.0.0.50:11434/api/generate
 curl -fsS -H 'Content-Type: application/json' \
   -d '{"model":"ollama/qwen3.5:latest","messages":[{"role":"user","content":"Reply with exactly: ok"}]}' \
-  http://127.0.0.1:11434/v1/chat/completions
+  http://10.0.0.50:11434/v1/chat/completions
 ```
 
 Expected:
@@ -82,7 +83,7 @@ From Almaz, the local Caddy route can be checked without public DNS/TLS:
 curl -I -H 'Host: switchyard.subcult.tv' http://127.0.0.1
 ```
 
-Expected: `302` redirect to Authelia. The route lives in `/opt/server/management/config/caddy/Caddyfile` and proxies to `10.0.0.50:28081`.
+Expected: `302` redirect to Authelia. The route lives in `/opt/server/management/config/caddy/Caddyfile` and proxies to `10.0.0.50:28081`. Direct access to Kvant's web listener is denied; only Almaz (`10.0.0.200/32`) may reach it.
 
 ## Incident triage
 
@@ -128,7 +129,7 @@ Expected: `302` redirect to Authelia. The route lives in `/opt/server/management
 3. Verify rollback:
 
    ```bash
-   curl -fsS http://127.0.0.1:11434/broker/status
+   curl -fsS http://10.0.0.50:11434/broker/status
    ss -ltnp 'sport = :11434'
    ```
 

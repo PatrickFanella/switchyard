@@ -64,7 +64,7 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if run.Status != controlplane.RunSucceeded || run.Summary != "Prepared Open Pilot prompt for issue 123" {
+	if run.Status != controlplane.RunPaused || run.Summary != "Prepared Open Pilot prompt for issue 123" {
 		t.Fatalf("run = %+v", run)
 	}
 	if len(detail.Steps) != 4 || detail.Steps[1].Name != "open-pilot.branch-plan" || detail.Steps[3].Executor != "opencode" || detail.Steps[3].OutputSummary != "OpenCode executor unavailable; prompt prepared for operator handoff" {
@@ -244,7 +244,7 @@ func TestRunnerPausesOpenPilotAgentWorkWithoutExecutedWorktree(t *testing.T) {
 			if atomic.LoadInt32(&ocqCalls) != 0 {
 				t.Fatalf("ocqCalls = %d", ocqCalls)
 			}
-			if run.Summary != "Open Pilot paused: isolated worktree required" || run.Status != controlplane.RunSucceeded {
+			if run.Summary != "Open Pilot paused: isolated worktree required" || run.Status != controlplane.RunPaused {
 				t.Fatalf("run = %+v", run)
 			}
 			if len(detail.Steps) != 4 || detail.Steps[3].OutputSummary != "Open Pilot paused: isolated worktree required" {

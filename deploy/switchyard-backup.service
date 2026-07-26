@@ -1,0 +1,15 @@
+[Unit]
+Description=Back up the Switchyard PostgreSQL database
+Requires=docker.service
+After=docker.service switchyard.service
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=-__REPO_ROOT__/.env
+ExecStart=__REPO_ROOT__/scripts/backup-postgres.sh
+
+[Install]
+WantedBy=multi-user.target

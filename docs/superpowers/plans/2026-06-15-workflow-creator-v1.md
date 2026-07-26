@@ -1,5 +1,7 @@
 # Workflow Creator V1 Implementation Plan
 
+> **Historical plan:** Persisted definitions, versioning, activation, rollback, and generic linear execution were subsequently implemented. Unchecked boxes are original planning notation, not current status.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

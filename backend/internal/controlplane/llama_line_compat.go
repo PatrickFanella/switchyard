@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,32 +31,38 @@ func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	status := a.modelBroker.Status(ctx)
-	queued, inflight := a.compatBroker.snapshot()
-	inFlightIDs := a.compatBroker.inFlightIDs()
+	queued, inflight := a.compatBroker.snapshot(r.Context())
+	inFlightIDs := a.compatBroker.inFlightIDs(r.Context())
 	if len(inFlightIDs) > 0 {
 		status.InFlightRequestIDs = inFlightIDs
 		status.ActiveRequest = true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            status.Status,
-		"backend":           "switchyard-native",
-		"queue_depth":       len(queued),
-		"max_depth":         status.MaxDepth,
-		"active_request":    len(inflight) > 0 || status.ActiveRequest,
-		"connected_clients": status.ConnectedClients,
-		"in_flight_ids":     status.InFlightRequestIDs,
-		"queue":             queued,
-		"inflight":          inflight,
-		"upstreams":         status.Upstreams,
-		"checked_at":        status.CheckedAt,
-		"error":             status.Error,
-	})
+	body := map[string]any{
+		"status":                status.Status,
+		"backend":               "switchyard-native",
+		"effective_selector":    status.EffectiveSelector,
+		"compatibility_warning": status.CompatibilityWarning,
+		"queue_depth":           len(queued),
+		"max_depth":             status.MaxDepth,
+		"active_request":        len(inflight) > 0 || status.ActiveRequest,
+		"connected_clients":     status.ConnectedClients,
+		"in_flight_ids":         status.InFlightRequestIDs,
+		"queue":                 queued,
+		"inflight":              inflight,
+		"upstreams":             status.Upstreams,
+		"checked_at":            status.CheckedAt,
+		"error":                 status.Error,
+	}
+	if status.ConfiguredSelector != "" {
+		body["configured_selector"] = status.ConfiguredSelector
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (a *API) llamaLineCompatChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var input llamaLineCompatChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if len(input.Messages) == 0 && strings.TrimSpace(input.Prompt) != "" {
@@ -103,6 +110,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
+	setDeprecatedBackendHeaders(w.Header(), resolveModelExecutionRoute(model, strings.TrimSpace(broker.ollamaBaseURL) != ""))
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -115,7 +123,10 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 
 	var streamed strings.Builder
 	var correlation map[string]string
-	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID}, func(event ModelStreamEvent) error {
+	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := a.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(requestID, decision.CorrelationIDs())
+		return mergeErr
+	}}, func(event ModelStreamEvent) error {
 		if event.CorrelationIDs != nil {
 			correlation = event.CorrelationIDs
 		}
@@ -129,7 +140,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	})
 	if err != nil {
 		spanErr = err
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
 		writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		return
@@ -155,7 +166,7 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request) {
 	var input llamaLineCompatChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if compatAsyncRequested(r) {
@@ -173,7 +184,7 @@ func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request)
 func (a *API) llamaLineCompatChat(w http.ResponseWriter, r *http.Request) {
 	var input llamaLineCompatChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if compatAsyncRequested(r) {
@@ -194,7 +205,7 @@ func (a *API) llamaLineCompatChat(w http.ResponseWriter, r *http.Request) {
 func (a *API) llamaLineCompatGenerate(w http.ResponseWriter, r *http.Request) {
 	var input llamaLineCompatChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if compatAsyncRequested(r) {
@@ -218,8 +229,21 @@ func (a *API) llamaLineCompatAcceptAsync(w http.ResponseWriter, r *http.Request,
 	if strings.TrimSpace(model) == "" {
 		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
 	}
+	if err := validateModelRequestSize(model, messages); err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+		return
+	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "path": r.URL.Path, "async": true})
-	req, started := a.compatBroker.submitAsync(r, model, messages, string(requestBody))
+	req, started, err := a.compatBroker.submitAsync(r, model, messages, string(requestBody))
+	if err != nil {
+		if errors.Is(err, ErrQueueFull) {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		writeControlError(w, err)
+		return
+	}
 	setCompatRequestHeaders(w.Header(), req.ID, req.CorrelationIDs)
 	w.Header().Set("Location", "/api/requests/"+req.ID+"/result")
 	status := http.StatusAccepted
@@ -233,6 +257,10 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	model := input.Model
 	if strings.TrimSpace(model) == "" {
 		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
+	}
+	if err := validateModelRequestSize(model, input.Messages); err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+		return ModelResponse{}, false
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "tools": input.Tools, "path": r.URL.Path})
 	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
@@ -255,10 +283,14 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	broker := NewEnvModelBroker()
-	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID})
+	setDeprecatedBackendHeaders(w.Header(), resolveModelExecutionRoute(model, strings.TrimSpace(broker.ollamaBaseURL) != ""))
+	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := a.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(requestID, decision.CorrelationIDs())
+		return mergeErr
+	}})
 	if err != nil {
 		spanErr = err
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), map[string]string{"llama_line_request_id": requestID})
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
 		w.Header().Set("X-OCQ-Status", "failed")
 		writeError(w, http.StatusBadGateway, err.Error())
 		return ModelResponse{}, false
@@ -272,6 +304,24 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "tool_calls": response.ToolCalls, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
 	return response, true
+}
+
+func validateModelRequestSize(model string, messages []ModelMessage) error {
+	maxPrompt := 64 << 10
+	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_MAX_PROMPT_BYTES"))); err == nil && parsed >= 1024 && parsed <= 4<<20 {
+		maxPrompt = parsed
+	}
+	if len(model) > 256 {
+		return fmt.Errorf("model identifier exceeds 256 bytes")
+	}
+	total := 0
+	for _, message := range messages {
+		total += len(message.Role) + len(message.Content)
+		if total > maxPrompt {
+			return fmt.Errorf("prompt exceeds configured %d-byte limit", maxPrompt)
+		}
+	}
+	return nil
 }
 
 func openAIChatCompletionBody(model string, response ModelResponse) map[string]any {
@@ -358,6 +408,14 @@ func setCompatRequestHeaders(header http.Header, requestID string, correlation m
 	}
 }
 
+func setDeprecatedBackendHeaders(header http.Header, decision BackendDecision) {
+	if decision.DeprecatedBackend == "" {
+		return
+	}
+	header.Set("X-Switchyard-Backend", decision.DeprecatedBackend)
+	header.Set("X-Switchyard-Compatibility-Warning", decision.CompatibilityWarning)
+}
+
 func writeCompatSSE(w http.ResponseWriter, event string, payload map[string]any) {
 	encoded, _ := json.Marshal(payload)
 	if event != "" {
@@ -384,7 +442,7 @@ func (a *API) llamaLineCompatEmbeddings(w http.ResponseWriter, r *http.Request) 
 		Prompt any    `json:"prompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if input.Input == nil {
@@ -501,9 +559,9 @@ func openAIModelsResponse(ollama map[string]any) map[string]any {
 }
 
 func (a *API) llamaLineCompatQueue(w http.ResponseWriter, r *http.Request) {
-	queued, inflight := a.compatBroker.snapshot()
+	queued, inflight := a.compatBroker.snapshot(r.Context())
 	if r.Method == http.MethodDelete {
-		cancelled := a.compatBroker.cancelAll("canceled")
+		cancelled := a.compatBroker.cancelAll(r.Context(), "canceled")
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "cancelled": cancelled, "backend": "switchyard-native"})
 		return
 	}
@@ -512,7 +570,7 @@ func (a *API) llamaLineCompatQueue(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) llamaLineCompatQueueItem(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if a.compatBroker.cancel(id) {
+	if a.compatBroker.cancel(r.Context(), id) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "canceled", "id": id, "backend": "switchyard-native"})
 		return
 	}
@@ -520,7 +578,7 @@ func (a *API) llamaLineCompatQueueItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) llamaLineCompatInflight(w http.ResponseWriter, r *http.Request) {
-	_, inflight := a.compatBroker.snapshot()
+	_, inflight := a.compatBroker.snapshot(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"inflight": inflight, "active_request": len(inflight) > 0, "inflight_depth": len(inflight), "backend": "switchyard-native"})
 }
 
@@ -532,29 +590,53 @@ func (a *API) llamaLineCompatInflightCancel(w http.ResponseWriter, r *http.Reque
 	_ = json.NewDecoder(r.Body).Decode(&input)
 	id := firstNonEmpty(input.ID, input.RequestID, r.URL.Query().Get("id"), r.URL.Query().Get("request_id"))
 	if id != "" {
-		if a.compatBroker.cancel(id) {
+		if a.compatBroker.cancel(r.Context(), id) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"status": "canceled", "id": id, "cancelled": 1, "backend": "switchyard-native"})
 			return
 		}
 		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "cancelled": 0, "backend": "switchyard-native"})
 		return
 	}
-	cancelled := a.compatBroker.cancelAll("canceled")
+	cancelled := a.compatBroker.cancelAll(r.Context(), "canceled")
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "cancelled": cancelled, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatHistory(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	requests, err := a.store.ListModelBrokerRequests(ListModelBrokerRequestsFilter{Limit: limit})
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	filter := ListModelBrokerRequestsFilter{Limit: limit + 1}
+	if raw := strings.TrimSpace(r.URL.Query().Get("cursor")); raw != "" {
+		created, id, decodeErr := decodeRunCursor(raw)
+		if decodeErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		filter.BeforeCreated = &created
+		filter.BeforeID = id
+	}
+	requests, err := a.store.ListModelBrokerRequestsContext(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"requests": requests, "history": requests, "count": len(requests), "backend": "switchyard-native"})
+	nextCursor := ""
+	if len(requests) > limit {
+		requests = requests[:limit]
+		last := requests[len(requests)-1]
+		nextCursor = encodeRunCursor(last.CreatedAt, last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": requests, "history": requests, "count": len(requests), "next_cursor": nextCursor, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatHistoryItem(w http.ResponseWriter, r *http.Request) {
-	req, err := a.store.ModelBrokerRequest(r.PathValue("id"))
+	req, err := a.store.ModelBrokerRequestContext(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "request not found")
 		return
@@ -563,7 +645,7 @@ func (a *API) llamaLineCompatHistoryItem(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *API) llamaLineCompatRequestResult(w http.ResponseWriter, r *http.Request) {
-	req, err := a.store.ModelBrokerRequest(r.PathValue("id"))
+	req, err := a.store.ModelBrokerRequestContext(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "request not found")
 		return
@@ -656,18 +738,40 @@ func (a *API) llamaLineCompatStatsSummary(w http.ResponseWriter, r *http.Request
 			byModel[req.Model]++
 		}
 	}
-	queued, inflight := a.compatBroker.snapshot()
+	queued, inflight := a.compatBroker.snapshot(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"requests_total": len(requests), "by_status": byStatus, "by_model": byModel, "queue_depth": len(queued), "inflight_depth": len(inflight), "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatFeedback(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
-		var input map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&input)
-		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "feedback": input, "backend": "switchyard-native"})
+		var input CreateModelBrokerFeedbackInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSONDecodeError(w, err)
+			return
+		}
+		feedback, err := a.store.AddModelBrokerFeedback(input)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"status": "created", "feedback": feedback, "backend": "switchyard-native"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"feedback": []any{}, "backend": "switchyard-native", "message": "feedback is accepted for compatibility but not persisted"})
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	feedback, err := a.store.ListModelBrokerFeedback(limit)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"feedback": feedback, "count": len(feedback), "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatUI(w http.ResponseWriter, r *http.Request) {
@@ -677,15 +781,26 @@ func (a *API) llamaLineCompatUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) llamaLineCompatConfig(w http.ResponseWriter, r *http.Request) {
+	broker := resolveModelBrokerBackend("", strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "")
+	executor := resolveOpenCodeExecutorBackend()
+	configuredBrokerSelector := strings.TrimSpace(os.Getenv("MODEL_BROKER_BACKEND"))
+	configuredExecutorSelector := strings.TrimSpace(os.Getenv("OPENCODE_EXECUTOR_BACKEND"))
+	brokerSelector := effectiveModelBrokerSelector(broker.ConfiguredSelector)
+	executorSelector := effectiveOpenCodeExecutorSelector(executor.ConfiguredSelector)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":                    "switchyard-native",
-		"llama_line_port":            firstNonEmpty(os.Getenv("LLAMA_LINE_PORT"), "11434"),
-		"ollama_base_url_configured": strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "",
-		"opencode_server_url":        firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
-		"model_broker_timeout":       modelBrokerTimeout().String(),
-		"ollama_model_prefixes":      strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes"), ","),
-		"max_depth":                  a.compatBroker.maxDepth,
-		"durable_history":            true,
+		"backend":                               "switchyard-native",
+		"llama_line_port":                       firstNonEmpty(os.Getenv("LLAMA_LINE_PORT"), "11434"),
+		"ollama_base_url_configured":            strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "",
+		"opencode_server_url":                   firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
+		"model_broker_timeout":                  modelBrokerTimeout().String(),
+		"ollama_model_prefixes":                 strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes"), ","),
+		"max_depth":                             a.compatBroker.maxDepth,
+		"durable_history":                       true,
+		"model_broker_selector":                 brokerSelector,
+		"opencode_executor_selector":            executorSelector,
+		"model_broker_configured_selector":      configuredBrokerSelector,
+		"opencode_executor_configured_selector": configuredExecutorSelector,
+		"compatibility_warning":                 firstNonEmpty(broker.CompatibilityWarning, executor.CompatibilityWarning),
 	})
 }
 
@@ -702,6 +817,38 @@ func compatLogLevel(status string) string {
 
 func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	metrics, err := a.store.RuntimeMetrics()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "model broker metrics unavailable")
+		return
+	}
+	queued, inflight := a.compatBroker.snapshot(r.Context())
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("# HELP switchyard_llama_line_compat_requests Native llama-line compatibility surface.\n# TYPE switchyard_llama_line_compat_requests counter\nswitchyard_llama_line_compat_requests 1\n"))
+	_, _ = fmt.Fprintln(w, "# HELP switchyard_model_broker_records Durable model broker requests currently retained by status.")
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_records gauge")
+	for _, status := range []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled, ModelBrokerRequestCompleted, ModelBrokerRequestFailed} {
+		_, _ = fmt.Fprintf(w, "switchyard_model_broker_records{status=%q} %d\n", status, metrics.ModelRequestStatusCounts[status])
+	}
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_workflow_runs gauge")
+	for _, status := range []RunStatus{RunQueued, RunRunning, RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut} {
+		_, _ = fmt.Fprintf(w, "switchyard_workflow_runs{status=%q} %d\n", status, metrics.RunStatusCounts[string(status)])
+	}
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_latency_milliseconds summary")
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_latency_milliseconds_count %d\n", metrics.ModelLatencyCount)
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_latency_milliseconds_sum %.3f\n", metrics.ModelLatencyMilliseconds)
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_queue_depth gauge")
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_queue_depth %d\n", len(queued))
+	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_inflight gauge")
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_inflight %d\n", len(inflight))
+	if a.workerPool != nil {
+		status := a.workerPool.Status()
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_active gauge")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_active %d\n", status.Active)
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_completed_runs_total counter")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_completed_runs_total %d\n", status.CompletedRuns)
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_failed_runs_total counter")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_failed_runs_total %d\n", status.FailedRuns)
+		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_lease_renewals_total counter")
+		_, _ = fmt.Fprintf(w, "switchyard_worker_lease_renewals_total %d\n", status.LeaseRenewals)
+	}
 }

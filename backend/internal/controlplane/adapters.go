@@ -2,8 +2,6 @@ package controlplane
 
 import "time"
 
-var adapterSampleTime = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-
 type AdapterPayload struct {
 	Queues      []AdapterQueue     `json:"queues"`
 	Sessions    []AdapterSession   `json:"sessions"`

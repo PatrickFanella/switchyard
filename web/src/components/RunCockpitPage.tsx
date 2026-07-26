@@ -63,6 +63,7 @@ function StepCard({ step, onStepAction, runID, runActionID }: { step: RunStep; o
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <HudField label="Recorded profile" value={step.profile || 'not recorded'} />
         <HudField label="Model" value={step.model || '—'} />
         <HudField label="Created" value={formatTime(step.created_at)} />
         <HudField label="Started" value={formatTime(step.started_at)} />
@@ -156,6 +157,14 @@ export function RunCockpitPage({
       return left.key.localeCompare(right.key);
     });
   }, [steps]);
+  const recordedProfiles = useMemo(
+    () => Array.from(new Set(steps.map((step) => step.profile).filter((profile): profile is string => Boolean(profile)))).sort(),
+    [steps],
+  );
+  const resolvedModels = useMemo(
+    () => Array.from(new Set(steps.map((step) => step.model).filter((model): model is string => Boolean(model)))).sort(),
+    [steps],
+  );
 
   if (!selectedRunID) {
     return (
@@ -225,6 +234,8 @@ export function RunCockpitPage({
               <HudField label="Artifacts" value={selectedRunDetail.artifacts.length} />
               <HudField label="Events" value={selectedRunDetail.events.length} />
               <HudField label="Selected run" value={selectedRunID} />
+              <HudField label="Recorded profiles" value={recordedProfiles.join(', ') || 'not recorded'} />
+              <HudField label="Resolved models" value={resolvedModels.join(', ') || 'not recorded'} />
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -332,7 +343,7 @@ export function RunCockpitPage({
           <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
             <span className="hud-label text-[hsl(var(--signal))]">Status</span>
             <select className={inputClassName()} onChange={(event) => setStepStatus(event.target.value)} value={stepStatus}>
-              {['all', 'queued', 'running', 'succeeded', 'failed', 'canceled', 'timed_out'].map((item) => (
+              {['all', 'queued', 'running', 'succeeded', 'failed', 'canceled', 'timed_out', 'paused'].map((item) => (
                 <option key={item} value={item}>
                   {item}
                 </option>

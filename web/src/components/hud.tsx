@@ -12,6 +12,9 @@ export function statusClasses(status: string) {
       return 'border-[hsl(var(--warn))] bg-[hsl(var(--warn-soft))] text-[hsl(var(--warn))]';
     case 'canceled':
       return 'border-[hsl(var(--faint))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]';
+    case 'paused':
+    case 'timed_out':
+      return 'border-[hsl(var(--warn))] bg-[hsl(var(--warn-soft))] text-[hsl(var(--warn))]';
     case 'seeded':
       return 'border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] text-[hsl(var(--signal))]';
     default:
@@ -62,20 +65,20 @@ export function HudLed({ className = '' }: { className?: string }) {
 
 export function HudField({ label, value, className = '' }: { label: string; value: ReactNode; className?: string }) {
   return (
-    <div className={`hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 ${className}`.trim()}>
-      <div className="hud-label text-[hsl(var(--signal))]">{label}</div>
-      <div className="mt-2 break-words text-sm text-[hsl(var(--ink))]">{value}</div>
+    <div className={`hud-panel bg-[hsl(var(--panel-soft))] px-3.5 py-3 ${className}`.trim()}>
+      <div className="hud-label text-[hsl(var(--faint))]">{label}</div>
+      <div className="mt-2 break-words text-sm font-medium text-[hsl(var(--ink))]">{value}</div>
     </div>
   );
 }
 
 export function HudEmptyState({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <p className={`hud-panel bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))] ${className}`.trim()}>{children}</p>;
+  return <p className={`hud-panel bg-[hsl(var(--panel-soft))] px-4 py-5 text-center text-sm leading-6 text-[hsl(var(--muted))] ${className}`.trim()}>{children}</p>;
 }
 
 export function HudErrorState({ children, className = '', ...props }: React.HTMLAttributes<HTMLDivElement> & { children: ReactNode; className?: string }) {
   return (
-    <div className={`hud-panel border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-4 py-3 text-sm text-[hsl(var(--ink))] ${className}`.trim()} {...props}>
+    <div className={`hud-panel mb-4 flex flex-col gap-1 border-[hsl(var(--danger))] bg-[hsl(var(--danger-soft))] px-4 py-3 text-sm text-[hsl(var(--ink))] ${className}`.trim()} {...props}>
       {children}
     </div>
   );
@@ -102,11 +105,11 @@ export function HudSection({
 }) {
   return (
     <section className={`hud-panel-strong p-4 sm:p-5 ${className}`.trim()}>
-      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[hsl(var(--border-faint))] pb-4">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[hsl(var(--border-faint))] pb-4">
         <div>
-          <HudLabel className="text-[hsl(var(--faint))]">{kicker}</HudLabel>
-          <h2 className="mt-2 text-xl font-semibold uppercase tracking-tight text-[hsl(var(--ink))]">{title}</h2>
-          {note ? <p className="mt-3 max-w-3xl text-sm leading-6 text-[hsl(var(--muted))]">{note}</p> : null}
+          <HudLabel className="text-[hsl(var(--signal))]">{kicker}</HudLabel>
+          <h2 className="mt-2 text-lg font-semibold tracking-[-0.02em] text-[hsl(var(--ink))] sm:text-xl">{title}</h2>
+          {note ? <p className="mt-2 max-w-3xl text-sm leading-6 text-[hsl(var(--muted))]">{note}</p> : null}
         </div>
         {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
       </div>

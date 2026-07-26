@@ -73,6 +73,71 @@ func TestRunQueueMigrationDeclaresLeaseFields(t *testing.T) {
 	}
 }
 
+func TestRunPipelineSnapshotMigrationDeclaresVersionedSnapshotFields(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/014_run_pipeline_snapshot.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"pipeline_id", "pipeline_version", "pipeline_snapshot", "runs_pipeline_version_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("run pipeline snapshot migration missing %q", field)
+		}
+	}
+}
+
+func TestRetentionMigrationDeclaresPartialIndexes(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/015_retention_indexes.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"runs_retention_idx", "model_broker_requests_retention_idx", "where status in"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("retention migration missing %q", field)
+		}
+	}
+}
+
+func TestModelBrokerFeedbackMigrationDeclaresDurableFeedback(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/016_model_broker_feedback.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"create table if not exists model_broker_feedback", "references model_broker_requests", "rating between -1 and 1", "model_broker_feedback_request_idx"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("feedback migration missing %q", field)
+		}
+	}
+}
+
+func TestWorkflowDefinitionVersionMigrationDeclaresHistory(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/017_workflow_definition_versions.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"add column if not exists version", "create table if not exists workflow_definition_versions", "primary key(id, version)", "on conflict(id, version) do nothing"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("workflow version migration missing %q", field)
+		}
+	}
+}
+
+func TestNativeWorkflowActivationMigrationCorrectsStaleStatuses(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/018_activate_native_workflows.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(data)
+	for _, field := range []string{"update workflows", "'open-pilot'", "'devlog'", "status = 'planned'", "status = 'active'"} {
+		if !strings.Contains(sql, field) {
+			t.Fatalf("native workflow activation migration missing %q", field)
+		}
+	}
+}
+
 func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/006_open_pilot_state.sql")
 	if err != nil {
@@ -217,7 +282,21 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
-	if detail.Run.Status != RunSucceeded || len(detail.Events) != 4 {
+	if detail.Run.Status != RunPaused || len(detail.Events) == 0 || len(detail.Steps) != 4 || len(detail.Artifacts) != 2 {
 		t.Fatalf("detail = %+v", detail)
+	}
+	if detail.Artifacts[0].StorageClass != "inline-data-uri" || detail.Artifacts[0].ByteSize == 0 || detail.Artifacts[0].SHA256 == "" || detail.Artifacts[0].RetentionUntil == nil {
+		t.Fatalf("artifact lifecycle metadata = %+v", detail.Artifacts[0])
+	}
+	if err := store.RecordCompatibilityUsage(ctx, "ocq", time.Unix(100, 0)); err != nil {
+		t.Fatalf("RecordCompatibilityUsage() error = %v", err)
+	}
+	retirement, err := store.CompatibilityRetirementStatus(ctx, time.Unix(100, 0))
+	if err != nil || len(retirement.Backends) != 2 || retirement.Backends[1].Backend != "ocq" || retirement.Backends[1].Attempts90D != 1 {
+		t.Fatalf("retirement = %+v err=%v", retirement, err)
+	}
+	snapshot, err := store.OperatorRunSnapshot(ctx, time.Unix(100, 0), 5)
+	if err != nil || len(snapshot.Recent) == 0 {
+		t.Fatalf("snapshot = %+v err=%v", snapshot, err)
 	}
 }

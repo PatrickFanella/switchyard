@@ -71,7 +71,7 @@ export type Run = {
   id: string;
   workflow_id: string;
   trigger_id?: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'paused' | 'timed_out';
   inputs?: Record<string, string>;
   created_at: string;
   started_at?: string;
@@ -93,8 +93,11 @@ export type RunStep = {
   position: number;
   name: string;
   executor: string;
+  // Newer control-plane responses persist the profile selected for a step.
+  // Keep this optional so historical run evidence remains renderable.
+  profile?: string;
   model?: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out' | 'paused';
   inputs?: Record<string, string>;
   output_summary?: string;
   error?: string;
@@ -293,9 +296,64 @@ export type DashboardState = {
   workflows: Workflow[];
   triggers: Trigger[];
   runs: Run[];
+  operatorSummary: OperatorSummary | null;
+  agentProfiles: AgentProfile[];
   adapters: AdapterPayload;
   scheduler: SchedulerStatus;
   workers: WorkerPoolStatus;
+};
+
+export type AgentProfile = {
+  id: string;
+  name: string;
+  role: string;
+  default_model: string;
+  prompt_contract: string;
+  allowed_executors: string[];
+};
+
+export type OperatorSummaryAlert = {
+  id: string;
+  severity: string;
+  title: string;
+  state: string;
+  started_at: string;
+  target_type: string;
+  target_id: string;
+};
+
+export type OperatorSummaryComponent = {
+  id: string;
+  name: string;
+  status: string;
+  summary: string;
+};
+
+export type OperatorSummaryRecentRun = {
+  id: string;
+  workflow_id: string;
+  workflow_name: string;
+  state: Run['status'];
+  started_at?: string;
+  finished_at?: string;
+  summary?: string;
+};
+
+export type OperatorSummary = {
+  schema_version: string;
+  service: { id: string; name: string };
+  status: { level: string; summary: string };
+  generated_at: string;
+  observed_at: string;
+  partial: boolean;
+  alerts: OperatorSummaryAlert[];
+  capabilities: { details: boolean; actions: string[] };
+  data: {
+    scheduler: { state: string; enabled: boolean; last_tick_at?: string; next_tick_at?: string };
+    workers: { configured: number; active: number; busy: number; draining: number };
+    runs: { queued: number; running: number; failed_24h: number; succeeded_24h: number; recent: OperatorSummaryRecentRun[] };
+    components: OperatorSummaryComponent[];
+  };
 };
 
 export type DashboardResponse<T> = {
@@ -415,18 +473,19 @@ export const starterWorkflowDefinitions: WorkflowDefinition[] = [
   },
 ];
 
-export const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode executor', 'Blacktower'];
+export const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode executor', 'agent profiles'];
 
 export const views: ViewMeta[] = [
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
+  { id: 'runs', label: 'Runs', source: 'Switchyard' },
   { id: 'queues', label: 'Queues', source: 'ModelBroker' },
   { id: 'observability', label: 'Observability', source: 'Phoenix / ModelBroker' },
-  { id: 'sessions', label: 'Sessions', source: 'OpenCode executor / Blacktower' },
+  { id: 'sessions', label: 'Sessions', source: 'OpenCode executor' },
   { id: 'logs', label: 'Logs / Search', source: 'ModelBroker / OpenCode executor' },
   { id: 'prompts', label: 'Prompts', source: 'Workflow policy' },
   { id: 'config', label: 'Config', source: 'Workflow policy / broker' },
-  { id: 'agents', label: 'Agents', source: 'Blacktower' },
-  { id: 'skills', label: 'Skills', source: 'Blacktower' },
+  { id: 'agents', label: 'Agents', source: 'Switchyard profiles' },
+  { id: 'skills', label: 'Capabilities', source: 'Switchyard policy' },
 ];
 
 export const emptyAdapters: AdapterPayload = {
@@ -448,12 +507,14 @@ export const emptyScheduler: SchedulerStatus = { enabled: false, running: false,
 export const emptyWorkers: WorkerPoolStatus = { enabled: false, running: false, workers: 0, active: 0 };
 
 export const defaultDashboardState: DashboardState = {
-  workflows: starterWorkflows,
+  workflows: [],
   triggers: [],
   runs: [],
+  operatorSummary: null,
+  agentProfiles: [],
   adapters: emptyAdapters,
   scheduler: emptyScheduler,
   workers: emptyWorkers,
 };
 
-export const defaultWorkflowDefinitions = starterWorkflowDefinitions;
+export const defaultWorkflowDefinitions: WorkflowDefinition[] = [];

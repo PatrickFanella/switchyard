@@ -2,6 +2,7 @@ import type {
   DashboardState,
   OpenPilotIssueState,
   OpenPilotStateResponse,
+  OperatorSummary,
   RunDetail,
   Trigger,
   WorkflowDefinition,
@@ -37,20 +38,24 @@ type OverviewDashboardProps = {
   setOpenPilotIssue: (value: string) => void;
 };
 
-function runSummary(runs: DashboardState['runs']) {
+function runSummary(summary: OperatorSummary | null, runs: DashboardState['runs']) {
+  if (summary) {
+    return [
+      { label: 'Active runs', value: String(summary.data.runs.queued + summary.data.runs.running), detail: `${summary.data.runs.queued} queued · ${summary.data.runs.running} running` },
+      { label: 'Succeeded (24h)', value: String(summary.data.runs.succeeded_24h), detail: 'Completed in the last 24 hours' },
+      { label: 'Needs attention (24h)', value: String(summary.data.runs.failed_24h), detail: 'Failed or timed out in the last 24 hours' },
+    ];
+  }
+
   const active = runs.filter((run) => run.status === 'queued' || run.status === 'running').length;
   const succeeded = runs.filter((run) => run.status === 'succeeded').length;
-  const blocked = runs.filter((run) => run.status === 'failed' || run.status === 'canceled').length;
+  const blocked = runs.filter((run) => ['failed', 'canceled', 'paused', 'timed_out'].includes(run.status)).length;
 
   return [
     { label: 'Active runs', value: String(active), detail: 'Queued or running now' },
     { label: 'Succeeded', value: String(succeeded), detail: 'Recorded control-plane wins' },
-    { label: 'Needs input', value: String(blocked), detail: 'Failed or canceled runs' },
+    { label: 'Needs input', value: String(blocked), detail: 'Failed, canceled, paused, or timed out' },
   ];
-}
-
-function visibleRuns(runs: DashboardState['runs']) {
-  return runs.slice(0, 6);
 }
 
 function TriggerCard({
@@ -177,6 +182,27 @@ function RunRow({ run, selected, onSelect }: { run: DashboardState['runs'][numbe
   );
 }
 
+function SummaryRunRow({ run, selected, onSelect }: { run: NonNullable<OperatorSummary>['data']['runs']['recent'][number]; selected: boolean; onSelect: (runID: string) => void }) {
+  return (
+    <button
+      className={`hud-panel text-left transition hover:bg-[hsl(var(--panel-soft))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--pulse))] focus-visible:ring-offset-2 focus-visible:ring-offset-[hsl(var(--void))] ${
+        selected ? 'border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))]' : 'bg-[hsl(var(--panel-soft))]'
+      }`}
+      onClick={() => onSelect(run.id)}
+      type="button"
+    >
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <span className="text-sm font-medium text-[hsl(var(--ink))]">{run.workflow_name}</span>
+        <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(run.state)}`}>{run.state}</span>
+      </div>
+      <div className="border-t border-[hsl(var(--border-faint))] px-4 py-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+        <div>{run.summary || run.id}</div>
+        <div className="mt-1 text-[hsl(var(--muted))]">{formatTime(run.finished_at || run.started_at)}</div>
+      </div>
+    </button>
+  );
+}
+
 function SelectedRunSummaryCard({
   selectedRunDetail,
   openPilotState,
@@ -286,17 +312,19 @@ export function OverviewDashboard({
   setOpenPilotIssue,
   workflows,
 }: OverviewDashboardProps) {
-  const summaries = runSummary(dashboard.runs);
-  const recentRuns = visibleRuns(dashboard.runs);
-  const activeRuns = dashboard.runs.filter((run) => run.status === 'queued' || run.status === 'running').length;
+  const operatorSummary = dashboard.operatorSummary;
+  const summaries = runSummary(operatorSummary, dashboard.runs);
+  const summaryRecentRuns = operatorSummary?.data.runs.recent ?? [];
+  const fallbackRecentRuns = dashboard.runs.slice(0, 6);
+  const activeRuns = operatorSummary ? operatorSummary.data.runs.queued + operatorSummary.data.runs.running : dashboard.runs.filter((run) => run.status === 'queued' || run.status === 'running').length;
   const workQueue = dashboard.triggers.filter((trigger) => trigger.enabled).length;
 
   return (
     <section className="grid gap-4">
       <HudSection
-        kicker="Command strip"
-        title="Command strip"
-        note="Live API health, scheduler posture, worker pool, and the quickest refresh and routing controls."
+        kicker="Live system"
+        title="System posture"
+        note="Authoritative operator summary for runtime health, scheduling, worker capacity, and current workload."
         actions={[
           <button
             key="refresh"
@@ -310,18 +338,36 @@ export function OverviewDashboard({
         ]}
       >
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <HudField label="API health" value={dashboard.adapters.health.status} />
-          <HudField label="Scheduler" value={dashboard.scheduler.enabled ? (dashboard.scheduler.running ? 'running' : 'enabled') : 'disabled'} />
-          <HudField label="Workers" value={dashboard.workers.enabled ? `${dashboard.workers.active ?? 0}/${dashboard.workers.workers ?? 0} active` : 'disabled'} />
-          <HudField label="Queues / runs" value={`${dashboard.adapters.queues.length} queues · ${dashboard.runs.length} runs`} />
+          <HudField label="Runtime status" value={operatorSummary?.status.level || dashboard.adapters.health.status} />
+          <HudField label="Scheduler" value={operatorSummary?.data.scheduler.state || (dashboard.scheduler.enabled ? (dashboard.scheduler.running ? 'running' : 'enabled') : 'disabled')} />
+          <HudField label="Workers" value={operatorSummary ? `${operatorSummary.data.workers.busy}/${operatorSummary.data.workers.configured} busy` : dashboard.workers.enabled ? `${dashboard.workers.active ?? 0}/${dashboard.workers.workers ?? 0} active` : 'disabled'} />
+          <HudField label="Queues / runs" value={`${dashboard.adapters.queues.length} queues · ${operatorSummary ? activeRuns : dashboard.runs.length} active`} />
           <HudField label="Active runs" value={activeRuns} />
           <HudField label="Enabled triggers" value={workQueue} />
           <HudField label="Workflow definitions" value={workflowDefinitions.length} />
           <HudField label="Selected run" value={selectedRunID || 'none'} />
         </div>
+        {operatorSummary ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <HudPanel className="bg-[hsl(var(--panel-soft))] p-3">
+              <HudLabel className="text-[hsl(var(--faint))]">Operator summary</HudLabel>
+              <p className="mt-2 text-sm text-[hsl(var(--ink))]">{operatorSummary.status.summary}</p>
+              <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Observed {formatTime(operatorSummary.observed_at)} · schema {operatorSummary.schema_version}</p>
+            </HudPanel>
+            <HudPanel className="bg-[hsl(var(--panel-soft))] p-3">
+              <HudLabel className="text-[hsl(var(--faint))]">Component posture</HudLabel>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {operatorSummary.data.components.map((component) => (
+                  <span key={component.id} className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(component.status)}`} title={component.summary}>{component.name}: {component.status}</span>
+                ))}
+              </div>
+              {operatorSummary.alerts.length > 0 ? <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--warn))]">{operatorSummary.alerts.length} active alert{operatorSummary.alerts.length === 1 ? '' : 's'}</p> : null}
+            </HudPanel>
+          </div>
+        ) : null}
       </HudSection>
 
-      <HudSection kicker="Active work" title="Active work" note="Recent runs, trigger controls, and operator inputs grouped for quick scanning.">
+      <HudSection kicker="Dispatch" title="Workflows and triggers" note="Start manual work, manage schedules, and watch recent execution state.">
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-3">
             {dashboard.triggers.length === 0 ? <HudEmptyState>{loading ? 'Loading triggers…' : 'No triggers returned by the API.'}</HudEmptyState> : null}
@@ -362,10 +408,12 @@ export function OverviewDashboard({
             <HudPanelStrong className="p-4">
               <HudLabel className="text-[hsl(var(--faint))]">Recent runs</HudLabel>
               <div className="mt-4 grid gap-3">
-                {dashboard.runs.length === 0 ? (
+                {(operatorSummary ? summaryRecentRuns : fallbackRecentRuns).length === 0 ? (
                   <HudEmptyState>Dispatch a trigger to create the first run envelope.</HudEmptyState>
                 ) : (
-                  recentRuns.map((run) => <RunRow key={run.id} run={run} selected={selectedRunID === run.id} onSelect={onSelectRun} />)
+                  operatorSummary
+                    ? summaryRecentRuns.map((run) => <SummaryRunRow key={run.id} run={run} selected={selectedRunID === run.id} onSelect={onSelectRun} />)
+                    : fallbackRecentRuns.map((run) => <RunRow key={run.id} run={run} selected={selectedRunID === run.id} onSelect={onSelectRun} />)
                 )}
               </div>
             </HudPanelStrong>
@@ -373,7 +421,7 @@ export function OverviewDashboard({
         </div>
       </HudSection>
 
-      <HudSection kicker="Selected run" title="Selected run" note="Compact summary with direct cockpit entry and the highest-signal run actions.">
+      <HudSection kicker="Inspection" title="Selected run" note="Review the current run and take the next safe operator action.">
         <SelectedRunSummaryCard
           openPilotState={openPilotState}
           onCancelRun={onCancelRun}

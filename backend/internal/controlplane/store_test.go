@@ -2,6 +2,7 @@ package controlplane_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,11 @@ func TestSeedDefaultsCreatesWorkflowAndTriggerCatalog(t *testing.T) {
 	}
 	if workflows[0].ID != "changemaker-daily-digest" || workflows[1].ID != "devlog" || workflows[2].ID != "open-pilot" {
 		t.Fatalf("workflows sorted by id = %+v", workflows)
+	}
+	for _, workflow := range workflows {
+		if workflow.Status != "active" {
+			t.Fatalf("workflow %q status = %q, want active", workflow.ID, workflow.Status)
+		}
 	}
 
 	triggers := store.ListTriggers()
@@ -89,7 +95,7 @@ func TestRunnerRejectsManualOpenPilotWithoutInputs(t *testing.T) {
 	}
 }
 
-func TestRunnerCreatesDevlogRunEnvelope(t *testing.T) {
+func TestRunnerFailsDevlogWithoutRegisteredExecutor(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := controlplane.NewStore(func() time.Time { return now })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -101,7 +107,7 @@ func TestRunnerCreatesDevlogRunEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTrigger() error = %v", err)
 	}
-	if run.WorkflowID != "devlog" || run.TriggerID != "manual-devlog" || run.Status != controlplane.RunSucceeded {
+	if run.WorkflowID != "devlog" || run.TriggerID != "manual-devlog" || run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "not registered") {
 		t.Fatalf("run = %+v", run)
 	}
 	if runs := store.ListRuns(); len(runs) != 1 || runs[0].ID != run.ID {
@@ -343,5 +349,74 @@ func TestStoreRecoversExpiredLeases(t *testing.T) {
 	}
 	if detail.Run.Status != controlplane.RunFailed || detail.Run.Summary != "Worker lease expired" {
 		t.Fatalf("run = %+v", detail.Run)
+	}
+}
+
+func TestStoreRedactsSecretsFromPersistedModelContent(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "secret-request", Model: "test", RequestBody: `{"messages":[{"role":"user","content":"use Bearer top-secret-token"}],"api_key":"sk-proj-abcdefghijklmnop"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(req.RequestBody, "top-secret-token") || strings.Contains(req.RequestBody, "abcdefghijklmnop") || !strings.Contains(req.RequestBody, "[REDACTED]") {
+		t.Fatalf("request body was not redacted: %s", req.RequestBody)
+	}
+	finished, err := store.FinishModelBrokerRequest(req.ID, controlplane.FinishModelBrokerRequestInput{ResponseBody: `{"content":"password=hunter2"}`, Error: "authorization: bearer another-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(finished.ResponseBody+finished.Error, "hunter2") || strings.Contains(finished.ResponseBody+finished.Error, "another-secret") {
+		t.Fatalf("response/error was not redacted: %+v", finished)
+	}
+}
+
+func TestStoreMergesModelBrokerAndStepCorrelations(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "merge-request", Model: "test", RequestBody: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MergeModelBrokerRequestCorrelationIDs(req.ID, map[string]string{"request_id": "initial", controlplane.CorrelationDeprecatedBackend: "ocq"}); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := store.FinishModelBrokerRequest(req.ID, controlplane.FinishModelBrokerRequestInput{CorrelationIDs: map[string]string{"ocq_session_id": "session"}})
+	if err != nil || finished.CorrelationIDs["request_id"] != "initial" || finished.CorrelationIDs["ocq_session_id"] != "session" {
+		t.Fatalf("finished=%+v err=%v", finished, err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "merge", Executor: "model", CorrelationIDs: map[string]string{"request_id": "initial"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartRunStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	finishedStep, err := store.FinishRunStep(step.ID, controlplane.StepSucceeded, "done", "", map[string]string{"ocq_session_id": "session"})
+	if err != nil || finishedStep.CorrelationIDs["request_id"] != "initial" || finishedStep.CorrelationIDs["ocq_session_id"] != "session" {
+		t.Fatalf("step=%+v err=%v", finishedStep, err)
+	}
+}
+
+func TestStoreRejectsOversizedArtifacts(t *testing.T) {
+	t.Setenv("SWITCHYARD_MAX_ARTIFACT_BYTES", "1024")
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "at-limit", Kind: "text", URI: "data:text/plain," + strings.Repeat("x", 1024)}); err != nil {
+		t.Fatalf("AddArtifact() at limit error = %v", err)
+	}
+	if _, err := store.AddArtifact(controlplane.CreateArtifactInput{RunID: run.ID, Name: "large", Kind: "text", URI: "data:text/plain," + strings.Repeat("x", 1025)}); err != controlplane.ErrInvalid {
+		t.Fatalf("AddArtifact() error = %v", err)
 	}
 }

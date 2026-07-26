@@ -3,9 +3,12 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type PipelineStepExecution struct {
@@ -47,6 +50,31 @@ type Runner struct {
 	pipelines PipelineRegistry
 	profiles  AgentProfileRegistry
 	limiter   ExecutorLimiter
+	activeMu  sync.Mutex
+	active    map[string]context.CancelFunc
+}
+
+type preAttemptContextKey struct{}
+type runStepCorrelationContextKey struct{}
+
+func withRunStepPreAttempt(ctx context.Context, store Store, runID, stepID string) context.Context {
+	ctx = context.WithValue(ctx, preAttemptContextKey{}, PreAttemptCallback(func(decision BackendDecision) error {
+		return store.RecordRunStepBackendDecision(runID, stepID, decision)
+	}))
+	return context.WithValue(ctx, runStepCorrelationContextKey{}, func(correlationIDs map[string]string) error {
+		_, err := store.MergeRunStepCorrelationIDs(stepID, correlationIDs)
+		return err
+	})
+}
+
+func preAttemptFromContext(ctx context.Context) PreAttemptCallback {
+	callback, _ := ctx.Value(preAttemptContextKey{}).(PreAttemptCallback)
+	return callback
+}
+
+func runStepCorrelationFromContext(ctx context.Context) func(map[string]string) error {
+	callback, _ := ctx.Value(runStepCorrelationContextKey{}).(func(map[string]string) error)
+	return callback
 }
 
 func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
@@ -54,7 +82,7 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if len(executors) > 0 && executors[0] != nil {
 		registry = executors[0]
 	}
-	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter()}
+	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter(), active: map[string]context.CancelFunc{}}
 }
 
 func (r *Runner) SetExecutorLimiter(limiter ExecutorLimiter) {
@@ -78,11 +106,18 @@ func (r *Runner) AgentProfiles() []AgentProfile {
 	return r.profiles.ListProfiles()
 }
 
+func (r *Runner) SetAgentProfileRegistry(profiles AgentProfileRegistry) {
+	if profiles == nil {
+		profiles = DefaultAgentProfileRegistry()
+	}
+	r.profiles = profiles
+}
+
 func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error) {
 	if err := validateCreateRunInput(input); err != nil {
 		return Run{}, err
 	}
-	run, err := r.store.CreateRun(input)
+	run, err := r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
 	if err != nil {
 		return Run{}, err
 	}
@@ -94,10 +129,35 @@ func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error)
 }
 
 func (r *Runner) Enqueue(input CreateRunInput) (Run, error) {
+	return r.EnqueueContext(context.Background(), input)
+}
+
+func (r *Runner) EnqueueContext(ctx context.Context, input CreateRunInput) (Run, error) {
 	if err := validateCreateRunInput(input); err != nil {
 		return Run{}, err
 	}
-	return r.store.CreateRun(input)
+	return r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
+}
+
+func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
+	if input.MaxAttempts == 0 {
+		input.MaxAttempts = defaultRunMaxAttempts()
+	}
+	if input.PipelineSnapshot != nil || r.pipelines == nil {
+		return input
+	}
+	if pipeline, ok := r.pipelines.PipelineForWorkflow(input.WorkflowID); ok {
+		snapshot := clonePipeline(pipeline)
+		input.PipelineSnapshot = &snapshot
+	}
+	return input
+}
+
+func defaultRunMaxAttempts() int {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_RUN_MAX_ATTEMPTS"))); err == nil && value >= 1 && value <= 10 {
+		return value
+	}
+	return 3
 }
 
 func (r *Runner) ExecuteRun(ctx context.Context, run Run) (Run, error) {
@@ -109,6 +169,17 @@ func (r *Runner) ExecuteClaimedRun(ctx context.Context, run Run, workerID string
 }
 
 func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run, error) {
+	executionCtx, cancel := context.WithCancel(ctx)
+	r.activeMu.Lock()
+	r.active[run.ID] = cancel
+	r.activeMu.Unlock()
+	defer func() {
+		cancel()
+		r.activeMu.Lock()
+		delete(r.active, run.ID)
+		r.activeMu.Unlock()
+	}()
+	ctx = executionCtx
 	select {
 	case <-ctx.Done():
 		return r.finishRun(run.ID, workerID, RunCanceled, ctx.Err().Error())
@@ -116,10 +187,11 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	}
 	executor := r.executors.ExecutorFor(run.WorkflowID)
 	if executor == nil {
-		executor = WorkflowExecutorFunc(stubWorkflowExecution(run.WorkflowID, "Workflow execution adapter is not wired yet"))
+		return r.finishRun(run.ID, workerID, RunFailed, "workflow execution adapter is not registered")
 	}
-	if r.pipelines != nil {
-		if pipeline, ok := r.pipelines.PipelineForWorkflow(run.WorkflowID); ok {
+	if r.pipelines != nil || run.PipelineSnapshot != nil {
+		pipeline, ok := r.pipelineForRun(run)
+		if ok {
 			if stepExecutor, ok := executor.(PipelineStepExecutor); ok {
 				execution, err := r.executePipeline(ctx, run, pipeline, stepExecutor, executor)
 				return r.finishExecution(run, workerID, execution, err)
@@ -130,10 +202,13 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 		execution, err := stepwise.ExecuteSteps(ctx, run, r.store)
 		return r.finishExecution(run, workerID, execution, err)
 	}
-	step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
+	step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
 	if err != nil {
 		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
 		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
+	}
+	if skip {
+		return r.finishRun(run.ID, workerID, RunSucceeded, firstNonEmpty(step.OutputSummary, "Workflow already completed"))
 	}
 	step, err = r.store.StartRunStep(step.ID)
 	if err != nil {
@@ -144,6 +219,29 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	return r.finishSingleStepExecution(run, workerID, step, execution, err)
 }
 
+// CancelRun interrupts an execution hosted by this process. Durable status is
+// updated separately by the store so cancellation remains visible after restart.
+func (r *Runner) CancelRun(id string) bool {
+	r.activeMu.Lock()
+	cancel := r.active[id]
+	r.activeMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (r *Runner) pipelineForRun(run Run) (Pipeline, bool) {
+	if run.PipelineSnapshot != nil {
+		return clonePipeline(*run.PipelineSnapshot), true
+	}
+	if r.pipelines == nil {
+		return Pipeline{}, false
+	}
+	return r.pipelines.PipelineForWorkflow(run.WorkflowID)
+}
+
 func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline, stepExecutor PipelineStepExecutor, executor WorkflowExecutor) (WorkflowExecution, error) {
 	steps := append([]PipelineStep(nil), pipeline.Steps...)
 	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
@@ -152,8 +250,12 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		hydrator.HydratePipelineResumeState(run, pipeline, state)
 	}
 	var execution WorkflowExecution
+	resumePosition, err := pipelineResumePosition(run, steps)
+	if err != nil {
+		return execution, err
+	}
 	for _, pipelineStep := range steps {
-		if shouldSkipPipelineStepForResume(run, pipelineStep) {
+		if resumePosition > 0 && pipelineStep.Position < resumePosition {
 			continue
 		}
 		select {
@@ -164,44 +266,50 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		if decider, ok := executor.(PipelineStepDecider); ok && !decider.ShouldExecutePipelineStep(run, pipelineStep, state) {
 			continue
 		}
-		model := pipelineStep.Model
-		if resolver, ok := executor.(PipelineStepModelResolver); ok {
-			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, pipelineStep, run.Inputs)
-			if err != nil {
-				model = ""
-				step, createErr := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
-				if createErr != nil {
-					return execution, createErr
-				}
-				step, startErr := r.store.StartRunStep(step.ID)
-				if startErr != nil {
-					if reporter, ok := executor.(PipelineStepFailureReporter); ok {
-						reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, startErr)
-					}
-					return execution, startErr
-				}
-				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
-					reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
-				}
-				_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
-				return execution, err
+		profile, hasProfile, profileErr := r.profileForPipelineStep(pipelineStep)
+		if profileErr != nil {
+			return execution, profileErr
+		}
+		model, err := r.resolvePipelineStepModel(run, pipelineStep, executor, profile, hasProfile)
+		if err != nil {
+			step, _, createErr := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+			if createErr != nil {
+				return execution, createErr
 			}
-			model = resolved
+			step, startErr := r.store.StartRunStep(step.ID)
+			if startErr != nil {
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, startErr)
+				}
+				return execution, startErr
+			}
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
+			}
+			_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
+			return execution, err
 		}
 		correlationIDs := map[string]string(nil)
 		if provider, ok := executor.(PipelineStepCorrelationProvider); ok {
 			correlationIDs = provider.PipelineStepCorrelationIDs(run, pipelineStep, state)
 		}
-		step, err := r.store.CreateRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
+		if hasProfile {
+			correlationIDs = mergeStringMaps(correlationIDs, profileAuditCorrelation(profile, model))
+			_, _ = r.store.AddEvent(run.ID, "agent-profile.resolved", profile.ID+" for "+pipelineStep.Name)
+		}
+		step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
 		if err != nil {
 			return execution, err
 		}
+		if skip {
+			if step.OutputSummary != "" {
+				execution.Summary = step.OutputSummary
+			}
+			continue
+		}
 		release, err := r.acquireExecutorSlot(ctx, pipelineStep.Executor)
 		if err != nil {
-			status := StepFailed
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				status = StepCanceled
-			}
+			status := stepStatusForError(err)
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
 			}
@@ -218,10 +326,13 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		}
 		resolvedStep := pipelineStep
 		resolvedStep.Model = model
+		if hasProfile {
+			resolvedStep.profileContract = profile.PromptContract
+		}
 		var stepResult PipelineStepExecution
 		func() {
 			defer release()
-			stepResult, err = stepExecutor.ExecutePipelineStep(ctx, run, resolvedStep, state)
+			stepResult, err = stepExecutor.ExecutePipelineStep(withRunStepPreAttempt(ctx, r.store, run.ID, step.ID), run, resolvedStep, state)
 		}()
 		if stepResult.Inputs != nil {
 			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
@@ -246,17 +357,19 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			}
 		}
 		if err != nil {
-			status := StepFailed
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				status = StepCanceled
-			}
+			status := stepStatusForError(err)
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 				reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, err)
 			}
 			_, _ = r.store.FinishRunStep(step.ID, status, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
 			return execution, err
 		}
-		if _, err := r.store.FinishRunStep(step.ID, StepSucceeded, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
+		stepStatus := StepSucceeded
+		if stepResult.Halt {
+			stepStatus = StepPaused
+			execution.Status = RunPaused
+		}
+		if _, err := r.store.FinishRunStep(step.ID, stepStatus, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
 			return execution, err
 		}
 		if stepResult.Halt {
@@ -269,6 +382,94 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 	return execution, nil
 }
 
+func (r *Runner) profileForPipelineStep(step PipelineStep) (AgentProfile, bool, error) {
+	profileID := strings.TrimSpace(step.Profile)
+	if profileID == "" {
+		return AgentProfile{}, false, nil
+	}
+	profiles := r.profiles
+	if profiles == nil {
+		profiles = DefaultAgentProfileRegistry()
+	}
+	profile, ok := profiles.Profile(profileID)
+	if !ok {
+		return AgentProfile{}, false, fmt.Errorf("unknown agent profile %q", profileID)
+	}
+	if !profileAllowsExecutor(profile, step.Executor) {
+		return AgentProfile{}, false, fmt.Errorf("agent profile %q does not allow executor %q", profileID, step.Executor)
+	}
+	return profile, true, nil
+}
+
+func (r *Runner) resolvePipelineStepModel(run Run, step PipelineStep, executor WorkflowExecutor, profile AgentProfile, hasProfile bool) (string, error) {
+	model := strings.TrimSpace(step.Model)
+	if hasProfile && model == "" {
+		if override := strings.TrimSpace(run.Inputs["model"]); override != "" {
+			model = override
+		} else if strings.TrimSpace(profile.DefaultModel) != "" && (step.Executor == "model" || step.Executor == "opencode") {
+			model = strings.TrimSpace(profile.DefaultModel)
+		}
+	}
+	if model == "" || model == "${model}" {
+		if resolver, ok := executor.(PipelineStepModelResolver); ok {
+			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, step, run.Inputs)
+			if err != nil {
+				return "", err
+			}
+			model = strings.TrimSpace(resolved)
+		}
+	}
+	if hasProfile && model != "" && !profileAllowsModel(profile, model) {
+		return "", fmt.Errorf("agent profile %q does not allow model %q", profile.ID, model)
+	}
+	return model, nil
+}
+
+func profileAuditCorrelation(profile AgentProfile, model string) map[string]string {
+	correlation := map[string]string{
+		"agent_profile_id":              profile.ID,
+		"agent_profile_role":            profile.Role,
+		"agent_profile_contract_sha256": profileContractHash(profile),
+	}
+	if model != "" {
+		correlation["agent_profile_model"] = model
+	}
+	return correlation
+}
+
+func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error) {
+	for _, existing := range r.store.ListRunSteps(input.RunID) {
+		if existing.Position != input.Position {
+			continue
+		}
+		if existing.Name != input.Name || existing.Executor != input.Executor {
+			return RunStep{}, false, ErrInvalid
+		}
+		switch existing.Status {
+		case StepSucceeded:
+			return existing, true, nil
+		case StepFailed, StepCanceled, StepTimedOut, StepPaused:
+			retried, err := r.store.RetryRunStep(existing.ID)
+			if err == nil && len(input.CorrelationIDs) > 0 {
+				retried, err = r.store.MergeRunStepCorrelationIDs(retried.ID, input.CorrelationIDs)
+			}
+			return retried, false, err
+		case StepRunning:
+			recovered, err := r.store.RecoverRunStep(existing.ID)
+			if err == nil && len(input.CorrelationIDs) > 0 {
+				recovered, err = r.store.MergeRunStepCorrelationIDs(recovered.ID, input.CorrelationIDs)
+			}
+			return recovered, false, err
+		case StepQueued:
+			return existing, false, nil
+		default:
+			return RunStep{}, false, ErrInvalid
+		}
+	}
+	created, err := r.store.CreateRunStep(input)
+	return created, false, err
+}
+
 func (r *Runner) acquireExecutorSlot(ctx context.Context, executor string) (func(), error) {
 	limiter := r.limiter
 	if limiter == nil {
@@ -277,12 +478,50 @@ func (r *Runner) acquireExecutorSlot(ctx context.Context, executor string) (func
 	return limiter.Acquire(ctx, executor)
 }
 
-func shouldSkipPipelineStepForResume(run Run, step PipelineStep) bool {
-	position, err := strconv.Atoi(run.Inputs["retry_from_step_position"])
-	if err == nil && position > 0 {
-		return step.Position < position
+func pipelineResumePosition(run Run, steps []PipelineStep) (int, error) {
+	stepIdentity := strings.TrimSpace(run.Inputs["retry_from_step"])
+	legacyPosition, legacyErr := strconv.Atoi(strings.TrimSpace(run.Inputs["retry_from_step_position"]))
+	if stepIdentity == "" {
+		if legacyErr != nil || legacyPosition <= 0 {
+			return 0, nil
+		}
+		for _, step := range steps {
+			if step.Position == legacyPosition {
+				return legacyPosition, nil
+			}
+		}
+		return 0, fmt.Errorf("resume position %d does not exist in pipeline", legacyPosition)
 	}
-	return false
+	for _, step := range steps {
+		if step.ID != stepIdentity && step.Name != stepIdentity {
+			continue
+		}
+		if legacyErr == nil && legacyPosition > 0 && legacyPosition != step.Position {
+			return 0, fmt.Errorf("resume step %q is position %d, not %d", stepIdentity, step.Position, legacyPosition)
+		}
+		return step.Position, nil
+	}
+	return 0, fmt.Errorf("resume step %q does not exist in pipeline", stepIdentity)
+}
+
+func stepStatusForError(err error) RunStepStatus {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return StepTimedOut
+	}
+	if errors.Is(err, context.Canceled) {
+		return StepCanceled
+	}
+	return StepFailed
+}
+
+func runStatusForError(err error) RunStatus {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return RunTimedOut
+	}
+	if errors.Is(err, context.Canceled) {
+		return RunCanceled
+	}
+	return RunFailed
 }
 
 func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunStep, execution WorkflowExecution, err error) (Run, error) {
@@ -294,21 +533,26 @@ func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunSte
 		_, _ = r.store.AddArtifact(artifact)
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			_, _ = r.store.FinishRunStep(step.ID, StepCanceled, "", err.Error(), nil)
-			_, _ = r.store.AddEvent(run.ID, "workflow.canceled", err.Error())
-			return r.finishRun(run.ID, workerID, RunCanceled, err.Error())
-		}
-		_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
-		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
-		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
+		stepStatus := stepStatusForError(err)
+		runStatus := runStatusForError(err)
+		_, _ = r.store.FinishRunStep(step.ID, stepStatus, "", err.Error(), nil)
+		_, _ = r.store.AddEvent(run.ID, "workflow."+string(runStatus), err.Error())
+		return r.finishRun(run.ID, workerID, runStatus, err.Error())
 	}
 	summary := execution.Summary
 	if summary == "" {
 		summary = "Workflow dispatched"
 	}
-	_, _ = r.store.FinishRunStep(step.ID, StepSucceeded, summary, "", nil)
-	return r.finishRun(run.ID, workerID, RunSucceeded, summary)
+	status := execution.Status
+	if status == "" {
+		status = RunSucceeded
+	}
+	stepStatus := StepSucceeded
+	if status == RunPaused {
+		stepStatus = StepPaused
+	}
+	_, _ = r.store.FinishRunStep(step.ID, stepStatus, summary, "", nil)
+	return r.finishRun(run.ID, workerID, status, summary)
 }
 
 func (r *Runner) finishExecution(run Run, workerID string, execution WorkflowExecution, err error) (Run, error) {
@@ -320,25 +564,44 @@ func (r *Runner) finishExecution(run Run, workerID string, execution WorkflowExe
 		_, _ = r.store.AddArtifact(artifact)
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			_, _ = r.store.AddEvent(run.ID, "workflow.canceled", err.Error())
-			return r.finishRun(run.ID, workerID, RunCanceled, err.Error())
-		}
-		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
-		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
+		status := runStatusForError(err)
+		_, _ = r.store.AddEvent(run.ID, "workflow."+string(status), err.Error())
+		return r.finishRun(run.ID, workerID, status, err.Error())
 	}
 	summary := execution.Summary
 	if summary == "" {
 		summary = "Workflow dispatched"
 	}
-	return r.finishRun(run.ID, workerID, RunSucceeded, summary)
+	status := execution.Status
+	if status == "" {
+		status = RunSucceeded
+	}
+	return r.finishRun(run.ID, workerID, status, summary)
 }
 
 func (r *Runner) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
+	if detail, err := r.store.RunDetail(id); err == nil && isTerminalRunStatus(detail.Run.Status) {
+		return detail.Run, nil
+	}
 	if workerID != "" {
-		return r.store.FinishClaimedRun(id, workerID, status, summary)
+		finished, err := r.store.FinishClaimedRun(id, workerID, status, summary)
+		if err == ErrNotFound {
+			if detail, detailErr := r.store.RunDetail(id); detailErr == nil && isTerminalRunStatus(detail.Run.Status) {
+				return detail.Run, nil
+			}
+		}
+		return finished, err
 	}
 	return r.store.FinishRun(id, status, summary)
+}
+
+func isTerminalRunStatus(status RunStatus) bool {
+	switch status {
+	case RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Runner) RunTrigger(ctx context.Context, triggerID string) (Run, error) {
@@ -358,6 +621,14 @@ func (r *Runner) EnqueueTrigger(triggerID string) (Run, error) {
 }
 
 func validateCreateRunInput(input CreateRunInput) error {
+	if input.MaxAttempts < 0 || input.MaxAttempts > 10 {
+		return ErrInvalid
+	}
+	for key := range input.Inputs {
+		if sensitiveJSONKey(key) {
+			return ErrInvalid
+		}
+	}
 	if input.WorkflowID != string(WorkflowOpenPilot) {
 		return nil
 	}

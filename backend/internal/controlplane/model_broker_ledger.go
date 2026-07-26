@@ -46,9 +46,26 @@ type FinishModelBrokerRequestInput struct {
 }
 
 type ListModelBrokerRequestsFilter struct {
-	Statuses []string
-	Query    string
-	Limit    int
+	Statuses      []string
+	Query         string
+	Limit         int
+	BeforeCreated *time.Time
+	BeforeID      string
+	SinceCreated  *time.Time
+}
+
+type ModelBrokerFeedback struct {
+	ID        string    `json:"id"`
+	RequestID string    `json:"request_id"`
+	Rating    int       `json:"rating"`
+	Comment   string    `json:"comment,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CreateModelBrokerFeedbackInput struct {
+	RequestID string `json:"request_id"`
+	Rating    int    `json:"rating"`
+	Comment   string `json:"comment,omitempty"`
 }
 
 func cloneModelBrokerRequest(in ModelBrokerRequest) ModelBrokerRequest {

@@ -37,12 +37,17 @@ type WorkflowDefinition struct {
 	Name        string             `json:"name"`
 	Description string             `json:"description"`
 	Status      string             `json:"status"`
+	Version     int                `json:"version"`
 	Owns        []string           `json:"owns,omitempty"`
 	Uses        []string           `json:"uses,omitempty"`
 	InputShape  JSONShape          `json:"input_shape,omitempty"`
 	Pipeline    PipelineDefinition `json:"pipeline"`
 	CreatedAt   time.Time          `json:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
+type WorkflowDefinitionRollbackInput struct {
+	Version int `json:"version"`
 }
 
 type PipelineDefinition struct {
@@ -96,25 +101,30 @@ const (
 	RunSucceeded RunStatus = "succeeded"
 	RunFailed    RunStatus = "failed"
 	RunCanceled  RunStatus = "canceled"
+	RunPaused    RunStatus = "paused"
+	RunTimedOut  RunStatus = "timed_out"
 )
 
 type Run struct {
-	ID             string            `json:"id"`
-	WorkflowID     string            `json:"workflow_id"`
-	TriggerID      string            `json:"trigger_id,omitempty"`
-	Status         RunStatus         `json:"status"`
-	Inputs         map[string]string `json:"inputs,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	QueuedAt       time.Time         `json:"queued_at"`
-	AvailableAt    time.Time         `json:"available_at"`
-	StartedAt      *time.Time        `json:"started_at,omitempty"`
-	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
-	ClaimedAt      *time.Time        `json:"claimed_at,omitempty"`
-	ClaimedBy      string            `json:"claimed_by,omitempty"`
-	LeaseExpiresAt *time.Time        `json:"lease_expires_at,omitempty"`
-	AttemptCount   int               `json:"attempt_count"`
-	MaxAttempts    int               `json:"max_attempts"`
-	Summary        string            `json:"summary,omitempty"`
+	ID               string            `json:"id"`
+	WorkflowID       string            `json:"workflow_id"`
+	TriggerID        string            `json:"trigger_id,omitempty"`
+	Status           RunStatus         `json:"status"`
+	Inputs           map[string]string `json:"inputs,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	QueuedAt         time.Time         `json:"queued_at"`
+	AvailableAt      time.Time         `json:"available_at"`
+	StartedAt        *time.Time        `json:"started_at,omitempty"`
+	FinishedAt       *time.Time        `json:"finished_at,omitempty"`
+	ClaimedAt        *time.Time        `json:"claimed_at,omitempty"`
+	ClaimedBy        string            `json:"claimed_by,omitempty"`
+	LeaseExpiresAt   *time.Time        `json:"lease_expires_at,omitempty"`
+	AttemptCount     int               `json:"attempt_count"`
+	MaxAttempts      int               `json:"max_attempts"`
+	Summary          string            `json:"summary,omitempty"`
+	PipelineID       string            `json:"pipeline_id,omitempty"`
+	PipelineVersion  string            `json:"pipeline_version,omitempty"`
+	PipelineSnapshot *Pipeline         `json:"-"`
 }
 
 type RunStepStatus string
@@ -126,6 +136,7 @@ const (
 	StepFailed    RunStepStatus = "failed"
 	StepCanceled  RunStepStatus = "canceled"
 	StepTimedOut  RunStepStatus = "timed_out"
+	StepPaused    RunStepStatus = "paused"
 )
 
 type RunStep struct {
@@ -169,12 +180,17 @@ type RunEvent struct {
 }
 
 type Artifact struct {
-	ID        string    `json:"id"`
-	RunID     string    `json:"run_id"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	URI       string    `json:"uri"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             string     `json:"id"`
+	RunID          string     `json:"run_id"`
+	Name           string     `json:"name"`
+	Kind           string     `json:"kind"`
+	URI            string     `json:"uri"`
+	StorageClass   string     `json:"storage_class"`
+	ContentType    string     `json:"content_type,omitempty"`
+	ByteSize       int        `json:"byte_size"`
+	SHA256         string     `json:"sha256,omitempty"`
+	RetentionUntil *time.Time `json:"retention_until,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 type CreateArtifactInput struct {
@@ -191,8 +207,36 @@ type RunDetail struct {
 	Artifacts []Artifact `json:"artifacts"`
 }
 
+type ListRunsPageInput struct {
+	Limit         int
+	BeforeCreated *time.Time
+	BeforeID      string
+}
+
+type RunPage struct {
+	Runs    []Run
+	HasMore bool
+}
+
+type RetentionResult struct {
+	Runs          int   `json:"runs"`
+	ModelRequests int   `json:"model_requests"`
+	Artifacts     int   `json:"artifacts"`
+	ArtifactBytes int64 `json:"artifact_bytes"`
+}
+
+type RuntimeMetrics struct {
+	RunStatusCounts             map[string]int
+	ModelRequestStatusCounts    map[string]int
+	ModelLatencyCount           int
+	ModelLatencyMilliseconds    float64
+	ModelLatencyMaxMilliseconds float64
+}
+
 type CreateRunInput struct {
-	WorkflowID string            `json:"workflow_id"`
-	TriggerID  string            `json:"trigger_id,omitempty"`
-	Inputs     map[string]string `json:"inputs,omitempty"`
+	WorkflowID       string            `json:"workflow_id"`
+	TriggerID        string            `json:"trigger_id,omitempty"`
+	Inputs           map[string]string `json:"inputs,omitempty"`
+	MaxAttempts      int               `json:"max_attempts,omitempty"`
+	PipelineSnapshot *Pipeline         `json:"-"`
 }

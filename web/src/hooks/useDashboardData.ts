@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { defaultDashboardState, defaultWorkflowDefinitions, type DashboardState, type OpenPilotStateResponse, type RunDetail, type Trigger, type ViewID, type WorkflowDefinition } from '../types';
+import { defaultDashboardState, type DashboardState, type OpenPilotStateResponse, type RunDetail, type Trigger, type ViewID, type WorkflowDefinition } from '../types';
 import {
   APIError,
   loadDashboardSnapshot,
@@ -23,7 +23,7 @@ type UseDashboardDataArgs = {
 
 export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }: UseDashboardDataArgs) {
   const [dashboard, setDashboard] = useState<DashboardState>(defaultDashboardState);
-  const [workflowDefinitions, setWorkflowDefinitions] = useState<WorkflowDefinition[]>(defaultWorkflowDefinitions);
+  const [workflowDefinitions, setWorkflowDefinitions] = useState<WorkflowDefinition[]>([]);
   const [dashboardError, setDashboardError] = useState('');
   const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
   const [openPilotState, setOpenPilotState] = useState<OpenPilotStateResponse | null>(null);
@@ -50,7 +50,7 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
     try {
       const snapshot = await loadDashboardSnapshot();
       setDashboard(snapshot.dashboard);
-      setWorkflowDefinitions(snapshot.workflowDefinitions.length > 0 ? snapshot.workflowDefinitions : defaultWorkflowDefinitions);
+      setWorkflowDefinitions(snapshot.workflowDefinitions);
     } catch (caught) {
       setDashboardError(messageFrom(caught));
       ok = false;

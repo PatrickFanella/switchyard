@@ -1,13 +1,13 @@
 services:
   postgres:
-    image: postgres:17
+    image: postgres:17@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-switchyard}
       POSTGRES_USER: ${POSTGRES_USER:-switchyard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong random value}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -17,34 +17,67 @@ services:
       retries: 5
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
     environment:
-      DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:-change-me} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
+      DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong random value} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
       MODEL_BROKER_TIMEOUT: ${MODEL_BROKER_TIMEOUT:-10m}
+      MODEL_BROKER_BACKEND: ${MODEL_BROKER_BACKEND:-}
+      LLAMA_LINE_BASE_URL: ${LLAMA_LINE_BASE_URL:-}
+      LLAMA_LINE_API_KEY: ${LLAMA_LINE_API_KEY:-}
+      MODEL_BROKER_RECOVERY_STALE_AFTER: ${MODEL_BROKER_RECOVERY_STALE_AFTER:-15m}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       MODEL_BROKER_OLLAMA_MODELS: ${MODEL_BROKER_OLLAMA_MODELS:-llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes}
       OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode:4096}
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
       OPENCODE_EXECUTOR_TIMEOUT: ${OPENCODE_EXECUTOR_TIMEOUT:-10m}
-      OPENCODE_SESSION_CREATE_TIMEOUT: ${OPENCODE_SESSION_CREATE_TIMEOUT:-5s}
+      OPENCODE_EXECUTOR_BACKEND: ${OPENCODE_EXECUTOR_BACKEND:-}
+      OCQ_BASE_URL: ${OCQ_BASE_URL:-}
+      OCQ_GATEWAY_KEY: ${OCQ_GATEWAY_KEY:-}
+      OPENCODE_SESSION_CREATE_TIMEOUT: ${OPENCODE_SESSION_CREATE_TIMEOUT:-300s}
       OPENCODE_MESSAGE_TIMEOUT: ${OPENCODE_MESSAGE_TIMEOUT:-10m}
-      OPENCODE_ABORT_TIMEOUT: ${OPENCODE_ABORT_TIMEOUT:-1s}
+      OPENCODE_ABORT_TIMEOUT: ${OPENCODE_ABORT_TIMEOUT:-300s}
       BLACKTOWER_BASE_URL: ${BLACKTOWER_BASE_URL:-}
+      CHANGEMAKER_BASE_URL: ${CHANGEMAKER_BASE_URL:-}
+      CHANGEMAKER_ADMIN_TOKEN: ${CHANGEMAKER_ADMIN_TOKEN:-}
       SWITCHYARD_PUBLIC_URL: ${SWITCHYARD_PUBLIC_URL:-}
       SWITCHYARD_REVERSE_PROXY_AUTH: ${SWITCHYARD_REVERSE_PROXY_AUTH:-false}
-      SWITCHYARD_SCHEDULER_ENABLED: ${SWITCHYARD_SCHEDULER_ENABLED:-false}
+      SWITCHYARD_CONTROL_API_TOKEN: ${SWITCHYARD_CONTROL_API_TOKEN:-}
+      SWITCHYARD_CONTROL_READ_TOKEN: ${SWITCHYARD_CONTROL_READ_TOKEN:-}
+      SWITCHYARD_CORS_ALLOWED_ORIGINS: ${SWITCHYARD_CORS_ALLOWED_ORIGINS:-}
+      LLAMA_LINE_LISTEN_ADDR: :11434
+      SWITCHYARD_SCHEDULER_ENABLED: ${SWITCHYARD_SCHEDULER_ENABLED:-true}
       SWITCHYARD_SCHEDULER_INTERVAL: ${SWITCHYARD_SCHEDULER_INTERVAL:-1m}
-      SWITCHYARD_WORKER_ENABLED: ${SWITCHYARD_WORKER_ENABLED:-false}
+      SWITCHYARD_SCHEDULER_TIMEZONE: ${SWITCHYARD_SCHEDULER_TIMEZONE:-UTC}
+      SWITCHYARD_WORKER_ENABLED: ${SWITCHYARD_WORKER_ENABLED:-true}
       SWITCHYARD_WORKER_COUNT: ${SWITCHYARD_WORKER_COUNT:-1}
       SWITCHYARD_WORKER_LEASE: ${SWITCHYARD_WORKER_LEASE:-5m}
       SWITCHYARD_WORKER_POLL_INTERVAL: ${SWITCHYARD_WORKER_POLL_INTERVAL:-1s}
+      SWITCHYARD_RUN_MAX_ATTEMPTS: ${SWITCHYARD_RUN_MAX_ATTEMPTS:-3}
+      SWITCHYARD_RUN_RETRY_BACKOFF: ${SWITCHYARD_RUN_RETRY_BACKOFF:-5s}
+      SWITCHYARD_RUN_RETRY_MAX_BACKOFF: ${SWITCHYARD_RUN_RETRY_MAX_BACKOFF:-5m}
+      SWITCHYARD_RUN_TIMEOUT: ${SWITCHYARD_RUN_TIMEOUT:-10m}
+      SWITCHYARD_SHUTDOWN_GRACE: ${SWITCHYARD_SHUTDOWN_GRACE:-30s}
+      SWITCHYARD_RETENTION: ${SWITCHYARD_RETENTION:-720h}
+      SWITCHYARD_RETENTION_INTERVAL: ${SWITCHYARD_RETENTION_INTERVAL:-24h}
+      SWITCHYARD_MAX_REQUEST_BYTES: ${SWITCHYARD_MAX_REQUEST_BYTES:-1048576}
+      SWITCHYARD_MAX_PROMPT_BYTES: ${SWITCHYARD_MAX_PROMPT_BYTES:-65536}
+      SWITCHYARD_MAX_MODEL_RESPONSE_BYTES: ${SWITCHYARD_MAX_MODEL_RESPONSE_BYTES:-1048576}
+      SWITCHYARD_MAX_ARTIFACT_BYTES: ${SWITCHYARD_MAX_ARTIFACT_BYTES:-1048576}
+      SWITCHYARD_RATE_LIMIT_PER_SECOND: ${SWITCHYARD_RATE_LIMIT_PER_SECOND:-50}
+      SWITCHYARD_HTTP_ALLOWED_HOSTS: ${SWITCHYARD_HTTP_ALLOWED_HOSTS:-}
+      SWITCHYARD_HTTP_ALLOW_INSECURE: ${SWITCHYARD_HTTP_ALLOW_INSECURE:-false}
+      SWITCHYARD_HTTP_TIMEOUT: ${SWITCHYARD_HTTP_TIMEOUT:-15s}
       SWITCHYARD_EXECUTOR_LIMITS: ${SWITCHYARD_EXECUTOR_LIMITS:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-x-project-name=switchyard}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-switchyard}
       OTEL_EXPORTER_OTLP_TRACES_PATH: ${OTEL_EXPORTER_OTLP_TRACES_PATH:-/v1/traces}
+      OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-10000}
       OPEN_PILOT_AUTONOMY_MODE: ${OPEN_PILOT_AUTONOMY_MODE:-manual}
       OPEN_PILOT_COMMAND: ${OPEN_PILOT_COMMAND:-}
       DEVLOG_MODEL: ${DEVLOG_MODEL:-gpt-5.4}
@@ -68,46 +101,82 @@ services:
       OPEN_PILOT_BASE_BRANCH: ${OPEN_PILOT_BASE_BRANCH:-main}
       OPEN_PILOT_BRANCH_PREFIX: ${OPEN_PILOT_BRANCH_PREFIX:-open-pilot/}
       OPEN_PILOT_PR_DRAFT: ${OPEN_PILOT_PR_DRAFT:-true}
-      OPEN_PILOT_COMMAND_POLICY_MODE: ${OPEN_PILOT_COMMAND_POLICY_MODE:-allow}
+      OPEN_PILOT_COMMAND_POLICY_MODE: ${OPEN_PILOT_COMMAND_POLICY_MODE:-deny}
       OPEN_PILOT_ALLOWED_COMMANDS: ${OPEN_PILOT_ALLOWED_COMMANDS:-}
       OPEN_PILOT_ALLOWED_GIT_VERBS: ${OPEN_PILOT_ALLOWED_GIT_VERBS:-}
       OPEN_PILOT_DENIED_COMMANDS: ${OPEN_PILOT_DENIED_COMMANDS:-}
-      OPEN_PILOT_COMMAND_TIMEOUT: ${OPEN_PILOT_COMMAND_TIMEOUT:-120s}
+      OPEN_PILOT_COMMAND_TIMEOUT: ${OPEN_PILOT_COMMAND_TIMEOUT:-300s}
       OPEN_PILOT_WORKDIR: ${OPEN_PILOT_WORKDIR:-}
       OPEN_PILOT_WORKTREE_MODE: ${OPEN_PILOT_WORKTREE_MODE:-disabled}
       OPEN_PILOT_WORKTREE_CLEANUP: ${OPEN_PILOT_WORKTREE_CLEANUP:-disabled}
       OPEN_PILOT_REPO_PATH: ${OPEN_PILOT_REPO_PATH:-}
       OPEN_PILOT_WORKTREE_ROOT: ${OPEN_PILOT_WORKTREE_ROOT:-}
-      OPEN_PILOT_WORKTREE_TIMEOUT: ${OPEN_PILOT_WORKTREE_TIMEOUT:-120s}
-      GIT_CONFIG_COUNT: 1
+      OPEN_PILOT_WORKTREE_TIMEOUT: ${OPEN_PILOT_WORKTREE_TIMEOUT:-300s}
+      GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: safe.directory
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_VALUE_0: /workspace
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /workspace/*
     depends_on:
       postgres:
         condition: service_healthy
       opencode:
         condition: service_healthy
     ports:
-      - "${API_PORT:-18080}:8080"
-      - "${LLAMA_LINE_PORT:-11434}:8080"
+      - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${API_PORT:-18080}:8080"
+      - "${SWITCHYARD_MODEL_BIND_HOST:-${SWITCHYARD_BIND_HOST:-127.0.0.1}}:${LLAMA_LINE_PORT:-11434}:11434"
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   opencode:
-    build: ./services/opencode
+    build:
+      context: ./services/opencode
+      args:
+        SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
+    # The entrypoint uses this minimal bootstrap identity only to prepare its
+    # state volumes, then execs the OpenCode server as OPENCODE_RUNTIME_UID:GID.
+    user: "0:0"
     environment:
+      HOME: /home/opencode
+      XDG_CONFIG_HOME: /home/opencode/.config
+      XDG_DATA_HOME: /home/opencode/.local/share
+      XDG_CACHE_HOME: /home/opencode/.cache
+      XDG_STATE_HOME: /home/opencode/.local/state
       OPENCODE_SERVER_HOSTNAME: 0.0.0.0
       OPENCODE_SERVER_PORT: 4096
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-switchyard}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-switchyard-local-opencode-password}
-      OPENCODE_SESSION_CREATE_TIMEOUT_MS: ${OPENCODE_SESSION_CREATE_TIMEOUT_MS:-5000}
+      OPENCODE_SESSION_CREATE_TIMEOUT_MS: ${OPENCODE_SESSION_CREATE_TIMEOUT_MS:-300000}
       OPENCODE_MESSAGE_TIMEOUT_MS: ${OPENCODE_MESSAGE_TIMEOUT_MS:-600000}
-      GIT_CONFIG_COUNT: 1
+      OPENCODE_SECURITY_MODE: ${OPENCODE_SECURITY_MODE:-strict}
+      OPENCODE_RUNTIME_UID: ${OPENCODE_RUNTIME_UID:-1000}
+      OPENCODE_RUNTIME_GID: ${OPENCODE_RUNTIME_GID:-1000}
+      GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: safe.directory
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_VALUE_0: /workspace
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /workspace/*
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Needed only by the short root bootstrap before it drops to the runtime user.
+      - CHOWN
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /run:rw,noexec,nosuid,size=16m
     healthcheck:
       test:
         [
@@ -119,16 +188,27 @@ services:
       retries: 12
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
-      - ${OPENCODE_CONFIG_DIR:-./.opencode}:/root/.config/opencode
-      - ${OPENCODE_DATA_DIR:-./opencode-data}:/root/.local/share/opencode
+      - ${OPENCODE_CONFIG_DIR:-./.opencode}:/home/opencode/.config/opencode
+      - ${OPENCODE_DATA_DIR:-./opencode-data}:/home/opencode/.local/share/opencode
+      - opencode-state:/home/opencode/.local/state
+      - opencode-cache:/home/opencode/.cache
 
   web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
     depends_on:
       - api
+    environment:
+      SWITCHYARD_WEB_TRUSTED_PROXY_CIDR: ${SWITCHYARD_WEB_TRUSTED_PROXY_CIDR:-172.16.0.0/12}
+      SWITCHYARD_DASHBOARD_CIDR: ${SWITCHYARD_DASHBOARD_CIDR:-127.0.0.1/32}
+      NGINX_ENVSUBST_FILTER: "^SWITCHYARD_(WEB_TRUSTED_PROXY|DASHBOARD)_CIDR$$"
     ports:
-      - "${WEB_PORT:-8081}:80"
+      - "${SWITCHYARD_WEB_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8081}:80"
 
 volumes:
   postgres-data:
+  opencode-cache:
+  opencode-state:

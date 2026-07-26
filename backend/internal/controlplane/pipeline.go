@@ -1,9 +1,27 @@
 package controlplane
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 )
+
+func clonePipeline(pipeline Pipeline) Pipeline {
+	out := pipeline
+	out.Steps = append([]PipelineStep(nil), pipeline.Steps...)
+	for i := range out.Steps {
+		out.Steps[i].Inputs = cloneMap(out.Steps[i].Inputs)
+	}
+	return out
+}
+
+func pipelineVersion(pipeline Pipeline) string {
+	encoded, _ := json.Marshal(pipeline)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:8])
+}
 
 type Pipeline struct {
 	ID          string         `json:"id"`
@@ -14,13 +32,14 @@ type Pipeline struct {
 }
 
 type PipelineStep struct {
-	ID       string            `json:"id"`
-	Position int               `json:"position"`
-	Name     string            `json:"name"`
-	Executor string            `json:"executor"`
-	Profile  string            `json:"profile,omitempty"`
-	Model    string            `json:"model,omitempty"`
-	Inputs   map[string]string `json:"inputs,omitempty"`
+	ID              string            `json:"id"`
+	Position        int               `json:"position"`
+	Name            string            `json:"name"`
+	Executor        string            `json:"executor"`
+	Profile         string            `json:"profile,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Inputs          map[string]string `json:"inputs,omitempty"`
+	profileContract string
 }
 
 type PipelineRegistry interface {

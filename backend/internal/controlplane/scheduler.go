@@ -2,7 +2,8 @@ package controlplane
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,11 +11,13 @@ import (
 )
 
 type SchedulerStatus struct {
-	Enabled   bool      `json:"enabled"`
-	Running   bool      `json:"running"`
-	Interval  string    `json:"interval"`
-	LastTick  time.Time `json:"last_tick,omitempty"`
-	LastError string    `json:"last_error,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	Running         bool      `json:"running"`
+	Interval        string    `json:"interval"`
+	LastTick        time.Time `json:"last_tick,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	Timezone        string    `json:"timezone"`
+	MissedRunPolicy string    `json:"missed_run_policy"`
 }
 
 type Scheduler struct {
@@ -23,11 +26,13 @@ type Scheduler struct {
 	now      func() time.Time
 	interval time.Duration
 	async    bool
+	location *time.Location
 
 	mu       sync.RWMutex
 	running  bool
 	lastTick time.Time
 	lastErr  string
+	done     chan struct{}
 }
 
 func (s *Scheduler) SetAsyncDispatch(enabled bool) {
@@ -41,13 +46,20 @@ func NewScheduler(store Store, runner *Runner, interval time.Duration, now func(
 	if now == nil {
 		now = time.Now
 	}
-	return &Scheduler{store: store, runner: runner, interval: interval, now: now}
+	return &Scheduler{store: store, runner: runner, interval: interval, now: now, location: time.UTC}
+}
+
+func (s *Scheduler) SetLocation(location *time.Location) {
+	if location == nil {
+		location = time.UTC
+	}
+	s.location = location
 }
 
 func (s *Scheduler) Status() SchedulerStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return SchedulerStatus{Enabled: true, Running: s.running, Interval: s.interval.String(), LastTick: s.lastTick, LastError: s.lastErr}
+	return SchedulerStatus{Enabled: true, Running: s.running, Interval: s.interval.String(), LastTick: s.lastTick, LastError: s.lastErr, Timezone: s.location.String(), MissedRunPolicy: "coalesce_once"}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
@@ -57,19 +69,21 @@ func (s *Scheduler) Start(ctx context.Context) {
 		return
 	}
 	s.running = true
+	s.done = make(chan struct{})
 	s.mu.Unlock()
 
 	go func() {
 		defer func() {
 			s.mu.Lock()
 			s.running = false
+			close(s.done)
 			s.mu.Unlock()
 		}()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 		for {
 			if err := s.Tick(ctx); err != nil {
-				log.Printf("switchyard scheduler tick: %v", err)
+				slog.Error("scheduler tick failed", "error", RedactForLog(err.Error()))
 			}
 			select {
 			case <-ctx.Done():
@@ -78,6 +92,21 @@ func (s *Scheduler) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (s *Scheduler) Wait(ctx context.Context) error {
+	s.mu.RLock()
+	done := s.done
+	s.mu.RUnlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Scheduler) Tick(ctx context.Context) error {
@@ -92,7 +121,14 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			continue
 		}
 		if trigger.NextRunAt == nil {
-			next := nextScheduledTime(trigger.Schedule, now)
+			next, err := nextScheduledTime(trigger.Schedule, now, s.location)
+			if err != nil {
+				_, _ = s.store.UpdateTriggerScheduleState(trigger.ID, nil, nil, err.Error())
+				s.mu.Lock()
+				s.lastErr = err.Error()
+				s.mu.Unlock()
+				continue
+			}
 			_, _ = s.store.UpdateTriggerScheduleState(trigger.ID, nil, &next, "")
 			continue
 		}
@@ -106,10 +142,16 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			_, err = s.runner.RunTrigger(ctx, trigger.ID)
 		}
 		last := now
-		next := nextScheduledTime(trigger.Schedule, now.Add(time.Minute))
+		next, scheduleErr := nextScheduledTime(trigger.Schedule, now, s.location)
 		lastErr := ""
 		if err != nil {
 			lastErr = err.Error()
+			s.mu.Lock()
+			s.lastErr = lastErr
+			s.mu.Unlock()
+		}
+		if scheduleErr != nil {
+			lastErr = scheduleErr.Error()
 			s.mu.Lock()
 			s.lastErr = lastErr
 			s.mu.Unlock()
@@ -123,27 +165,103 @@ func isScheduledTrigger(t TriggerType) bool {
 	return t == TriggerCron || t == TriggerPoll
 }
 
-func nextScheduledTime(schedule string, after time.Time) time.Time {
+func nextScheduledTime(schedule string, after time.Time, location *time.Location) (time.Time, error) {
 	fields := strings.Fields(schedule)
 	if len(fields) != 5 {
-		return after.Add(time.Hour)
+		return time.Time{}, fmt.Errorf("cron schedule must contain five fields")
 	}
-	for candidate := after.Truncate(time.Minute).Add(time.Minute); candidate.Before(after.Add(366 * 24 * time.Hour)); candidate = candidate.Add(time.Minute) {
-		if cronFieldMatches(fields[0], candidate.Minute(), 0, 59) && cronFieldMatches(fields[1], candidate.Hour(), 0, 23) {
-			return candidate.UTC()
+	if location == nil {
+		location = time.UTC
+	}
+	parsed := make([]cronField, 5)
+	ranges := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
+	for index, bounds := range ranges {
+		field, err := parseCronField(fields[index], bounds[0], bounds[1])
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid cron field %d: %w", index+1, err)
+		}
+		parsed[index] = field
+	}
+	start := after.In(location)
+	for candidate := start.Truncate(time.Minute).Add(time.Minute); candidate.Before(start.Add(5 * 366 * 24 * time.Hour)); candidate = candidate.Add(time.Minute) {
+		weekday := int(candidate.Weekday())
+		domMatch := parsed[2].matches(candidate.Day())
+		dowMatch := parsed[4].matches(weekday) || (weekday == 0 && parsed[4].matches(7))
+		dayMatch := domMatch && dowMatch
+		if !parsed[2].wildcard && !parsed[4].wildcard {
+			dayMatch = domMatch || dowMatch
+		}
+		if parsed[0].matches(candidate.Minute()) && parsed[1].matches(candidate.Hour()) && dayMatch && parsed[3].matches(int(candidate.Month())) {
+			return candidate.UTC(), nil
 		}
 	}
-	return after.Add(time.Hour).UTC()
+	return time.Time{}, fmt.Errorf("cron schedule has no occurrence within five years")
 }
 
-func cronFieldMatches(field string, value int, min int, max int) bool {
-	if field == "*" {
-		return true
+type cronField struct {
+	values   map[int]struct{}
+	wildcard bool
+}
+
+func (f cronField) matches(value int) bool {
+	_, ok := f.values[value]
+	return ok
+}
+
+func parseCronField(raw string, minValue, maxValue int) (cronField, error) {
+	field := cronField{values: map[int]struct{}{}, wildcard: raw == "*"}
+	parts := strings.Split(raw, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return cronField{}, fmt.Errorf("empty list item")
+		}
+		base, stepText, hasStep := strings.Cut(part, "/")
+		step := 1
+		if hasStep {
+			parsed, err := strconv.Atoi(stepText)
+			if err != nil || parsed < 1 {
+				return cronField{}, fmt.Errorf("invalid step %q", stepText)
+			}
+			step = parsed
+		}
+		start, end := minValue, maxValue
+		switch {
+		case base == "*":
+			field.wildcard = field.wildcard || len(parts) == 1
+		case strings.Contains(base, "-"):
+			startText, endText, ok := strings.Cut(base, "-")
+			if !ok {
+				return cronField{}, fmt.Errorf("invalid range %q", base)
+			}
+			var err error
+			start, err = strconv.Atoi(startText)
+			if err != nil {
+				return cronField{}, fmt.Errorf("invalid range start %q", startText)
+			}
+			end, err = strconv.Atoi(endText)
+			if err != nil {
+				return cronField{}, fmt.Errorf("invalid range end %q", endText)
+			}
+		default:
+			value, err := strconv.Atoi(base)
+			if err != nil {
+				return cronField{}, fmt.Errorf("invalid value %q", base)
+			}
+			if hasStep {
+				return cronField{}, fmt.Errorf("step requires wildcard or range")
+			}
+			start, end = value, value
+		}
+		if start < minValue || end > maxValue || start > end {
+			return cronField{}, fmt.Errorf("value outside %d-%d", minValue, maxValue)
+		}
+		for value := start; value <= end; value += step {
+			field.values[value] = struct{}{}
+		}
 	}
-	if strings.HasPrefix(field, "*/") {
-		step, err := strconv.Atoi(strings.TrimPrefix(field, "*/"))
-		return err == nil && step > 0 && value%step == 0
+	if len(field.values) == 0 {
+		return cronField{}, fmt.Errorf("field has no values")
 	}
-	exact, err := strconv.Atoi(field)
-	return err == nil && exact >= min && exact <= max && value == exact
+	return field, nil
 }

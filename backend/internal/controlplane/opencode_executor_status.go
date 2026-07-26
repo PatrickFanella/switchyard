@@ -15,18 +15,20 @@ type OpenCodeExecutorStatusProvider interface {
 }
 
 type OpenCodeExecutorStatus struct {
-	ID                  string                          `json:"id"`
-	Status              string                          `json:"status"`
-	Configured          bool                            `json:"configured"`
-	Backend             string                          `json:"backend"`
-	TransitionalBackend string                          `json:"transitional_backend,omitempty"`
-	BaseURL             string                          `json:"base_url,omitempty"`
-	Healthy             bool                            `json:"healthy"`
-	SessionCount        int                             `json:"session_count"`
-	ActiveSessionCount  int                             `json:"active_session_count"`
-	Sessions            []OpenCodeExecutorStatusSession `json:"sessions"`
-	CheckedAt           time.Time                       `json:"checked_at"`
-	Error               string                          `json:"error,omitempty"`
+	ID                   string                          `json:"id"`
+	Status               string                          `json:"status"`
+	Configured           bool                            `json:"configured"`
+	Backend              string                          `json:"backend"`
+	TransitionalBackend  string                          `json:"transitional_backend,omitempty"`
+	ConfiguredSelector   string                          `json:"configured_selector,omitempty"`
+	CompatibilityWarning string                          `json:"compatibility_warning,omitempty"`
+	BaseURL              string                          `json:"base_url,omitempty"`
+	Healthy              bool                            `json:"healthy"`
+	SessionCount         int                             `json:"session_count"`
+	ActiveSessionCount   int                             `json:"active_session_count"`
+	Sessions             []OpenCodeExecutorStatusSession `json:"sessions"`
+	CheckedAt            time.Time                       `json:"checked_at"`
+	Error                string                          `json:"error,omitempty"`
 }
 
 type OpenCodeExecutorStatusSession struct {
@@ -66,14 +68,16 @@ func (p *EnvOpenCodeExecutorStatusProvider) Status(ctx context.Context) OpenCode
 		return p.nativeStatus(ctx, now)
 	}
 	status := OpenCodeExecutorStatus{
-		ID:                  "switchyard-opencode-executor",
-		Status:              "not_configured",
-		Configured:          strings.TrimSpace(p.ocqBaseURL) != "",
-		Backend:             "switchyard-opencode-executor",
-		TransitionalBackend: "ocq",
-		BaseURL:             p.ocqBaseURL,
-		Sessions:            []OpenCodeExecutorStatusSession{},
-		CheckedAt:           now,
+		ID:                   "switchyard-opencode-executor",
+		Status:               "not_configured",
+		Configured:           strings.TrimSpace(p.ocqBaseURL) != "",
+		Backend:              "switchyard-opencode-executor",
+		TransitionalBackend:  "ocq",
+		ConfiguredSelector:   "ocq",
+		CompatibilityWarning: "deprecated-external-backend",
+		BaseURL:              p.ocqBaseURL,
+		Sessions:             []OpenCodeExecutorStatusSession{},
+		CheckedAt:            now,
 	}
 	if !status.Configured {
 		status.Error = "OCQ_BASE_URL is not configured"
@@ -112,7 +116,7 @@ func (p *EnvOpenCodeExecutorStatusProvider) Status(ctx context.Context) OpenCode
 }
 
 func (p *EnvOpenCodeExecutorStatusProvider) nativeStatus(ctx context.Context, now time.Time) OpenCodeExecutorStatus {
-	status := OpenCodeExecutorStatus{ID: "switchyard-opencode-executor", Status: "not_configured", Configured: strings.TrimSpace(p.openCodeURL) != "", Backend: "switchyard-opencode-executor", BaseURL: p.openCodeURL, Sessions: []OpenCodeExecutorStatusSession{}, CheckedAt: now}
+	status := OpenCodeExecutorStatus{ID: "switchyard-opencode-executor", Status: "not_configured", Configured: strings.TrimSpace(p.openCodeURL) != "", Backend: "switchyard-opencode-executor", ConfiguredSelector: "native", BaseURL: p.openCodeURL, Sessions: []OpenCodeExecutorStatusSession{}, CheckedAt: now}
 	if !status.Configured {
 		status.Error = "OPENCODE_SERVER_URL is not configured"
 		return status

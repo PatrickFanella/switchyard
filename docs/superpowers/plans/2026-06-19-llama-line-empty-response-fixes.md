@@ -1,5 +1,7 @@
 # llama-line Empty Response Fixes Implementation Plan
 
+> **Historical cross-repository plan:** The standalone llama-line repository referenced below is no longer a Switchyard product boundary. Switchyard compatibility behavior is documented in `docs/reference/client-compatibility.md`; this checklist is not current status.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

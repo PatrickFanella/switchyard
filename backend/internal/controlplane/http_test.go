@@ -112,8 +112,84 @@ func TestAPIWorkflowDefinitionCRUD(t *testing.T) {
 	}
 }
 
+func TestAPIWorkflowDefinitionActivationVersionsAndRollback(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := store.UpsertWorkflow(controlplane.Workflow{ID: "versioned", Kind: "versioned", Name: "Versioned"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	put := func(name, summary string) controlplane.WorkflowDefinition {
+		body := `{"name":"` + name + `","status":"draft","pipeline":{"id":"versioned-pipeline","workflow_id":"versioned","name":"Versioned Pipeline","steps":[{"id":"prepare","position":1,"name":"versioned.prepare","executor":"internal","inputs":{"summary":"` + summary + `"}}]}}`
+		req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/versioned", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT status = %d body=%s", resp.StatusCode, mustReadBody(t, resp.Body))
+		}
+		var envelope struct {
+			Definition controlplane.WorkflowDefinition `json:"workflow_definition"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		return envelope.Definition
+	}
+	first := put("First", "first")
+	if first.Version != 1 || first.Status != "draft" {
+		t.Fatalf("first = %+v", first)
+	}
+	activate, err := http.NewRequest(http.MethodPost, srv.URL+"/api/workflow-definitions/versioned/activate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(activate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("activate status = %d", resp.StatusCode)
+	}
+	second := put("Second", "second")
+	if second.Version != 2 || second.Status != "draft" {
+		t.Fatalf("second = %+v", second)
+	}
+	rollback, err := http.NewRequest(http.MethodPost, srv.URL+"/api/workflow-definitions/versioned/rollback", strings.NewReader(`{"version":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(rollback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", resp.StatusCode, mustReadBody(t, resp.Body))
+	}
+	var rollbackEnvelope struct {
+		Definition controlplane.WorkflowDefinition `json:"workflow_definition"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rollbackEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if rollbackEnvelope.Definition.Version != 3 || rollbackEnvelope.Definition.Status != "active" || rollbackEnvelope.Definition.Name != "First" {
+		t.Fatalf("rollback = %+v", rollbackEnvelope.Definition)
+	}
+	versions, err := store.ListWorkflowDefinitionVersions("versioned")
+	if err != nil || len(versions) != 3 {
+		t.Fatalf("versions = %+v err=%v", versions, err)
+	}
+}
+
 func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
-	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	store := controlplane.NewStore(time.Now)
 	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
@@ -294,7 +370,6 @@ func TestAPIWorkflowDefinitionWritesAreDraftOnlyAndValidated(t *testing.T) {
 	for name, body := range map[string]string{
 		"active status":     `{"name":"Custom Digest","description":"Daily custom digest","status":"active","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model"}]}}`,
 		"duplicate step id": `{"name":"Custom Digest","description":"Daily custom digest","status":"draft","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"generate","position":1,"name":"custom.generate","executor":"model"},{"id":"generate","position":2,"name":"custom.generate-again","executor":"internal"}]}}`,
-		"http executor":     `{"name":"Custom Digest","description":"Daily custom digest","status":"draft","pipeline":{"id":"custom-digest-pipeline","workflow_id":"custom-digest","name":"Custom Digest Pipeline","steps":[{"id":"call","position":1,"name":"custom.call","executor":"http"}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/workflow-definitions/custom-digest", bytes.NewBufferString(body))
@@ -518,11 +593,60 @@ func TestAPIRetryOpenPilotPausedRunRequiresLifecycleResume(t *testing.T) {
 	}
 }
 
-type fakeCanceler struct{ called bool }
+type fakeCanceler struct {
+	called bool
+	calls  int
+}
 
 func (f *fakeCanceler) Cancel(context.Context, controlplane.Run) controlplane.CancelResult {
 	f.called = true
+	f.calls++
 	return controlplane.CancelResult{Events: []controlplane.WorkflowExecutionEvent{{Type: "fake.cancel", Message: "called"}}}
+}
+
+func TestAPIStepCancellationDispatchesUpstreamOnceAndTerminalizesRun(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := store.UpsertWorkflow(controlplane.Workflow{ID: "test", Kind: "test", Name: "Test"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "test.agent", Executor: "opencode", CorrelationIDs: map[string]string{"opencode_session_id": "ses-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceler := &fakeCanceler{}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetCancelDispatcher(canceler)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		request, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+run.ID+"/steps/"+step.ID+"/cancel", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("attempt %d status = %d", attempt, response.StatusCode)
+		}
+	}
+	if canceler.calls != 1 {
+		t.Fatalf("upstream cancellation calls = %d, want 1", canceler.calls)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Run.Status != controlplane.RunCanceled || detail.Steps[0].Status != controlplane.StepCanceled {
+		t.Fatalf("detail = %+v", detail)
+	}
 }
 
 func TestAPIUpdatesTriggerEnabled(t *testing.T) {
@@ -597,7 +721,7 @@ func TestAPIAgentProfilesListsNativeProfiles(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode profiles: %v", err)
 	}
-	if len(body.Profiles) != 3 || body.Profiles[0].ID == "" || len(body.Profiles[0].AllowedExecutors) == 0 {
+	if len(body.Profiles) != 4 || body.Profiles[0].ID != "content-writer" || len(body.Profiles[0].AllowedExecutors) == 0 {
 		t.Fatalf("profiles = %+v", body.Profiles)
 	}
 }
@@ -1169,7 +1293,7 @@ func TestAPILlamaLineCompatIdentifiesClientFromBearerKey(t *testing.T) {
 	}
 }
 
-func TestAPILlamaLineCompatStatusOrdersQueuedByPriority(t *testing.T) {
+func TestModelBrokerQueueClaimsByPriority(t *testing.T) {
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "low", Model: "qwen3:14b", Path: "/api/generate", Client: "low-client", Priority: 1, RequestBody: `{"prompt":"low"}`}); err != nil {
 		t.Fatalf("create low: %v", err)
@@ -1177,27 +1301,60 @@ func TestAPILlamaLineCompatStatusOrdersQueuedByPriority(t *testing.T) {
 	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "high", Model: "qwen3:14b", Path: "/api/generate", Client: "high-client", Priority: 99, RequestBody: `{"prompt":"high"}`}); err != nil {
 		t.Fatalf("create high: %v", err)
 	}
-	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
-	srv := httptest.NewServer(api.Handler())
+	claimed, err := store.ClaimNextModelBrokerRequest()
+	if err != nil {
+		t.Fatalf("ClaimNextModelBrokerRequest() error = %v", err)
+	}
+	if claimed.ID != "high" || claimed.ClientPriority != 99 || claimed.Status != controlplane.ModelBrokerRequestRunning {
+		t.Fatalf("claimed = %+v, want high priority running request", claimed)
+	}
+}
+
+func TestModelBrokerAsyncQueueRejectsRequestsAtCapacity(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "ok"}, "done": true})
+	}))
+	t.Cleanup(func() {
+		close(release)
+		ollama.Close()
+	})
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+	t.Setenv("MODEL_BROKER_QUEUE_MAX_DEPTH", "1")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/broker/status")
-	if err != nil {
-		t.Fatalf("GET /broker/status: %v", err)
+	submit := func(id string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/generate?async=true", strings.NewReader(`{"model":"ollama/llama3.2","prompt":"hello"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", id)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
 	}
-	defer resp.Body.Close()
-	var body struct {
-		Queue []struct {
-			ID       string `json:"id"`
-			Client   string `json:"client"`
-			Priority int    `json:"priority"`
-		} `json:"queue"`
+	first := submit("capacity-first")
+	first.Body.Close()
+	if first.StatusCode != http.StatusAccepted {
+		t.Fatalf("first status = %d", first.StatusCode)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode status: %v", err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first queued request did not start")
 	}
-	if len(body.Queue) < 2 || body.Queue[0].ID != "high" || body.Queue[0].Priority != 99 {
-		t.Fatalf("queue order = %+v, want high priority first", body.Queue)
+	second := submit("capacity-second")
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests || second.Header.Get("Retry-After") == "" {
+		t.Fatalf("second status = %d Retry-After=%q", second.StatusCode, second.Header.Get("Retry-After"))
 	}
 }
 
@@ -1222,6 +1379,32 @@ func TestAPILlamaLineCompatRecoveryLeavesFreshRunningRequest(t *testing.T) {
 	}
 	if row.Status != controlplane.ModelBrokerRequestRunning {
 		t.Fatalf("status = %s", row.Status)
+	}
+}
+
+func TestAPIModelBrokerFeedbackIsPersistedAndRedacted(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if _, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "feedback-request", Model: "test", RequestBody: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	resp, err := http.Post(srv.URL+"/admin/feedback", "application/json", strings.NewReader(`{"request_id":"feedback-request","rating":1,"comment":"Bearer super-secret-token"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST status = %d", resp.StatusCode)
+	}
+	resp, err = http.Get(srv.URL + "/admin/feedback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := mustReadBody(t, resp.Body)
+	if !strings.Contains(body, "feedback-request") || !strings.Contains(body, "[REDACTED]") || strings.Contains(body, "super-secret-token") {
+		t.Fatalf("feedback body = %s", body)
 	}
 }
 
@@ -1529,7 +1712,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		Issue:             "123",
 		Phase:             controlplane.OpenPilotPhaseRequested,
 		GateStatus:        controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"},
-		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "8", "resume.open-pilot.prompt": "prompt"},
+		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "9", "resume.open-pilot.prompt": "prompt"},
 		RepairAttempts:    1,
 		MaxRepairAttempts: 2,
 	})
@@ -1634,7 +1817,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resumeResp.Body).Decode(&resumeBody); err != nil {
 		t.Fatalf("decode resume: %v", err)
 	}
-	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "8" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
+	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "9" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
 		t.Fatalf("resume body = %+v", resumeBody)
 	}
 	if resumeBody.State.Phase != controlplane.OpenPilotPhasePRCreated {
@@ -1703,7 +1886,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&agentNoTestBody); err != nil {
 		t.Fatalf("decode agent completed no test resume: %v", err)
 	}
-	if agentNoTestBody.Run.Inputs["retry_from_step"] != "open-pilot.push-branch" || agentNoTestBody.Run.Inputs["retry_from_step_position"] != "6" {
+	if agentNoTestBody.Run.Inputs["retry_from_step"] != "open-pilot.commit-changes" || agentNoTestBody.Run.Inputs["retry_from_step_position"] != "6" {
 		t.Fatalf("agent completed without test command resume = %+v", agentNoTestBody.Run.Inputs)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "127", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
@@ -1763,7 +1946,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&aiReviewedBody); err != nil {
 		t.Fatalf("decode ai reviewed resume: %v", err)
 	}
-	if aiReviewedBody.Run.Inputs["retry_from_step"] != "open-pilot.ci-checks" || aiReviewedBody.Run.Inputs["retry_from_step_position"] != "9" || aiReviewedBody.Run.Inputs["resume.open-pilot.pr-plan.pull_request_number"] != "42" {
+	if aiReviewedBody.Run.Inputs["retry_from_step"] != "open-pilot.ci-checks" || aiReviewedBody.Run.Inputs["retry_from_step_position"] != "10" || aiReviewedBody.Run.Inputs["resume.open-pilot.pr-plan.pull_request_number"] != "42" {
 		t.Fatalf("ai reviewed resume = %+v", aiReviewedBody.Run.Inputs)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "128", Phase: controlplane.OpenPilotPhaseRequested, GateStatus: controlplane.OpenPilotGateStatus{"merge": "merged"}, MergeCommitSHA: "deadbeef"}); err != nil {
@@ -1788,7 +1971,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&mergedBody); err != nil {
 		t.Fatalf("decode merged resume: %v", err)
 	}
-	if mergedBody.Run.Inputs["retry_from_step"] != "open-pilot.close-issue" || mergedBody.Run.Inputs["retry_from_step_position"] != "11" || mergedBody.Run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"] != "deadbeef" {
+	if mergedBody.Run.Inputs["retry_from_step"] != "open-pilot.close-issue" || mergedBody.Run.Inputs["retry_from_step_position"] != "12" || mergedBody.Run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"] != "deadbeef" {
 		t.Fatalf("merged resume = %+v", mergedBody.Run.Inputs)
 	}
 	_, err = store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
@@ -1903,7 +2086,7 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode retry: %v", err)
 	}
-	if body.Run.ID == run.ID || body.Run.TriggerID != run.TriggerID || body.Run.Status != controlplane.RunSucceeded {
+	if body.Run.ID == run.ID || body.Run.TriggerID != run.TriggerID || body.Run.Status != controlplane.RunFailed || !strings.Contains(body.Run.Summary, "not registered") {
 		t.Fatalf("retry run = %+v original = %+v", body.Run, run)
 	}
 }
@@ -1984,6 +2167,50 @@ func TestAPIRunStepsListRetryAndCancel(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("cancel status = %d", resp.StatusCode)
+	}
+}
+
+func TestAPIStepActionRejectsCrossRunStepID(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runOne, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun(one) error = %v", err)
+	}
+	runTwo, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"})
+	if err != nil {
+		t.Fatalf("CreateRun(two) error = %v", err)
+	}
+	step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: runOne.ID, Position: 1, Name: "devlog.test", Executor: "internal"})
+	if err != nil {
+		t.Fatalf("CreateRunStep() error = %v", err)
+	}
+
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	for _, action := range []string{"retry", "cancel"} {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+runTwo.ID+"/steps/"+step.ID+"/"+action, nil)
+		if err != nil {
+			t.Fatalf("new %s request: %v", action, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", action, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", action, resp.StatusCode)
+		}
+	}
+	saved, err := store.RunStep(step.ID)
+	if err != nil {
+		t.Fatalf("RunStep() error = %v", err)
+	}
+	if saved.Status != controlplane.StepQueued {
+		t.Fatalf("step status = %s, want queued", saved.Status)
 	}
 }
 
@@ -2143,39 +2370,271 @@ func TestAPIAdaptersEndpointShape(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode adapters: %v", err)
 	}
-	if len(body.Queues) != 1 || body.Queues[0].Status != "healthy" {
+	if len(body.Queues) != 0 {
 		t.Fatalf("queues = %+v", body.Queues)
 	}
-	if len(body.Sessions) != 1 || body.Sessions[0].Surface != "sessions" {
+	if len(body.Sessions) != 0 {
 		t.Fatalf("sessions = %+v", body.Sessions)
 	}
-	if len(body.Logs) != 1 || body.Logs[0].Level != "info" {
+	if len(body.Logs) != 0 {
 		t.Fatalf("logs = %+v", body.Logs)
 	}
-	if len(body.Prompts) != 1 || body.Prompts[0].Name == "" {
+	if len(body.Prompts) != 0 {
 		t.Fatalf("prompts = %+v", body.Prompts)
 	}
-	if body.Config.Environment != "development" || len(body.Config.Features) == 0 {
+	if body.Config.Environment != "unknown" || len(body.Config.Features) == 0 {
 		t.Fatalf("config = %+v", body.Config)
 	}
-	if len(body.Agents) != 1 || len(body.Skills) != 1 {
+	if len(body.Agents) != 0 || len(body.Skills) != 0 {
 		t.Fatalf("agents/skills = %+v %+v", body.Agents, body.Skills)
 	}
 	if body.Health.Status != "healthy" || len(body.Health.Services) != 1 {
 		t.Fatalf("health = %+v", body.Health)
 	}
-	if len(body.LlamaLine.Requests) != 1 || body.LlamaLine.Stats.ActiveRequests == 0 || len(body.LlamaLine.Upstreams) != 1 {
+	if len(body.LlamaLine.Requests) != 0 || body.LlamaLine.Stats.ActiveRequests != 0 || len(body.LlamaLine.Upstreams) != 0 {
 		t.Fatalf("llama_line = %+v", body.LlamaLine)
 	}
-	if len(body.OCQ.Requests) != 1 || len(body.OCQ.Sessions) != 1 || body.OCQ.Settings.Provider == "" {
+	if len(body.OCQ.Requests) != 0 || len(body.OCQ.Sessions) != 0 || body.OCQ.Settings.Provider != "unconfigured" {
 		t.Fatalf("ocq = %+v", body.OCQ)
 	}
-	if len(body.Blacktower.Tasks) != 1 || len(body.Blacktower.Reports) != 1 || body.Blacktower.SchedulerHealth.Status != "healthy" {
+	if len(body.Blacktower.Tasks) != 0 || len(body.Blacktower.Reports) != 0 || body.Blacktower.SchedulerHealth.Status != "unconfigured" {
 		t.Fatalf("blacktower = %+v", body.Blacktower)
 	}
-	if len(body.Changemaker.Posts) != 1 || !body.Changemaker.Service.Healthy || !body.Changemaker.RunControl.Enabled {
+	if len(body.Changemaker.Posts) != 0 || body.Changemaker.Service.Healthy || body.Changemaker.RunControl.Enabled {
 		t.Fatalf("changemaker = %+v", body.Changemaker)
 	}
+}
+
+func TestAPIListenerRouteIsolation(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	control := httptest.NewServer(api.ControlPlaneHandler())
+	t.Cleanup(control.Close)
+	model := httptest.NewServer(api.ModelIngressHandler())
+	t.Cleanup(model.Close)
+
+	for _, path := range []string{"/api/runs", "/api/triggers", "/api/workflow-definitions", "/admin/queue", "/api/history"} {
+		resp, err := http.Get(model.URL + path)
+		if err != nil {
+			t.Fatalf("GET model ingress %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("model ingress %s status = %d, want 404", path, resp.StatusCode)
+		}
+	}
+
+	resp, err := http.Get(control.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET control inference route: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("control inference status = %d, want 404", resp.StatusCode)
+	}
+
+	resp, err = http.Get(model.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET model list: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("model list status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestAPIRunsUsesBoundedCursorPagination(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := controlplane.NewStore(func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	})
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "devlog"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	var first struct {
+		Runs       []controlplane.Run `json:"runs"`
+		NextCursor string             `json:"next_cursor"`
+	}
+	resp, err := http.Get(srv.URL + "/api/runs?limit=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(first.Runs) != 2 || first.NextCursor == "" {
+		t.Fatalf("first page = %+v", first)
+	}
+	var second struct {
+		Runs       []controlplane.Run `json:"runs"`
+		NextCursor string             `json:"next_cursor"`
+	}
+	resp, err = http.Get(srv.URL + "/api/runs?limit=2&cursor=" + first.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Runs) != 1 || second.NextCursor != "" || second.Runs[0].ID == first.Runs[0].ID || second.Runs[0].ID == first.Runs[1].ID {
+		t.Fatalf("second page = %+v", second)
+	}
+}
+
+func TestControlPlaneRequiresAuthenticationAndEnforcesReadRole(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-secret")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "read-secret")
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+
+	request := func(method, path, token string) *http.Response {
+		req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(`{"workflow_id":"devlog"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+		return resp
+	}
+	if got := request(http.MethodGet, "/api/runs", "").StatusCode; got != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d", got)
+	}
+	if got := request(http.MethodGet, "/api/runs", "read-secret").StatusCode; got != http.StatusOK {
+		t.Fatalf("read token GET status = %d", got)
+	}
+	if got := request(http.MethodPost, "/api/runs", "read-secret").StatusCode; got != http.StatusForbidden {
+		t.Fatalf("read token POST status = %d", got)
+	}
+	if got := request(http.MethodPost, "/api/runs", "admin-secret").StatusCode; got != http.StatusCreated {
+		t.Fatalf("admin token POST status = %d", got)
+	}
+}
+
+func TestControlPlaneFailsClosedWithoutAuthenticationConfiguration(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "false")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + "/api/runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestAPICORSAllowsOnlyConfiguredOrigins(t *testing.T) {
+	t.Setenv("SWITCHYARD_CORS_ALLOWED_ORIGINS", "https://operator.example")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+	t.Cleanup(srv.Close)
+	request := func(origin string) *http.Response {
+		req, err := http.NewRequest(http.MethodOptions, srv.URL+"/api/runs", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", origin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	allowed := request("https://operator.example")
+	allowed.Body.Close()
+	if allowed.StatusCode != http.StatusNoContent || allowed.Header.Get("Access-Control-Allow-Origin") != "https://operator.example" {
+		t.Fatalf("allowed origin status/header = %d/%q", allowed.StatusCode, allowed.Header.Get("Access-Control-Allow-Origin"))
+	}
+	denied := request("https://evil.example")
+	denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden || denied.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("denied origin status/header = %d/%q", denied.StatusCode, denied.Header.Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestAPIEnforcesBodyPromptAndRateLimits(t *testing.T) {
+	t.Run("body", func(t *testing.T) {
+		t.Setenv("SWITCHYARD_MAX_REQUEST_BYTES", "1024")
+		store := controlplane.NewStore(nil)
+		srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+		t.Cleanup(srv.Close)
+		resp, err := http.Post(srv.URL+"/api/runs", "application/json", strings.NewReader(strings.Repeat("x", 1025)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	})
+	t.Run("prompt", func(t *testing.T) {
+		t.Setenv("SWITCHYARD_MAX_PROMPT_BYTES", "1024")
+		store := controlplane.NewStore(nil)
+		srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+		t.Cleanup(srv.Close)
+		body := `{"model":"test","messages":[{"role":"user","content":"` + strings.Repeat("x", 1025) + `"}]}`
+		resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	})
+	t.Run("rate", func(t *testing.T) {
+		t.Setenv("SWITCHYARD_RATE_LIMIT_PER_SECOND", "1")
+		store := controlplane.NewStore(nil)
+		srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).Handler())
+		t.Cleanup(srv.Close)
+		first, err := http.Get(srv.URL + "/api/runs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		first.Body.Close()
+		limited := false
+		for i := 0; i < 3; i++ {
+			response, err := http.Get(srv.URL + "/api/runs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode == http.StatusTooManyRequests && response.Header.Get("Retry-After") != "" {
+				limited = true
+				break
+			}
+		}
+		if !limited {
+			t.Fatal("requests were not rate limited")
+		}
+	})
 }
 
 func TestAPIAdaptersProbesOCQWhenConfigured(t *testing.T) {
@@ -2302,7 +2761,7 @@ func TestAPIAdaptersProbesBlacktowerWhenConfigured(t *testing.T) {
 	if body.Blacktower.SchedulerHealth.Status != "healthy" {
 		t.Fatalf("scheduler health = %+v", body.Blacktower.SchedulerHealth)
 	}
-	if len(body.Sessions) < 2 || body.Sessions[len(body.Sessions)-1].Surface != "blacktower" {
+	if len(body.Sessions) != 1 || body.Sessions[0].Surface != "blacktower" {
 		t.Fatalf("sessions = %+v", body.Sessions)
 	}
 }

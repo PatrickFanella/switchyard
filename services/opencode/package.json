@@ -1,0 +1,8 @@
+{
+  "name": "switchyard-opencode-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "opencode-ai": "1.17.18"
+  }
+}

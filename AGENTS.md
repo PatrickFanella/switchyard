@@ -22,6 +22,14 @@ Switchyard is one cohesive automation runtime. OCQ, llama-line, and Changemaker 
 
 Compatibility backends and LLAMA_LINE_PORT ingress are cutover aids only. New code should prefer Switchyard-native interfaces over direct service-specific coupling. See `docs/adr/0003-native-switchyard-modules.md`.
 
+Keep the operator control plane and model-compatible ingress on separate listeners. Model ingress must not expose workflow, run, trigger, history, audit, or administrative routes. Published development ports bind to loopback by default, and command execution remains deny-by-default with argv allowlists even in autonomous modes.
+
+Treat the managed OpenCode sidecar as an untrusted executor. Production uses
+`OPENCODE_SECURITY_MODE=strict`, a dedicated worktree root, a non-root runtime
+identity, pinned plugins, a read-only root filesystem, and no inherited MCP or
+global permission configuration. Development-only capability expansion must be
+explicit and must not become the production default.
+
 ## Verification
 
 Run:
@@ -31,3 +39,14 @@ make verify
 ```
 
 Use narrower commands only when an issue explicitly asks for a smaller check.
+
+## Repository Map
+
+A full codemap is available at `codemap.md` in the project root.
+
+Before working on any task, read `codemap.md` to understand:
+- Project architecture and entry points
+- Directory responsibilities and design patterns
+- Data flow and integration points between modules
+
+For deep work on a specific folder, also read that folder's `codemap.md`.

@@ -1,0 +1,34 @@
+groups:
+  - name: switchyard
+    rules:
+      - alert: SwitchyardControlPlaneDown
+        expr: up{job="switchyard-control"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Switchyard control-plane readiness is unavailable
+
+      - alert: SwitchyardModelBrokerBacklog
+        expr: switchyard_model_broker_queue_depth > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Switchyard model-broker queue has remained above 50 requests
+
+      - alert: SwitchyardWorkerFailures
+        expr: increase(switchyard_worker_failed_runs_total[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Switchyard workers have failed more than five runs in fifteen minutes
+
+      - alert: SwitchyardNoRecentBackup
+        expr: time() - switchyard_postgres_backup_last_success_timestamp_seconds > 93600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No successful Switchyard PostgreSQL backup has been recorded for 26 hours

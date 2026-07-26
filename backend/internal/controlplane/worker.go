@@ -3,7 +3,9 @@ package controlplane
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +44,8 @@ type WorkerPool struct {
 	failedRuns    int
 	leaseRenewals int
 	lastErr       string
+	done          chan struct{}
+	cancelActive  context.CancelFunc
 }
 
 func NewWorkerPool(store Store, runner *Runner, workers int, lease time.Duration, pollInterval time.Duration, now func() time.Time) *WorkerPool {
@@ -73,13 +77,18 @@ func (p *WorkerPool) Start(ctx context.Context) {
 		return
 	}
 	p.running = true
+	p.done = make(chan struct{})
+	executionCtx, cancelActive := context.WithCancel(context.Background())
+	p.cancelActive = cancelActive
 	p.mu.Unlock()
 
 	go func() {
 		defer func() {
 			p.mu.Lock()
 			p.running = false
+			close(p.done)
 			p.mu.Unlock()
+			cancelActive()
 		}()
 		p.recoverLeases()
 		var wg sync.WaitGroup
@@ -88,7 +97,7 @@ func (p *WorkerPool) Start(ctx context.Context) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				p.loop(ctx, workerID)
+				p.loop(ctx, executionCtx, workerID)
 			}()
 		}
 		<-ctx.Done()
@@ -96,25 +105,25 @@ func (p *WorkerPool) Start(ctx context.Context) {
 	}()
 }
 
-func (p *WorkerPool) loop(ctx context.Context, workerID string) {
+func (p *WorkerPool) loop(intakeCtx context.Context, executionCtx context.Context, workerID string) {
 	ticker := time.NewTicker(p.pollInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-intakeCtx.Done():
 			return
 		default:
 		}
 		claimed, err := p.store.ClaimNextRun(workerID, p.lease)
 		if err == nil {
-			p.execute(ctx, workerID, claimed)
+			p.execute(executionCtx, workerID, claimed)
 			continue
 		}
 		if err != ErrNotFound {
 			p.recordError(err)
 		}
 		select {
-		case <-ctx.Done():
+		case <-intakeCtx.Done():
 			return
 		case <-ticker.C:
 			p.recoverLeases()
@@ -122,17 +131,54 @@ func (p *WorkerPool) loop(ctx context.Context, workerID string) {
 	}
 }
 
+func (p *WorkerPool) Wait(ctx context.Context) error {
+	p.mu.RLock()
+	done := p.done
+	p.mu.RUnlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *WorkerPool) CancelActive() {
+	p.mu.RLock()
+	cancel := p.cancelActive
+	p.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 	p.mu.Lock()
 	p.active++
 	p.mu.Unlock()
-	execCtx, cancelExecution := context.WithCancel(ctx)
+	execCtx, cancelExecution := context.WithTimeout(ctx, runExecutionTimeout())
 	defer cancelExecution()
 	stopHeartbeat := p.startHeartbeat(execCtx, workerID, run.ID, cancelExecution)
 	defer stopHeartbeat()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			_, _ = p.store.FinishClaimedRun(run.ID, workerID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
+			finished, finishErr := p.store.FinishClaimedRun(run.ID, workerID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
+			if finishErr == nil && finished.AttemptCount < finished.MaxAttempts {
+				backoff := runRetryBackoff(finished.AttemptCount)
+				if _, retryErr := p.store.RequeueFailedRun(finished.ID, p.now().UTC().Add(backoff), fmt.Sprintf("Retry %d/%d scheduled after worker panic", finished.AttemptCount+1, finished.MaxAttempts)); retryErr == nil {
+					p.mu.Lock()
+					p.active--
+					p.mu.Unlock()
+					return
+				} else {
+					p.recordError(retryErr)
+				}
+			} else if finishErr != nil {
+				p.recordError(finishErr)
+			}
 			p.mu.Lock()
 			p.failedRuns++
 			p.active--
@@ -144,8 +190,16 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 		p.mu.Unlock()
 	}()
 	finished, err := p.runner.ExecuteClaimedRun(execCtx, run, workerID)
+	if err == nil && (finished.Status == RunFailed || finished.Status == RunTimedOut) && finished.AttemptCount < finished.MaxAttempts {
+		backoff := runRetryBackoff(finished.AttemptCount)
+		if _, retryErr := p.store.RequeueFailedRun(finished.ID, p.now().UTC().Add(backoff), fmt.Sprintf("Retry %d/%d scheduled after %s", finished.AttemptCount+1, finished.MaxAttempts, backoff)); retryErr == nil {
+			return
+		} else {
+			p.recordError(retryErr)
+		}
+	}
 	p.mu.Lock()
-	if err != nil || finished.Status == RunFailed || finished.Status == RunCanceled {
+	if err != nil || finished.Status == RunFailed || finished.Status == RunCanceled || finished.Status == RunTimedOut {
 		p.failedRuns++
 	} else {
 		p.completedRuns++
@@ -154,6 +208,35 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 	if err != nil {
 		p.recordError(err)
 	}
+}
+
+func runExecutionTimeout() time.Duration {
+	if parsed, err := time.ParseDuration(strings.TrimSpace(os.Getenv("SWITCHYARD_RUN_TIMEOUT"))); err == nil && parsed > 0 {
+		return parsed
+	}
+	return 10 * time.Minute
+}
+
+func runRetryBackoff(attempt int) time.Duration {
+	base := 5 * time.Second
+	if parsed, err := time.ParseDuration(strings.TrimSpace(os.Getenv("SWITCHYARD_RUN_RETRY_BACKOFF"))); err == nil && parsed > 0 {
+		base = parsed
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	multiplier := 1 << min(attempt-1, 6)
+	backoff := time.Duration(multiplier) * base
+	maxBackoff := 5 * time.Minute
+	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RUN_RETRY_MAX_BACKOFF")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			maxBackoff = parsed
+		}
+	}
+	if backoff > maxBackoff {
+		return maxBackoff
+	}
+	return backoff
 }
 
 func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID string, cancelExecution context.CancelFunc) func() {
@@ -198,7 +281,7 @@ func (p *WorkerPool) recoverLeases() {
 	p.failedLeases += failed
 	if err != nil {
 		p.lastErr = err.Error()
-		log.Printf("switchyard worker recovery: %v", err)
+		slog.Error("worker recovery failed", "error", RedactForLog(err.Error()))
 	}
 }
 

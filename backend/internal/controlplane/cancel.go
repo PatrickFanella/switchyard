@@ -27,6 +27,9 @@ type RunDetailCancelDispatcher interface {
 type EnvCancelDispatcher struct {
 	ocqBaseURL        string
 	ocqGatewayKey     string
+	openCodeBaseURL   string
+	openCodeUsername  string
+	openCodePassword  string
 	llamaLineBaseURL  string
 	llamaLineAdminKey string
 	openPilotCommand  string
@@ -37,6 +40,9 @@ func NewEnvCancelDispatcher() *EnvCancelDispatcher {
 	return &EnvCancelDispatcher{
 		ocqBaseURL:        strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey:     os.Getenv("OCQ_GATEWAY_KEY"),
+		openCodeBaseURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		openCodeUsername:  os.Getenv("OPENCODE_SERVER_USERNAME"),
+		openCodePassword:  os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		llamaLineBaseURL:  strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAdminKey: os.Getenv("LLAMA_LINE_ADMIN_KEY"),
 		openPilotCommand:  strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
@@ -49,6 +55,8 @@ func (d *EnvCancelDispatcher) Cancel(ctx context.Context, run Run) CancelResult 
 }
 
 func (d *EnvCancelDispatcher) CancelRunDetail(ctx context.Context, detail RunDetail) CancelResult {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	run := detail.Run
 	result := CancelResult{}
 	switch run.WorkflowID {
@@ -62,10 +70,35 @@ func (d *EnvCancelDispatcher) CancelRunDetail(ctx context.Context, detail RunDet
 	if requestID := correlation["llama_line_request_id"]; requestID != "" {
 		result.Events = append(result.Events, d.dropLlamaLineRequest(ctx, requestID)...)
 	}
+	if sessionID := correlation["opencode_session_id"]; sessionID != "" {
+		result.Events = append(result.Events, d.abortOpenCodeSession(ctx, sessionID)...)
+	}
 	if len(result.Events) == 0 {
 		result.Events = append(result.Events, WorkflowExecutionEvent{Type: "cancel.noop", Message: "No upstream cancellation adapter matched this run"})
 	}
 	return result
+}
+
+func (d *EnvCancelDispatcher) abortOpenCodeSession(ctx context.Context, sessionID string) []WorkflowExecutionEvent {
+	if d.openCodeBaseURL == "" {
+		return []WorkflowExecutionEvent{{Type: "opencode.abort.skipped", Message: "OPENCODE_SERVER_URL is not configured"}}
+	}
+	endpoint, err := url.JoinPath(d.openCodeBaseURL, "/session/", sessionID, "/abort")
+	if err != nil {
+		return []WorkflowExecutionEvent{{Type: "opencode.abort.failed", Message: err.Error()}}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return []WorkflowExecutionEvent{{Type: "opencode.abort.failed", Message: err.Error()}}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if d.openCodeUsername != "" || d.openCodePassword != "" {
+		req.SetBasicAuth(firstNonEmpty(d.openCodeUsername, "switchyard"), d.openCodePassword)
+	}
+	if d.ocqGatewayKey != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+d.ocqGatewayKey)
+	}
+	return d.doCancelRequest("opencode.abort", req)
 }
 
 func cancelRunDetail(ctx context.Context, dispatcher CancelDispatcher, detail RunDetail) CancelResult {

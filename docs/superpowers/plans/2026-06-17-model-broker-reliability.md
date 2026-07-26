@@ -1,5 +1,7 @@
 # Model Broker Reliability Implementation Plan
 
+> **Historical plan:** The bounded retry, status, ledger, and recovery work was subsequently implemented. Use current code, runbooks, and release evidence for status.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

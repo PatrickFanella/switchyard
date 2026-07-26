@@ -228,7 +228,7 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 		t.Fatalf("executePipeline() error = %v", err)
 	}
 	if len(ocq.requests) != 1 || !strings.Contains(ocq.requests[0].Prompt, "Please tighten validation and add tests") {
-		t.Fatalf("prompt = %q", ocq.requests)
+		t.Fatalf("prompt = %v", ocq.requests)
 	}
 	if ocq.requests[0].WorkDir != "/tmp/worktree" {
 		t.Fatalf("workdir = %q", ocq.requests[0].WorkDir)

@@ -88,7 +88,7 @@ func (a *API) ocqCompatAbort(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "request id required")
 		return
 	}
-	if a.compatBroker.cancel(id) {
+	if a.compatBroker.cancel(r.Context(), id) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "aborted", "id": id, "request_id": id, "backend": "switchyard-native"})
 		return
 	}

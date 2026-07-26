@@ -2,6 +2,9 @@ package controlplane
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +15,44 @@ type recordingModelBroker struct {
 	requests []ModelRequest
 	response ModelResponse
 	err      error
+}
+
+func TestGenericWorkflowHTTPExecutorUsesAllowlistedBoundedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWITCHYARD_HTTP_ALLOWED_HOSTS", target.Hostname())
+	t.Setenv("SWITCHYARD_HTTP_ALLOW_INSECURE", "true")
+	store := NewStore(nil)
+	if err := store.UpsertWorkflow(Workflow{ID: "http-workflow", Kind: "http-workflow", Name: "HTTP Workflow"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertWorkflowDefinition(WorkflowDefinition{ID: "http-workflow", Name: "HTTP Workflow", Status: "active", Pipeline: PipelineDefinition{ID: "http-pipeline", WorkflowID: "http-workflow", Name: "HTTP Pipeline", Steps: []PipelineStepDefinition{{ID: "fetch", Position: 1, Name: "http.fetch", Executor: "http", Inputs: map[string]string{"allow_http": "true", "url": server.URL, "method": "POST", "body": `{}`}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunner(store).RunOnce(t.Context(), CreateRunInput{WorkflowID: "http-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != RunSucceeded {
+		t.Fatalf("run = %+v", run)
+	}
+	detail, err := store.RunDetail(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Artifacts) != 1 || !strings.Contains(detail.Artifacts[0].URI, "%7B%22ok%22%3Atrue%7D") {
+		t.Fatalf("artifacts = %+v", detail.Artifacts)
+	}
 }
 
 func (r *recordingModelBroker) Generate(ctx context.Context, request ModelRequest) (ModelResponse, error) {

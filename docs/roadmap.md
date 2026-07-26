@@ -2,7 +2,7 @@
 
 Switchyard is the monorepo for one cohesive automation runtime. OCQ, llama-line, and Changemaker are historical references whose useful ideas have been rebuilt as native Switchyard modules; the imported directories were removed.
 
-The next major phase is to build **Switchyard Runtime**: a small, durable workflow orchestrator with native model brokering, native OpenCode execution, curated profiles, and first-party workflow modules instead of a pile of taped-together apps.
+Switchyard Runtime phases 1–6 are implemented: durable linear workflows, native model brokering, native OpenCode execution, first-party workflow policy, and release qualification exist. The active phase is to make autonomous execution controllable and constrained, finish profile enforcement and selected operator surfaces, and close production recovery obligations.
 
 ## North star
 
@@ -62,7 +62,7 @@ Excluded:
 
 ## Phase 0 — stabilize the current control plane
 
-Status: mostly complete.
+Status: complete; ongoing compatibility and operational maintenance remains.
 
 Already done:
 
@@ -94,12 +94,14 @@ Exit criteria before Phase 1:
 
 ## Phase 1 — durable step runtime
 
+Status: complete.
+
 Goal: turn a run from one opaque executor call into an inspectable series of steps.
 
 Build:
 
 - `RunStep` domain model and Postgres table.
-- Step statuses: `queued`, `running`, `succeeded`, `failed`, `canceled`, `timed_out`.
+- Step statuses: `queued`, `running`, `succeeded`, `failed`, `canceled`, `timed_out`, `paused`.
 - Step fields: run ID, name, executor, model, inputs, output summary, error, attempt count, timestamps, correlation IDs.
 - Store methods for creating, starting, finishing, retrying, and listing steps.
 - API endpoints:
@@ -124,6 +126,8 @@ Exit criteria:
 - Failed step retry creates a resume run that starts registry-backed pipelines at the selected step; Open Pilot rehydrates branch/agent/push state from preserved resume metadata for downstream retries.
 
 ## Phase 2 — native model broker contract
+
+Status: complete.
 
 Goal: remove one-off LLM plumbing from workflow code and route model work through a Switchyard-native `ModelBroker` contract while llama-line-compatible ingress remains available for cutover.
 
@@ -162,6 +166,9 @@ Current status:
 
 ## Phase 3 — OpenCode executor
 
+Status: complete. Native sessions are correlated before dispatch and operator
+cancellation propagates to authenticated OpenCode abort.
+
 Goal: make OpenCode work a first-class Switchyard step while keeping compatibility correlation available for cutover only.
 
 Build:
@@ -197,6 +204,8 @@ Current status:
 - `GET /api/opencode-executor/status` exposes a native Switchyard OpenCode executor status surface.
 
 ## Phase 4 — workflow pipelines
+
+Status: complete for safe linear pipelines.
 
 Goal: move first-party workflows from ad hoc executors into declarative or typed linear pipelines.
 
@@ -235,6 +244,8 @@ Exit criteria:
 
 ## Phase 5 — Open Pilot v1
 
+Status: implemented behind deny-by-default mutation gates; unrestricted production autonomy is not the default.
+
 Goal: make Open Pilot a Switchyard-native workflow that can process one issue end-to-end using native Blacktower profiles when useful.
 
 Build:
@@ -268,6 +279,8 @@ Exit criteria:
 
 ## Phase 6 — runtime hardening
 
+Status: code-complete for the documented release gate. Backup restore, rollback rehearsal, alert delivery, and encrypted proxy transport remain operational prerequisites.
+
 Goal: make Switchyard Runtime reliable enough for unattended scheduled workflows.
 
 Build:
@@ -291,6 +304,11 @@ Exit criteria:
 - Retrying a failed step is safe and predictable.
 
 ## Phase 7 — Blacktower profile layer
+
+Status: complete for the static v1 profile layer. Profiles are enforced during
+definition validation and execution, `content-writer` is present, prompt
+contracts/default models are applied, and effective policy is visible in run
+evidence and the native operator UI.
 
 Goal: turn Blacktower into a named set of built-in Switchyard agents/subagents, model defaults, and workflow roles.
 
@@ -352,8 +370,18 @@ Exit criteria:
 
 ## Near-term implementation backlog
 
-1. Harden full Open Pilot autonomy: richer artifact rehydration and better agent commit diagnostics. Existing-branch detection for externally published heads is implemented by probing `origin/<branch>` during the push step and allowing PR publication when that remote head already exists.
-2. Keep `docs/openapi.yaml` aligned as route shapes settle and decide whether to serve it from the API/UI.
+1. Qualify and promote one immutable mainline release with complete CI,
+   provenance, restore, rollback, and production-contract evidence.
+2. Deploy and test backup freshness, runtime health, queue, and failure alerts
+   with an assigned receiver and escalation owner.
+3. Replace the Almaz-to-Kvant plaintext dashboard hop with the approved
+   encrypted Tailscale path while preserving the control/model listener split.
+4. Observe durable deprecated-selector usage for 90 days and require two
+   qualifying zero-use releases before selector removal.
+5. Measure retained inline-artifact growth before funding an object-storage
+   backend.
+6. Keep `docs/openapi.yaml`, codemaps, current release evidence, and
+   environment defaults aligned with implementation.
 
 ## Non-goals for the next phase
 

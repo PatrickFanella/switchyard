@@ -62,7 +62,7 @@ func (a *API) modelCatalog(w http.ResponseWriter, r *http.Request) {
 func (a *API) pullModels(w http.ResponseWriter, r *http.Request) {
 	var input modelPullRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeJSONDecodeError(w, err)
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(firstNonEmpty(input.Provider, "ollama")))

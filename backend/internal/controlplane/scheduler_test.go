@@ -62,3 +62,54 @@ func TestSchedulerDispatchesDueTrigger(t *testing.T) {
 		t.Fatalf("runs = %+v", runs)
 	}
 }
+
+func TestSchedulerSupportsAllFiveCronFieldsAndTimezone(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	store := controlplane.NewStore(func() time.Time { return now })
+	if err := store.UpsertWorkflow(controlplane.Workflow{ID: "scheduled", Kind: "scheduled", Name: "Scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertTrigger(controlplane.Trigger{ID: "monthly", WorkflowID: "scheduled", Type: controlplane.TriggerCron, Name: "Monthly", Enabled: true, Schedule: "30 9 15 2 *"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertTrigger(controlplane.Trigger{ID: "weekday", WorkflowID: "scheduled", Type: controlplane.TriggerCron, Name: "Weekday", Enabled: true, Schedule: "0,30 8-10 * * 1-5"}); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := controlplane.NewScheduler(store, controlplane.NewRunner(store), time.Minute, func() time.Time { return now })
+	location, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.SetLocation(location)
+	if err := scheduler.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	monthly, _ := store.Trigger("monthly")
+	wantMonthly := time.Date(2026, time.February, 15, 15, 30, 0, 0, time.UTC)
+	if monthly.NextRunAt == nil || !monthly.NextRunAt.Equal(wantMonthly) {
+		t.Fatalf("monthly next = %v, want %v", monthly.NextRunAt, wantMonthly)
+	}
+	weekday, _ := store.Trigger("weekday")
+	wantWeekday := time.Date(2026, time.January, 1, 14, 0, 0, 0, time.UTC)
+	if weekday.NextRunAt == nil || !weekday.NextRunAt.Equal(wantWeekday) {
+		t.Fatalf("weekday next = %v, want %v", weekday.NextRunAt, wantWeekday)
+	}
+}
+
+func TestSchedulerRecordsInvalidCronInsteadOfGuessing(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := store.UpsertWorkflow(controlplane.Workflow{ID: "scheduled", Kind: "scheduled", Name: "Scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertTrigger(controlplane.Trigger{ID: "invalid", WorkflowID: "scheduled", Type: controlplane.TriggerCron, Name: "Invalid", Enabled: true, Schedule: "99 9 * * *"}); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := controlplane.NewScheduler(store, controlplane.NewRunner(store), time.Minute, nil)
+	if err := scheduler.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	trigger, _ := store.Trigger("invalid")
+	if trigger.NextRunAt != nil || trigger.LastError == "" {
+		t.Fatalf("trigger = %+v", trigger)
+	}
+}

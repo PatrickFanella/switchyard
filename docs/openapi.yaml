@@ -5,11 +5,12 @@ info:
   description: >-
     Local control-plane API for workflows, runs, triggers, pipelines, workers,
     adapter status, and compatibility ingress. Switchyard also exposes
-    llama-line/Ollama-compatible cutover endpoints on LLAMA_LINE_PORT:
+    llama-line/Ollama-compatible model endpoints on LLAMA_LINE_PORT:
     /broker/status, /v1/chat/completions, /api/chat, /api/generate, /api/tags,
-    /v1/models, /api/embed, /v1/embeddings, admin queue/inflight endpoints,
-    and durable /api/history, /api/search, /api/logs, /api/config compatibility
-    surfaces. The compatibility ingress preserves llama-line/OCQ correlation
+    /v1/models, /api/embed, and /v1/embeddings. Admin queue/inflight and durable
+    history/search/log/config compatibility surfaces remain on the authenticated
+    control listener and are excluded from model ingress. Compatibility routes
+    preserve llama-line/OCQ correlation
     headers (`X-Request-ID`, `X-Llama-Line-Request-ID`, `X-OCQ-Request-ID`,
     `X-OCQ-Session` when available) and serves OpenAI streaming requests as
     native SSE chunks when upstream streaming is available, with buffered
@@ -17,13 +18,20 @@ info:
     to OpenCode by default and to upstream Ollama when OLLAMA_BASE_URL is
     configured and the model is local or prefixed with ollama/. Requests may be
     submitted durably with `Prefer: respond-async` or `?async=true` and polled at
-    `/api/requests/{id}/result`; queued jobs are recovered on API startup.
+    `/api/requests/{id}/result`; queued jobs are recovered on API startup. On
+    the control-plane listener every non-health request requires an admin or
+    read-only bearer token, or an identity asserted by an explicitly trusted
+    authenticated reverse proxy. Mutating requests require the admin role.
 servers:
   - url: http://127.0.0.1:28080
     description: Local Docker Compose API
   - url: http://127.0.0.1:18080
     description: Local smoke-test API
 paths:
+  /health:
+    get:
+      summary: Compatibility health check
+      responses: { "200": { description: API is healthy } }
   /healthz:
     get:
       summary: Health check
@@ -37,6 +45,12 @@ paths:
                 properties:
                   ok: { type: boolean }
                 required: [ok]
+  /readyz:
+    get:
+      summary: Storage-backed readiness check
+      responses:
+        "200": { description: API and persistence are ready }
+        "503": { description: Persistence is unavailable }
   /broker/status:
     get:
       summary: Llama-line-compatible broker status
@@ -46,7 +60,96 @@ paths:
           description: Broker status
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                $ref: "#/components/schemas/CompatBrokerStatus"
+  /v1/chat/completions:
+    post:
+      summary: OpenAI-compatible chat completion
+      responses:
+        "200":
+          description: Completion or SSE stream
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
+  /v1/completions:
+    post:
+      summary: OpenAI-compatible text completion
+      responses:
+        "200":
+          description: Completion
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
+  /v1/embeddings:
+    post:
+      summary: OpenAI-compatible embeddings
+      responses: { "200": { description: Embeddings } }
+  /v1/models:
+    get:
+      summary: OpenAI-compatible model list
+      responses: { "200": { description: Model list } }
+  /api/chat:
+    post:
+      summary: Ollama-compatible chat
+      responses:
+        "200":
+          description: Chat response
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
+  /api/generate:
+    post:
+      summary: Ollama-compatible generation
+      responses:
+        "200":
+          description: Generation response
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected; absent for supported native ingress, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend; absent for supported native ingress, schema: { type: string } }
+        "502":
+          description: Synchronous upstream generation failure
+          headers:
+            X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
+            X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
+        "202": { description: Async request accepted }
+  /api/embed:
+    post:
+      summary: Ollama-compatible embeddings alias
+      responses: { "200": { description: Embeddings } }
+  /api/embeddings:
+    post:
+      summary: Ollama-compatible embeddings
+      responses: { "200": { description: Embeddings } }
+  /api/tags:
+    get:
+      summary: Ollama-compatible model tags
+      responses: { "200": { description: Model list } }
+  /metrics:
+    get:
+      summary: Prometheus runtime metrics
+      responses: { "200": { description: Prometheus text exposition } }
+  /api/observability/model-broker:
+    get:
+      summary: Model broker latency, errors, and recent requests
+      responses: { "200": { description: Model broker observability summary } }
   /admin/queue:
     get:
       summary: List queued compatibility requests
@@ -138,14 +241,24 @@ paths:
         "200": { description: Stats summary }
   /admin/feedback:
     get:
-      summary: Legacy feedback compatibility status
+      summary: List persisted model feedback
       responses:
-        "200": { description: Feedback compatibility status }
+        "200": { description: Persisted feedback list }
     post:
-      summary: Accept legacy feedback compatibility payloads
-      description: Accepts feedback for compatibility but does not persist it.
+      summary: Persist model feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                request_id: { type: string }
+                rating: { type: integer, minimum: -1, maximum: 1 }
+                comment: { type: string, maxLength: 4096 }
+              required: [request_id, rating]
       responses:
-        "202": { description: Feedback accepted }
+        "201": { description: Feedback persisted }
   /ui/:
     get:
       summary: Lightweight legacy broker UI landing page
@@ -242,7 +355,14 @@ paths:
           description: Compatibility config
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                type: object
+                properties:
+                  model_broker_selector: { type: string, description: Effective selector; native when unset. }
+                  opencode_executor_selector: { type: string, description: Effective selector; native when unset. }
+                  model_broker_configured_selector: { type: string, description: Explicit MODEL_BROKER_BACKEND value, when configured. }
+                  opencode_executor_configured_selector: { type: string, description: Explicit OPENCODE_EXECUTOR_BACKEND value, when configured. }
+                  compatibility_warning: { type: string, description: Present only when a deprecated external selector is active. }
   /api/requests/{id}/result:
     get:
       summary: Poll a durable model broker request result
@@ -426,6 +546,21 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WorkerPoolStatus" }
+  /api/retention:
+    get:
+      summary: Get retention manager status and last prune counts
+      responses:
+        "200": { description: Retention status }
+  /api/compatibility/retirement:
+    get:
+      summary: Get durable deprecated-backend retirement status
+      description: Aggregate-only UTC daily usage for deprecated llama-line and OCQ compatibility routes. A backend is eligible only after 90 days of zero attempts; two-release evidence remains an external qualification record.
+      responses:
+        "200":
+          description: Compatibility retirement status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompatibilityRetirementStatus" }
   /api/operator-safety:
     get:
       summary: Get operator safety status
@@ -435,6 +570,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
+  /api/operator-summary:
+    get:
+      summary: Get bounded Switchyard operator summary
+      description: Returns the versioned read-only summary used by external operator surfaces.
+      responses:
+        "200":
+          description: Current scheduler, worker, run, and component summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperatorSummary" }
   /api/pipelines:
     get:
       summary: List pipeline definitions
@@ -497,7 +642,7 @@ paths:
                 required: [workflow_definition]
         default: { $ref: "#/components/responses/Error" }
     put:
-      summary: Create or update a workflow definition
+      summary: Create or update a workflow definition draft
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
       requestBody:
@@ -516,6 +661,36 @@ paths:
                   workflow_definition: { $ref: "#/components/schemas/WorkflowDefinition" }
                 required: [workflow_definition]
         default: { $ref: "#/components/responses/Error" }
+  /api/workflow-definitions/{id}/versions:
+    get:
+      summary: List immutable workflow-definition versions
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      responses:
+        "200": { description: Version history }
+  /api/workflow-definitions/{id}/activate:
+    post:
+      summary: Validate and activate the latest draft version
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      responses:
+        "200": { description: Activated workflow definition }
+  /api/workflow-definitions/{id}/rollback:
+    post:
+      summary: Restore a historical snapshot as a new active version
+      parameters:
+        - $ref: "#/components/parameters/WorkflowDefinitionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: integer, minimum: 1 }
+              required: [version]
+      responses:
+        "200": { description: Rolled-back workflow definition }
   /api/open-pilot/states:
     get:
       summary: List Open Pilot issue states
@@ -616,6 +791,13 @@ paths:
   /api/runs:
     get:
       summary: List runs
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
       responses:
         "200":
           description: Run list
@@ -627,6 +809,7 @@ paths:
                   runs:
                     type: array
                     items: { $ref: "#/components/schemas/Run" }
+                  next_cursor: { type: string }
                 required: [runs]
     post:
       summary: Create and dispatch a run
@@ -732,6 +915,12 @@ paths:
         "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
         default: { $ref: "#/components/responses/Error" }
 components:
+  securitySchemes:
+    controlPlaneBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: SWITCHYARD_CONTROL_API_TOKEN or SWITCHYARD_CONTROL_READ_TOKEN; the read token permits GET and HEAD only.
   parameters:
     RunID:
       name: runId
@@ -927,6 +1116,9 @@ components:
         configured: { type: boolean }
         backend: { type: string }
         transitional_backend: { type: string }
+        effective_selector: { type: string, description: Effective request route; native when selectors are unset or unknown. }
+        configured_selector: { type: string }
+        compatibility_warning: { type: string, example: deprecated-external-backend }
         base_url: { type: string }
         queue_depth: { type: integer }
         max_depth: { type: integer }
@@ -940,7 +1132,26 @@ components:
           items: { $ref: "#/components/schemas/ModelBrokerStatusUpstream" }
         checked_at: { type: string, format: date-time }
         error: { type: string }
-      required: [id, status, configured, backend, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+      required: [id, status, configured, backend, effective_selector, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+    CompatBrokerStatus:
+      type: object
+      properties:
+        status: { type: string }
+        backend: { type: string, enum: [switchyard-native] }
+        effective_selector: { type: string, description: Effective request route; native when selectors are unset or unknown. }
+        configured_selector: { type: string, description: Explicit MODEL_BROKER_BACKEND value when set. }
+        compatibility_warning: { type: string, example: deprecated-external-backend }
+        queue_depth: { type: integer }
+        max_depth: { type: integer }
+        active_request: { type: boolean }
+        connected_clients: { type: integer }
+        in_flight_ids: { type: array, items: { type: string } }
+        queue: { type: array, items: { type: object } }
+        inflight: { type: array, items: { type: object } }
+        upstreams: { type: array, items: { $ref: "#/components/schemas/ModelBrokerStatusUpstream" } }
+        checked_at: { type: string, format: date-time }
+        error: { type: string }
+      required: [status, backend, effective_selector, queue_depth, max_depth, active_request, connected_clients, in_flight_ids, queue, inflight, upstreams, checked_at]
     ModelBrokerStatusUpstream:
       type: object
       properties:
@@ -960,6 +1171,8 @@ components:
         configured: { type: boolean }
         backend: { type: string }
         transitional_backend: { type: string }
+        configured_selector: { type: string }
+        compatibility_warning: { type: string, example: deprecated-external-backend }
         base_url: { type: string }
         healthy: { type: boolean }
         session_count: { type: integer }
@@ -976,6 +1189,7 @@ components:
         id: { type: string }
         title: { type: string }
         status: { type: string }
+        version: { type: integer, minimum: 1, readOnly: true }
         user: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -1049,10 +1263,10 @@ components:
         pipeline: { $ref: "#/components/schemas/PipelineDefinition" }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
-      required: [id, name, status, pipeline]
+      required: [id, name, status, version, pipeline]
     WorkflowDefinitionUpsertRequest:
       type: object
-      description: Request body for creating or updating a draft workflow definition. The path ID is authoritative; activation is intentionally not exposed by this endpoint.
+      description: Request body for creating an immutable draft version. The path ID is authoritative; activate through the dedicated action after validation.
       properties:
         name: { type: string }
         description: { type: string }
@@ -1081,6 +1295,8 @@ components:
         last_run_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         last_error: { type: string }
+        timezone: { type: string }
+        missed_run_policy: { type: string, enum: [coalesce_once] }
       required: [id, workflow_id, type, name, description, enabled]
     Run:
       type: object
@@ -1088,7 +1304,7 @@ components:
         id: { type: string }
         workflow_id: { type: string }
         trigger_id: { type: string }
-        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, paused, timed_out] }
         inputs: { $ref: "#/components/schemas/StringMap" }
         created_at: { type: string, format: date-time }
         queued_at: { type: string, format: date-time }
@@ -1101,6 +1317,8 @@ components:
         attempt_count: { type: integer }
         max_attempts: { type: integer }
         summary: { type: string }
+        pipeline_id: { type: string }
+        pipeline_version: { type: string, description: Stable hash of the immutable pipeline snapshot used by this run. }
       required: [id, workflow_id, status, created_at, queued_at, available_at, attempt_count, max_attempts]
     RunStep:
       type: object
@@ -1111,7 +1329,7 @@ components:
         name: { type: string }
         executor: { type: string }
         model: { type: string }
-        status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out] }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out, paused] }
         inputs: { $ref: "#/components/schemas/StringMap" }
         output_summary: { type: string }
         error: { type: string }
@@ -1138,8 +1356,13 @@ components:
         name: { type: string }
         kind: { type: string }
         uri: { type: string }
+        storage_class: { type: string, enum: [inline-data-uri, legacy-inline] }
+        content_type: { type: string }
+        byte_size: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        retention_until: { type: [string, "null"], format: date-time }
         created_at: { type: string, format: date-time }
-      required: [id, run_id, name, kind, uri, created_at]
+      required: [id, run_id, name, kind, uri, storage_class, byte_size, created_at]
     RunDetail:
       type: object
       properties:
@@ -1154,6 +1377,7 @@ components:
         workflow_id: { type: string }
         trigger_id: { type: string }
         inputs: { $ref: "#/components/schemas/StringMap" }
+        max_attempts: { type: integer, minimum: 1, maximum: 10, default: 3 }
       required: [workflow_id]
     Pipeline:
       type: object
@@ -1221,6 +1445,136 @@ components:
         open_pilot_autonomy_mode: { type: string }
         warnings: { type: array, items: { type: string } }
       required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
+    CompatibilityRetirementStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        backends:
+          type: array
+          items: { $ref: "#/components/schemas/CompatibilityRetirementBackend" }
+      required: [backends]
+    CompatibilityRetirementBackend:
+      type: object
+      additionalProperties: false
+      properties:
+        backend: { type: string }
+        attempts_90d: { type: integer, minimum: 0 }
+        first_observed_at: { type: string, format: date-time }
+        last_observed_at: { type: string, format: date-time }
+        configured_selector: { type: string }
+        effective_selector: { type: string }
+        eligibility: { type: string, enum: [in_use, eligible_pending_two_release_evidence] }
+      required: [backend, attempts_90d, configured_selector, effective_selector, eligibility]
+    OperatorSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        schema_version: { type: string, const: "1.0" }
+        service: { $ref: "#/components/schemas/OperatorSummaryService" }
+        status: { $ref: "#/components/schemas/OperatorSummaryStatus" }
+        generated_at: { type: string, format: date-time }
+        observed_at: { type: string, format: date-time }
+        partial: { type: boolean }
+        alerts:
+          type: array
+          maxItems: 8
+          items: { $ref: "#/components/schemas/OperatorSummaryAlert" }
+        capabilities: { $ref: "#/components/schemas/OperatorSummaryCapabilities" }
+        data: { $ref: "#/components/schemas/OperatorSummaryData" }
+      required: [schema_version, service, status, generated_at, observed_at, partial, alerts, capabilities, data]
+    OperatorSummaryService:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string, const: switchyard }
+        name: { type: string }
+      required: [id, name]
+    OperatorSummaryStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        level: { type: string, enum: [healthy, degraded, critical, unknown] }
+        summary: { type: string, maxLength: 240 }
+      required: [level, summary]
+    OperatorSummaryAlert:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        severity: { type: string, enum: [info, warning, critical] }
+        title: { type: string }
+        state: { type: string }
+        started_at: { type: string, format: date-time }
+        target_type: { type: string }
+        target_id: { type: string }
+      required: [id, severity, title, state, started_at, target_type, target_id]
+    OperatorSummaryCapabilities:
+      type: object
+      additionalProperties: false
+      properties:
+        details: { type: boolean }
+        actions: { type: array, items: { type: string } }
+      required: [details, actions]
+    OperatorSummaryData:
+      type: object
+      additionalProperties: false
+      properties:
+        scheduler:
+          type: object
+          additionalProperties: false
+          properties:
+            state: { type: string, enum: [running, stopped, disabled] }
+            enabled: { type: boolean }
+            last_tick_at: { type: [string, "null"], format: date-time }
+            next_tick_at: { type: [string, "null"], format: date-time }
+          required: [state, enabled, last_tick_at, next_tick_at]
+        workers:
+          type: object
+          additionalProperties: false
+          properties:
+            configured: { type: integer, minimum: 0 }
+            active: { type: integer, minimum: 0 }
+            busy: { type: integer, minimum: 0 }
+            draining: { type: integer, minimum: 0 }
+          required: [configured, active, busy, draining]
+        runs:
+          type: object
+          additionalProperties: false
+          properties:
+            queued: { type: integer, minimum: 0 }
+            running: { type: integer, minimum: 0 }
+            failed_24h: { type: integer, minimum: 0 }
+            succeeded_24h: { type: integer, minimum: 0 }
+            recent:
+              type: array
+              maxItems: 5
+              items: { $ref: "#/components/schemas/OperatorSummaryRecentRun" }
+          required: [queued, running, failed_24h, succeeded_24h, recent]
+        components:
+          type: array
+          items: { $ref: "#/components/schemas/OperatorSummaryComponent" }
+      required: [scheduler, workers, runs, components]
+    OperatorSummaryRecentRun:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        workflow_name: { type: string }
+        state: { type: string }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        summary: { type: string, maxLength: 241 }
+      required: [id, workflow_id, workflow_name, state, started_at, finished_at]
+    OperatorSummaryComponent:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [healthy, degraded, critical, unknown] }
+        summary: { type: string, maxLength: 161 }
+      required: [id, name, status, summary]
     ErrorEnvelope:
       type: object
       properties:

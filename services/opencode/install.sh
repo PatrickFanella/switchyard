@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/root/.config/opencode}"
+CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-/home/opencode/.config}/opencode}"
 DEFAULT_DIR="/opt/switchyard-opencode/default-config"
 
 mkdir -p "$CONFIG_DIR/plugins" "$CONFIG_DIR/agents" "$CONFIG_DIR/skills"

@@ -1,5 +1,7 @@
 # Production Hardening + Runbook Implementation Plan
 
+> **Historical plan:** The initial cutover runbook and smoke path were delivered. Current production operations live under `docs/runbooks/`.
+
 > **For agentic workers:** Execute this plan task-by-task. Recommended path:
 > dispatch a fresh subagent per task, review each result with `review-quality`,
 > then continue. For complex multi-agent splits, use

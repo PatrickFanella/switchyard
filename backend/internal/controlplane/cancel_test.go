@@ -54,3 +54,25 @@ func TestEnvCancelDispatcherUsesRunningStepCorrelationIDs(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestEnvCancelDispatcherAbortsNativeOpenCodeSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/session/ses-native/abort" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "switchyard" || password != "secret" {
+			t.Fatalf("basic auth = %q %q %t", user, password, ok)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_SERVER_USERNAME", "switchyard")
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "secret")
+
+	result := controlplane.NewEnvCancelDispatcher().CancelRunDetail(t.Context(), controlplane.RunDetail{Run: controlplane.Run{WorkflowID: "devlog"}, Steps: []controlplane.RunStep{{Status: controlplane.StepRunning, CorrelationIDs: map[string]string{"opencode_session_id": "ses-native"}}}})
+	if len(result.Events) != 1 || result.Events[0].Type != "opencode.abort.accepted" {
+		t.Fatalf("result = %+v", result)
+	}
+}

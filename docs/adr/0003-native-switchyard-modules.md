@@ -49,7 +49,7 @@ Switchyard
 - The web UI should present native Switchyard module state, not separate service consoles.
 - Changemaker and Devlog should become workflow policy modules, not independently scheduled apps.
 - Blacktower means native profiles/personas in Switchyard, not an imported app or marketplace.
-- Switchyard exposes llama-line/Ollama-compatible ingress on `LLAMA_LINE_PORT` only for cutover: `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, `/v1/embeddings`, admin queue/inflight endpoints, and durable `/api/history`, `/api/search`, `/api/logs`, `/api/config` compatibility surfaces. The native broker routes provider-style models to OpenCode and can route Ollama/local models to a separate upstream `OLLAMA_BASE_URL`.
+- Switchyard exposes llama-line/Ollama-compatible model ingress on `LLAMA_LINE_PORT` only for cutover: `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, and `/v1/embeddings`. Admin queue/inflight and durable history/search/log/config compatibility surfaces remain on the authenticated control listener and are excluded from model ingress. The native broker routes provider-style models to OpenCode and can route Ollama/local models to a separate upstream `OLLAMA_BASE_URL`.
 
 ## Migration Plan
 
