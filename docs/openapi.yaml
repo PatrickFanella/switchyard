@@ -560,6 +560,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
+  /api/operator-summary:
+    get:
+      summary: Get bounded Switchyard operator summary
+      description: Returns the versioned read-only summary used by external operator surfaces.
+      responses:
+        "200":
+          description: Current scheduler, worker, run, and component summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperatorSummary" }
   /api/pipelines:
     get:
       summary: List pipeline definitions
@@ -1420,6 +1430,116 @@ components:
         open_pilot_autonomy_mode: { type: string }
         warnings: { type: array, items: { type: string } }
       required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
+    OperatorSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        schema_version: { type: string, const: "1.0" }
+        service: { $ref: "#/components/schemas/OperatorSummaryService" }
+        status: { $ref: "#/components/schemas/OperatorSummaryStatus" }
+        generated_at: { type: string, format: date-time }
+        observed_at: { type: string, format: date-time }
+        partial: { type: boolean }
+        alerts:
+          type: array
+          maxItems: 8
+          items: { $ref: "#/components/schemas/OperatorSummaryAlert" }
+        capabilities: { $ref: "#/components/schemas/OperatorSummaryCapabilities" }
+        data: { $ref: "#/components/schemas/OperatorSummaryData" }
+      required: [schema_version, service, status, generated_at, observed_at, partial, alerts, capabilities, data]
+    OperatorSummaryService:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string, const: switchyard }
+        name: { type: string }
+      required: [id, name]
+    OperatorSummaryStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        level: { type: string, enum: [healthy, degraded, critical, unknown] }
+        summary: { type: string, maxLength: 240 }
+      required: [level, summary]
+    OperatorSummaryAlert:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        severity: { type: string, enum: [info, warning, critical] }
+        title: { type: string }
+        state: { type: string }
+        started_at: { type: string, format: date-time }
+        target_type: { type: string }
+        target_id: { type: string }
+      required: [id, severity, title, state, started_at, target_type, target_id]
+    OperatorSummaryCapabilities:
+      type: object
+      additionalProperties: false
+      properties:
+        details: { type: boolean }
+        actions: { type: array, items: { type: string } }
+      required: [details, actions]
+    OperatorSummaryData:
+      type: object
+      additionalProperties: false
+      properties:
+        scheduler:
+          type: object
+          additionalProperties: false
+          properties:
+            state: { type: string, enum: [running, stopped, disabled] }
+            enabled: { type: boolean }
+            last_tick_at: { type: [string, "null"], format: date-time }
+            next_tick_at: { type: [string, "null"], format: date-time }
+          required: [state, enabled, last_tick_at, next_tick_at]
+        workers:
+          type: object
+          additionalProperties: false
+          properties:
+            configured: { type: integer, minimum: 0 }
+            active: { type: integer, minimum: 0 }
+            busy: { type: integer, minimum: 0 }
+            draining: { type: integer, minimum: 0 }
+          required: [configured, active, busy, draining]
+        runs:
+          type: object
+          additionalProperties: false
+          properties:
+            queued: { type: integer, minimum: 0 }
+            running: { type: integer, minimum: 0 }
+            failed_24h: { type: integer, minimum: 0 }
+            succeeded_24h: { type: integer, minimum: 0 }
+            recent:
+              type: array
+              maxItems: 5
+              items: { $ref: "#/components/schemas/OperatorSummaryRecentRun" }
+          required: [queued, running, failed_24h, succeeded_24h, recent]
+        components:
+          type: array
+          items: { $ref: "#/components/schemas/OperatorSummaryComponent" }
+      required: [scheduler, workers, runs, components]
+    OperatorSummaryRecentRun:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        workflow_name: { type: string }
+        state: { type: string }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        summary: { type: string, maxLength: 241 }
+      required: [id, workflow_id, workflow_name, state, started_at, finished_at]
+    OperatorSummaryComponent:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [healthy, degraded, critical, unknown] }
+        summary: { type: string, maxLength: 161 }
+      required: [id, name, status, summary]
     ErrorEnvelope:
       type: object
       properties:
