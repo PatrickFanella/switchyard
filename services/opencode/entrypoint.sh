@@ -24,7 +24,14 @@ state_dirs="$runtime_config_home/opencode $runtime_data_home/opencode $runtime_s
 if [ "$(id -u)" -eq 0 ]; then
   for directory in $state_dirs; do
     mkdir -p "$directory"
-    chown -R "$runtime_uid:$runtime_gid" "$directory"
+    # Existing bind-mounted OpenCode trees can contain mode-0700 backups.
+    # With only CAP_CHOWN (and deliberately no DAC_OVERRIDE), bootstrap root
+    # cannot traverse those trees even when they already belong to the target
+    # runtime identity. Avoid the unnecessary recursive walk in that case.
+    directory_owner="$(stat -c '%u:%g' "$directory")"
+    if [ "$directory_owner" != "$runtime_uid:$runtime_gid" ]; then
+      chown -R "$runtime_uid:$runtime_gid" "$directory"
+    fi
   done
 
   if ! su-exec "$runtime_uid:$runtime_gid" test -w /workspace; then
