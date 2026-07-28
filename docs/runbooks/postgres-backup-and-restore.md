@@ -31,9 +31,14 @@ The command:
 - never prints database credentials.
 
 When `SWITCHYARD_BACKUP_METRICS_FILE` is set, the command also atomically writes
-the successful backup timestamp in Prometheus text format. Compose mounts that
-single file read-only into the API and republishes it on `/metrics`; create one
-successful backup before reloading Compose with a non-empty metrics-file path.
+the successful backup timestamp in Prometheus text format. Set
+`SWITCHYARD_BACKUP_METRICS_DIR` to a dedicated directory containing only that
+file, and set the file path to
+`${SWITCHYARD_BACKUP_METRICS_DIR}/backup.prom`. Compose mounts the directory
+read-only into the API so atomic replacement remains visible across backup
+runs, then republishes the timestamp on `/metrics`. Do not place backup archives
+in the metrics directory. Create one successful backup before reloading Compose
+with non-empty metrics paths.
 
 Backups must live outside the Docker volume and repository.
 

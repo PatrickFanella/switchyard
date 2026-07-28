@@ -53,6 +53,11 @@ BACKUP=/approved/encrypted/path/<backup>.dump make postgres-restore-drill
 make production-smoke
 ```
 
+For backup-freshness metrics, keep
+`SWITCHYARD_BACKUP_METRICS_DIR` separate from backup archives and set
+`SWITCHYARD_BACKUP_METRICS_FILE` to its `backup.prom` file. Compose mounts the
+directory read-only so atomic metric updates remain visible to the API.
+
 Follow [`docs/runbooks/release-and-rollback.md`](docs/runbooks/release-and-rollback.md); do not infer production health from a local checkout or a running container.
 
 Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.

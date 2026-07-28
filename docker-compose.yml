@@ -128,7 +128,9 @@ services:
       - "${SWITCHYARD_MODEL_BIND_HOST:-${SWITCHYARD_BIND_HOST:-127.0.0.1}}:${LLAMA_LINE_PORT:-11434}:11434"
     volumes:
       - ${OPENCODE_WORKSPACE:-.}:/workspace
-      - ${SWITCHYARD_BACKUP_METRICS_FILE:-/dev/null}:/var/lib/switchyard-metrics/backup.prom:ro
+      # Mount the containing directory so atomic replacement of backup.prom
+      # remains visible inside the container across successful backup runs.
+      - ${SWITCHYARD_BACKUP_METRICS_DIR:-/dev/null}:/var/lib/switchyard-metrics:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

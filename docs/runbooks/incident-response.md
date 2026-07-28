@@ -44,9 +44,11 @@ loopback-only and use a Kvant-local probe/exporter for private readiness.
 
 Backup freshness also requires the backup service to publish
 `switchyard_postgres_backup_last_success_timestamp_seconds` to the file named by
-`SWITCHYARD_BACKUP_METRICS_FILE`. Compose mounts that file read-only into the
-API, which republishes the timestamp on the canonical `/metrics` route. The
-freshness rule treats a missing series as a failure.
+`SWITCHYARD_BACKUP_METRICS_FILE`. Set `SWITCHYARD_BACKUP_METRICS_DIR` to the
+dedicated directory containing that file. Compose mounts the directory
+read-only into the API so atomic file replacement remains visible, and the API
+republishes the timestamp on the canonical `/metrics` route. The freshness rule
+treats a missing series as a failure.
 
 Initial thresholds:
 
