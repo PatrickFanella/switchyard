@@ -27,7 +27,7 @@ func (p staticOpenCodeStatusProvider) Status(context.Context) OpenCodeExecutorSt
 }
 
 func TestOperatorSummaryReportsRunsAndComponents(t *testing.T) {
-	now := time.Date(2026, 7, 26, 18, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	store := NewStore(func() time.Time { return now })
 	if err := store.UpsertWorkflow(Workflow{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot"}); err != nil {
 		t.Fatal(err)
