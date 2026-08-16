@@ -1,0 +1,4 @@
+interface:
+  display_name: "Switchyard Production Operations"
+  short_description: "Deploy and validate Switchyard production"
+  default_prompt: "Use $switchyard-production-operations to operate or validate the real Switchyard production deployment safely."
