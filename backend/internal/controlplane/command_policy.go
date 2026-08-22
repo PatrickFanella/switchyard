@@ -1,8 +1,12 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,7 +48,9 @@ type CommandRunner interface {
 }
 
 type PolicyCommandRunner struct {
-	policy CommandPolicy
+	policy      CommandPolicy
+	verifierURL string
+	httpClient  *http.Client
 }
 
 func NewEnvCommandRunner() *PolicyCommandRunner {
@@ -71,7 +77,7 @@ func NewEnvCommandRunner() *PolicyCommandRunner {
 		DeniedCommands:  deniedCommands,
 		Workdir:         os.Getenv("OPEN_PILOT_WORKDIR"),
 		Timeout:         timeout,
-	}}
+	}, verifierURL: strings.TrimSuffix(strings.TrimSpace(os.Getenv("OPEN_PILOT_VERIFIER_URL")), "/"), httpClient: &http.Client{}}
 }
 
 func NewPolicyCommandRunner(policy CommandPolicy) *PolicyCommandRunner {
@@ -91,6 +97,9 @@ func (r *PolicyCommandRunner) Run(ctx context.Context, command string, workdir .
 		result.Output = "dry-run: " + strings.Join(decision.Command, " ")
 		return result, nil
 	}
+	if r.verifierURL != "" {
+		return r.runViaVerifier(ctx, decision, workdir...)
+	}
 	runCtx, cancel := context.WithTimeout(ctx, r.policy.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, decision.Command[0], decision.Command[1:]...)
@@ -106,6 +115,47 @@ func (r *PolicyCommandRunner) Run(ctx context.Context, command string, workdir .
 	result.Output = strings.TrimSpace(string(output))
 	if err != nil {
 		return result, err
+	}
+	return result, nil
+}
+
+type verifierRequest struct {
+	Command []string `json:"command"`
+	Workdir string   `json:"workdir"`
+	Timeout string   `json:"timeout"`
+}
+
+type verifierResponse struct {
+	Output string `json:"output"`
+	Error  string `json:"error"`
+}
+
+func (r *PolicyCommandRunner) runViaVerifier(ctx context.Context, decision CommandDecision, workdir ...string) (CommandResult, error) {
+	cmdDir := r.policy.Workdir
+	if len(workdir) > 0 && strings.TrimSpace(workdir[0]) != "" {
+		cmdDir = strings.TrimSpace(workdir[0])
+	}
+	payload, err := json.Marshal(verifierRequest{Command: decision.Command, Workdir: cmdDir, Timeout: r.policy.Timeout.String()})
+	if err != nil {
+		return CommandResult{Decision: decision}, fmt.Errorf("encode verifier request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.verifierURL+"/verify", bytes.NewReader(payload))
+	if err != nil {
+		return CommandResult{Decision: decision}, fmt.Errorf("create verifier request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return CommandResult{Decision: decision}, fmt.Errorf("execute verifier request: %w", err)
+	}
+	defer response.Body.Close()
+	var body verifierResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return CommandResult{Decision: decision}, fmt.Errorf("decode verifier response: %w", err)
+	}
+	result := CommandResult{Decision: decision, Executed: true, Output: strings.TrimSpace(body.Output)}
+	if response.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("verifier rejected command: %s", firstNonEmpty(body.Error, response.Status))
 	}
 	return result, nil
 }

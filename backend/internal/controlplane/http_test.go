@@ -512,7 +512,7 @@ func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Post(srv.URL+"/api/workflows/open-pilot/run", "application/json", bytes.NewBufferString(`{"repo":"OWNER/REPO","issue":"123"}`))
+	resp, err := http.Post(srv.URL+"/api/workflows/open-pilot/run", "application/json", bytes.NewBufferString(`{"repo":" OWNER/REPO ","issue":" 123 ","test_command":" make verify ","base_branch":" release "}`))
 	if err != nil {
 		t.Fatalf("POST workflow error = %v", err)
 	}
@@ -526,7 +526,7 @@ func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode run: %v", err)
 	}
-	if body.Run.WorkflowID != "open-pilot" || body.Run.Inputs["repo"] != "OWNER/REPO" || body.Run.Inputs["issue"] != "123" {
+	if body.Run.WorkflowID != "open-pilot" || body.Run.Inputs["repo"] != "OWNER/REPO" || body.Run.Inputs["issue"] != "123" || body.Run.Inputs["test_command"] != "make verify" || body.Run.Inputs["base_branch"] != "release" {
 		t.Fatalf("run = %+v", body.Run)
 	}
 }
@@ -804,16 +804,24 @@ func TestAPIModelBrokerStatusReportsNativeBroker(t *testing.T) {
 }
 
 func TestAPILlamaLineCompatChatCompletionsUsesNativeBroker(t *testing.T) {
+	messagePosted := false
 	opencode := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session":
+		switch {
+		case r.URL.Path == "/session":
 			if r.Method == http.MethodGet {
 				_ = json.NewEncoder(w).Encode([]map[string]string{{"id": "session-1", "title": "compat"}})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "session-1"})
-		case "/session/session-1/message":
+		case r.URL.Path == "/session/session-1/message" && r.Method == http.MethodPost:
+			messagePosted = true
 			_ = json.NewEncoder(w).Encode(map[string]any{"parts": []map[string]string{{"type": "text", "text": "native answer"}}})
+		case r.URL.Path == "/session/session-1/message" && r.Method == http.MethodGet:
+			if !messagePosted {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{"info": map[string]string{"id": "before", "role": "assistant", "finish": "stop"}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"info": map[string]string{"id": "after", "role": "assistant", "finish": "stop"}, "parts": []map[string]string{{"type": "text", "text": "native answer"}}}})
 		default:
 			t.Fatalf("unexpected opencode path %s", r.URL.Path)
 		}

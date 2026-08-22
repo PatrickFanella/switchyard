@@ -76,6 +76,10 @@ func openCodeMessageTimeout() time.Duration {
 	return durationFromEnv("OPENCODE_MESSAGE_TIMEOUT", openCodeExecutorTimeout())
 }
 
+func openCodeSessionStatusPollInterval() time.Duration {
+	return durationFromEnv("OPENCODE_SESSION_STATUS_POLL_INTERVAL", 100*time.Millisecond)
+}
+
 func openCodeAbortTimeout() time.Duration {
 	return durationFromEnv("OPENCODE_ABORT_TIMEOUT", time.Second)
 }
@@ -204,8 +208,16 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		}
 	}
 	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
-	content, err := e.postOpenCodeMessage(messageCtx, sessionID, request)
-	cancel()
+	defer cancel()
+	priorMessageID, err := e.openCodeLatestMessageID(messageCtx, sessionID)
+	if err != nil {
+		return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
+	}
+	_, err = e.postOpenCodeMessage(messageCtx, sessionID, request)
+	content := ""
+	if err == nil {
+		content, err = e.waitForOpenCodeSessionIdle(messageCtx, sessionID, priorMessageID)
+	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
 			e.abortOpenCodeSession(context.Background(), sessionID)
@@ -213,6 +225,108 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
 	}
 	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
+}
+
+func (e *EnvOpenCodeExecutor) waitForOpenCodeSessionIdle(ctx context.Context, sessionID, priorMessageID string) (string, error) {
+	ticker := time.NewTicker(openCodeSessionStatusPollInterval())
+	defer ticker.Stop()
+	for {
+		content, idle, err := e.openCodeSessionIdle(ctx, sessionID, priorMessageID)
+		if err != nil {
+			return "", err
+		}
+		if idle {
+			return content, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *EnvOpenCodeExecutor) openCodeSessionIdle(ctx context.Context, sessionID, priorMessageID string) (string, bool, error) {
+	message, err := e.openCodeLatestMessage(ctx, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	if message.ID == priorMessageID || message.Role != "assistant" || message.Finish != "stop" {
+		return "", false, nil
+	}
+	var content strings.Builder
+	for _, part := range message.Parts {
+		if part.Type == "text" {
+			content.WriteString(part.Text)
+		}
+	}
+	return strings.TrimSpace(content.String()), true, nil
+}
+
+type openCodeSessionMessage struct {
+	ID     string
+	Role   string
+	Finish string
+	Parts  []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+}
+
+func (e *EnvOpenCodeExecutor) openCodeLatestMessageID(ctx context.Context, sessionID string) (string, error) {
+	message, err := e.openCodeLatestMessage(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return message.ID, nil
+}
+
+func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, sessionID string) (openCodeSessionMessage, error) {
+	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, "/message")
+	if err != nil {
+		return openCodeSessionMessage{}, err
+	}
+	endpoint += "?limit=1"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return openCodeSessionMessage{}, err
+	}
+	e.applyOpenCodeAuth(req)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return openCodeSessionMessage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := readModelResponseBody(resp.Body)
+		return openCodeSessionMessage{}, fmt.Errorf("opencode session status failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var payload json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return openCodeSessionMessage{}, err
+	}
+	if len(payload) == 0 || payload[0] != '[' {
+		return openCodeSessionMessage{}, errors.New("opencode session messages response is not an array")
+	}
+	var messages []struct {
+		Info struct {
+			ID     string `json:"id"`
+			Role   string `json:"role"`
+			Finish string `json:"finish"`
+		} `json:"info"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(payload, &messages); err != nil {
+		return openCodeSessionMessage{}, err
+	}
+	if len(messages) == 0 {
+		return openCodeSessionMessage{}, nil
+	}
+	message := messages[len(messages)-1]
+	return openCodeSessionMessage{ID: message.Info.ID, Role: message.Info.Role, Finish: message.Info.Finish, Parts: message.Parts}, nil
 }
 
 func nativeOpenCodeCorrelation(sessionID, requestID string) map[string]string {

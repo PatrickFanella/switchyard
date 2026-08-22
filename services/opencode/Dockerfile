@@ -17,7 +17,7 @@ RUN cd /opt/opencode && npm ci --omit=dev \
 	&& echo "${RTK_INSTALL_SHA256}  /tmp/rtk-install.sh" | sha256sum -c - \
 	&& sh /tmp/rtk-install.sh \
 	&& rm -f /tmp/rtk-install.sh \
-	&& if [ -x /root/.local/bin/rtk ]; then ln -sf /root/.local/bin/rtk /usr/local/bin/rtk; fi
+	&& if [ -x /root/.local/bin/rtk ]; then install -m 0755 /root/.local/bin/rtk /usr/local/bin/rtk; fi
 
 COPY install.sh /usr/local/bin/switchyard-opencode-install
 COPY entrypoint.sh /usr/local/bin/switchyard-opencode-entrypoint

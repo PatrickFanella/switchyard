@@ -1,6 +1,9 @@
 package controlplane_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -96,5 +99,36 @@ func TestCommandPolicyAllowEnforcesExecutableAllowlist(t *testing.T) {
 	}
 	if decision := runner.Decide("go test ./..."); !decision.Allowed || decision.DryRun {
 		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestEnvCommandRunnerExecutesAllowedCommandInVerifier(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/verify" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var request struct {
+			Command []string `json:"command"`
+			Workdir string   `json:"workdir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(request.Command, " ") != "git diff --check" || request.Workdir != "/workspace/.open-pilot-worktrees/issue-1" {
+			t.Fatalf("request = %+v", request)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "clean"})
+	}))
+	defer server.Close()
+	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
+	t.Setenv("OPEN_PILOT_VERIFIER_URL", server.URL)
+	result, err := controlplane.NewEnvCommandRunner().Run(t.Context(), "git diff --check", "/workspace/.open-pilot-worktrees/issue-1")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.Executed || result.Output != "clean" {
+		t.Fatalf("result = %+v", result)
 	}
 }

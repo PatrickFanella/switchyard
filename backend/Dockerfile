@@ -3,13 +3,15 @@ WORKDIR /src
 COPY go.mod ./
 COPY . ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-buildid=' -o /out/api ./cmd/app
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-buildid=' -o /out/verifier ./cmd/verifier
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 ARG SWITCHYARD_SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://git.subcult.tv/subculture-collective/switchyard" \
       org.opencontainers.image.revision="${SWITCHYARD_SOURCE_REVISION}"
 WORKDIR /app
-RUN apk add --no-cache git=2.49.1-r0
+RUN apk add --no-cache git=2.49.1-r0 nodejs=22.23.2-r0 npm=11.6.4-r0
 COPY --from=build /out/api /app/api
+COPY --from=build /out/verifier /app/verifier
 EXPOSE 8080
 CMD ["/app/api"]

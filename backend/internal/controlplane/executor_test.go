@@ -336,6 +336,9 @@ func TestRunnerRunsOpenPilotDryRunVerifyCommand(t *testing.T) {
 	if detail.Steps[4].CorrelationIDs["policy_mode"] != "dry-run" {
 		t.Fatalf("verify step = %+v", detail.Steps[4])
 	}
+	if detail.Steps[4].Inputs["diff_check"] != "git diff --check" || !strings.Contains(detail.Steps[4].OutputSummary, "git diff --check passed") {
+		t.Fatalf("expected central diff check evidence: %+v", detail.Steps[4])
+	}
 	if detail.Steps[1].Inputs["branch"] == "" || detail.Steps[4].Inputs["command"] != "make verify" || detail.Steps[6].Inputs["mode"] == "" || detail.Steps[7].Inputs["head"] == "" {
 		t.Fatalf("dynamic inputs not persisted: %+v", detail.Steps)
 	}
@@ -411,7 +414,8 @@ func runOpenPilotNoPersistTest(t *testing.T, pushMode, writeMode string) control
 
 func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
-	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
@@ -452,7 +456,8 @@ func TestRunnerRehydratesOpenPilotResumeStateForVerifyStep(t *testing.T) {
 
 func TestRunnerReusesStoredOpenPilotPromptFromResumeInputs(t *testing.T) {
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
-	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
@@ -611,7 +616,8 @@ func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "disabled")
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
-	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
 	t.Setenv("OPEN_PILOT_GITEA_WRITE_MODE", "allow")
 	t.Setenv("MODEL_BROKER_BACKEND", "llama-line")
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
@@ -669,6 +675,26 @@ func TestRunnerPersistsOpenPilotFailureState(t *testing.T) {
 	}
 }
 
+func TestRunnerFailsOpenPilotWhenConfiguredGiteaFetchFails(t *testing.T) {
+	t.Setenv("GITEA_BASE_URL", "http://127.0.0.1:1")
+	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	runner := controlplane.NewRunner(store)
+	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if run.Status != controlplane.RunFailed || state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.validate-issue" || state.FailingGate != "issue_validation" {
+		t.Fatalf("run = %+v state = %+v", run, state)
+	}
+}
+
 func TestRunnerPrefersOpenPilotDBStateForHydration(t *testing.T) {
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -692,7 +718,8 @@ func TestRunnerPrefersOpenPilotDBStateForHydration(t *testing.T) {
 		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
 	}
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "dry-run")
-	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
 	runner := controlplane.NewRunner(store)
 	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{
 		"repo":                                  "OWNER/REPO",
@@ -795,7 +822,7 @@ func TestRunnerCreatesOpenPilotWorktreeAndRunsVerifyThere(t *testing.T) {
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "git")
-	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status,diff")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -1047,7 +1074,7 @@ func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "git")
-	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "status,diff")
 	t.Setenv("OPEN_PILOT_AUTO_COMMIT_MODE", "allow")
 	t.Setenv("OPEN_PILOT_GIT_PUSH_MODE", "allow")
 
@@ -1098,7 +1125,8 @@ func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
 	t.Setenv("OPEN_PILOT_REPO_PATH", repoPath)
 	t.Setenv("OPEN_PILOT_WORKTREE_ROOT", worktreeRoot)
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
-	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "touch")
+	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "touch,git")
+	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
 
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {

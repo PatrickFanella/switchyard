@@ -133,8 +133,10 @@ func (a *API) cancelOpenPilotRuns(repo, issue, message string) {
 
 func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Repo  string `json:"repo"`
-		Issue string `json:"issue"`
+		Repo        string `json:"repo"`
+		Issue       string `json:"issue"`
+		TestCommand string `json:"test_command"`
+		BaseBranch  string `json:"base_branch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeJSONDecodeError(w, err)
@@ -144,7 +146,14 @@ func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repo and issue are required")
 		return
 	}
-	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "manual-open-pilot", Inputs: map[string]string{"repo": input.Repo, "issue": input.Issue}})
+	inputs := map[string]string{"repo": strings.TrimSpace(input.Repo), "issue": strings.TrimSpace(input.Issue)}
+	if testCommand := strings.TrimSpace(input.TestCommand); testCommand != "" {
+		inputs["test_command"] = testCommand
+	}
+	if baseBranch := strings.TrimSpace(input.BaseBranch); baseBranch != "" {
+		inputs["base_branch"] = baseBranch
+	}
+	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "manual-open-pilot", Inputs: inputs})
 	if err != nil {
 		writeControlError(w, err)
 		return

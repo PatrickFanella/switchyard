@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,12 +62,14 @@ func TestEnvOCQExecutorCompatibilityConstructor(t *testing.T) {
 func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 	var sessionDirectory string
 	var messageBody map[string]any
+	var messagePosted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/session" && r.Method == http.MethodPost:
 			sessionDirectory = r.URL.Query().Get("directory")
 			_, _ = w.Write([]byte(`{"id":"ses-native"}`))
 		case r.URL.Path == "/session/ses-native/message" && r.Method == http.MethodPost:
+			messagePosted.Store(true)
 			if got := r.Header.Get("X-Request-ID"); got != "req-native" {
 				t.Fatalf("X-Request-ID = %q", got)
 			}
@@ -74,6 +77,12 @@ func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 				t.Fatalf("decode body: %v", err)
 			}
 			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"native done"}]}`))
+		case r.URL.Path == "/session/ses-native/message" && r.Method == http.MethodGet:
+			if !messagePosted.Load() {
+				_, _ = w.Write([]byte(`[{"info":{"id":"before","role":"assistant","finish":"stop"}}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"info":{"id":"after","role":"assistant","finish":"stop"},"parts":[{"type":"text","text":"native done"}]}]`))
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
@@ -94,6 +103,48 @@ func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 	}
 	if messageBody["model"] == nil || len(messageBody["parts"].([]any)) != 1 {
 		t.Fatalf("message body = %+v", messageBody)
+	}
+}
+
+func TestEnvOpenCodeExecutorWaitsForNativeSessionIdle(t *testing.T) {
+	var marker atomic.Bool
+	var messagePosted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session":
+			_, _ = w.Write([]byte(`{"id":"ses-idle"}`))
+		case r.URL.Path == "/session/ses-idle/message" && r.Method == http.MethodPost:
+			messagePosted.Store(true)
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				marker.Store(true)
+			}()
+			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"queued"}]}`))
+		case r.URL.Path == "/session/ses-idle/message" && r.Method == http.MethodGet:
+			if !messagePosted.Load() {
+				_, _ = w.Write([]byte(`[{"info":{"id":"before","role":"assistant","finish":"stop"}}]`))
+				return
+			}
+			if marker.Load() {
+				_, _ = w.Write([]byte(`[{"info":{"id":"after","role":"assistant","finish":"stop"},"parts":[{"type":"text","text":"finished"}]}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"info":{"role":"assistant","finish":"tool-calls"}}]`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+	t.Setenv("OPENCODE_SESSION_STATUS_POLL_INTERVAL", "1ms")
+
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Prompt: "work"})
+	if err != nil {
+		t.Fatalf("SendPrompt() error = %v", err)
+	}
+	if response.Content != "finished" || !marker.Load() {
+		t.Fatalf("response=%+v marker=%v", response, marker.Load())
 	}
 }
 
@@ -153,6 +204,8 @@ func TestEnvOpenCodeExecutorAbortsNativeSessionOnMessageTimeout(t *testing.T) {
 		case r.URL.Path == "/session/ses-timeout/message" && r.Method == http.MethodPost:
 			time.Sleep(50 * time.Millisecond)
 			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"late"}]}`))
+		case r.URL.Path == "/session/ses-timeout/message" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`[]`))
 		case r.URL.Path == "/session/ses-timeout/abort" && r.Method == http.MethodPost:
 			aborted = true
 			_, _ = w.Write([]byte(`{"ok":true}`))
@@ -179,14 +232,22 @@ func TestEnvOpenCodeExecutorAbortsNativeSessionOnMessageTimeout(t *testing.T) {
 func TestEnvOpenCodeExecutorPersistsNativeSessionCorrelationBeforeMessageCompletes(t *testing.T) {
 	messageStarted := make(chan struct{})
 	releaseMessage := make(chan struct{})
+	var messagePosted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session":
+		switch {
+		case r.URL.Path == "/session":
 			_, _ = w.Write([]byte(`{"id":"ses-early"}`))
-		case "/session/ses-early/message":
+		case r.URL.Path == "/session/ses-early/message" && r.Method == http.MethodPost:
+			messagePosted.Store(true)
 			close(messageStarted)
 			<-releaseMessage
 			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"done"}]}`))
+		case r.URL.Path == "/session/ses-early/message" && r.Method == http.MethodGet:
+			if !messagePosted.Load() {
+				_, _ = w.Write([]byte(`[{"info":{"id":"before","role":"assistant","finish":"stop"}}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"info":{"id":"after","role":"assistant","finish":"stop"},"parts":[{"type":"text","text":"done"}]}]`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}

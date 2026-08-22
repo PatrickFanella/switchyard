@@ -159,6 +159,13 @@ func TestOpenPilotStateMigrationDeclaresLifecycleTable(t *testing.T) {
 			t.Fatalf("open pilot diagnostics migration missing %q", field)
 		}
 	}
+	committedPhase, err := migrationFS.ReadFile("migrations/020_allow_committed_open_pilot_phase.sql")
+	if err != nil {
+		t.Fatalf("read committed phase migration: %v", err)
+	}
+	if !strings.Contains(string(committedPhase), "'committed'") {
+		t.Fatal("committed phase migration does not allow committed")
+	}
 }
 
 func TestPostgresStoreOpenPilotIssueStateIntegration(t *testing.T) {

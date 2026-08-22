@@ -929,7 +929,14 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		state["open-pilot.issue-summary"] = issueSummary
 		state["open-pilot.fetched-issue"] = fetchedIssue
 		if fetchErr != nil {
-			out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.issue.fetch.skipped", Message: fetchErr.Error()})
+			if strings.TrimSpace(os.Getenv("GITEA_BASE_URL")) == "" {
+				out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.issue.fetch.skipped", Message: fetchErr.Error()})
+			} else {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, fetchErr.Error(), state); persistErr != nil {
+					return out, errors.Join(fetchErr, persistErr)
+				}
+				return out, fetchErr
+			}
 		}
 		if fetchedIssue != nil {
 			if err := o.env.validateOpenPilotIssue(*fetchedIssue); err != nil {
@@ -1053,19 +1060,30 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 			return PipelineStepExecution{Summary: result.Output, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
 		}
+		diffResult, err := o.env.commandRunner.Run(ctx, "git diff --check", workdir)
+		if err != nil {
+			state["open-pilot.verify-command.command"] = command
+			state["open-pilot.verify-command.diff-check"] = "git diff --check"
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{Summary: diffResult.Output, Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{Summary: diffResult.Output, Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, err
+		}
 		summary := "Command allowed"
 		if result.Decision.DryRun {
 			summary = "Command allowed by policy in dry-run mode"
 		} else if result.Executed {
 			summary = "Command executed by policy runner"
 		}
+		summary += "; git diff --check passed"
 		state["open-pilot.verify-command.command"] = command
+		state["open-pilot.verify-command.diff-check"] = "git diff --check"
 		state["open-pilot.verify-summary"] = summary
 		state["open-pilot.gate-status"] = map[string]string{"local_verify": "passed"}
 		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseVerified, step.Name, "", state); err != nil {
 			return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
 		}
-		return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, nil
+		return PipelineStepExecution{Summary: summary, Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, nil
 	case "commit-changes":
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		result, err := o.env.openPilotCommitChanges(ctx, run, branchPlan, state)
@@ -1229,7 +1247,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		if o.env == nil || o.env.modelExecutor == nil {
 			return PipelineStepExecution{}, errors.New("model executor not configured")
 		}
-		response, err := o.env.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "system", Content: "You are the Open Pilot operator reviewer. Review the completed work against the issue, branch, local verification, and agent output. Reply with exactly one paragraph using the required verdict contract."}, {Role: "user", Content: reviewPrompt}}, PreAttempt: preAttemptFromContext(ctx)})
+		response, err := o.env.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "system", Content: "You are the Open Pilot operator reviewer. Review the completed work against the supplied issue, branch, central verification, and agent output. Do not invoke tools. Treat a successful central verification summary as evidence that Switchyard ran that command; do not request the agent rerun it. Request changes only for a concrete conflict or acceptance gap apparent in the supplied evidence. Reply with exactly one paragraph using the required verdict contract."}, {Role: "user", Content: reviewPrompt}}, ToolChoice: "none", PreAttempt: preAttemptFromContext(ctx)})
 		if err != nil {
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
 				return PipelineStepExecution{CorrelationIDs: response.CorrelationIDs}, errors.Join(err, persistErr)
@@ -1698,10 +1716,10 @@ func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSumma
 	if len(requiredChecks) == 0 {
 		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: no required checks configured"}, true
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.State), "failure") || strings.EqualFold(strings.TrimSpace(snapshot.State), "error") {
+	if (strings.EqualFold(strings.TrimSpace(snapshot.State), "failure") || strings.EqualFold(strings.TrimSpace(snapshot.State), "error")) && !openPilotRequiredChecksPresent(requiredChecks, snapshot) {
 		return openPilotCICheckResult{status: "failed", summary: "CI checks failed: aggregate status " + snapshot.State}, true
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.State), "success") {
+	if strings.EqualFold(strings.TrimSpace(snapshot.State), "success") && !openPilotRequiredChecksPresent(requiredChecks, snapshot) {
 		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: aggregate status success"}, true
 	}
 	hasPending := false
@@ -1717,6 +1735,22 @@ func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSumma
 		return openPilotCICheckResult{}, false
 	}
 	return openPilotCICheckResult{status: "passed", summary: "CI checks passed: " + strings.Join(requiredChecks, ", ")}, true
+}
+
+func openPilotRequiredChecksPresent(requiredChecks []string, snapshot GiteaCheckSummary) bool {
+	for _, required := range requiredChecks {
+		for _, status := range snapshot.Statuses {
+			if status.Context == required {
+				return true
+			}
+		}
+		for _, check := range snapshot.Checks {
+			if check.Name == required {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func evaluateOpenPilotRequiredCheck(required string, snapshot GiteaCheckSummary) string {
@@ -2288,7 +2322,7 @@ func buildOpenPilotPrompt(repo string, issue string, issueSummary string, fetche
 	}
 	builder.WriteString("\n## Instructions\n\nInspect the issue, preserve repository conventions, and make the smallest safe change. ")
 	if openPilotAutonomyFullEnabled() {
-		builder.WriteString("You may run implementation, inspection, formatting, and test commands inside the assigned worktree. Do not commit, push, or create the PR yourself; Switchyard will verify, commit, inspect worktree status, push the branch, and create the PR through audited follow-up steps. Summarize files changed and any verification you ran with file references.\n")
+		builder.WriteString("You may run implementation, inspection, formatting, and test commands inside the assigned worktree. If project dependencies are absent, install them only from the committed lockfile before verification; do not modify lockfiles. Do not commit, push, or create the PR yourself; Switchyard will verify, commit, inspect worktree status, push the branch, and create the PR through audited follow-up steps. Summarize files changed and any verification you ran with file references.\n")
 	} else {
 		builder.WriteString("Do not run shell/test commands, commit, or push changes yourself; Switchyard will run verification, commit, and branch publication through policy-gated steps after agent work. Summarize results with file references.\n")
 	}

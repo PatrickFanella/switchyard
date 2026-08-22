@@ -22,7 +22,10 @@ services:
       args:
         SWITCHYARD_SOURCE_REVISION: ${SWITCHYARD_SOURCE_REVISION:-unknown}
     restart: unless-stopped
+    user: "${OPENCODE_RUNTIME_UID:-1000}:${OPENCODE_RUNTIME_GID:-1000}"
     environment:
+      HOME: /tmp
+      NPM_CONFIG_CACHE: /tmp/.npm
       DATABASE_URL: host=postgres port=5432 user=${POSTGRES_USER:-switchyard} password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong random value} dbname=${POSTGRES_DB:-switchyard} sslmode=disable
       MODEL_BROKER_TIMEOUT: ${MODEL_BROKER_TIMEOUT:-10m}
       MODEL_BROKER_BACKEND: ${MODEL_BROKER_BACKEND:-}
@@ -106,6 +109,7 @@ services:
       OPEN_PILOT_ALLOWED_GIT_VERBS: ${OPEN_PILOT_ALLOWED_GIT_VERBS:-}
       OPEN_PILOT_DENIED_COMMANDS: ${OPEN_PILOT_DENIED_COMMANDS:-}
       OPEN_PILOT_COMMAND_TIMEOUT: ${OPEN_PILOT_COMMAND_TIMEOUT:-300s}
+      OPEN_PILOT_VERIFIER_URL: http://verifier:8090
       OPEN_PILOT_WORKDIR: ${OPEN_PILOT_WORKDIR:-}
       OPEN_PILOT_WORKTREE_MODE: ${OPEN_PILOT_WORKTREE_MODE:-disabled}
       OPEN_PILOT_WORKTREE_CLEANUP: ${OPEN_PILOT_WORKTREE_CLEANUP:-disabled}
@@ -123,6 +127,8 @@ services:
         condition: service_healthy
       opencode:
         condition: service_healthy
+      verifier:
+        condition: service_healthy
     ports:
       - "${SWITCHYARD_BIND_HOST:-127.0.0.1}:${API_PORT:-18080}:8080"
       - "${SWITCHYARD_MODEL_BIND_HOST:-${SWITCHYARD_BIND_HOST:-127.0.0.1}}:${LLAMA_LINE_PORT:-11434}:11434"
@@ -133,6 +139,9 @@ services:
       - ${SWITCHYARD_BACKUP_METRICS_DIR:-/dev/null}:/var/lib/switchyard-metrics:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - verification
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 10s
@@ -212,7 +221,34 @@ services:
     ports:
       - "${SWITCHYARD_WEB_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8081}:80"
 
+  verifier:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    user: "${OPENCODE_RUNTIME_UID:-1000}:${OPENCODE_RUNTIME_GID:-1000}"
+    command: ["/app/verifier"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    volumes:
+      - ${OPENCODE_WORKSPACE:-.}:/workspace:ro
+    networks:
+      - verification
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres-data:
   opencode-cache:
   opencode-state:
+
+networks:
+  verification:
+    internal: true

@@ -35,6 +35,7 @@ func TestBackendDecisionLifecycleMatrix(t *testing.T) {
 		{"nested OCQ SSE error", "", "ocq", http.StatusBadGateway, http.StatusOK, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			messagePosted := false
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if tc.upstreamStatus != http.StatusOK {
 					http.Error(w, "upstream failed", tc.upstreamStatus)
@@ -51,6 +52,17 @@ func TestBackendDecisionLifecycleMatrix(t *testing.T) {
 				if tc.broker == "" && r.URL.Path == "/session" {
 					_, _ = w.Write([]byte(`{"id":"s1"}`))
 					return
+				}
+				if tc.broker == "" && r.URL.Path == "/session/s1/message" && r.Method == http.MethodGet {
+					if !messagePosted {
+						_, _ = w.Write([]byte(`[{"info":{"id":"before","role":"assistant","finish":"stop"}}]`))
+						return
+					}
+					_, _ = w.Write([]byte(`[{"info":{"id":"after","role":"assistant","finish":"stop"},"parts":[{"type":"text","text":"ok"}]}]`))
+					return
+				}
+				if tc.broker == "" && r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost {
+					messagePosted = true
 				}
 				if tc.broker == "ollama" {
 					_, _ = w.Write([]byte("{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":true}\n"))
