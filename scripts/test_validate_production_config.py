@@ -42,6 +42,7 @@ def make_owned_workspace(parent: str) -> tuple[Path, int, int]:
         uid = 65534
         gid = 65534
         os.chown(workspace, uid, gid)
+        os.chown(workspace / ".git", uid, gid)
         os.chown(worktree_root, uid, gid)
         os.chown(marker, uid, gid)
         os.chown(config_dir, uid, gid)
@@ -247,7 +248,7 @@ class ProductionConfigTest(unittest.TestCase):
         workspace = Path(self.env["OPENCODE_WORKSPACE"])
         marker = "credential-marker-must-not-print"
         subprocess.run(
-            ["git", "-C", str(workspace), "config", "--local", "credential.helper", marker],
+            ["git", "-c", f"safe.directory={workspace}", "-C", str(workspace), "config", "--local", "credential.helper", marker],
             check=True,
             capture_output=True,
             text=True,
@@ -624,7 +625,7 @@ class ProductionConfigCLITest(unittest.TestCase):
             workspace, uid, gid = make_owned_workspace(directory)
             marker = "credential-marker-must-not-print"
             subprocess.run(
-                ["git", "-C", str(workspace), "config", "--local", "http.extraheader", marker],
+                ["git", "-c", f"safe.directory={workspace}", "-C", str(workspace), "config", "--local", "http.extraheader", marker],
                 check=True,
                 capture_output=True,
                 text=True,
