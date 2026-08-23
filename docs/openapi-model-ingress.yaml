@@ -1,0 +1,16 @@
+openapi: 3.1.0
+info:
+  title: Switchyard Model Ingress API
+  version: 0.1.0
+  description: Public operations on the model-compatible listener.
+servers:
+  - url: http://127.0.0.1:11434
+    description: Model-compatible ingress (LLAMA_LINE_PORT)
+paths:
+  /metrics:
+    get:
+      security: []
+      summary: Prometheus runtime metrics
+      responses:
+        "200":
+          description: Prometheus text exposition
