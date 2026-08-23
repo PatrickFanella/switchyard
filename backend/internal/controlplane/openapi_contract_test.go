@@ -168,6 +168,12 @@ func TestOpenAPIDocumentsModelRuntimeSecurityAndSchemas(t *testing.T) {
 			t.Errorf("ModelQueue omits %s", field)
 		}
 	}
+	artifactReport := fmt.Sprint(schemas["ArtifactReport"])
+	for _, field := range []string{"maxItems:90", "declared_retention_expired", "declared_retention_missing", "retention_semantics", "pruned_bytes_total"} {
+		if !strings.Contains(strings.ReplaceAll(artifactReport, " ", ""), strings.ReplaceAll(field, " ", "")) {
+			t.Errorf("ArtifactReport omits %s", field)
+		}
+	}
 	responses := components["responses"].(map[string]any)
 	if !strings.Contains(fmt.Sprint(responses["ModelBrokerStatusResponse"]), "queue") {
 		t.Error("ModelBrokerStatusResponse omits queue")

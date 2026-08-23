@@ -342,6 +342,26 @@ func (a *API) retentionStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"retention": a.retention.Status()})
 }
 
+func (a *API) artifactReport(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > maxArtifactReportDays {
+			writeError(w, http.StatusBadRequest, "days must be between 1 and 90")
+			return
+		}
+		days = parsed
+	}
+	end := time.Now().UTC()
+	start := utcDay(end).AddDate(0, 0, -days+1)
+	report, err := a.store.ArtifactReport(r.Context(), ArtifactReportInput{Start: start, End: end})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "artifact report unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifact_report": report})
+}
+
 func (a *API) compatibilityRetirement(w http.ResponseWriter, r *http.Request) {
 	status, err := compatibilityRetirementStatus(a.store, time.Now().UTC())
 	if err != nil {

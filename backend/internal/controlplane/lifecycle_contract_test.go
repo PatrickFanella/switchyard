@@ -27,6 +27,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				cleanupLifecycleModelRequest(t, store, req.ID)
 				req, err = store.TransitionModelBrokerRequest(req.ID, controlplane.TransitionModelBrokerRequestInput{ExpectedStatus: controlplane.ModelBrokerRequestRunning, Status: controlplane.ModelBrokerRequestCancelRequested, CorrelationIDs: map[string]string{"audit_action": "cancel", "audit_actor": "first", "audit_reason": "first reason"}})
 				if err != nil {
 					t.Fatal(err)
@@ -45,6 +46,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				cleanupLifecycleModelRequest(t, store, partial.ID)
 				partial, err = store.TransitionModelBrokerRequest(partial.ID, controlplane.TransitionModelBrokerRequestInput{ExpectedStatus: controlplane.ModelBrokerRequestRunning, Status: controlplane.ModelBrokerRequestCancelRequested, CorrelationIDs: map[string]string{"audit_action": "cancel"}})
 				if err != nil {
 					t.Fatal(err)
@@ -302,6 +304,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if err != nil || !admitted || accepted.Status != controlplane.ModelBrokerRequestQueued {
 					t.Fatalf("accepted=%+v admitted=%v err=%v", accepted, admitted, err)
 				}
+				cleanupLifecycleModelRequest(t, store, accepted.ID)
 				dropped, admitted, err := store.AdmitModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "dropped-" + factory.name, Model: "test"}, 1)
 				if err != controlplane.ErrQueueFull || admitted || dropped.Status != controlplane.ModelBrokerRequestDropped {
 					t.Fatalf("dropped=%+v admitted=%v err=%v", dropped, admitted, err)
@@ -314,6 +317,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				cleanupLifecycleModelRequest(t, store, running.ID)
 				first, err := store.CancelModelBrokerRequest(running.ID)
 				if err != nil || first.CancelRequestedAt == nil {
 					t.Fatalf("first cancel=%+v err=%v", first, err)
@@ -326,6 +330,19 @@ func TestStoreLifecycleContract(t *testing.T) {
 			})
 		})
 	}
+}
+
+func cleanupLifecycleModelRequest(t *testing.T, store controlplane.Store, id string) {
+	t.Helper()
+	t.Cleanup(func() {
+		request, err := store.ModelBrokerRequest(id)
+		if err != nil || !controlplane.ModelBrokerRequestTransitionAllowed(request.Status, controlplane.ModelBrokerRequestCanceled) {
+			return
+		}
+		if _, err := store.TransitionModelBrokerRequest(id, controlplane.TransitionModelBrokerRequestInput{ExpectedStatus: request.Status, Status: controlplane.ModelBrokerRequestCanceled}); err != nil {
+			t.Errorf("cleanup model request %s: %v", id, err)
+		}
+	})
 }
 
 func lifecycleStoreFactories() []lifecycleStoreFactory {

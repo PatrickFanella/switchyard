@@ -87,6 +87,7 @@ type Store interface {
 	AddModelBrokerFeedback(CreateModelBrokerFeedbackInput) (ModelBrokerFeedback, error)
 	ListModelBrokerFeedback(int) ([]ModelBrokerFeedback, error)
 	PruneRetention(time.Time) (RetentionResult, error)
+	ArtifactReport(context.Context, ArtifactReportInput) (ArtifactReport, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
 }
 
@@ -105,13 +106,19 @@ type MemoryStore struct {
 	modelBrokerRequests        map[string]ModelBrokerRequest
 	modelBrokerFeedback        []ModelBrokerFeedback
 	compatibilityUsage         map[string]CompatibilityUsageDaily
+	artifactDaily              map[string]ArtifactDailyBucket
+	artifactObservationStarted time.Time
+	artifactsCreated           int64
+	artifactBytesCreated       int64
+	artifactsPruned            int64
+	artifactBytesPruned        int64
 }
 
 func NewStore(now func() time.Time) *MemoryStore {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}}
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: now().UTC()}
 }
 
 func (s *MemoryStore) Ready(context.Context) error       { return nil }

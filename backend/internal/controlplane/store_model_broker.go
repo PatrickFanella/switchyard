@@ -372,6 +372,16 @@ func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) 
 		}
 		result.Runs++
 	}
+	if result.Artifacts > 0 {
+		s.artifactsPruned += int64(result.Artifacts)
+		s.artifactBytesPruned += result.ArtifactBytes
+		date := s.now().UTC().Format(time.DateOnly)
+		bucket := s.artifactDaily[date]
+		bucket.Date = date
+		bucket.Pruned += int64(result.Artifacts)
+		bucket.PrunedBytes += result.ArtifactBytes
+		s.artifactDaily[date] = bucket
+	}
 	for id, req := range s.modelBrokerRequests {
 		if !isTerminalModelBrokerRequest(req.Status) || !req.CreatedAt.Before(before) {
 			continue
@@ -397,6 +407,15 @@ func (s *MemoryStore) RuntimeMetricsSince(_ context.Context, since time.Time) (R
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
+	metrics.ArtifactObservationStartedAt = s.artifactObservationStarted
+	metrics.ArtifactsCreated, metrics.ArtifactBytesCreated = s.artifactsCreated, s.artifactBytesCreated
+	metrics.ArtifactsPruned, metrics.ArtifactBytesPruned = s.artifactsPruned, s.artifactBytesPruned
+	for _, artifacts := range s.artifacts {
+		metrics.ArtifactsRetained += int64(len(artifacts))
+		for _, artifact := range artifacts {
+			metrics.ArtifactBytesRetained += int64(artifact.ByteSize)
+		}
+	}
 	for _, run := range s.runs {
 		metrics.RunStatusCounts[string(run.Status)]++
 	}

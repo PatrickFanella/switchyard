@@ -2,9 +2,12 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
+
+const retentionBatchesPerRun = 20
 
 type RetentionStatus struct {
 	Running   bool            `json:"running"`
@@ -57,7 +60,15 @@ func (m *RetentionManager) Start(ctx context.Context) {
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
 		for {
-			m.prune()
+			more := m.prune()
+			if more {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -67,17 +78,36 @@ func (m *RetentionManager) Start(ctx context.Context) {
 	}()
 }
 
-func (m *RetentionManager) prune() {
+func (m *RetentionManager) prune() bool {
 	now := m.now().UTC()
-	result, err := m.store.PruneRetention(now.Add(-m.window))
+	result := RetentionResult{}
+	var pruneErr error
+	more := false
+	for range retentionBatchesPerRun {
+		batch, err := m.store.PruneRetention(now.Add(-m.window))
+		result.Runs += batch.Runs
+		result.ModelRequests += batch.ModelRequests
+		result.Artifacts += batch.Artifacts
+		result.ArtifactBytes += batch.ArtifactBytes
+		result.ArtifactBytesUnmeasured += batch.ArtifactBytesUnmeasured
+		if err != nil {
+			pruneErr = errors.Join(pruneErr, err)
+			break
+		}
+		more = batch.Runs >= retentionBatchSize || batch.ModelRequests >= retentionBatchSize
+		if !more {
+			break
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.status.LastRunAt = now
 	m.status.LastPrune = result
 	m.status.LastError = ""
-	if err != nil {
-		m.status.LastError = err.Error()
+	if pruneErr != nil {
+		m.status.LastError = pruneErr.Error()
 	}
+	return more && pruneErr == nil
 }
 
 func (m *RetentionManager) Status() RetentionStatus {

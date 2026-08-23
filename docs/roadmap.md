@@ -384,8 +384,11 @@ Exit criteria:
    preserving the control/model listener split.
 3. Observe durable deprecated-selector usage for 90 days and require two
    qualifying zero-use releases before selector removal.
-4. Measure retained inline-artifact growth before funding an object-storage
-   backend.
+4. Continue measuring retained inline-artifact growth. Keep PostgreSQL until an
+   operator-supplied byte budget, observation window, and sustained threshold
+   are exceeded by measured workload. Current: bounded report, durable totals,
+   and low-cardinality metrics complete; no threshold values or object storage
+   selected.
 5. Keep `docs/openapi.yaml`, codemaps, current release evidence, and
    environment defaults aligned with implementation.
 6. Obtain live timer evidence for the bounded restore-drill scheduler under

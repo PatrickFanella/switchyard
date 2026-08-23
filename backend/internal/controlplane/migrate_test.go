@@ -99,6 +99,18 @@ func TestRetentionMigrationDeclaresPartialIndexes(t *testing.T) {
 	}
 }
 
+func TestArtifactMeasurementMigrationDeclaresDurableAggregates(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/021_artifact_measurement.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"artifact_lifecycle_totals", "observation_started_at", "artifact_lifecycle_daily", "pruned_bytes", "pruned_bytes_unmeasured", "totals start at zero"} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("artifact measurement migration missing %q", field)
+		}
+	}
+}
+
 func TestModelBrokerFeedbackMigrationDeclaresDurableFeedback(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/016_model_broker_feedback.sql")
 	if err != nil {
@@ -294,6 +306,13 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if detail.Artifacts[0].StorageClass != "inline-data-uri" || detail.Artifacts[0].ByteSize == 0 || detail.Artifacts[0].SHA256 == "" || detail.Artifacts[0].RetentionUntil == nil {
 		t.Fatalf("artifact lifecycle metadata = %+v", detail.Artifacts[0])
+	}
+	report, err := store.ArtifactReport(ctx, ArtifactReportInput{Start: utcDay(time.Unix(100, 0)), End: time.Unix(100, 0).UTC()})
+	if err != nil {
+		t.Fatalf("ArtifactReport() error = %v", err)
+	}
+	if report.Retained < int64(len(detail.Artifacts)) || report.CreatedTotal < int64(len(detail.Artifacts)) || len(report.Buckets) != 1 || report.Buckets[0].Created < int64(len(detail.Artifacts)) {
+		t.Fatalf("artifact report = %+v", report)
 	}
 	if err := store.RecordCompatibilityUsage(ctx, "ocq", time.Unix(100, 0)); err != nil {
 		t.Fatalf("RecordCompatibilityUsage() error = %v", err)

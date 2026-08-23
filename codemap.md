@@ -27,13 +27,13 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 - **Model lifecycle:** one native `ModelService` owns durable admission, queue workers, recovery, active cancellation, and terminal transition arbitration; compatibility handlers only adapt legacy envelopes.
 - **First-party workflows:** Open Pilot, Changemaker, and Devlog use generic runtime mechanics rather than owning schedulers.
 - **Managed agent runtime:** Blacktower is represented by OpenCode profiles, prompts, plugins, and model defaults—not a separate app.
-- **Operator visibility:** the web SPA consumes typed API contracts for runs, queues, observability, adapters, and configuration.
+- **Operator visibility:** the web SPA consumes typed API contracts for runs, queues, observability, adapters, configuration, and bounded inline-artifact measurements.
 
 ## Flow
 1. Compose starts PostgreSQL, managed OpenCode, the Go API, and web UI.
 2. The API migrates storage, seeds defaults, and starts scheduler/worker/retention loops.
 3. Operators, schedules, polls, or webhooks create queued runs with immutable pipeline snapshots.
-4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence.
+4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence. Durable daily aggregates measure inline artifact creation and run-retention pruning without artifact identifiers in metrics.
 5. Model-compatible clients enter the isolated native broker listener, which routes to OpenCode, Ollama, or transitional llama-line compatibility.
 6. The dashboard and CLI query/control the authenticated operator API.
 

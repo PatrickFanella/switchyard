@@ -665,6 +665,30 @@ paths:
       summary: Get retention manager status and last prune counts
       responses:
         "200": { description: Retention status }
+  /api/artifacts/report:
+    get:
+      summary: Get bounded inline artifact storage measurements
+      description: >-
+        Returns retained inline data URI volume, durable created and pruned totals,
+        and bounded UTC daily buckets. retention_until is declared metadata;
+        actual deletion follows terminal run retention.
+      parameters:
+        - name: days
+          in: query
+          description: Number of UTC daily buckets ending today.
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+      responses:
+        "200":
+          description: Bounded artifact report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact_report: { $ref: "#/components/schemas/ArtifactReport" }
+                required: [artifact_report]
+        "400": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/compatibility/retirement:
     get:
       summary: Get durable deprecated-backend retirement status
@@ -1189,6 +1213,43 @@ components:
               next_action: { type: string }
             required: [state, run, next_action]
   schemas:
+    ArtifactDailyBucket:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        created: { type: integer, format: int64 }
+        created_bytes: { type: integer, format: int64 }
+        pruned: { type: integer, format: int64 }
+        pruned_bytes: { type: integer, format: int64 }
+        pruned_bytes_unmeasured: { type: integer, format: int64, description: Number of legacy pruned artifacts without measured decoded bytes. }
+        net_change: { type: integer, format: int64 }
+        net_bytes: { type: integer, format: int64 }
+      required: [date, created, created_bytes, pruned, pruned_bytes, pruned_bytes_unmeasured, net_change, net_bytes]
+    ArtifactReport:
+      type: object
+      properties:
+        window_start: { type: string, format: date-time }
+        window_end: { type: string, format: date-time }
+        bucket: { type: string, const: day }
+        observation_started_at: { type: string, format: date-time }
+        retained: { type: integer, format: int64 }
+        retained_bytes: { type: integer, format: int64 }
+        retained_bytes_unmeasured: { type: integer, format: int64, description: Number of retained legacy artifacts excluded from retained_bytes because decoded size is unknown. }
+        created_total: { type: integer, format: int64 }
+        created_bytes_total: { type: integer, format: int64 }
+        pruned_total: { type: integer, format: int64 }
+        pruned_bytes_total: { type: integer, format: int64 }
+        pruned_bytes_unmeasured_total: { type: integer, format: int64, description: Number of legacy artifacts excluded from pruned_bytes_total because decoded size is unknown. }
+        declared_retention_missing: { type: integer, format: int64, description: Retained legacy artifacts without retention_until metadata. }
+        declared_retention_expired: { type: integer, format: int64 }
+        declared_retention_expired_bytes: { type: integer, format: int64 }
+        declared_retention_expired_bytes_unmeasured: { type: integer, format: int64, description: Number of declared-expired legacy artifacts excluded from the byte sum. }
+        retention_semantics: { type: string }
+        buckets:
+          type: array
+          maxItems: 90
+          items: { $ref: "#/components/schemas/ArtifactDailyBucket" }
+      required: [window_start, window_end, bucket, observation_started_at, retained, retained_bytes, retained_bytes_unmeasured, created_total, created_bytes_total, pruned_total, pruned_bytes_total, pruned_bytes_unmeasured_total, declared_retention_missing, declared_retention_expired, declared_retention_expired_bytes, declared_retention_expired_bytes_unmeasured, retention_semantics, buckets]
     StringMap:
       type: object
       additionalProperties: { type: string }

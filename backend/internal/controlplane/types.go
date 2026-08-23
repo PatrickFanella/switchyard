@@ -219,18 +219,65 @@ type RunPage struct {
 }
 
 type RetentionResult struct {
-	Runs          int   `json:"runs"`
-	ModelRequests int   `json:"model_requests"`
-	Artifacts     int   `json:"artifacts"`
-	ArtifactBytes int64 `json:"artifact_bytes"`
+	Runs                    int   `json:"runs"`
+	ModelRequests           int   `json:"model_requests"`
+	Artifacts               int   `json:"artifacts"`
+	ArtifactBytes           int64 `json:"artifact_bytes"`
+	ArtifactBytesUnmeasured int   `json:"artifact_bytes_unmeasured"`
+}
+
+type ArtifactReportInput struct {
+	Start time.Time
+	End   time.Time
+}
+
+type ArtifactDailyBucket struct {
+	Date                  string `json:"date"`
+	Created               int64  `json:"created"`
+	CreatedBytes          int64  `json:"created_bytes"`
+	Pruned                int64  `json:"pruned"`
+	PrunedBytes           int64  `json:"pruned_bytes"`
+	PrunedBytesUnmeasured int64  `json:"pruned_bytes_unmeasured"`
+	NetChange             int64  `json:"net_change"`
+	NetBytes              int64  `json:"net_bytes"`
+}
+
+type ArtifactReport struct {
+	WindowStart                    time.Time             `json:"window_start"`
+	WindowEnd                      time.Time             `json:"window_end"`
+	Bucket                         string                `json:"bucket"`
+	ObservationStartedAt           time.Time             `json:"observation_started_at"`
+	Retained                       int64                 `json:"retained"`
+	RetainedBytes                  int64                 `json:"retained_bytes"`
+	RetainedBytesUnmeasured        int64                 `json:"retained_bytes_unmeasured"`
+	CreatedTotal                   int64                 `json:"created_total"`
+	CreatedBytesTotal              int64                 `json:"created_bytes_total"`
+	PrunedTotal                    int64                 `json:"pruned_total"`
+	PrunedBytesTotal               int64                 `json:"pruned_bytes_total"`
+	PrunedBytesUnmeasuredTotal     int64                 `json:"pruned_bytes_unmeasured_total"`
+	DeclaredRetentionMissing       int64                 `json:"declared_retention_missing"`
+	DeclaredRetentionExpired       int64                 `json:"declared_retention_expired"`
+	DeclaredExpiredBytes           int64                 `json:"declared_retention_expired_bytes"`
+	DeclaredExpiredBytesUnmeasured int64                 `json:"declared_retention_expired_bytes_unmeasured"`
+	RetentionSemantics             string                `json:"retention_semantics"`
+	Buckets                        []ArtifactDailyBucket `json:"buckets"`
 }
 
 type RuntimeMetrics struct {
-	RunStatusCounts             map[string]int
-	ModelRequestStatusCounts    map[string]int
-	ModelLatencyCount           int
-	ModelLatencyMilliseconds    float64
-	ModelLatencyMaxMilliseconds float64
+	RunStatusCounts                 map[string]int
+	ModelRequestStatusCounts        map[string]int
+	ModelLatencyCount               int
+	ModelLatencyMilliseconds        float64
+	ModelLatencyMaxMilliseconds     float64
+	ArtifactObservationStartedAt    time.Time
+	ArtifactsRetained               int64
+	ArtifactBytesRetained           int64
+	ArtifactsCreated                int64
+	ArtifactBytesCreated            int64
+	ArtifactsPruned                 int64
+	ArtifactBytesPruned             int64
+	ArtifactBytesRetainedUnmeasured int64
+	ArtifactBytesPrunedUnmeasured   int64
 }
 
 type CreateRunInput struct {

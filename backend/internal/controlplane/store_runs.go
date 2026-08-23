@@ -451,6 +451,14 @@ func (s *MemoryStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
 	}
 	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, StorageClass: metadata.StorageClass, ContentType: metadata.ContentType, ByteSize: metadata.ByteSize, SHA256: metadata.SHA256, RetentionUntil: metadata.RetentionUntil, CreatedAt: now}
 	s.artifacts[input.RunID] = append(s.artifacts[input.RunID], artifact)
+	s.artifactsCreated++
+	s.artifactBytesCreated += int64(artifact.ByteSize)
+	date := now.Format(time.DateOnly)
+	bucket := s.artifactDaily[date]
+	bucket.Date = date
+	bucket.Created++
+	bucket.CreatedBytes += int64(artifact.ByteSize)
+	s.artifactDaily[date] = bucket
 	s.events[input.RunID] = append(s.events[input.RunID], RunEvent{ID: newID("evt"), RunID: input.RunID, Type: "artifact.created", Message: input.Name + " (" + input.Kind + ")", CreatedAt: now})
 	return artifact, nil
 }

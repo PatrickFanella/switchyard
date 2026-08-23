@@ -336,31 +336,76 @@ func (s *PostgresStore) ListModelBrokerFeedback(limit int) ([]ModelBrokerFeedbac
 }
 
 func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error) {
-	tx, err := s.db.BeginTx(s.operationContext(), nil)
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RetentionResult{}, err
 	}
-	var artifacts, artifactBytes int64
-	if err := tx.QueryRowContext(s.operationContext(), `with expired as (select id from runs where created_at < $1 and status in ($2,$3,$4,$5,$6)), removed as (delete from artifacts where run_id in (select id from expired) returning byte_size) select count(*), coalesce(sum(byte_size),0) from removed`, before.UTC(), RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut).Scan(&artifacts, &artifactBytes); err != nil {
-		_ = tx.Rollback()
+	defer tx.Rollback()
+	runRows, err := tx.QueryContext(ctx, `select id from runs where created_at < $1 and status in ($2,$3,$4,$5,$6) order by created_at, id limit $7 for update skip locked`, before.UTC(), RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut, retentionBatchSize)
+	if err != nil {
 		return RetentionResult{}, err
 	}
-	runResult, err := tx.ExecContext(s.operationContext(), `delete from runs where created_at < $1 and status in ($2,$3,$4,$5,$6)`, before.UTC(), RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut)
-	if err != nil {
-		_ = tx.Rollback()
+	runIDs := []string{}
+	for runRows.Next() {
+		var id string
+		if err := runRows.Scan(&id); err != nil {
+			runRows.Close()
+			return RetentionResult{}, err
+		}
+		runIDs = append(runIDs, id)
+	}
+	if err := runRows.Close(); err != nil {
 		return RetentionResult{}, err
 	}
-	requestResult, err := tx.ExecContext(s.operationContext(), `delete from model_broker_requests where created_at < $1 and status in ($2,$3,$4,$5)`, before.UTC(), ModelBrokerRequestCompleted, ModelBrokerRequestFailed, ModelBrokerRequestCanceled, ModelBrokerRequestDropped)
+	if err := runRows.Err(); err != nil {
+		return RetentionResult{}, err
+	}
+	var artifacts, artifactBytes, artifactBytesUnmeasured int64
+	var runResult sql.Result
+	if len(runIDs) > 0 {
+		placeholders, args := retentionIDArgs(runIDs)
+		if err := tx.QueryRowContext(ctx, `with removed as (delete from artifacts where run_id in (`+placeholders+`) returning byte_size, storage_class) select count(*), coalesce(sum(byte_size) filter (where storage_class='inline-data-uri'),0), count(*) filter (where storage_class<>'inline-data-uri') from removed`, args...).Scan(&artifacts, &artifactBytes, &artifactBytesUnmeasured); err != nil {
+			return RetentionResult{}, err
+		}
+		runResult, err = tx.ExecContext(ctx, `delete from runs where id in (`+placeholders+`)`, args...)
+		if err != nil {
+			return RetentionResult{}, err
+		}
+	}
+	if artifacts > 0 {
+		if _, err := tx.ExecContext(ctx, `update artifact_lifecycle_totals set pruned_count=pruned_count+$1, pruned_bytes=pruned_bytes+$2, pruned_bytes_unmeasured=pruned_bytes_unmeasured+$3 where singleton=true`, artifacts, artifactBytes, artifactBytesUnmeasured); err != nil {
+			return RetentionResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `insert into artifact_lifecycle_daily(measurement_date, pruned_count, pruned_bytes, pruned_bytes_unmeasured) values(($1::timestamptz at time zone 'UTC')::date,$2,$3,$4) on conflict (measurement_date) do update set pruned_count=artifact_lifecycle_daily.pruned_count+excluded.pruned_count, pruned_bytes=artifact_lifecycle_daily.pruned_bytes+excluded.pruned_bytes, pruned_bytes_unmeasured=artifact_lifecycle_daily.pruned_bytes_unmeasured+excluded.pruned_bytes_unmeasured`, s.now().UTC(), artifacts, artifactBytes, artifactBytesUnmeasured); err != nil {
+			return RetentionResult{}, err
+		}
+	}
+	requestResult, err := tx.ExecContext(ctx, `with expired_requests as (select id from model_broker_requests where created_at < $1 and status in ($2,$3,$4,$5) order by created_at, id limit $6 for update skip locked) delete from model_broker_requests where id in (select id from expired_requests)`, before.UTC(), ModelBrokerRequestCompleted, ModelBrokerRequestFailed, ModelBrokerRequestCanceled, ModelBrokerRequestDropped, retentionBatchSize)
 	if err != nil {
-		_ = tx.Rollback()
 		return RetentionResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return RetentionResult{}, err
 	}
-	runs, _ := runResult.RowsAffected()
+	var runs int64
+	if runResult != nil {
+		runs, _ = runResult.RowsAffected()
+	}
 	requests, _ := requestResult.RowsAffected()
-	return RetentionResult{Runs: int(runs), ModelRequests: int(requests), Artifacts: int(artifacts), ArtifactBytes: artifactBytes}, nil
+	return RetentionResult{Runs: int(runs), ModelRequests: int(requests), Artifacts: int(artifacts), ArtifactBytes: artifactBytes, ArtifactBytesUnmeasured: int(artifactBytesUnmeasured)}, nil
+}
+
+const retentionBatchSize = 500
+
+func retentionIDArgs(ids []string) (string, []any) {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		placeholders[index] = fmt.Sprintf("$%d", index+1)
+		args[index] = id
+	}
+	return strings.Join(placeholders, ","), args
 }
 
 func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
@@ -369,6 +414,12 @@ func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
 
 func (s *PostgresStore) RuntimeMetricsSince(ctx context.Context, since time.Time) (RuntimeMetrics, error) {
 	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
+	if err := s.db.QueryRowContext(ctx, `select count(*), coalesce(sum(byte_size) filter (where storage_class='inline-data-uri'),0), count(*) filter (where storage_class<>'inline-data-uri') from artifacts`).Scan(&metrics.ArtifactsRetained, &metrics.ArtifactBytesRetained, &metrics.ArtifactBytesRetainedUnmeasured); err != nil {
+		return RuntimeMetrics{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, `select observation_started_at, created_count, created_bytes, pruned_count, pruned_bytes, pruned_bytes_unmeasured from artifact_lifecycle_totals where singleton=true`).Scan(&metrics.ArtifactObservationStartedAt, &metrics.ArtifactsCreated, &metrics.ArtifactBytesCreated, &metrics.ArtifactsPruned, &metrics.ArtifactBytesPruned, &metrics.ArtifactBytesPrunedUnmeasured); err != nil {
+		return RuntimeMetrics{}, err
+	}
 	rows, err := s.db.QueryContext(ctx, `select status, count(*) from runs group by status`)
 	if err != nil {
 		return RuntimeMetrics{}, err
