@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule disposable Switchyard restore drills
+
+[Timer]
+OnCalendar=__DRILL_CALENDAR__
+Persistent=true
+Unit=switchyard-restore-drill.service
+
+[Install]
+WantedBy=timers.target

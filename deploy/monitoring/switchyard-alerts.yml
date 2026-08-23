@@ -32,3 +32,17 @@ groups:
           severity: critical
         annotations:
           summary: No successful Switchyard PostgreSQL backup has been recorded for 26 hours
+
+      - alert: SwitchyardRestoreDrillFailed
+        expr: switchyard_restore_drill_last_result{job="switchyard-model"} == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: The last Switchyard disposable restore drill failed
+
+      - alert: SwitchyardRestoreDrillOverdue
+        expr: absent(switchyard_restore_drill_next_deadline_timestamp_seconds{job="switchyard-model"}) or time() > switchyard_restore_drill_next_deadline_timestamp_seconds{job="switchyard-model"}
+        labels:
+          severity: critical
+        annotations:
+          summary: Switchyard restore-drill deadline telemetry is absent or expired

@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-docker-test restore-drill postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check release-evidence-test restore-contract-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -46,6 +46,9 @@ postgres-backup: ## Create a completed policy-bound backup bundle
 restore-contract-test: ## Test backup policy, bundle, restore evidence, and shell safety contracts
 	python3 -m unittest scripts/test_restore_evidence.py scripts/test_restore_shell_safety.py
 
+restore-scheduler-test: ## Test scheduled restore selection, metrics, and installer contracts
+	python3 -m unittest scripts/test_restore_drill_scheduler.py scripts/test_restore_drill_installer.py
+
 restore-docker-test: ## Run a real completed-bundle PostgreSQL restore fixture
 	./scripts/test-restore-postgres-integration.sh
 
@@ -57,6 +60,9 @@ restore-drill: ## Restore a completed bundle through its disposable provider ada
 	python3 scripts/restore_evidence.py restore --bundle "$${SWITCHYARD_RESTORE_BUNDLE}" --policy "$${SWITCHYARD_RESTORE_ACTIVE_POLICY}" --evidence-dir "$${SWITCHYARD_RESTORE_EVIDENCE_DIR}" --timeout-seconds "$${SWITCHYARD_RESTORE_TIMEOUT_SECONDS}" --disposable
 
 postgres-restore-drill: restore-drill ## PostgreSQL-default compatibility entrypoint for restore-drill
+
+restore-drill-scheduled: ## Select and restore the newest valid completed bundle
+	python3 scripts/restore_drill_scheduler.py run
 
 security-audit: ## Audit Go and web dependencies for known vulnerabilities
 	cd backend && govulncheck ./...

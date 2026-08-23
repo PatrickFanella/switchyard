@@ -120,6 +120,7 @@ services:
       OPEN_PILOT_WORKTREE_ROOT: ${OPEN_PILOT_WORKTREE_ROOT:-/workspace/.open-pilot-worktrees}
       OPEN_PILOT_WORKTREE_TIMEOUT: ${OPEN_PILOT_WORKTREE_TIMEOUT:-300s}
       SWITCHYARD_BACKUP_METRICS_FILE: /var/lib/switchyard-metrics/backup.prom
+      SWITCHYARD_RESTORE_DRILL_METRICS_FILE: /var/lib/switchyard-metrics/restore-drill.prom
       GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /workspace
@@ -150,8 +151,8 @@ services:
         target: /workspace
         bind:
           create_host_path: false
-      # Mount the containing directory so atomic replacement of backup.prom
-      # remains visible inside the container across successful backup runs.
+      # Mount the containing directory so atomic backup and restore-drill
+      # textfile replacement remains visible without restarting the API.
       - type: bind
         source: ${SWITCHYARD_BACKUP_METRICS_DIR:-/dev/null}
         target: /var/lib/switchyard-metrics

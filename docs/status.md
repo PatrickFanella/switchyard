@@ -29,7 +29,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Operator UI | test-verified selected scope | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
 | Release qualification | qualified with exceptions | `v0.1.2` is deployed with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md` |
-| Production recovery | contract implemented; historical drill verified | Versioned policy, completed-bundle, PostgreSQL object, and provider-neutral restore-evidence contracts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
+| Production recovery | contract and scheduler implemented; historical drill verified | Versioned policy, completed-bundle, PostgreSQL object, provider-neutral restore evidence, opt-in timer, deadline metrics, and external alerts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
 
 ## Active release blockers
 

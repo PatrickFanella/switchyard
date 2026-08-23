@@ -1,0 +1,16 @@
+[Unit]
+Description=Run a disposable Switchyard restore drill
+Requires=docker.service
+After=docker.service switchyard.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=__TIMEOUT_START_SECONDS__s
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__ENV_FILE__
+ExecStart=__REPO_ROOT__/scripts/restore_drill_scheduler.py run
+
+[Install]
+WantedBy=multi-user.target

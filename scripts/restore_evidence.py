@@ -529,35 +529,44 @@ def validate_bundle(manifest_path: Path, staging_dir: Path | None = None, source
         contract_value, _ = read_fd_json(descriptors["object_contract"], "bundle")
         contract = validate_contract(contract_value)
         contract_digest = fd_digest(descriptors["object_contract"])
-    finally:
-        pass
+    except BaseException:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        os.close(directory_fd)
+        raise
 
-    metadata_keys = {
-        "contract_version", "bundle_id", "provider", "created_at", "source_revision", "database_version",
-        "archive_basename", "archive_format", "archive_sha256", "policy_id", "policy_version", "policy_sha256",
-        "object_contract_version", "object_contract_sha256", "migration_head", "migration_ledger",
-    }
-    exact_object(metadata, metadata_keys, "bundle")
-    checks = (
-        metadata["contract_version"] == "switchyard.postgres-backup-metadata.v1",
-        metadata["bundle_id"] == manifest["bundle_id"],
-        metadata["provider"] == archived_policy["provider"] == "postgres",
-        metadata["created_at"] == manifest["completed_at"],
-        metadata["archive_basename"] == manifest["archive"]["basename"],
-        metadata["archive_sha256"] == manifest["archive"]["sha256"],
-        metadata["policy_id"] == archived_policy["policy_id"],
-        metadata["policy_version"] == archived_policy["policy_version"],
-        metadata["policy_sha256"] == archived_digest,
-        metadata["object_contract_version"] == contract["contract_version"],
-        metadata["object_contract_sha256"] == contract_digest,
-        metadata["migration_head"] == contract["migration_head"],
-        metadata["migration_ledger"] == contract["migration_ledger"],
-        metadata["archive_format"] == "postgres-custom",
-    )
-    if not all(checks) or not isinstance(metadata["source_revision"], str) or not REVISION.fullmatch(metadata["source_revision"]):
-        raise ContractError("bundle", "bundle_binding_mismatch")
-    if not isinstance(metadata["database_version"], str) or not POSTGRES_VERSION.fullmatch(metadata["database_version"]):
-        raise ContractError("bundle", "invalid_database_version")
+    try:
+        metadata_keys = {
+            "contract_version", "bundle_id", "provider", "created_at", "source_revision", "database_version",
+            "archive_basename", "archive_format", "archive_sha256", "policy_id", "policy_version", "policy_sha256",
+            "object_contract_version", "object_contract_sha256", "migration_head", "migration_ledger",
+        }
+        exact_object(metadata, metadata_keys, "bundle")
+        checks = (
+            metadata["contract_version"] == "switchyard.postgres-backup-metadata.v1",
+            metadata["bundle_id"] == manifest["bundle_id"],
+            metadata["provider"] == archived_policy["provider"] == "postgres",
+            metadata["created_at"] == manifest["completed_at"],
+            metadata["archive_basename"] == manifest["archive"]["basename"],
+            metadata["archive_sha256"] == manifest["archive"]["sha256"],
+            metadata["policy_id"] == archived_policy["policy_id"],
+            metadata["policy_version"] == archived_policy["policy_version"],
+            metadata["policy_sha256"] == archived_digest,
+            metadata["object_contract_version"] == contract["contract_version"],
+            metadata["object_contract_sha256"] == contract_digest,
+            metadata["migration_head"] == contract["migration_head"],
+            metadata["migration_ledger"] == contract["migration_ledger"],
+            metadata["archive_format"] == "postgres-custom",
+        )
+        if not all(checks) or not isinstance(metadata["source_revision"], str) or not REVISION.fullmatch(metadata["source_revision"]):
+            raise ContractError("bundle", "bundle_binding_mismatch")
+        if not isinstance(metadata["database_version"], str) or not POSTGRES_VERSION.fullmatch(metadata["database_version"]):
+            raise ContractError("bundle", "invalid_database_version")
+    except BaseException:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        os.close(directory_fd)
+        raise
     paths = {key: parent / entries[key][0] for key in entries}
     try:
         if staging_dir is not None:
@@ -565,13 +574,13 @@ def validate_bundle(manifest_path: Path, staging_dir: Path | None = None, source
             staging_fd = open_directory(staging_dir, "bundle")
             try:
                 staged: dict[str, Path] = {}
-                for key in ("archive", "metadata", "object_contract"):
+                for key in ("archive", "metadata", "object_contract", "policy"):
                     name, expected = entries[key]
                     current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     opened = os.fstat(descriptors[key])
                     if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
                         raise ContractError("bundle", f"{key}_replaced_during_validation")
-                    target_name = {"archive": "archive.dump", "metadata": "metadata.json", "object_contract": "object-contract.json"}[key]
+                    target_name = name
                     target_fd = os.open(target_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=staging_fd)
                     checksum = hashlib.sha256()
                     try:
@@ -588,12 +597,26 @@ def validate_bundle(manifest_path: Path, staging_dir: Path | None = None, source
                     if checksum.hexdigest() != expected:
                         raise ContractError("bundle", f"{key}_checksum_mismatch")
                     staged[key] = staging_dir / target_name
+                manifest_name = manifest_path.name
+                current = os.stat(manifest_name, dir_fd=directory_fd, follow_symlinks=False)
+                opened = os.fstat(descriptors["manifest"])
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ContractError("bundle", "manifest_replaced_during_validation")
+                target_fd = os.open(manifest_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=staging_fd)
+                try:
+                    os.lseek(descriptors["manifest"], 0, os.SEEK_SET)
+                    for block in iter(lambda: os.read(descriptors["manifest"], 1024 * 1024), b""):
+                        write_all(target_fd, block)
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+                staged["manifest"] = staging_dir / manifest_name
                 os.fsync(staging_fd)
                 os.chmod(staging_dir, 0o500)
                 paths.update(staged)
             finally:
                 os.close(staging_fd)
-        return {"manifest": manifest, "metadata": metadata, "policy": archived_policy, "paths": paths, "created_at": completed_at, "contract": contract}
+        return {"manifest": manifest, "manifest_sha256": fd_digest(descriptors["manifest"]), "metadata": metadata, "policy": archived_policy, "paths": paths, "created_at": completed_at, "contract": contract}
     finally:
         for descriptor in descriptors.values():
             os.close(descriptor)
@@ -785,8 +808,13 @@ def remove_staging(path: Path) -> None:
 
 
 def restore(args: argparse.Namespace) -> int:
-    started = utc_now()
-    attempt_id = started.strftime("%Y%m%dt%H%M%Sz").lower() + "-" + secrets.token_hex(6)
+    invoked = utc_now()
+    attempt_id = args.attempt_id or invoked.strftime("%Y%m%dt%H%M%Sz").lower() + "-" + secrets.token_hex(6)
+    if not SAFE_ID.fullmatch(attempt_id):
+        raise ContractError("selection", "invalid_attempt_id")
+    started = parse_timestamp(args.started_at, "selection") if args.started_at else invoked
+    if started > invoked:
+        raise ContractError("selection", "invalid_timestamp")
     evidence_dir = Path(args.evidence_dir)
     evidence_fd = open_directory(evidence_dir, "selection")
     provider: str | None = None
@@ -868,7 +896,7 @@ def restore(args: argparse.Namespace) -> int:
             raise ContractError("restore", "adapter_failed")
         if provider_payload is None or provider_payload["result"] != "success":
             raise ContractError("restore", "missing_provider_payload")
-        duration = max(0, math.ceil(time.monotonic() - started_monotonic))
+        duration = max(0, math.ceil(time.monotonic() - started_monotonic + (invoked - started).total_seconds()))
         policy_match = metadata["policy_sha256"] == active_digest
         age_ok = age <= active_policy["declared_rpo_seconds"]
         duration_ok = duration <= active_policy["declared_rto_seconds"]
@@ -931,6 +959,8 @@ def parser() -> argparse.ArgumentParser:
     drill.add_argument("--evidence-dir", required=True)
     drill.add_argument("--test-adapter", help=argparse.SUPPRESS)
     drill.add_argument("--timeout-seconds", type=int, required=True)
+    drill.add_argument("--attempt-id")
+    drill.add_argument("--started-at", help=argparse.SUPPRESS)
     drill.add_argument("--disposable", action="store_true")
     return result
 

@@ -146,13 +146,15 @@ raise SystemExit(1 if stage != 'complete' or os.environ.get('FAKE_EXIT_NONZERO')
         }), encoding="utf-8")
         return manifest
 
-    def run_restore(self, env=None, policy=None, disposable=True, manifest=None):
+    def run_restore(self, env=None, policy=None, disposable=True, manifest=None, attempt_id=None):
         before = set(self.evidence_dir.glob("restore-evidence-*.json"))
         command = ["python3", str(MODULE_PATH), "restore", "--bundle", str(manifest or self.manifest),
                    "--policy", str(policy or self.policy), "--evidence-dir", str(self.evidence_dir),
                    "--test-adapter", str(self.adapter), "--timeout-seconds", "10"]
         if disposable:
             command.append("--disposable")
+        if attempt_id:
+            command.extend(("--attempt-id", attempt_id))
         process_env = os.environ.copy()
         process_env["SWITCHYARD_RESTORE_TESTING"] = "1"
         process_env["ACTIVE_OBJECT_CONTRACT"] = str(restore_evidence.OBJECT_CONTRACT)
@@ -162,6 +164,24 @@ raise SystemExit(1 if stage != 'complete' or os.environ.get('FAKE_EXIT_NONZERO')
         self.assertEqual(len(files), 1)
         evidence = json.loads(files.pop().read_text())
         return result, evidence
+
+    def test_explicit_attempt_id_controls_filename_and_content(self):
+        result, evidence = self.run_restore(attempt_id="scheduled-attempt-24")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(evidence["attempt_id"], "scheduled-attempt-24")
+        self.assertTrue((self.evidence_dir / "restore-evidence-scheduled-attempt-24.json").exists())
+
+    def test_invalid_attempt_id_is_rejected_without_evidence(self):
+        command = ["python3", str(MODULE_PATH), "restore", "--bundle", str(self.manifest),
+                   "--policy", str(self.policy), "--evidence-dir", str(self.evidence_dir),
+                   "--test-adapter", str(self.adapter), "--timeout-seconds", "10", "--disposable",
+                   "--attempt-id", "../unsafe"]
+        env = os.environ.copy()
+        env["SWITCHYARD_RESTORE_TESTING"] = "1"
+        result = subprocess.run(command, text=True, capture_output=True, env=env, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(list(self.evidence_dir.iterdir()), [])
+        self.assertIn("invalid_attempt_id", result.stderr)
 
     def test_checked_contracts_are_strict_json(self):
         for path in (ROOT / "docs/persistence").glob("*.json"):

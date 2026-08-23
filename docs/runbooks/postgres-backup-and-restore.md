@@ -116,7 +116,7 @@ stage and sanitized error code. Evidence contains no SQL, response bodies,
 credentials, or absolute paths. The RTO comparison is labeled as isolated drill
 duration. Neither the RPO nor RTO result proves production incident recovery.
 
-## Installing the daily backup timer
+## Install the backup and restore-drill timers
 
 Put both `SWITCHYARD_BACKUP_DIR` and `SWITCHYARD_BACKUP_POLICY` in the production
 `.env`, then explicitly opt in:
@@ -126,8 +126,65 @@ sudo SWITCHYARD_INSTALL_BACKUP_TIMER=1 ./deploy/install-systemd.sh
 systemctl status switchyard-backup.timer
 ```
 
-The installer schedules backups only. Restore-drill scheduling and restore
-metrics belong to Gitea #24 and are not implemented.
+Restore-drill scheduling is separate and disabled by default. Create three
+canonical owner-only directories with no symlink components: the protected
+backup directory, a dedicated evidence directory, and the existing metrics
+directory. None may contain another or live in the repository. Set these values
+in `.env`:
+
+```dotenv
+SWITCHYARD_BACKUP_DIR=/approved/encrypted/backups
+SWITCHYARD_BACKUP_METRICS_DIR=/var/lib/switchyard-metrics
+SWITCHYARD_RESTORE_POLICY=/approved/non-secret/switchyard-backup-policy.json
+SWITCHYARD_RESTORE_DRILL_EVIDENCE_DIR=/approved/private/restore-evidence
+SWITCHYARD_RESTORE_DRILL_METRICS_FILE=/var/lib/switchyard-metrics/restore-drill.prom
+SWITCHYARD_RESTORE_TIMEOUT_SECONDS=900
+```
+
+The installer validates every setting, directory owner/mode, atomic sink write,
+Docker access, and the policy calendar before installing a unit or starting a
+service. After installation and daemon reload, it initializes only the absolute
+next-deadline metric immediately before enabling the timer. A failed enable
+restores the previous metric and removes the restore units. It does not invent
+a successful drill. The configured non-root run user must use UID 1000 so the
+API container can read the protected textfile mount. Explicitly opt in:
+
+```bash
+sudo SWITCHYARD_INSTALL_RESTORE_DRILL_TIMER=1 ./deploy/install-systemd.sh
+systemctl status switchyard-restore-drill.timer
+```
+
+The persistent timer uses the policy's `drill_calendar`; there is no monthly or
+other default. Each run selects the newest valid `.complete.json` bundle by its
+validated completion metadata, never archive mtime. It ignores partial and
+tampered bundles, stages through held directory descriptors, and invokes the
+provider-neutral wrapper in disposable mode under a policy-bounded whole-attempt
+deadline and a larger finite systemd backstop. A private nonblocking scheduler
+lock prevents overlapping attempts. Each invocation, evidence filename, and
+evidence record use the scheduler attempt ID; the evidence record must also
+match the selected bundle ID. Existing #23 evidence remains untouched, and each
+selection failure gets a unique evidence file.
+
+The scheduler replaces `restore-drill.prom` atomically while holding the attempt
+lock. It records attempt time, binary result, the matching failure or success
+time, and the next deadline computed as attempt time plus policy maximum interval
+plus grace. A later failure preserves the last success. The API reads only this
+fixed filename from its existing read-only metrics mount and rejects malformed,
+extra, non-finite, negative, or symlinked input. External rules alert immediately
+on a failed result and when deadline telemetry is absent or expired.
+
+To roll back scheduling without affecting backups or evidence:
+
+```bash
+sudo systemctl disable --now switchyard-restore-drill.timer
+sudo rm -f /etc/systemd/system/switchyard-restore-drill.timer \
+  /etc/systemd/system/switchyard-restore-drill.service
+sudo systemctl daemon-reload
+```
+
+Generated drill containers, images, locks, and networks remain disposable and
+ownership-labeled. Scheduling does not add production restore targets,
+credentials, failover, or failback automation.
 
 ## Restore incident
 

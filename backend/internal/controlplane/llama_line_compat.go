@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -857,6 +859,58 @@ func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, "# TYPE switchyard_postgres_backup_last_success_timestamp_seconds gauge")
 		_, _ = fmt.Fprintf(w, "switchyard_postgres_backup_last_success_timestamp_seconds %.0f\n", timestamp)
 	}
+	if restoreMetrics, ok := restoreDrillMetrics("/var/lib/switchyard-metrics/restore-drill.prom"); ok {
+		for _, name := range restoreDrillMetricNames {
+			if value, exists := restoreMetrics[name]; exists {
+				_, _ = fmt.Fprintf(w, "%s %.0f\n", name, value)
+			}
+		}
+	}
+}
+
+var restoreDrillMetricNames = []string{
+	"switchyard_restore_drill_last_attempt_timestamp_seconds",
+	"switchyard_restore_drill_last_result",
+	"switchyard_restore_drill_last_failure_timestamp_seconds",
+	"switchyard_restore_drill_last_success_timestamp_seconds",
+	"switchyard_restore_drill_next_deadline_timestamp_seconds",
+}
+
+func restoreDrillMetrics(path string) (map[string]float64, bool) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
+		return nil, false
+	}
+	allowed := make(map[string]struct{}, len(restoreDrillMetricNames))
+	for _, name := range restoreDrillMetricNames {
+		allowed[name] = struct{}{}
+	}
+	values := make(map[string]float64)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 {
+			return nil, false
+		}
+		if _, exists := allowed[fields[0]]; !exists {
+			return nil, false
+		}
+		if _, duplicate := values[fields[0]]; duplicate {
+			return nil, false
+		}
+		value, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || fields[0] == "switchyard_restore_drill_last_result" && value != 0 && value != 1 {
+			return nil, false
+		}
+		values[fields[0]] = value
+	}
+	return values, scanner.Err() == nil && len(values) > 0
 }
 
 func backupSuccessTimestamp(path string) (float64, bool) {
