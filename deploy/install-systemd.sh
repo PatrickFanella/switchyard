@@ -26,6 +26,22 @@ if [[ ! -f "$repo_root/docker-compose.yml" ]]; then
   exit 1
 fi
 
+if [[ "${SWITCHYARD_INSTALL_BACKUP_TIMER:-0}" == "1" ]]; then
+  if [[ ! -f "$repo_root/.env" ]] || ! grep -Eq '^SWITCHYARD_BACKUP_DIR=.+$' "$repo_root/.env" || ! grep -Eq '^SWITCHYARD_BACKUP_POLICY=.+$' "$repo_root/.env"; then
+    echo "refusing to enable backup timer without SWITCHYARD_BACKUP_DIR and SWITCHYARD_BACKUP_POLICY in .env" >&2
+    exit 1
+  fi
+  policy_path=$(python3 - "$repo_root/.env" <<'PY'
+import pathlib, sys
+for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if line.startswith("SWITCHYARD_BACKUP_POLICY="):
+        print(line.split("=", 1)[1])
+        break
+PY
+  )
+  python3 "$repo_root/scripts/restore_evidence.py" validate-policy --policy "$policy_path" >/dev/null
+fi
+
 tmp_unit="$(mktemp)"
 tmp_backup_unit="$(mktemp)"
 trap 'rm -f "$tmp_unit" "$tmp_backup_unit"' EXIT
@@ -54,10 +70,6 @@ fi
 systemctl daemon-reload
 systemctl enable --now switchyard.service
 if [[ "${SWITCHYARD_INSTALL_BACKUP_TIMER:-0}" == "1" ]]; then
-  if [[ ! -f "$repo_root/.env" ]] || ! grep -Eq '^SWITCHYARD_BACKUP_DIR=.+$' "$repo_root/.env"; then
-    echo "refusing to enable backup timer without SWITCHYARD_BACKUP_DIR in $repo_root/.env" >&2
-    exit 1
-  fi
   systemctl enable --now switchyard-backup.timer
 fi
 systemctl --no-pager status switchyard.service

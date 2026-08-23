@@ -51,10 +51,22 @@ Production releases are pinned OCI archives with BuildKit SBOM and provenance at
 Production promotion also requires a verified backup/restore drill and the real target contract smoke:
 
 ```bash
-SWITCHYARD_BACKUP_DIR=/approved/encrypted/path make postgres-backup
-BACKUP=/approved/encrypted/path/<backup>.dump make postgres-restore-drill
+SWITCHYARD_BACKUP_DIR=/approved/encrypted/backups \
+SWITCHYARD_BACKUP_POLICY=/approved/non-secret/backup-policy.json \
+make postgres-backup
+SWITCHYARD_RESTORE_BUNDLE=/approved/encrypted/backups/<bundle>.complete.json \
+SWITCHYARD_RESTORE_ACTIVE_POLICY=/approved/non-secret/backup-policy.json \
+SWITCHYARD_RESTORE_EVIDENCE_DIR=/approved/private/restore-evidence \
+SWITCHYARD_RESTORE_TIMEOUT_SECONDS=900 \
+make restore-drill
 make production-smoke
 ```
+
+Backups publish a private archive, archived policy and object contract,
+metadata, then a completion manifest last. Restore evidence is
+provider-neutral; PostgreSQL is the only
+approved adapter. RPO and isolated-drill RTO comparisons qualify the active
+policy but do not prove production recovery performance.
 
 For backup-freshness metrics, keep
 `SWITCHYARD_BACKUP_METRICS_DIR` separate from backup archives and set

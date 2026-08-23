@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "switchyard.restore-evidence.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "attempt_id", "started_at", "finished_at", "provider", "result", "stage", "error_code", "bundle", "qualification", "provider_payload"],
+  "properties": {
+    "contract_version": {"const": "switchyard.restore-evidence.v1"},
+    "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "started_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "finished_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "provider": {"enum": ["postgres", null]},
+    "result": {"enum": ["success", "failure"]},
+    "stage": {"enum": ["selection", "policy", "bundle", "restore", "pre_api", "api", "cleanup", "complete"]},
+    "error_code": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}]},
+    "bundle": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/bundle"}]},
+    "qualification": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/qualification"}]},
+    "provider_payload": {"oneOf": [{"type": "null"}, {"$ref": "postgres-restore-payload-v1.schema.json"}]}
+  },
+  "$defs": {
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "backup_basename", "backup_sha256", "backup_created_at", "backup_age_seconds", "source_revision", "archived_policy_id", "archived_policy_version", "archived_policy_sha256", "active_policy_id", "active_policy_version", "active_policy_sha256", "object_contract_sha256", "bundle_valid_against_archived_policy"],
+      "properties": {
+        "bundle_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "backup_basename": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "backup_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "backup_created_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+        "backup_age_seconds": {"type": "integer", "minimum": 0},
+        "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "archived_policy_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "archived_policy_version": {"type": "integer", "minimum": 1},
+        "archived_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "active_policy_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "active_policy_version": {"type": "integer", "minimum": 1},
+        "active_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "object_contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bundle_valid_against_archived_policy": {"const": true}
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_policy_matches_archived_policy", "backup_age_within_active_declared_rpo", "isolated_drill_duration_seconds", "isolated_drill_within_active_declared_rto", "current_policy_qualified", "measurement_scope"],
+      "properties": {
+        "active_policy_matches_archived_policy": {"type": "boolean"},
+        "backup_age_within_active_declared_rpo": {"type": "boolean"},
+        "isolated_drill_duration_seconds": {"type": "integer", "minimum": 0},
+        "isolated_drill_within_active_declared_rto": {"type": "boolean"},
+        "current_policy_qualified": {"type": "boolean"},
+        "measurement_scope": {"const": "isolated_restore_drill_not_production_recovery_proof"}
+      },
+      "allOf": [
+        {"if": {"properties": {"active_policy_matches_archived_policy": {"const": false}}}, "then": {"properties": {"current_policy_qualified": {"const": false}}}},
+        {"if": {"properties": {"backup_age_within_active_declared_rpo": {"const": false}}}, "then": {"properties": {"current_policy_qualified": {"const": false}}}},
+        {"if": {"properties": {"isolated_drill_within_active_declared_rto": {"const": false}}}, "then": {"properties": {"current_policy_qualified": {"const": false}}}},
+        {"if": {"properties": {"active_policy_matches_archived_policy": {"const": true}, "backup_age_within_active_declared_rpo": {"const": true}, "isolated_drill_within_active_declared_rto": {"const": true}}}, "then": {"properties": {"current_policy_qualified": {"const": true}}}}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["result"], "properties": {"result": {"const": "success"}}},
+      "then": {
+        "properties": {
+          "provider": {"const": "postgres"}, "stage": {"const": "complete"}, "error_code": {"type": "null"},
+          "bundle": {"$ref": "#/$defs/bundle"}, "qualification": {"$ref": "#/$defs/qualification"},
+          "provider_payload": {"allOf": [{"$ref": "postgres-restore-payload-v1.schema.json"}, {"properties": {"result": {"const": "success"}, "stage": {"const": "complete"}, "error_code": {"type": "null"}}}]}
+        }
+      },
+      "else": {
+        "properties": {
+          "stage": {"enum": ["selection", "policy", "bundle", "restore", "pre_api", "api", "cleanup"]},
+          "error_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+          "qualification": {"type": "null"}, "provider_payload": {"type": "null"}
+        }
+      }
+    }
+  ]
+}

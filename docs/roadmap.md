@@ -280,7 +280,10 @@ Exit criteria:
 ## Phase 6 — runtime hardening
 
 Status: code-complete and deployed at `v0.1.2`. Production backup, isolated
-restore, monitoring scrape/rules, and live application rollback are proven.
+restore, monitoring scrape/rules, and live application rollback are proven for
+that release. A newer provider-neutral restore-evidence contract now requires
+manifest-last policy-bound bundles and a disposable PostgreSQL adapter; old
+evidence does not qualify the new contract.
 Acknowledged alert delivery and encrypted proxy transport remain operational
 prerequisites.
 
@@ -385,6 +388,8 @@ Exit criteria:
    backend.
 5. Keep `docs/openapi.yaml`, codemaps, current release evidence, and
    environment defaults aligned with implementation.
+6. Schedule bounded restore-drill evidence and its metrics under Gitea #24.
+   No restore scheduling or restore telemetry is part of the current contract work.
 
 ## Non-goals for the next phase
 

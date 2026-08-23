@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-docker-test restore-drill postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check release-evidence-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check release-evidence-test restore-contract-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -40,12 +40,23 @@ api-soak-extended: ## Run the release-grade 15-minute authenticated API soak
 postgres-test: ## Run integration tests against an isolated pinned Postgres container
 	./scripts/test-postgres.sh
 
-postgres-backup: ## Create and verify a custom-format backup in SWITCHYARD_BACKUP_DIR
+postgres-backup: ## Create a completed policy-bound backup bundle
 	./scripts/backup-postgres.sh
 
-postgres-restore-drill: ## Restore BACKUP into an isolated PostgreSQL container and prove API readiness
-	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/switchyard.dump is required" >&2; exit 2)
-	./scripts/restore-postgres-drill.sh "$(BACKUP)"
+restore-contract-test: ## Test backup policy, bundle, restore evidence, and shell safety contracts
+	python3 -m unittest scripts/test_restore_evidence.py scripts/test_restore_shell_safety.py
+
+restore-docker-test: ## Run a real completed-bundle PostgreSQL restore fixture
+	./scripts/test-restore-postgres-integration.sh
+
+restore-drill: ## Restore a completed bundle through its disposable provider adapter
+	@test -n "$${SWITCHYARD_RESTORE_BUNDLE:-}" || (echo "SWITCHYARD_RESTORE_BUNDLE is required" >&2; exit 2)
+	@test -n "$${SWITCHYARD_RESTORE_ACTIVE_POLICY:-}" || (echo "SWITCHYARD_RESTORE_ACTIVE_POLICY is required" >&2; exit 2)
+	@test -n "$${SWITCHYARD_RESTORE_EVIDENCE_DIR:-}" || (echo "SWITCHYARD_RESTORE_EVIDENCE_DIR is required" >&2; exit 2)
+	@test -n "$${SWITCHYARD_RESTORE_TIMEOUT_SECONDS:-}" || (echo "SWITCHYARD_RESTORE_TIMEOUT_SECONDS is required" >&2; exit 2)
+	python3 scripts/restore_evidence.py restore --bundle "$${SWITCHYARD_RESTORE_BUNDLE}" --policy "$${SWITCHYARD_RESTORE_ACTIVE_POLICY}" --evidence-dir "$${SWITCHYARD_RESTORE_EVIDENCE_DIR}" --timeout-seconds "$${SWITCHYARD_RESTORE_TIMEOUT_SECONDS}" --disposable
+
+postgres-restore-drill: restore-drill ## PostgreSQL-default compatibility entrypoint for restore-drill
 
 security-audit: ## Audit Go and web dependencies for known vulnerabilities
 	cd backend && govulncheck ./...
@@ -186,4 +197,4 @@ reproducible-build-check: ## Build Go binaries twice and compare bytes
 	CGO_ENABLED=0 go build -trimpath -ldflags='-buildid=' -o "$$tmp/cli-2" ./cmd/switchyard; \
 	cmp "$$tmp/api-1" "$$tmp/api-2"; cmp "$$tmp/cli-1" "$$tmp/cli-2"
 
-verify-production: verify api-race api-soak postgres-test security-audit docker-smoke release-verify ## Run all production release gates
+verify-production: verify api-race api-soak postgres-test restore-docker-test security-audit docker-smoke release-verify ## Run all production release gates

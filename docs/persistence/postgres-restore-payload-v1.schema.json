@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "switchyard.postgres-restore-payload.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "provider", "result", "stage", "error_code", "database_version", "migration_before", "required_objects", "row_counts", "migration_after", "api_ready", "api_auth_workflows"],
+  "properties": {
+    "contract_version": {"const": "switchyard.postgres-restore-payload.v1"},
+    "provider": {"const": "postgres"},
+    "result": {"enum": ["success", "failure"]},
+    "stage": {"enum": ["restore", "pre_api", "api", "cleanup", "complete"]},
+    "error_code": {"oneOf": [{"type": "null"}, {"enum": ["adapter_interrupted", "archive_copy_failed", "archive_restore_failed", "api_auth_failed", "api_start_failed", "orphan_cleanup_failed", "postgres_ready_failed", "postgres_start_failed", "pre_api_contract_failed", "resource_cleanup_failed", "restore_already_running", "unsafe_adapter_path"]}]},
+    "database_version": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9]{6}$"}]},
+    "migration_before": {"type": ["array", "null"], "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{3}_[a-z0-9_]+\\.sql$", "maxLength": 128}},
+    "required_objects": {"type": ["array", "null"], "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,62}$"}},
+    "row_counts": {"type": ["object", "null"], "maxProperties": 4096, "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,62}$"}, "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807}},
+    "migration_after": {"type": ["array", "null"], "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{3}_[a-z0-9_]+\\.sql$", "maxLength": 128}},
+    "api_ready": {"type": "boolean"},
+    "api_auth_workflows": {"type": "boolean"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"result": {"const": "success"}}},
+      "then": {
+        "properties": {
+          "stage": {"const": "complete"},
+          "error_code": {"type": "null"},
+          "database_version": {"type": "string"},
+          "migration_before": {"type": "array", "minItems": 1},
+          "required_objects": {"type": "array", "minItems": 1},
+          "row_counts": {"type": "object", "minProperties": 1},
+          "migration_after": {"type": "array", "minItems": 1},
+          "api_ready": {"const": true},
+          "api_auth_workflows": {"const": true}
+        }
+      },
+      "else": {
+        "properties": {
+          "stage": {"enum": ["restore", "pre_api", "api", "cleanup"]},
+          "error_code": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"stage": {"const": "restore"}}},
+            "then": {"properties": {"error_code": {"enum": ["adapter_interrupted", "archive_copy_failed", "archive_restore_failed", "postgres_ready_failed", "postgres_start_failed", "restore_already_running", "unsafe_adapter_path"]}, "database_version": {"type": "null"}, "migration_before": {"type": "null"}, "required_objects": {"type": "null"}, "row_counts": {"type": "null"}, "migration_after": {"type": "null"}, "api_ready": {"const": false}, "api_auth_workflows": {"const": false}}}
+          },
+          {
+            "if": {"properties": {"stage": {"const": "pre_api"}}},
+            "then": {"properties": {"error_code": {"const": "pre_api_contract_failed"}, "migration_after": {"type": "null"}, "api_ready": {"const": false}, "api_auth_workflows": {"const": false}}}
+          },
+          {
+            "if": {"properties": {"stage": {"const": "api"}}},
+            "then": {"properties": {"error_code": {"enum": ["api_auth_failed", "api_start_failed"]}, "database_version": {"type": "string"}, "migration_before": {"type": "array"}, "required_objects": {"type": "array"}, "row_counts": {"type": "object"}, "migration_after": {"type": "null"}, "api_auth_workflows": {"const": false}}}
+          },
+          {
+            "if": {"properties": {"stage": {"const": "cleanup"}}},
+            "then": {"properties": {"error_code": {"enum": ["orphan_cleanup_failed", "resource_cleanup_failed"]}}}
+          }
+        ]
+      }
+    }
+  ]
+}
