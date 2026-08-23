@@ -201,30 +201,75 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		request.PreAttempt = nil
 	}
 	correlation := nativeOpenCodeCorrelation(sessionID, requestID)
-	if request.OnCorrelation != nil {
-		if err := request.OnCorrelation(correlation); err != nil {
-			e.abortOpenCodeSession(context.Background(), sessionID)
-			return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
+	publishCorrelation := func() error {
+		if request.OnCorrelation == nil {
+			return nil
 		}
+		return request.OnCorrelation(correlation)
+	}
+	if err := publishCorrelation(); err != nil {
+		e.abortOpenCodeSession(context.Background(), sessionID)
+		return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
 	}
 	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
 	defer cancel()
-	priorMessageID, err := e.openCodeLatestMessageID(messageCtx, sessionID)
-	if err != nil {
-		return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
-	}
-	_, err = e.postOpenCodeMessage(messageCtx, sessionID, request)
-	content := ""
-	if err == nil {
-		content, err = e.waitForOpenCodeSessionIdle(messageCtx, sessionID, priorMessageID)
-	}
-	if err != nil {
+	replaced := false
+	for {
+		priorMessageID, err := e.openCodeLatestMessageID(messageCtx, sessionID)
+		if err == nil {
+			preAttemptPending := request.PreAttempt != nil
+			_, err = e.postOpenCodeMessage(messageCtx, sessionID, request)
+			if preAttemptPending {
+				request.PreAttempt = nil
+			}
+		}
+		content := ""
+		if err == nil {
+			content, err = e.waitForOpenCodeSessionIdle(messageCtx, sessionID, priorMessageID)
+		}
+		if err == nil {
+			return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
+		}
+		if isStaleOpenCodeSession(err) && !replaced {
+			createCtx, createCancel := context.WithTimeout(messageCtx, openCodeSessionCreateTimeout())
+			preAttemptPending := request.PreAttempt != nil
+			replacementID, createErr := e.createOpenCodeSession(createCtx, directory, request.PreAttempt)
+			createCancel()
+			if preAttemptPending {
+				request.PreAttempt = nil
+			}
+			if createErr != nil {
+				return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, createErr
+			}
+			sessionID = replacementID
+			correlation = nativeOpenCodeCorrelation(sessionID, requestID)
+			replaced = true
+			if correlationErr := publishCorrelation(); correlationErr != nil {
+				e.abortOpenCodeSession(context.Background(), sessionID)
+				return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, correlationErr
+			}
+			continue
+		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
 			e.abortOpenCodeSession(context.Background(), sessionID)
 		}
 		return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, err
 	}
-	return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
+}
+
+type staleOpenCodeSessionError struct {
+	operation string
+	status    string
+	body      string
+}
+
+func (e *staleOpenCodeSessionError) Error() string {
+	return fmt.Sprintf("opencode %s failed: %s %s", e.operation, e.status, e.body)
+}
+
+func isStaleOpenCodeSession(err error) bool {
+	var staleErr *staleOpenCodeSessionError
+	return errors.As(err, &staleErr)
 }
 
 func (e *EnvOpenCodeExecutor) waitForOpenCodeSessionIdle(ctx context.Context, sessionID, priorMessageID string) (string, error) {
@@ -299,6 +344,9 @@ func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, session
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := readModelResponseBody(resp.Body)
+		if resp.StatusCode == http.StatusNotFound {
+			return openCodeSessionMessage{}, &staleOpenCodeSessionError{operation: "session status", status: resp.Status, body: strings.TrimSpace(string(body))}
+		}
 		return openCodeSessionMessage{}, fmt.Errorf("opencode session status failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var payload json.RawMessage
@@ -437,6 +485,9 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := readModelResponseBody(resp.Body)
+		if resp.StatusCode == http.StatusNotFound {
+			return "", &staleOpenCodeSessionError{operation: "message", status: resp.Status, body: strings.TrimSpace(string(body))}
+		}
 		return "", fmt.Errorf("opencode message failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	responseBody, err := readModelResponseBody(resp.Body)

@@ -39,6 +39,9 @@ ENV OPENCODE_SERVER_HOSTNAME=0.0.0.0
 ENV OPENCODE_SERVER_PORT=4096
 ENV OPENCODE_RUNTIME_UID=10001
 ENV OPENCODE_RUNTIME_GID=10001
+ENV OPENCODE_DB=:memory:
+ENV OPENCODE_DISABLE_PROJECT_CONFIG=true
+ENV OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=true
 
 VOLUME ["/home/opencode/.config/opencode", "/home/opencode/.local/share/opencode", "/home/opencode/.local/state", "/home/opencode/.cache"]
 

@@ -22,7 +22,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | --- | --- | --- |
 | Durable linear workflow runtime | test-verified | Workers, scheduler, leases, retries, cancellation, pipeline snapshots, memory/PostgreSQL contracts |
 | Native model broker and compatible ingress | test-verified | OpenAI/Ollama routes, durable ledger, bounded queue, status and metrics |
-| Native OpenCode execution | test-verified | Session correlation, authenticated abort-on-cancel, non-root strict sidecar, pinned runtime, and no default MCP/global permission surface |
+| Native OpenCode execution | test-verified | Session correlation, authenticated abort-on-cancel, strict source-checkout-free and shell-denied sidecar with read-only Git-common and managed-worktree access, non-root API/verifier, static Compose isolation contract, pinned runtime, and no default MCP/global permission surface |
 | Open Pilot policy pipeline | implemented, gated | Issue-to-PR/CI/merge/close path exists; mutation remains deny-by-default |
 | Devlog and Changemaker policy | implemented | Native model-backed linear pipelines |
 | Agent profiles | test-verified | Registry/API, executor/model validation, default resolution, prompt contracts, and run-step audit correlation |
@@ -40,6 +40,16 @@ proven for one immutable revision:
 2. Gitea issue #19 requires human completion and target evidence for the approved host-managed Tailscale path.
 
 Issue #17 adds static enforcement for the production configuration contract. It does not prove either blocker or the deployed target path.
+
+Production configuration validation also enforces strict OpenCode mode, a
+non-default password, a dedicated externally located workspace with matching
+non-root ownership, a valid top-level Git repository, and a private managed
+worktree marker/layout. Only the API mounts the source workspace; OpenCode and
+verifier mount its Git common directory read-only plus the managed worktree
+subtree at write/read-only modes respectively. The persistent executor still sees sibling worktrees. The verifier
+has Git, pinned Go 1.26, Make, npm, pnpm 10.33.0, and Cargo with tmpfs caches;
+its internal network and read-only worktrees limit it to dependency-free or
+already-snapshotted checks. Arbitrary dependency installation is not claimed.
 
 ## Operational evidence
 

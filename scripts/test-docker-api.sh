@@ -9,6 +9,14 @@ api="switchyard-test-api-$suffix"
 password='switchyard-test-only-password'
 token='switchyard-test-control-token'
 
+assert_equal() {
+  local actual="$1" expected="$2" message="$3"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'Docker API isolation assertion failed: %s\n' "$message" >&2
+    exit 1
+  fi
+}
+
 cleanup() {
   docker rm -f "$api" "$postgres" >/dev/null 2>&1 || true
   if [[ "$network_created" == true ]]; then
@@ -35,7 +43,7 @@ for _ in $(seq 1 120); do
 done
 docker logs "$postgres" 2>&1 | grep -q 'PostgreSQL init process complete'
 
-api_args=(--detach --name "$api" --network "$network")
+api_args=(--detach --name "$api" --network "$network" --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,exec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=16m)
 if [[ -n "${SWITCHYARD_TEST_DOCKER_NETWORK:-}" ]]; then
   control_url="http://$api:8080"
   model_url="http://$api:11434"
@@ -59,6 +67,13 @@ for _ in $(seq 1 120); do
   sleep 0.25
 done
 curl --fail --silent "$control_url/readyz" >/dev/null
+
+assert_equal "$(docker inspect --format '{{.Config.User}}' "$api")" "1000:1000" "configured user must be non-root"
+assert_equal "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$api")" "true" "root filesystem must be read-only"
+assert_equal "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$api")" '["ALL"]' "all capabilities must be dropped"
+assert_equal "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$api")" '["no-new-privileges"]' "no-new-privileges must be enabled"
+assert_equal "$(docker inspect --format '{{index .HostConfig.Tmpfs "/tmp"}}' "$api")" "rw,exec,nosuid,size=256m" "/tmp must be writable and executable"
+docker exec "$api" sh -eu -c 'test "$(id -u)" != 0; printf "#!/bin/sh\nexit 0\n" > /tmp/switchyard-exec-check; chmod 700 /tmp/switchyard-exec-check; /tmp/switchyard-exec-check; rm /tmp/switchyard-exec-check'
 
 test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$control_url/api/runs")" = 401
 test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H "Authorization: Bearer $token" "$control_url/api/runs")" = 200
