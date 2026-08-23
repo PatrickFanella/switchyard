@@ -11,6 +11,7 @@ qualification record.
 - Current deployed revision: `7d90c065c05bfa93eb380ff071036d61c1f965e2`
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
+- Required production configuration gate: `make production-config-check` with the deployed environment exported
 - Required deployment proof: `make production-smoke` on the resolved target
 
 Record the exact candidate and deployed SHA in `docs/releases/`.
@@ -35,8 +36,10 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 Do not increase unattended Open Pilot autonomy until all of the following are
 proven for one immutable revision:
 
-1. working alert delivery, acknowledgement, recovery notification, and ownership;
-2. encrypted authenticated Almaz-to-Kvant proxy transport.
+1. Gitea issue #18 requires human completion and target evidence.
+2. Gitea issue #19 requires human completion and target evidence for the approved host-managed Tailscale path.
+
+Issue #17 adds static enforcement for the production configuration contract. It does not prove either blocker or the deployed target path.
 
 ## Operational evidence
 

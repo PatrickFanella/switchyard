@@ -6,7 +6,9 @@ This repository is the Switchyard project. Security work here focuses on safe de
 
 Switchyard separates its operator control plane from model-compatible ingress. Production deployments must keep raw listeners private and place the web/control surface behind authenticated access. Setting `SWITCHYARD_REVERSE_PROXY_AUTH=true` is an operator assertion, not an authentication mechanism by itself.
 
-When the web listener must cross a host boundary, set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR` to the authenticated proxy's exact `/32`. The nginx gateway denies other sources and clears client-supplied `X-Forwarded-User`; do not broaden this allowlist to a LAN CIDR. Prefer an authenticated encrypted proxy hop over the current trusted-LAN fallback.
+Production web traffic may cross the host boundary only through host-managed Tailscale. Set `SWITCHYARD_WEB_TRANSPORT=tailscale`, bind the web listener to this host's `100.64.0.0/10` address, and set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR` to the other peer's distinct Tailscale `/32`. The nginx gateway denies other sources and clears client-supplied `X-Forwarded-User`. Do not broaden the allowlist, add a plaintext LAN fallback, terminate TLS or mTLS in nginx, or put Tailscale credentials in Compose. The host Tailscale daemon and central tailnet policy are external security controls. Store their credentials as host-managed secrets outside this repository.
+
+Run `make production-config-check` with the deployed environment before the target smoke. This static check does not prove the Tailscale ACL, route, public authentication redirect, or target listener ownership.
 
 ## Reporting a vulnerability
 

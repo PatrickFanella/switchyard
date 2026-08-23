@@ -31,6 +31,8 @@ make docker-up        # start the local stack
 make docker-down      # stop the local stack
 make verify-production # run database, race, security, image, smoke, and release gates
 make api-soak-extended # run the release-grade 15-minute API soak
+make alert-lifecycle  # manually verify Alertmanager-to-ntfy firing and resolution
+make production-config-check # validate exported production transport settings
 ```
 
 See [`docs/status.md`](docs/status.md) for the current capability and release-evidence state. Dated readiness reports prove only the revision they name.
@@ -60,6 +62,13 @@ directory read-only so atomic metric updates remain visible to the API.
 
 Follow [`docs/runbooks/release-and-rollback.md`](docs/runbooks/release-and-rollback.md); do not infer production health from a local checkout or a running container.
 
+The opt-in `make alert-lifecycle` check posts a uniquely correlated firing alert
+to Alertmanager, observes delivery through the configured ntfy topic, resolves
+the same labels, and observes the recovery notification. It never publishes to
+ntfy. Set `SWITCHYARD_ALERT_LIFECYCLE_TEST=1` and the required values documented
+in [the incident runbook](docs/runbooks/incident-response.md). `make verify`
+runs only deterministic fake-server tests; it never runs the live check.
+
 Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.
 
 Docker port defaults are configurable through `.env` or inline variables:
@@ -68,7 +77,15 @@ Docker port defaults are configurable through `.env` or inline variables:
 WEB_PORT=8081 API_PORT=18080 POSTGRES_PORT=5432 make docker-up
 ```
 
-Published ports bind to `127.0.0.1` by default. `SWITCHYARD_BIND_HOST` controls the API and Postgres, `SWITCHYARD_WEB_BIND_HOST` controls the web UI, and `SWITCHYARD_MODEL_BIND_HOST` controls model-compatible ingress. Keep API/control and Postgres loopback-bound. The current homelab deployment binds web on Kvant's LAN address (`SWITCHYARD_WEB_BIND_HOST=10.0.0.50`); Almaz Caddy proxies to `10.0.0.50:28081`, and nginx accepts requests only from Almaz's exact address (`SWITCHYARD_WEB_TRUSTED_PROXY_CIDR=10.0.0.200/32`). `SWITCHYARD_DASHBOARD_CIDR` may add one exact dashboard-backend address for bearer-authenticated, read-only API calls while retaining the nginx deny-by-default boundary. Direct access from every other address is denied. This is a trusted-LAN fallback; prefer a Tailscale ACL or authenticated encrypted proxy hop when available. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
+Published ports bind to `127.0.0.1` by default. `SWITCHYARD_BIND_HOST` controls the API and Postgres, `SWITCHYARD_WEB_BIND_HOST` controls the web UI, and `SWITCHYARD_MODEL_BIND_HOST` controls model-compatible ingress. Keep API/control and Postgres loopback-bound. Local development uses `SWITCHYARD_WEB_TRANSPORT=http`.
+
+Production uses only the approved host-managed Tailscale path for the web hop. Set `SWITCHYARD_WEB_TRANSPORT=tailscale`, bind the web port to this host's Tailscale address, and set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR` to the proxy host's distinct Tailscale `/32`. Both addresses must be within `100.64.0.0/10`. nginx still denies every other source and clears client-supplied `X-Forwarded-User` before it forwards the proxy's `Remote-User`. The host Tailscale daemon and central tailnet ACL own encryption and peer authentication. Keep Tailscale credentials and policy outside Compose and this repository. Do not add nginx certificates, nginx mTLS, container Tailscale credentials, or a plaintext LAN fallback.
+
+Before a production smoke, export the deployed `.env` values and run `make production-config-check`, or validate the file directly with `python3 scripts/validate_production_config.py --env-file .env`. Environment variables override file values. The parser does not perform shell expansion or print values. The check also requires an HTTPS `SWITCHYARD_PUBLIC_URL`, reverse-proxy authentication, a literal loopback IPv4 control bind, a literal non-wildcard IPv4 model bind, a literal loopback IPv4 `/32` dashboard CIDR, integer host ports, and distinct effective bind-and-port pairs for Postgres, API, model, and web. The model bind may use any specific IPv4 address required by model clients. The check validates configuration only. Gitea issues #18 and #19 still require human action and target-path evidence.
+
+The production smoke uses `SWITCHYARD_PUBLIC_URL` for the public probe. `SWITCHYARD_PRODUCTION_PUBLIC_URL`, when set, must match it. Unless explicit `SWITCHYARD_PRODUCTION_CONTROL_URL` or `SWITCHYARD_PRODUCTION_MODEL_URL` overrides are set, the smoke derives local probe URLs from the validated API and model bind and port settings.
+
+Production requires `SWITCHYARD_DASHBOARD_CIDR` to identify one loopback IPv4 address with `/32`; it cannot admit a remote peer. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
 
 ## Control-plane storage
 
@@ -171,7 +188,7 @@ API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintain
 
 Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented in [`docs/reference/client-compatibility.md`](docs/reference/client-compatibility.md).
 
-The deployed operator dashboard is exposed as `https://switchyard.subcult.tv` through Almaz Caddy and Authelia, proxying to Kvant's web service on `10.0.0.50:28081`. Kvant binds this listener only with `SWITCHYARD_WEB_BIND_HOST=10.0.0.50`; nginx permits only Almaz's `10.0.0.200/32` proxy address, so direct access is denied. The API/control listener remains loopback-bound.
+The public operator dashboard remains an HTTPS route protected by Caddy and Authelia. The approved private web hop is host-managed Tailscale, with nginx restricted to the proxy peer's exact Tailscale `/32`. The API/control listener remains loopback-bound. Repository validation does not prove that the tailnet ACL or deployed route works.
 
 ## Host service ownership
 
@@ -183,7 +200,7 @@ To replace a legacy standalone llama-line systemd unit with Switchyard's Docker 
 sudo ./deploy/install-systemd.sh
 ```
 
-The installer renders `/etc/systemd/system/switchyard.service`, disables/removes `/etc/systemd/system/llama-line.service` when present, starts Switchyard with `docker compose up -d --remove-orphans`, and enables it at boot. Use `sudo systemctl reload switchyard` after pulling code when you want a rebuild via `docker compose up -d --build --remove-orphans`.
+The installer renders `/etc/systemd/system/switchyard.service`, disables/removes `/etc/systemd/system/llama-line.service` when present, validates the repository `.env`, starts Switchyard with that file, and enables it at boot. Use `sudo systemctl reload switchyard` after pulling code; reload validates `.env` again before rebuilding the Compose stack.
 
 Model inventory and pulls:
 

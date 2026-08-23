@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "release-evidence-v1.schema.json",
+  "title": "Switchyard release evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "phase",
+    "candidate_sha",
+    "release_tag",
+    "pull_request",
+    "ci_run",
+    "migration_head",
+    "rollback_target",
+    "exceptions",
+    "recorded_at",
+    "gates",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "phase": { "enum": ["candidate", "deployed"] },
+    "candidate_sha": { "$ref": "#/$defs/git_sha" },
+    "release_tag": { "$ref": "#/$defs/non_placeholder_text" },
+    "pull_request": { "$ref": "#/$defs/pull_request_url" },
+    "ci_run": { "$ref": "#/$defs/non_placeholder_text" },
+    "migration_head": { "$ref": "#/$defs/non_placeholder_text" },
+    "rollback_target": { "$ref": "#/$defs/rollback_target" },
+    "exceptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/non_placeholder_text" }
+    },
+    "recorded_at": { "$ref": "#/$defs/utc_timestamp" },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verify_production", "extended_soak"],
+      "properties": {
+        "verify_production": { "$ref": "#/$defs/gate_proof" },
+        "extended_soak": { "$ref": "#/$defs/gate_proof" },
+        "backup_restore": { "$ref": "#/$defs/gate_proof" },
+        "production_smoke": { "$ref": "#/$defs/gate_proof" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["archive", "archive_sha256"],
+        "properties": {
+          "archive": { "$ref": "#/$defs/non_placeholder_text" },
+          "archive_sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployed_sha", "deployed_at", "host"],
+      "properties": {
+        "deployed_sha": { "$ref": "#/$defs/git_sha" },
+        "deployed_at": { "$ref": "#/$defs/utc_timestamp" },
+        "host": { "$ref": "#/$defs/non_placeholder_text" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "phase": { "const": "deployed" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "required": ["deployment"],
+        "properties": {
+          "gates": {
+            "required": [
+              "verify_production",
+              "extended_soak",
+              "backup_restore",
+              "production_smoke"
+            ]
+          }
+        }
+      },
+      "else": {
+        "not": { "required": ["deployment"] },
+        "properties": {
+          "gates": {
+            "not": {
+              "anyOf": [
+                { "required": ["backup_restore"] },
+                { "required": ["production_smoke"] }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "pull_request_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://[^/?#@\\s]+/(?:[^/?#\\s]+/)+pulls/[1-9][0-9]*$"
+    },
+    "rollback_target": {
+      "type": "string",
+      "oneOf": [
+        { "$ref": "#/$defs/git_sha" },
+        {
+          "pattern": "^v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        }
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "non_placeholder_text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!\\s*$)(?!.*(?:^|[^A-Za-z0-9])(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Cc][Hh][Aa][Nn][Gg][Ee][Mm][Ee]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee][ _-]?[Mm][Ee]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])(?:$|[^A-Za-z0-9]))(?!.*[<>])(?!.*\\$\\{)(?!.*[Ee][Xx][Aa][Mm][Pp][Ll][Ee]\\.[Cc][Oo][Mm]).+$"
+    },
+    "utc_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    },
+    "gate_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "completed_at", "proof"],
+      "properties": {
+        "status": { "const": "passed" },
+        "completed_at": { "$ref": "#/$defs/utc_timestamp" },
+        "proof": { "$ref": "#/$defs/non_placeholder_text" }
+      }
+    }
+  }
+}

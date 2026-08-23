@@ -2,6 +2,15 @@ name: switchyard-production-verify
 
 on:
   workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Credential-free HTTPS repository /pulls/<positive integer> URL
+        required: true
+        type: string
+      rollback_target:
+        description: Previous semver-like release tag or full lowercase Git SHA
+        required: true
+        type: string
   schedule:
     - cron: '0 5 * * 1'
 
@@ -60,7 +69,58 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Verify production qualification
         run: |
+          export CI_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           make verify-production
           make api-soak-extended
           test "$(node -p 'require("./release/manifest.json").source_revision')" = "$(git rev-parse HEAD)"
           git diff --exit-code -- ':(glob)backend/**/*.go'
+      - name: Generate candidate release evidence
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_PULL_REQUEST: ${{ inputs.pull_request }}
+          ROLLBACK_TARGET: ${{ inputs.rollback_target }}
+        run: |
+          CANDIDATE_SHA="$(git rev-parse HEAD)" python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          manifest = json.loads(Path("release/manifest.json").read_text())
+          now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          evidence = {
+              "schema_version": 1,
+              "phase": "candidate",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "release_tag": manifest["release_tag"],
+              "pull_request": os.environ["RELEASE_PULL_REQUEST"],
+              "ci_run": run_url,
+              "migration_head": manifest["migration_head"],
+              "rollback_target": os.environ["ROLLBACK_TARGET"],
+              "exceptions": [],
+              "recorded_at": now,
+              "gates": {
+                  "verify_production": {"status": "passed", "completed_at": now, "proof": run_url},
+                  "extended_soak": {"status": "passed", "completed_at": now, "proof": run_url},
+              },
+              "artifacts": [
+                  {"archive": image["archive"], "archive_sha256": image["archive_sha256"]}
+                  for image in manifest["images"]
+              ],
+          }
+          Path("release/candidate-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          PY
+          make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json
+      - name: Upload candidate release evidence
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-release-evidence-${{ github.sha }}
+          path: |
+            release/candidate-evidence.json
+            release/manifest.json
+            release/SHA256SUMS
+            release/*.oci.tar
+          if-no-files-found: error
+          retention-days: 30
