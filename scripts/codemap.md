@@ -1,7 +1,7 @@
 # scripts/
 
 ## Responsibility
-Provides integration, soak, PostgreSQL, Docker, and model-broker smoke verification scripts.
+Provides integration, soak, PostgreSQL, Docker, model-broker, and release-evidence verification scripts.
 
 ## Design
 Scripts use strict shell mode, isolated temporary/container resources, explicit health checks, and assertions against API contracts.
@@ -15,6 +15,7 @@ Scripts use strict shell mode, isolated temporary/container resources, explicit 
 - `backup-postgres.sh` produces verified custom-format backups; `restore-postgres-drill.sh` restores them into isolated PostgreSQL and proves API readiness.
 - `report-compatibility-usage.sh` summarizes durable deprecated-backend attempts without treating configuration alone as usage.
 - `check-docs-consistency.sh` keeps current-status documents and stable API references aligned.
+- `validate_release_evidence.py` validates local candidate/deployment proof and generated manifest checksums without third-party packages or network access.
 
 ## Integration
 Invoked by `Makefile` verification, recovery, and production gates; targets the Go API, PostgreSQL, Docker Compose, model ingress, and current documentation contracts.

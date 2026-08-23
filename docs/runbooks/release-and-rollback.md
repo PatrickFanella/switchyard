@@ -29,6 +29,23 @@ make api-soak-extended
 
 Do not promote when either command fails. Save the CI run URL, release
 checksums, and source revision in `docs/releases/<version>-qualification.md`.
+Create candidate-phase JSON evidence using
+`docs/releases/release-evidence-v1.schema.json`, then validate the exact
+candidate and generated manifest:
+
+```bash
+make release-evidence-verify \
+  CANDIDATE_SHA="$(git rev-parse HEAD)" \
+  EVIDENCE=docs/releases/<version>-evidence.json \
+  MANIFEST=release/manifest.json
+```
+
+The candidate phase requires the release tag, pull request and CI run
+references, migration head, rollback target, explicit exceptions array,
+qualification proof, and extended-soak proof, but no deployment fields. Use an
+empty exceptions array when none exist; do not use placeholder entries.
+Historical matching proof does not expire. Treat revision, release-tag, CI-run,
+or artifact mismatches as stale evidence.
 
 ## Pre-deployment capture
 
@@ -82,6 +99,10 @@ that:
 - the public route reaches Authelia;
 - direct dashboard access is denied except from the approved proxy;
 - Ollama is reached on its real upstream port.
+
+Update the JSON evidence to the deployed phase. Record the deployed SHA, host,
+deployment time, backup/restore proof, and production-smoke proof. Run
+`make release-evidence-verify` again before accepting the release.
 
 ## Application rollback
 
