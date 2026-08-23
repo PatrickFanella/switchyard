@@ -3,9 +3,56 @@ package controlplane
 import (
 	"database/sql"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestClaimAndCreateOpenPilotResumeRunIsAtomic(t *testing.T) {
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "owner/repo", "issue": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishRun(prior.ID, RunFailed, "CI failed"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: "owner/repo", Issue: "1", Phase: OpenPilotPhaseRequested, RunID: prior.ID, PullRequestURL: "https://gitea.test/owner/repo/pulls/1", PullRequestID: 1, PullRequestNum: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []OpenPilotPhase{OpenPilotPhaseValidated, OpenPilotPhaseBranchPrepared, OpenPilotPhaseAgentCompleted, OpenPilotPhaseVerified, OpenPilotPhasePushed, OpenPilotPhasePRCreated, OpenPilotPhaseAIReviewed} {
+		state, err = store.TransitionOpenPilotIssueState(state.Repo, state.Issue, phase)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := CreateRunInput{WorkflowID: string(WorkflowOpenPilot)}
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, claimErr := store.ClaimAndCreateOpenPilotResumeRun(state.Repo, state.Issue, input)
+			results <- claimErr
+		}()
+	}
+	wg.Wait()
+	close(results)
+	succeeded := 0
+	for claimErr := range results {
+		if claimErr == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("successful claims = %d, want 1", succeeded)
+	}
+}
 
 func TestOpenPilotPhaseAllowsV1Transitions(t *testing.T) {
 	allowed := []struct{ from, to OpenPilotPhase }{

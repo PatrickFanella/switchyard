@@ -191,6 +191,89 @@ func (s *PostgresStore) ClaimOpenPilotIssueStateForResume(repo, issue string, re
 	return saved, nil
 }
 
+func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input CreateRunInput) (OpenPilotIssueState, Run, error) {
+	if repo == "" || issue == "" || input.WorkflowID != string(WorkflowOpenPilot) {
+		return OpenPilotIssueState{}, Run{}, ErrInvalid
+	}
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return OpenPilotIssueState{}, Run{}, err
+	}
+	rollback := func(err error) (OpenPilotIssueState, Run, error) {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, Run{}, err
+	}
+	state, err := scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `select `+openPilotIssueStateColumns+` from open_pilot_issue_states where repo=$1 and issue=$2 for update`, repo, issue))
+	if err != nil {
+		return rollback(mapScanErr(err))
+	}
+	var priorStatus RunStatus
+	if err := tx.QueryRowContext(ctx, `select status from runs where id=$1`, state.RunID).Scan(&priorStatus); err != nil {
+		return rollback(mapScanErr(err))
+	}
+	if priorStatus == RunQueued || priorStatus == RunRunning {
+		return rollback(ErrInvalid)
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, `select exists(select 1 from runs where workflow_id=$1 and status in ($2,$3) and inputs->>'repo'=$4 and inputs->>'issue'=$5)`, string(WorkflowOpenPilot), RunQueued, RunRunning, repo, issue).Scan(&active); err != nil {
+		return rollback(err)
+	}
+	if active {
+		return rollback(ErrInvalid)
+	}
+	inputs, err := safeOpenPilotResumeInputs(state)
+	if err != nil {
+		return rollback(err)
+	}
+	for name, value := range input.Inputs {
+		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" {
+			inputs[name] = value
+		}
+	}
+	input.Inputs = inputs
+	encodedInputs, err := json.Marshal(inputs)
+	if err != nil {
+		return rollback(err)
+	}
+	now := s.now().UTC()
+	maxAttempts := input.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	run := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: maxAttempts}
+	var pipelineSnapshot any
+	if input.PipelineSnapshot != nil {
+		snapshot := clonePipeline(*input.PipelineSnapshot)
+		run.PipelineID, run.PipelineVersion, run.PipelineSnapshot = snapshot.ID, pipelineVersion(snapshot), &snapshot
+		encoded, marshalErr := json.Marshal(snapshot)
+		if marshalErr != nil {
+			return rollback(marshalErr)
+		}
+		pipelineSnapshot = string(encoded)
+	}
+	triggerID := sql.NullString{String: input.TriggerID, Valid: input.TriggerID != ""}
+	if _, err := tx.ExecContext(ctx, `insert into runs(id, workflow_id, trigger_id, status, inputs, created_at, queued_at, available_at, attempt_count, max_attempts, summary, pipeline_id, pipeline_version, pipeline_snapshot) values($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,'',$11,$12,$13::jsonb)`, run.ID, run.WorkflowID, triggerID, run.Status, string(encodedInputs), now, now, now, 0, maxAttempts, run.PipelineID, run.PipelineVersion, pipelineSnapshot); err != nil {
+		return rollback(mapPgErr(err))
+	}
+	if _, err := tx.ExecContext(ctx, `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, newID("evt"), run.ID, "run.created", "Open Pilot resume queued", now); err != nil {
+		return rollback(err)
+	}
+	phase := openPilotResumeClaimPhase(state.Phase, inputs)
+	resumeJSON, err := marshalOpenPilotJSONMap(inputs)
+	if err != nil {
+		return rollback(err)
+	}
+	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set phase=$3, run_id=$4, resume_inputs=$5::jsonb, last_error='', failing_gate='', operator_summary='', recommended_next_action='', updated_at=$6 where repo=$1 and issue=$2 returning `+openPilotIssueStateColumns, repo, issue, phase, run.ID, string(resumeJSON), now))
+	if err != nil {
+		return rollback(mapScanErr(err))
+	}
+	if err := tx.Commit(); err != nil {
+		return OpenPilotIssueState{}, Run{}, err
+	}
+	return state, run, nil
+}
+
 func (s *PostgresStore) ListOpenPilotIssueStates() []OpenPilotIssueState {
 	rows, err := s.db.QueryContext(s.operationContext(), `select `+openPilotIssueStateColumns+` from open_pilot_issue_states order by repo, issue`)
 	if err != nil {

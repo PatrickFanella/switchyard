@@ -318,6 +318,33 @@ func openPilotResumeClaimPhase(current OpenPilotPhase, inputs map[string]string)
 	}
 }
 
+func safeOpenPilotResumeInputs(state OpenPilotIssueState) (map[string]string, error) {
+	if state.PullRequestID < 1 || state.PullRequestNum < 1 || strings.TrimSpace(state.PullRequestURL) == "" || strings.TrimSpace(state.RunID) == "" {
+		return nil, ErrInvalid
+	}
+	step := ""
+	switch state.Phase {
+	case OpenPilotPhasePRCreated:
+		step = "open-pilot.ai-review"
+	case OpenPilotPhaseAIReviewed:
+		step = "open-pilot.ci-checks"
+	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
+		if state.LastStepName == "open-pilot.ai-review" || state.LastStepName == "open-pilot.ci-checks" {
+			step = state.LastStepName
+		}
+	}
+	position := openPilotStepPosition(step)
+	if step == "" || position == "" {
+		return nil, ErrInvalid
+	}
+	inputs := mergeOpenPilotResumeStateInputs(state)
+	delete(inputs, "retry_from_step")
+	delete(inputs, "retry_from_step_position")
+	inputs["retry_from_step"] = step
+	inputs["retry_from_step_position"] = position
+	return inputs, nil
+}
+
 func gateStatusForOpenPilotStep(stepName string, gateStatus map[string]string) string {
 	switch stepName {
 	case "open-pilot.validate-issue":

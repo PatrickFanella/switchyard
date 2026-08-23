@@ -1714,11 +1714,23 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	api.SetAsyncDispatch(true)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
+	prior, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatalf("CreateRun prior error = %v", err)
+	}
+	if _, err := store.FinishRun(prior.ID, controlplane.RunFailed, "CI failed"); err != nil {
+		t.Fatalf("FinishRun prior error = %v", err)
+	}
 
 	seed, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
 		Repo:              "OWNER/REPO",
 		Issue:             "123",
 		Phase:             controlplane.OpenPilotPhaseRequested,
+		RunID:             prior.ID,
+		LastStepName:      "open-pilot.ai-review",
+		PullRequestURL:    "https://gitea.test/owner/repo/pulls/1",
+		PullRequestID:     1,
+		PullRequestNum:    1,
 		GateStatus:        controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"},
 		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "9", "resume.open-pilot.prompt": "prompt"},
 		RepairAttempts:    1,
@@ -1852,17 +1864,8 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		t.Fatalf("POST resume agent completed with test command error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("agent completed with test command status = %d", resp.StatusCode)
-	}
-	var agentTestBody struct {
-		Run controlplane.Run `json:"run"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&agentTestBody); err != nil {
-		t.Fatalf("decode agent completed test resume: %v", err)
-	}
-	if agentTestBody.Run.Inputs["retry_from_step"] != "open-pilot.verify-command" || agentTestBody.Run.Inputs["retry_from_step_position"] != "5" {
-		t.Fatalf("agent completed with test command resume = %+v", agentTestBody.Run.Inputs)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("agent completed with test command status = %d, want 400", resp.StatusCode)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "126", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
 		t.Fatalf("seed agent completed without test command requested error = %v", err)
@@ -1885,17 +1888,8 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		t.Fatalf("POST resume agent completed without test command error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("agent completed without test command status = %d", resp.StatusCode)
-	}
-	var agentNoTestBody struct {
-		Run controlplane.Run `json:"run"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&agentNoTestBody); err != nil {
-		t.Fatalf("decode agent completed no test resume: %v", err)
-	}
-	if agentNoTestBody.Run.Inputs["retry_from_step"] != "open-pilot.commit-changes" || agentNoTestBody.Run.Inputs["retry_from_step_position"] != "6" {
-		t.Fatalf("agent completed without test command resume = %+v", agentNoTestBody.Run.Inputs)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("agent completed without test command status = %d, want 400", resp.StatusCode)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "127", Phase: controlplane.OpenPilotPhaseRequested}); err != nil {
 		t.Fatalf("seed failed verify requested error = %v", err)
@@ -1920,19 +1914,17 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		t.Fatalf("POST resume failed verify error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("failed verify resume status = %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("failed verify resume status = %d, want 400", resp.StatusCode)
 	}
-	var failedVerifyBody struct {
-		Run controlplane.Run `json:"run"`
+	priorAI, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "129"}})
+	if err != nil {
+		t.Fatalf("CreateRun prior AI error = %v", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&failedVerifyBody); err != nil {
-		t.Fatalf("decode failed verify resume: %v", err)
+	if _, err := store.FinishRun(priorAI.ID, controlplane.RunFailed, "CI failed"); err != nil {
+		t.Fatalf("FinishRun prior AI error = %v", err)
 	}
-	if failedVerifyBody.Run.Inputs["retry_from_step"] != "open-pilot.verify-command" || failedVerifyBody.Run.Inputs["retry_from_step_position"] != "5" {
-		t.Fatalf("failed verify resume = %+v", failedVerifyBody.Run.Inputs)
-	}
-	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "129", Phase: controlplane.OpenPilotPhaseRequested, PullRequestNum: 42, PullRequestURL: "https://git.example.test/OWNER/REPO/pulls/42", GateStatus: controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"}}); err != nil {
+	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "129", Phase: controlplane.OpenPilotPhaseRequested, RunID: priorAI.ID, PullRequestID: 42, PullRequestNum: 42, PullRequestURL: "https://git.example.test/OWNER/REPO/pulls/42", GateStatus: controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"}}); err != nil {
 		t.Fatalf("seed ai reviewed requested error = %v", err)
 	}
 	for _, phase := range []controlplane.OpenPilotPhase{controlplane.OpenPilotPhaseValidated, controlplane.OpenPilotPhaseBranchPrepared, controlplane.OpenPilotPhaseAgentCompleted, controlplane.OpenPilotPhaseVerified, controlplane.OpenPilotPhasePushed, controlplane.OpenPilotPhasePRCreated, controlplane.OpenPilotPhaseAIReviewed} {
@@ -1970,17 +1962,8 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		t.Fatalf("POST resume merged error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("merged resume status = %d", resp.StatusCode)
-	}
-	var mergedBody struct {
-		Run controlplane.Run `json:"run"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&mergedBody); err != nil {
-		t.Fatalf("decode merged resume: %v", err)
-	}
-	if mergedBody.Run.Inputs["retry_from_step"] != "open-pilot.close-issue" || mergedBody.Run.Inputs["retry_from_step_position"] != "12" || mergedBody.Run.Inputs["resume.open-pilot.merge-pr.merge_commit_sha"] != "deadbeef" {
-		t.Fatalf("merged resume = %+v", mergedBody.Run.Inputs)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("merged resume status = %d, want 400", resp.StatusCode)
 	}
 	_, err = store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
 	if err != nil {
@@ -1995,7 +1978,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 		t.Fatalf("POST conflict resume error = %v", err)
 	}
 	defer conflictResp.Body.Close()
-	if conflictResp.StatusCode != http.StatusConflict {
+	if conflictResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("conflict resume status = %d", conflictResp.StatusCode)
 	}
 
@@ -2222,7 +2205,7 @@ func TestAPIStepActionRejectsCrossRunStepID(t *testing.T) {
 	}
 }
 
-func TestAPIRetryOpenPilotAIReviewUsesRepairCursor(t *testing.T) {
+func TestAPIRetryOpenPilotAIReviewRequiresLifecycleResume(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
@@ -2261,17 +2244,8 @@ func TestAPIRetryOpenPilotAIReviewUsesRepairCursor(t *testing.T) {
 		t.Fatalf("POST retry error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("retry status = %d", resp.StatusCode)
-	}
-	var retryBody struct {
-		Run controlplane.Run `json:"run"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&retryBody); err != nil {
-		t.Fatalf("decode retry step: %v", err)
-	}
-	if retryBody.Run.Inputs["retry_from_step"] != "open-pilot.agent-work" || retryBody.Run.Inputs["retry_from_step_position"] != "4" || retryBody.Run.Inputs["ai_review.feedback"] != "tighten validation" {
-		t.Fatalf("retry inputs = %+v", retryBody.Run.Inputs)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("retry status = %d, want 409", resp.StatusCode)
 	}
 }
 

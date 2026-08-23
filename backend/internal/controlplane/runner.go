@@ -139,6 +139,13 @@ func (r *Runner) EnqueueContext(ctx context.Context, input CreateRunInput) (Run,
 	return r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
 }
 
+func (r *Runner) prepareRunInput(input CreateRunInput) (CreateRunInput, error) {
+	if err := validateCreateRunInput(input); err != nil {
+		return CreateRunInput{}, err
+	}
+	return r.withPipelineSnapshot(input), nil
+}
+
 func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
 	if input.MaxAttempts == 0 {
 		input.MaxAttempts = defaultRunMaxAttempts()

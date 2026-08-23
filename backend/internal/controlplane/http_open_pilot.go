@@ -57,39 +57,30 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, err)
 		return
 	}
-	if !isOpenPilotResumablePhase(state.Phase) {
-		writeError(w, http.StatusBadRequest, "state is not resumable")
+	inputs, err := safeOpenPilotResumeInputs(state)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "state is not safely resumable from AI review or CI checks")
 		return
 	}
-	originalPhase := state.Phase
-	if openPilotHasActiveRun(a.store, repo, issue) {
-		writeError(w, http.StatusConflict, "open-pilot issue already has an active run")
-		return
-	}
-	inputs := mergeOpenPilotResumeStateInputs(state)
-	if inputs == nil {
-		inputs = map[string]string{}
-	}
-	inputs["repo"] = repo
-	inputs["issue"] = issue
-	state, err = a.store.ClaimOpenPilotIssueStateForResume(repo, issue, inputs)
+	prepared, err := a.runner.prepareRunInput(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
-	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
+	state, run, err := a.store.ClaimAndCreateOpenPilotResumeRun(repo, issue, prepared)
 	if err != nil {
-		state.Phase = OpenPilotPhaseFailed
-		if originalPhase == OpenPilotPhasePaused {
-			state.Phase = OpenPilotPhasePaused
+		writeControlError(w, err)
+		return
+	}
+	if !a.asyncDispatch {
+		run, err = a.store.StartRun(run.ID)
+		if err == nil {
+			run, err = a.runner.ExecuteRun(r.Context(), run)
 		}
-		state.LastError = err.Error()
-		state.FailingGate = "resume"
-		state.OperatorSummary = "Resume dispatch failed: " + err.Error()
-		state.RecommendedNextAction = "resume"
-		_, _ = a.store.UpsertOpenPilotIssueState(state)
-		writeControlError(w, err)
-		return
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
 	}
 	if fresh, err := a.store.OpenPilotIssueState(repo, issue); err == nil {
 		state = fresh

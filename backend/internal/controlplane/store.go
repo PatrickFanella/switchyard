@@ -31,6 +31,7 @@ type Store interface {
 	UpsertOpenPilotIssueState(OpenPilotIssueState) (OpenPilotIssueState, error)
 	TransitionOpenPilotIssueState(string, string, OpenPilotPhase) (OpenPilotIssueState, error)
 	ClaimOpenPilotIssueStateForResume(string, string, map[string]string) (OpenPilotIssueState, error)
+	ClaimAndCreateOpenPilotResumeRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
 	ListOpenPilotIssueStates() []OpenPilotIssueState
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger

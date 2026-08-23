@@ -67,6 +67,10 @@ func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, err)
 		return
 	}
+	if input.WorkflowID == string(WorkflowOpenPilot) && (input.Inputs["retry_from_step"] != "" || input.Inputs["retry_from_step_position"] != "") {
+		writeError(w, http.StatusBadRequest, "use the Open Pilot lifecycle resume action")
+		return
+	}
 	run, err := a.dispatchRun(r.Context(), input)
 	if err != nil {
 		writeControlError(w, err)
@@ -172,6 +176,10 @@ func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, p
 		detail, err := a.store.RunDetailContext(r.Context(), runID)
 		if err != nil {
 			writeControlError(w, err)
+			return
+		}
+		if detail.Run.WorkflowID == string(WorkflowOpenPilot) {
+			writeError(w, http.StatusConflict, "use the Open Pilot lifecycle resume action")
 			return
 		}
 		inputs := retryRunInputsFromStep(detail, step)
