@@ -48,3 +48,10 @@ files from `release/`. Each Markdown record must name:
 - rollback target and unresolved exceptions.
 
 Historical readiness reports prove only the revision and date they name.
+
+For a release that claims alert delivery, run `make alert-lifecycle` manually
+against the deployed source revision as described in the incident runbook.
+Retain its redacted JSON evidence with the release records. Baseline
+`make verify` runs the harness's fake-server tests only and does not contact
+Alertmanager or ntfy. The lifecycle evidence proves firing and recovery
+delivery, not human acknowledgement.

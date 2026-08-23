@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup postgres-restore-drill security-audit docker-build docker-smoke api-smoke production-smoke compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup postgres-restore-drill security-audit docker-build docker-smoke api-smoke production-smoke compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config docs-check open-pilot-check release-evidence-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config docs-check open-pilot-check release-evidence-test alert-lifecycle-test ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -142,6 +142,12 @@ release-verify: release-artifacts ## Verify release archives and checksums
 
 release-evidence-test: ## Test the release-evidence contract
 	python3 -m unittest discover -s scripts -p 'test_validate_release_evidence.py'
+
+alert-lifecycle: ## Manually test Alertmanager-to-ntfy firing and resolution
+	python3 scripts/alert_lifecycle.py
+
+alert-lifecycle-test: ## Test the alert lifecycle harness against a local fake server
+	python3 -m unittest discover -s scripts -p 'test_alert_lifecycle.py'
 
 release-evidence-verify: ## Validate EVIDENCE and MANIFEST for CANDIDATE_SHA
 	@test -n "$(CANDIDATE_SHA)" || (echo "CANDIDATE_SHA is required" >&2; exit 2)

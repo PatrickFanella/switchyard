@@ -31,6 +31,7 @@ make docker-up        # start the local stack
 make docker-down      # stop the local stack
 make verify-production # run database, race, security, image, smoke, and release gates
 make api-soak-extended # run the release-grade 15-minute API soak
+make alert-lifecycle  # manually verify Alertmanager-to-ntfy firing and resolution
 ```
 
 See [`docs/status.md`](docs/status.md) for the current capability and release-evidence state. Dated readiness reports prove only the revision they name.
@@ -59,6 +60,13 @@ For backup-freshness metrics, keep
 directory read-only so atomic metric updates remain visible to the API.
 
 Follow [`docs/runbooks/release-and-rollback.md`](docs/runbooks/release-and-rollback.md); do not infer production health from a local checkout or a running container.
+
+The opt-in `make alert-lifecycle` check posts a uniquely correlated firing alert
+to Alertmanager, observes delivery through the configured ntfy topic, resolves
+the same labels, and observes the recovery notification. It never publishes to
+ntfy. Set `SWITCHYARD_ALERT_LIFECYCLE_TEST=1` and the required values documented
+in [the incident runbook](docs/runbooks/incident-response.md). `make verify`
+runs only deterministic fake-server tests; it never runs the live check.
 
 Run `make api-run` and `make web-dev` in separate terminals for local dashboard work. The Vite dev server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`; set `VITE_SWITCHYARD_API_URL` only when the API is hosted elsewhere.
 

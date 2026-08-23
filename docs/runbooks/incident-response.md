@@ -64,6 +64,41 @@ silently raised to suppress alerts.
 
 ## Alert test
 
+Run the delivery and recovery check manually from the deployed revision:
+
+```bash
+export SWITCHYARD_ALERT_LIFECYCLE_TEST=1
+export SWITCHYARD_SOURCE_REVISION="$(git rev-parse HEAD)"
+export SWITCHYARD_ALERTMANAGER_URL=https://alertmanager.example.internal
+export SWITCHYARD_NTFY_TOPIC_URL=https://ntfy.example.internal/switchyard-alerts
+export SWITCHYARD_ALERT_RECEIVER=primary-on-call
+export SWITCHYARD_ALERT_LIFECYCLE_TIMEOUT=120
+export SWITCHYARD_ALERT_LIFECYCLE_POLL_INTERVAL=2
+export SWITCHYARD_ALERT_LIFECYCLE_EVIDENCE_PATH=/approved/evidence/alert-lifecycle.json
+make alert-lifecycle
+```
+
+Use `SWITCHYARD_ALERTMANAGER_BEARER_TOKEN` or the dedicated
+`SWITCHYARD_ALERTMANAGER_BASIC_USERNAME` and
+`SWITCHYARD_ALERTMANAGER_BASIC_PASSWORD` pair when Alertmanager requires auth.
+The equivalent ntfy variables are `SWITCHYARD_NTFY_BEARER_TOKEN` or
+`SWITCHYARD_NTFY_BASIC_USERNAME` and `SWITCHYARD_NTFY_BASIC_PASSWORD`. Do not
+put credentials in URLs. The harness requires HTTPS. Its
+`SWITCHYARD_ALERT_LIFECYCLE_ALLOW_LOCAL_TEST=1` escape hatch permits HTTP only
+for a localhost or loopback fake server.
+
+The harness sends the firing and resolved alerts only through Alertmanager. It
+polls Alertmanager's v2 API and ntfy's newline-JSON poll API for the unique
+correlation. If a check fails after the firing POST, it still attempts to
+resolve the alert. The JSON evidence contains the source revision, correlation,
+receiver, endpoint hostnames, a topic hash, Alertmanager fingerprint and status,
+timestamps, and result. It excludes URLs, topic names, headers, message bodies,
+and credentials. Store it in the approved evidence location.
+
+This test proves automated firing delivery and recovery delivery. It does not
+prove human acknowledgement. Human acknowledgement remains tracked in Gitea
+issue #16 and must be recorded separately.
+
 For every alert, record:
 
 - the deliberate test condition;
