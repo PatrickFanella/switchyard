@@ -27,6 +27,7 @@ type Scheduler struct {
 	interval time.Duration
 	async    bool
 	location *time.Location
+	assigner *OpenPilotAssigner
 
 	mu       sync.RWMutex
 	running  bool
@@ -34,6 +35,8 @@ type Scheduler struct {
 	lastErr  string
 	done     chan struct{}
 }
+
+func (s *Scheduler) SetOpenPilotAssigner(assigner *OpenPilotAssigner) { s.assigner = assigner }
 
 func (s *Scheduler) SetAsyncDispatch(enabled bool) {
 	s.async = enabled
@@ -136,7 +139,13 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			continue
 		}
 		var err error
-		if s.async {
+		if trigger.ID == "gitea-open-pilot-poll" {
+			if s.assigner == nil {
+				err = fmt.Errorf("Open Pilot assigner is not configured")
+			} else {
+				_, err = s.assigner.Poll(ctx)
+			}
+		} else if s.async {
 			_, err = s.runner.EnqueueTrigger(trigger.ID)
 		} else {
 			_, err = s.runner.RunTrigger(ctx, trigger.ID)

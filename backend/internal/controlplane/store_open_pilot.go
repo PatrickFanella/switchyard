@@ -158,6 +158,37 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 	return cloneOpenPilotIssueState(state), run, nil
 }
 
+func (s *MemoryStore) ClaimAndCreateOpenPilotInitialRun(repo, issue string, input CreateRunInput) (OpenPilotIssueState, Run, error) {
+	if repo == "" || issue == "" || input.WorkflowID != string(WorkflowOpenPilot) {
+		return OpenPilotIssueState{}, Run{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := openPilotIssueStateKey(repo, issue)
+	if _, exists := s.openPilotIssueStates[key]; exists {
+		return OpenPilotIssueState{}, Run{}, ErrInvalid
+	}
+	input.Inputs = cloneMap(input.Inputs)
+	input.Inputs["repo"], input.Inputs["issue"] = repo, issue
+	now := s.now().UTC()
+	maxAttempts := input.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	run := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: maxAttempts}
+	if input.PipelineSnapshot != nil {
+		snapshot := clonePipeline(*input.PipelineSnapshot)
+		run.PipelineID = snapshot.ID
+		run.PipelineVersion = pipelineVersion(snapshot)
+		run.PipelineSnapshot = &snapshot
+	}
+	state := OpenPilotIssueState{ID: newID("opi"), Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, RunID: run.ID, ResumeInputs: cloneMap(input.Inputs), MaxRepairAttempts: 2, CreatedAt: now, UpdatedAt: now}
+	s.openPilotIssueStates[key] = state
+	s.runs[run.ID] = run
+	s.events[run.ID] = append(s.events[run.ID], RunEvent{ID: newID("evt"), RunID: run.ID, Type: "run.created", Message: "Verified Open Pilot issue queued", CreatedAt: now})
+	return cloneOpenPilotIssueState(state), run, nil
+}
+
 func (s *MemoryStore) ListOpenPilotIssueStates() []OpenPilotIssueState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -32,6 +32,25 @@ func TestEnvGiteaClientFetchesIssue(t *testing.T) {
 	}
 }
 
+func TestEnvGiteaClientListsOpenIssuesAndExcludesPullRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/issues" || r.URL.Query().Get("state") != "open" || r.URL.Query().Get("type") != "issues" || r.URL.Query().Get("labels") != "ready-for-agent,agent:queued" {
+			t.Fatalf("request = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`[{"id":10,"number":7,"title":"Task","body":"## Test Command\nmake verify","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]},{"id":11,"number":8,"title":"PR","state":"open","pull_request":{},"labels":[]}]`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "token")
+	issues, err := controlplane.NewEnvGiteaClient().ListIssues(t.Context(), "OWNER/REPO", []string{"ready-for-agent", "agent:queued"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || issues[0].Number != 7 {
+		t.Fatalf("issues = %+v", issues)
+	}
+}
+
 func TestEnvGiteaClientRejectsInvalidRepo(t *testing.T) {
 	t.Setenv("GITEA_BASE_URL", "http://example.invalid")
 	_, err := controlplane.NewEnvGiteaClient().FetchIssue(t.Context(), "OWNER/REPO/extra", "123")

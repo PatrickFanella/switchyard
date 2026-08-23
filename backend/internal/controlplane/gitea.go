@@ -31,6 +31,11 @@ type IssueFetcher interface {
 	FetchIssue(ctx context.Context, repo string, issue string) (GiteaIssue, error)
 }
 
+type GiteaIssueReader interface {
+	IssueFetcher
+	ListIssues(ctx context.Context, repo string, labels []string) ([]GiteaIssue, error)
+}
+
 // GiteaPullRequestRef models a repository or pull request reference.
 type GiteaPullRequestRef struct {
 	Ref   string `json:"ref,omitempty"`
@@ -215,6 +220,75 @@ func (c *EnvGiteaClient) FetchIssue(ctx context.Context, repo string, issue stri
 		}
 	}
 	return GiteaIssue{ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, URL: raw.URL, HTMLURL: raw.HTMLURL, Labels: labels}, nil
+}
+
+func (c *EnvGiteaClient) ListIssues(ctx context.Context, repo string, labels []string) ([]GiteaIssue, error) {
+	if c.baseURL == "" {
+		return nil, fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	owner, name, err := c.repoParts(repo)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "issues")
+	if err != nil {
+		return nil, err
+	}
+	result := []GiteaIssue{}
+	for page := 1; page <= 10; page++ {
+		query, parseErr := url.Parse(endpoint)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		values := query.Query()
+		values.Set("state", "open")
+		values.Set("type", "issues")
+		values.Set("limit", "50")
+		values.Set("page", strconv.Itoa(page))
+		if len(labels) > 0 {
+			values.Set("labels", strings.Join(labels, ","))
+		}
+		query.RawQuery = values.Encode()
+		var raw []struct {
+			ID      int    `json:"id"`
+			Number  int    `json:"number"`
+			Title   string `json:"title"`
+			Body    string `json:"body"`
+			State   string `json:"state"`
+			URL     string `json:"url"`
+			HTMLURL string `json:"html_url"`
+			Labels  []struct {
+				Name string `json:"name"`
+			} `json:"labels"`
+			PullRequest *json.RawMessage `json:"pull_request"`
+		}
+		resp, requestErr := c.doJSON(ctx, http.MethodGet, query.String(), nil, &raw)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+		if resp != nil {
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode > 299 {
+				return nil, fmt.Errorf("gitea issue list failed: %s", resp.Status)
+			}
+		}
+		for _, item := range raw {
+			if item.PullRequest != nil || item.Number < 1 || item.State != "open" {
+				continue
+			}
+			itemLabels := make([]string, 0, len(item.Labels))
+			for _, label := range item.Labels {
+				if label.Name != "" {
+					itemLabels = append(itemLabels, label.Name)
+				}
+			}
+			result = append(result, GiteaIssue{ID: item.ID, Number: item.Number, Title: item.Title, Body: item.Body, State: item.State, URL: item.URL, HTMLURL: item.HTMLURL, Labels: itemLabels})
+		}
+		if len(raw) < 50 {
+			break
+		}
+	}
+	return result, nil
 }
 
 // FindPullRequestByHead looks up an open pull request by head branch.

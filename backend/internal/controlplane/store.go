@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrInvalid   = errors.New("invalid input")
-	ErrQueueFull = errors.New("queue capacity exceeded")
+	ErrNotFound       = errors.New("not found")
+	ErrInvalid        = errors.New("invalid input")
+	ErrQueueFull      = errors.New("queue capacity exceeded")
+	ErrAlreadyClaimed = errors.New("open-pilot issue already claimed")
 )
 
 type Store interface {
@@ -32,6 +33,7 @@ type Store interface {
 	TransitionOpenPilotIssueState(string, string, OpenPilotPhase) (OpenPilotIssueState, error)
 	ClaimOpenPilotIssueStateForResume(string, string, map[string]string) (OpenPilotIssueState, error)
 	ClaimAndCreateOpenPilotResumeRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
+	ClaimAndCreateOpenPilotInitialRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
 	ListOpenPilotIssueStates() []OpenPilotIssueState
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger

@@ -54,6 +54,35 @@ func TestClaimAndCreateOpenPilotResumeRunIsAtomic(t *testing.T) {
 	}
 }
 
+func TestClaimAndCreateOpenPilotInitialRunIsAtomic(t *testing.T) {
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	input := CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "gitea-open-pilot-poll", Inputs: map[string]string{"issue_id": "10", "issue_verified_at": "2026-08-22T00:00:00Z"}}
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "10", input)
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	succeeded := 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 || len(store.ListRuns()) != 1 {
+		t.Fatalf("successful claims=%d runs=%d", succeeded, len(store.ListRuns()))
+	}
+}
+
 func TestOpenPilotPhaseAllowsV1Transitions(t *testing.T) {
 	allowed := []struct{ from, to OpenPilotPhase }{
 		{OpenPilotPhaseRequested, OpenPilotPhaseValidated},

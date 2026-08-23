@@ -123,6 +123,7 @@ func run() error {
 			interval = parsed
 		}
 		scheduler = controlplane.NewScheduler(store, runner, interval, nil)
+		scheduler.SetOpenPilotAssigner(controlplane.NewEnvOpenPilotAssigner(store, runner, controlplane.NewEnvGiteaClient()))
 		timezone := strings.TrimSpace(os.Getenv("SWITCHYARD_SCHEDULER_TIMEZONE"))
 		if timezone == "" {
 			timezone = "UTC"

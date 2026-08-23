@@ -274,6 +274,67 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 	return state, run, nil
 }
 
+func (s *PostgresStore) ClaimAndCreateOpenPilotInitialRun(repo, issue string, input CreateRunInput) (OpenPilotIssueState, Run, error) {
+	if repo == "" || issue == "" || input.WorkflowID != string(WorkflowOpenPilot) {
+		return OpenPilotIssueState{}, Run{}, ErrInvalid
+	}
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return OpenPilotIssueState{}, Run{}, err
+	}
+	rollback := func(err error) (OpenPilotIssueState, Run, error) {
+		_ = tx.Rollback()
+		return OpenPilotIssueState{}, Run{}, err
+	}
+	input.Inputs = cloneMap(input.Inputs)
+	input.Inputs["repo"], input.Inputs["issue"] = repo, issue
+	encodedInputs, err := json.Marshal(input.Inputs)
+	if err != nil {
+		return rollback(err)
+	}
+	now := s.now().UTC()
+	maxAttempts := input.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	run := Run{ID: newID("run"), WorkflowID: input.WorkflowID, TriggerID: input.TriggerID, Status: RunQueued, Inputs: cloneMap(input.Inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: maxAttempts}
+	var pipelineSnapshot any
+	if input.PipelineSnapshot != nil {
+		snapshot := clonePipeline(*input.PipelineSnapshot)
+		run.PipelineID, run.PipelineVersion, run.PipelineSnapshot = snapshot.ID, pipelineVersion(snapshot), &snapshot
+		encoded, marshalErr := json.Marshal(snapshot)
+		if marshalErr != nil {
+			return rollback(marshalErr)
+		}
+		pipelineSnapshot = string(encoded)
+	}
+	triggerID := sql.NullString{String: input.TriggerID, Valid: input.TriggerID != ""}
+	if _, err := tx.ExecContext(ctx, `insert into runs(id, workflow_id, trigger_id, status, inputs, created_at, queued_at, available_at, attempt_count, max_attempts, summary, pipeline_id, pipeline_version, pipeline_snapshot) values($1,$2,$3,$4,$5::jsonb,$6,$7,$8,0,$9,'',$10,$11,$12::jsonb)`, run.ID, run.WorkflowID, triggerID, run.Status, string(encodedInputs), now, now, now, maxAttempts, run.PipelineID, run.PipelineVersion, pipelineSnapshot); err != nil {
+		return rollback(mapPgErr(err))
+	}
+	resumeJSON, err := marshalOpenPilotJSONMap(input.Inputs)
+	if err != nil {
+		return rollback(err)
+	}
+	state := OpenPilotIssueState{ID: newID("opi"), Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, RunID: run.ID, ResumeInputs: cloneMap(input.Inputs), MaxRepairAttempts: 2, CreatedAt: now, UpdatedAt: now}
+	gateJSON, _ := marshalOpenPilotJSONMap(nil)
+	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `insert into open_pilot_issue_states(id,repo,issue,phase,run_id,last_step_name,branch,base,worktree_path,pull_request_url,pull_request_id,pull_request_number,merge_commit_sha,issue_closed,gate_status,resume_inputs,repair_attempts,max_repair_attempts,last_error,failing_gate,operator_summary,recommended_next_action,created_at,updated_at) values($1,$2,$3,$4,$5,'','','','','',null,null,'',false,$6::jsonb,$7::jsonb,0,2,'',null,null,null,$8,$8) on conflict (repo,issue) do nothing returning `+openPilotIssueStateColumns, state.ID, repo, issue, state.Phase, run.ID, string(gateJSON), string(resumeJSON), now))
+	if errors.Is(err, sql.ErrNoRows) {
+		return rollback(ErrAlreadyClaimed)
+	}
+	if err != nil {
+		return rollback(mapPgErr(err))
+	}
+	if _, err := tx.ExecContext(ctx, `insert into run_events(id,run_id,type,message,created_at) values($1,$2,$3,$4,$5)`, newID("evt"), run.ID, "run.created", "Verified Open Pilot issue queued", now); err != nil {
+		return rollback(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return OpenPilotIssueState{}, Run{}, err
+	}
+	return state, run, nil
+}
+
 func (s *PostgresStore) ListOpenPilotIssueStates() []OpenPilotIssueState {
 	rows, err := s.db.QueryContext(s.operationContext(), `select `+openPilotIssueStateColumns+` from open_pilot_issue_states order by repo, issue`)
 	if err != nil {
