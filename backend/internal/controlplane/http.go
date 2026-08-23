@@ -15,23 +15,39 @@ import (
 )
 
 type API struct {
-	store         Store
-	runner        *Runner
-	adapterProbe  AdapterProbe
-	modelBroker   ModelBrokerStatusProvider
-	compatBroker  *llamaLineCompatTracker
-	openCode      OpenCodeExecutorStatusProvider
-	canceler      CancelDispatcher
-	scheduler     *Scheduler
-	workerPool    *WorkerPool
-	retention     *RetentionManager
-	asyncDispatch bool
+	store             Store
+	runner            *Runner
+	adapterProbe      AdapterProbe
+	modelBroker       ModelBrokerStatusProvider
+	modelRuntime      ModelRuntimeControl
+	ownedModelService *ModelService
+	compatBroker      *llamaLineCompatTracker
+	openCode          OpenCodeExecutorStatusProvider
+	canceler          CancelDispatcher
+	scheduler         *Scheduler
+	workerPool        *WorkerPool
+	retention         *RetentionManager
+	asyncDispatch     bool
 }
 
 type controlPlaneActorContextKey struct{}
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), compatBroker: newLlamaLineCompatTracker(store), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
+	service := NewModelService(store, NewEnvModelBroker(), ModelServiceOptions{})
+	api := NewAPIWithModelService(store, runner, service)
+	api.ownedModelService = service
+	return api
+}
+
+func (a *API) Shutdown(ctx context.Context) error {
+	if a.ownedModelService == nil {
+		return nil
+	}
+	return a.ownedModelService.Close(ctx)
+}
+
+func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
@@ -52,13 +68,6 @@ func (a *API) SetRetentionManager(retention *RetentionManager) {
 
 func (a *API) SetAsyncDispatch(enabled bool) {
 	a.asyncDispatch = enabled
-}
-
-func (a *API) Shutdown(ctx context.Context) error {
-	if a.compatBroker == nil {
-		return nil
-	}
-	return a.compatBroker.close(ctx)
 }
 
 func (a *API) Handler() http.Handler {
@@ -217,7 +226,11 @@ func requestActor(r *http.Request) string {
 	if r == nil {
 		return "unknown"
 	}
-	if actor, ok := r.Context().Value(controlPlaneActorContextKey{}).(string); ok && actor != "" {
+	return contextActor(r.Context())
+}
+
+func contextActor(ctx context.Context) string {
+	if actor, ok := ctx.Value(controlPlaneActorContextKey{}).(string); ok && actor != "" {
 		return actor
 	}
 	return "internal"
@@ -291,7 +304,12 @@ func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
 func (a *API) modelBrokerStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"model_broker": a.modelBroker.Status(ctx)})
+	queue, err := a.modelRuntime.QueueStatus(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"model_broker": a.modelBroker.Status(ctx), "queue": queue})
 }
 
 func (a *API) openCodeExecutorStatus(w http.ResponseWriter, r *http.Request) {

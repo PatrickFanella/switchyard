@@ -79,8 +79,9 @@ func run() error {
 	for _, warning := range controlplane.NewEnvOperatorSafetyStatus().Warnings {
 		slog.Warn("operator safety", "warning", controlplane.RedactForLog(warning))
 	}
-	runner := controlplane.NewRunner(store)
-	api := controlplane.NewAPI(store, runner)
+	modelService := controlplane.NewModelService(store, controlplane.NewEnvModelBroker(), controlplane.ModelServiceOptions{})
+	runner := controlplane.NewRunner(store, controlplane.NewEnvWorkflowExecutorsWithModel(modelService, store))
+	api := controlplane.NewAPIWithModelService(store, runner, modelService)
 	var workersPool *controlplane.WorkerPool
 	workerEnabled := envEnabledByDefault("SWITCHYARD_WORKER_ENABLED")
 	if workerEnabled {
@@ -204,6 +205,7 @@ func run() error {
 		drainCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
 		var runtimeErr error
+		modelService.Stop()
 		if scheduler != nil {
 			runtimeErr = errors.Join(runtimeErr, scheduler.Wait(drainCtx))
 		}
@@ -216,7 +218,7 @@ func run() error {
 				forceCancel()
 			}
 		}
-		runtimeErr = errors.Join(runtimeErr, api.Shutdown(drainCtx))
+		runtimeErr = errors.Join(runtimeErr, modelService.Wait(drainCtx))
 		return runtimeErr
 	}
 

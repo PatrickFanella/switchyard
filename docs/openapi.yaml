@@ -27,13 +27,98 @@ servers:
     description: Local Docker Compose API
   - url: http://127.0.0.1:18080
     description: Local smoke-test API
+security:
+  - controlPlaneBearer: []
 paths:
+  /api/model-broker/queue:
+    get:
+      summary: Get native model queue health
+      responses:
+        "200":
+          description: Exact queue counts with a bounded in-flight ID sample
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelQueueEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests:
+    get:
+      summary: List native model requests
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: before, in: query, schema: {type: string}}
+      responses:
+        "200":
+          description: Bounded request list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelRequestListEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Cancel all queued and running model requests
+      responses:
+        "200":
+          description: Cancellation result with authenticated actor evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelBulkMutationEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      summary: Get a native model request
+      responses:
+        "200":
+          description: Model request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelRequestEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests/{id}/cancel:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      summary: Cancel a native model request
+      responses:
+        "200":
+          description: Cancellation state with authenticated actor evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelMutationEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests/{id}/drop:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      summary: Drop a native model request
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, maxLength: 256}
+      responses:
+        "200":
+          description: Dropped request with authenticated actor and reason evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelMutationEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /health:
     get:
+      security: []
       summary: Compatibility health check
       responses: { "200": { description: API is healthy } }
   /healthz:
     get:
+      security: []
       summary: Health check
       responses:
         "200":
@@ -47,12 +132,15 @@ paths:
                 required: [ok]
   /readyz:
     get:
+      security: []
       summary: Storage-backed readiness check
       responses:
         "200": { description: API and persistence are ready }
         "503": { description: Persistence is unavailable }
   /broker/status:
     get:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Llama-line-compatible broker status
       description: Cutover endpoint served on LLAMA_LINE_PORT; includes native queue/inflight state and upstream health.
       responses:
@@ -64,6 +152,8 @@ paths:
                 $ref: "#/components/schemas/CompatBrokerStatus"
   /v1/chat/completions:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible chat completion
       responses:
         "200":
@@ -77,8 +167,11 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/completions:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible text completion
       responses:
         "200":
@@ -92,16 +185,23 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/embeddings:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible embeddings
       responses: { "200": { description: Embeddings } }
   /v1/models:
     get:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible model list
       responses: { "200": { description: Model list } }
   /api/chat:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible chat
       responses:
         "200":
@@ -115,8 +215,11 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /api/generate:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible generation
       responses:
         "200":
@@ -130,21 +233,32 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /api/embed:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible embeddings alias
       responses: { "200": { description: Embeddings } }
   /api/embeddings:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible embeddings
       responses: { "200": { description: Embeddings } }
   /api/tags:
     get:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible model tags
       responses: { "200": { description: Model list } }
   /metrics:
     get:
       summary: Prometheus runtime metrics
+      description: >-
+        Authenticated control-listener metrics. The public model-listener
+        operation is specified in docs/openapi-model-ingress.yaml.
+      servers: [{url: "http://127.0.0.1:28080", description: Authenticated control listener}]
       responses: { "200": { description: Prometheus text exposition } }
   /api/observability/model-broker:
     get:
@@ -1017,7 +1131,8 @@ components:
             type: object
             properties:
               model_broker: { $ref: "#/components/schemas/ModelBrokerStatus" }
-            required: [model_broker]
+              queue: { $ref: "#/components/schemas/ModelQueue" }
+            required: [model_broker, queue]
     OpenCodeExecutorStatusResponse:
       description: Native OpenCodeExecutor status response
       content:
@@ -1133,6 +1248,72 @@ components:
         checked_at: { type: string, format: date-time }
         error: { type: string }
       required: [id, status, configured, backend, effective_selector, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+    ModelRequest:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/ModelRequestStatus" }
+        model: { type: string }
+        path: { type: string }
+        client: { type: string }
+        client_priority: { type: integer }
+        request_body: { type: string }
+        response_body: { type: string }
+        error: { type: string }
+        correlation_ids:
+          type: object
+          additionalProperties: { type: string }
+          description: Includes bounded audit_action, audit_actor, and audit_reason evidence for operator mutations.
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        cancel_requested_at: { type: string, format: date-time }
+      required: [id, status, model, path, client, client_priority, created_at, updated_at]
+    ModelRequestStatus:
+      type: string
+      enum: [queued, running, cancel_requested, canceled, completed, failed, dropped]
+    ModelQueue:
+      type: object
+      properties:
+        queued: { type: integer, minimum: 0, description: Exact queued request count. }
+        running: { type: integer, minimum: 0, description: Exact running request count. }
+        cancel_requested: { type: integer, minimum: 0, description: Exact cancel-requested count. }
+        max_depth: { type: integer, minimum: 1 }
+        in_flight_request_ids:
+          type: array
+          maxItems: 100
+          items: { type: string }
+          description: Bounded sample of running and cancel-requested IDs.
+      required: [queued, running, cancel_requested, max_depth, in_flight_request_ids]
+    ModelQueueEnvelope:
+      type: object
+      properties:
+        queue: { $ref: "#/components/schemas/ModelQueue" }
+      required: [queue]
+    ModelRequestEnvelope:
+      type: object
+      properties:
+        request: { $ref: "#/components/schemas/ModelRequest" }
+      required: [request]
+    ModelRequestListEnvelope:
+      type: object
+      properties:
+        requests: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/ModelRequest" } }
+      required: [requests]
+    ModelMutationEnvelope:
+      type: object
+      properties:
+        actor: { type: string, maxLength: 256 }
+        request: { $ref: "#/components/schemas/ModelRequest" }
+      required: [actor, request]
+    ModelBulkMutationEnvelope:
+      type: object
+      properties:
+        actor: { type: string, maxLength: 256 }
+        canceled: { type: integer, minimum: 0 }
+        requests: { type: array, items: { $ref: "#/components/schemas/ModelRequest" } }
+      required: [actor, canceled, requests]
     CompatBrokerStatus:
       type: object
       properties:

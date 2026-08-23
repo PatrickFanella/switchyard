@@ -8,17 +8,86 @@ import (
 )
 
 func (s *MemoryStore) CreateModelBrokerRequest(input CreateModelBrokerRequestInput) (ModelBrokerRequest, error) {
-	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Model) == "" {
-		return ModelBrokerRequest{}, ErrInvalid
+	req, _, err := s.admitModelBrokerRequest(input, ModelBrokerRequestQueued, 0)
+	return req, err
+}
+
+func (s *MemoryStore) BeginModelBrokerRequest(input CreateModelBrokerRequestInput) (ModelBrokerRequest, bool, error) {
+	return s.admitModelBrokerRequest(input, ModelBrokerRequestRunning, 0)
+}
+
+func (s *MemoryStore) AdmitModelBrokerRequest(input CreateModelBrokerRequestInput, maxActive int) (ModelBrokerRequest, bool, error) {
+	return s.admitModelBrokerRequest(input, ModelBrokerRequestQueued, maxActive)
+}
+
+func (s *MemoryStore) admitModelBrokerRequest(input CreateModelBrokerRequestInput, requestedStatus string, maxActive int) (ModelBrokerRequest, bool, error) {
+	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Model) == "" || (maxActive < 0) {
+		return ModelBrokerRequest{}, false, ErrInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now().UTC()
 	if existing, ok := s.modelBrokerRequests[input.ID]; ok {
-		return cloneModelBrokerRequest(existing), nil
+		err := error(nil)
+		if existing.Status == ModelBrokerRequestDropped && existing.Error == "queue capacity exceeded" {
+			err = ErrQueueFull
+		}
+		return cloneModelBrokerRequest(existing), false, err
 	}
-	req := ModelBrokerRequest{ID: input.ID, Status: ModelBrokerRequestQueued, Model: input.Model, Path: input.Path, Client: input.Client, ClientPriority: input.Priority, RequestBody: redactPersistedJSON(input.RequestBody), CorrelationIDs: map[string]string{}, CreatedAt: now, UpdatedAt: now}
+	active := 0
+	for _, req := range s.modelBrokerRequests {
+		if req.Status == ModelBrokerRequestQueued || req.Status == ModelBrokerRequestRunning || req.Status == ModelBrokerRequestCancelRequested {
+			active++
+		}
+	}
+	now := s.now().UTC()
+	status := requestedStatus
+	if maxActive > 0 && active >= maxActive {
+		status = ModelBrokerRequestDropped
+	}
+	req := ModelBrokerRequest{ID: input.ID, Status: status, Model: input.Model, Path: input.Path, Client: input.Client, ClientPriority: input.Priority, RequestBody: redactPersistedJSON(input.RequestBody), CorrelationIDs: map[string]string{}, CreatedAt: now, UpdatedAt: now}
+	if status == ModelBrokerRequestRunning {
+		req.StartedAt = &now
+	}
+	if status == ModelBrokerRequestDropped {
+		req.Error = "queue capacity exceeded"
+		req.FinishedAt = &now
+	}
 	s.modelBrokerRequests[req.ID] = req
+	if status == ModelBrokerRequestDropped {
+		return cloneModelBrokerRequest(req), false, ErrQueueFull
+	}
+	return cloneModelBrokerRequest(req), true, nil
+}
+
+func (s *MemoryStore) TransitionModelBrokerRequest(id string, input TransitionModelBrokerRequestInput) (ModelBrokerRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.modelBrokerRequests[id]
+	if !ok {
+		return ModelBrokerRequest{}, ErrNotFound
+	}
+	if req.Status != input.ExpectedStatus || !ModelBrokerRequestTransitionAllowed(req.Status, input.Status) {
+		return ModelBrokerRequest{}, ErrConflict
+	}
+	now := s.now().UTC()
+	req.Status = input.Status
+	req.UpdatedAt = now
+	req.CorrelationIDs = mergeModelCorrelationIDs(req.CorrelationIDs, input.CorrelationIDs)
+	if input.Status == ModelBrokerRequestRunning {
+		req.StartedAt = &now
+	}
+	if input.Status == ModelBrokerRequestCancelRequested && req.CancelRequestedAt == nil {
+		req.CancelRequestedAt = &now
+	}
+	if input.Status == ModelBrokerRequestCanceled && req.CancelRequestedAt == nil {
+		req.CancelRequestedAt = &now
+	}
+	if isTerminalModelBrokerRequest(input.Status) {
+		req.ResponseBody = redactPersistedJSON(input.ResponseBody)
+		req.Error = embeddedSecretPattern.ReplaceAllString(input.Error, `${1}${2}${3}[REDACTED]`)
+		req.FinishedAt = &now
+	}
+	s.modelBrokerRequests[id] = req
 	return cloneModelBrokerRequest(req), nil
 }
 
@@ -79,7 +148,7 @@ func (s *MemoryStore) FinishModelBrokerRequest(id string, input FinishModelBroke
 	req.Status = status
 	req.ResponseBody = redactPersistedJSON(input.ResponseBody)
 	req.Error = embeddedSecretPattern.ReplaceAllString(input.Error, `${1}${2}${3}[REDACTED]`)
-	req.CorrelationIDs = mergeStringMaps(req.CorrelationIDs, input.CorrelationIDs)
+	req.CorrelationIDs = mergeModelCorrelationIDs(req.CorrelationIDs, input.CorrelationIDs)
 	req.FinishedAt = &now
 	req.UpdatedAt = now
 	s.modelBrokerRequests[id] = req
@@ -93,7 +162,7 @@ func (s *MemoryStore) MergeModelBrokerRequestCorrelationIDs(id string, correlati
 	if !ok {
 		return ModelBrokerRequest{}, ErrNotFound
 	}
-	req.CorrelationIDs = mergeStringMaps(req.CorrelationIDs, correlationIDs)
+	req.CorrelationIDs = mergeModelCorrelationIDs(req.CorrelationIDs, correlationIDs)
 	req.UpdatedAt = s.now().UTC()
 	if backend := strings.TrimSpace(correlationIDs[CorrelationDeprecatedBackend]); backend != "" {
 		if err := s.recordCompatibilityUsageLocked(backend, req.UpdatedAt); err != nil {
@@ -111,29 +180,90 @@ func (s *MemoryStore) CancelModelBrokerRequest(id string) (ModelBrokerRequest, e
 	if !ok {
 		return ModelBrokerRequest{}, ErrNotFound
 	}
+	if isTerminalModelBrokerRequest(req.Status) {
+		return cloneModelBrokerRequest(req), nil
+	}
 	now := s.now().UTC()
-	req.Status = ModelBrokerRequestCancelRequested
-	req.CancelRequestedAt = &now
+	if req.Status == ModelBrokerRequestQueued {
+		req.Status, req.Error, req.FinishedAt = ModelBrokerRequestCanceled, "request canceled before execution", &now
+	} else {
+		req.Status = ModelBrokerRequestCancelRequested
+	}
+	if req.CancelRequestedAt == nil {
+		req.CancelRequestedAt = &now
+	}
 	req.UpdatedAt = now
 	s.modelBrokerRequests[id] = req
 	return cloneModelBrokerRequest(req), nil
 }
 
+func (s *MemoryStore) ModelBrokerQueueSnapshot(idLimit int) (ModelBrokerQueueSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshot := ModelBrokerQueueSnapshot{InFlightIDs: []string{}}
+	ids := []string{}
+	for _, req := range s.modelBrokerRequests {
+		switch req.Status {
+		case ModelBrokerRequestQueued:
+			snapshot.Queued++
+		case ModelBrokerRequestRunning:
+			snapshot.Running++
+			ids = append(ids, req.ID)
+		case ModelBrokerRequestCancelRequested:
+			snapshot.CancelRequested++
+			ids = append(ids, req.ID)
+		}
+	}
+	sort.Strings(ids)
+	if idLimit >= 0 && len(ids) > idLimit {
+		ids = ids[:idLimit]
+	}
+	snapshot.InFlightIDs = ids
+	return snapshot, nil
+}
+
 func (s *MemoryStore) CancelAllModelBrokerRequests() (int, error) {
+	requests, err := s.RequestCancelModelBrokerRequests(nil)
+	return len(requests), err
+}
+
+func (s *MemoryStore) RequestCancelModelBrokerRequests(correlationIDs map[string]string) ([]ModelBrokerRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
-	count := 0
+	out := []ModelBrokerRequest{}
 	for id, req := range s.modelBrokerRequests {
-		if req.Status == ModelBrokerRequestQueued || req.Status == ModelBrokerRequestRunning || req.Status == ModelBrokerRequestCancelRequested {
-			req.Status = ModelBrokerRequestCancelRequested
+		switch req.Status {
+		case ModelBrokerRequestQueued:
+			req.Status, req.Error, req.FinishedAt = ModelBrokerRequestCanceled, "request canceled before execution", &now
 			req.CancelRequestedAt = &now
-			req.UpdatedAt = now
-			s.modelBrokerRequests[id] = req
-			count++
+		case ModelBrokerRequestRunning:
+			req.Status, req.CancelRequestedAt = ModelBrokerRequestCancelRequested, &now
+		case ModelBrokerRequestCancelRequested:
+			continue
+		default:
+			continue
+		}
+		req.UpdatedAt = now
+		req.CorrelationIDs = mergeModelCorrelationIDs(req.CorrelationIDs, correlationIDs)
+		s.modelBrokerRequests[id] = req
+		out = append(out, cloneModelBrokerRequest(req))
+	}
+	return out, nil
+}
+
+func mergeModelCorrelationIDs(base, updates map[string]string) map[string]string {
+	merged := mergeStringMaps(base, updates)
+	if base["audit_action"] != "" {
+		for _, key := range []string{"audit_action", "audit_actor", "audit_reason"} {
+			if value, ok := base[key]; ok {
+				merged[key] = value
+			} else {
+				delete(merged, key)
+			}
 		}
 	}
-	return count, nil
+	return merged
 }
 
 func (s *MemoryStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error) {
@@ -161,11 +291,8 @@ func (s *MemoryStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilt
 		out = append(out, cloneModelBrokerRequest(req))
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if len(statuses) > 0 && out[i].Status != ModelBrokerRequestCompleted && out[j].Status != ModelBrokerRequestCompleted {
-			if out[i].ClientPriority != out[j].ClientPriority {
-				return out[i].ClientPriority > out[j].ClientPriority
-			}
-			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
 		}
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})

@@ -9,7 +9,23 @@ const (
 	ModelBrokerRequestCanceled        = "canceled"
 	ModelBrokerRequestCompleted       = "completed"
 	ModelBrokerRequestFailed          = "failed"
+	ModelBrokerRequestDropped         = "dropped"
 )
+
+// ModelBrokerRequestTransitionAllowed is the lifecycle contract shared by all
+// stores and the model runtime. Terminal states never transition.
+func ModelBrokerRequestTransitionAllowed(from, to string) bool {
+	switch from {
+	case ModelBrokerRequestQueued:
+		return to == ModelBrokerRequestRunning || to == ModelBrokerRequestCanceled || to == ModelBrokerRequestDropped
+	case ModelBrokerRequestRunning:
+		return to == ModelBrokerRequestCancelRequested || to == ModelBrokerRequestCompleted || to == ModelBrokerRequestFailed || to == ModelBrokerRequestDropped
+	case ModelBrokerRequestCancelRequested:
+		return to == ModelBrokerRequestCanceled || to == ModelBrokerRequestDropped
+	default:
+		return false
+	}
+}
 
 type ModelBrokerRequest struct {
 	ID                string            `json:"id"`
@@ -43,6 +59,26 @@ type FinishModelBrokerRequestInput struct {
 	ResponseBody   string
 	Error          string
 	CorrelationIDs map[string]string
+}
+
+type TransitionModelBrokerRequestInput struct {
+	ExpectedStatus string
+	Status         string
+	ResponseBody   string
+	Error          string
+	CorrelationIDs map[string]string
+}
+
+type ModelBrokerQueueSnapshot struct {
+	Queued          int
+	Running         int
+	CancelRequested int
+	InFlightIDs     []string
+}
+
+type ModelBrokerMutationEvidence struct {
+	Actor  string
+	Reason string
 }
 
 type ListModelBrokerRequestsFilter struct {

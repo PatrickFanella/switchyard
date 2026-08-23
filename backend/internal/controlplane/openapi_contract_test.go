@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -96,6 +97,80 @@ func TestOpenAPIPathsMatchRegisteredRoutes(t *testing.T) {
 		if !documented[route] {
 			t.Errorf("registered route %s is missing from OpenAPI", route)
 		}
+	}
+}
+
+func TestOpenAPIDocumentsModelRuntimeSecurityAndSchemas(t *testing.T) {
+	documentBytes, err := os.ReadFile("../../../docs/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(documentBytes, &document); err != nil {
+		t.Fatal(err)
+	}
+	security, ok := document["security"].([]any)
+	if !ok || len(security) == 0 {
+		t.Fatal("global control-plane bearer security is missing")
+	}
+	paths := document["paths"].(map[string]any)
+	for _, path := range []string{"/healthz", "/broker/status", "/v1/chat/completions", "/api/generate"} {
+		operations := paths[path].(map[string]any)
+		for _, operation := range operations {
+			if body, ok := operation.(map[string]any); ok {
+				public, exists := body["security"].([]any)
+				if !exists || len(public) != 0 {
+					t.Errorf("%s must explicitly override security for public model ingress", path)
+				}
+				if path != "/healthz" {
+					servers, exists := body["servers"].([]any)
+					if !exists || len(servers) == 0 || !strings.Contains(fmt.Sprint(servers), "11434") {
+						t.Errorf("%s must document the separate model-ingress listener", path)
+					}
+				}
+				break
+			}
+		}
+	}
+	metrics := paths["/metrics"].(map[string]any)["get"].(map[string]any)
+	if _, exists := metrics["security"]; exists {
+		t.Error("control /metrics must inherit bearer security")
+	}
+	servers := fmt.Sprint(metrics["servers"])
+	if !strings.Contains(servers, "28080") || strings.Contains(servers, "11434") {
+		t.Errorf("control /metrics must document only the authenticated control listener: %s", servers)
+	}
+	modelDocumentBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "openapi-model-ingress.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelDocument map[string]any
+	if err := yaml.Unmarshal(modelDocumentBytes, &modelDocument); err != nil {
+		t.Fatal(err)
+	}
+	modelMetrics := modelDocument["paths"].(map[string]any)["/metrics"].(map[string]any)["get"].(map[string]any)
+	public, exists := modelMetrics["security"].([]any)
+	if !exists || len(public) != 0 || !strings.Contains(fmt.Sprint(modelDocument["servers"]), "11434") {
+		t.Errorf("model /metrics must be public on the model listener: operation=%v servers=%v", modelMetrics, modelDocument["servers"])
+	}
+	components := document["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	status := schemas["ModelRequestStatus"].(map[string]any)
+	enum := fmt.Sprint(status["enum"])
+	for _, required := range []string{"cancel_requested", "dropped"} {
+		if !strings.Contains(enum, required) {
+			t.Errorf("ModelRequestStatus omits %s", required)
+		}
+	}
+	queue := fmt.Sprint(schemas["ModelQueue"])
+	for _, field := range []string{"queued", "running", "cancel_requested", "max_depth", "in_flight_request_ids"} {
+		if !strings.Contains(queue, field) {
+			t.Errorf("ModelQueue omits %s", field)
+		}
+	}
+	responses := components["responses"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(responses["ModelBrokerStatusResponse"]), "queue") {
+		t.Error("ModelBrokerStatusResponse omits queue")
 	}
 }
 

@@ -4,23 +4,130 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
 func (s *PostgresStore) CreateModelBrokerRequest(input CreateModelBrokerRequestInput) (ModelBrokerRequest, error) {
-	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Model) == "" {
-		return ModelBrokerRequest{}, ErrInvalid
+	req, _, err := s.admitModelBrokerRequest(input, ModelBrokerRequestQueued, 0)
+	return req, err
+}
+
+func (s *PostgresStore) BeginModelBrokerRequest(input CreateModelBrokerRequestInput) (ModelBrokerRequest, bool, error) {
+	return s.admitModelBrokerRequest(input, ModelBrokerRequestRunning, 0)
+}
+
+func (s *PostgresStore) AdmitModelBrokerRequest(input CreateModelBrokerRequestInput, maxActive int) (ModelBrokerRequest, bool, error) {
+	return s.admitModelBrokerRequest(input, ModelBrokerRequestQueued, maxActive)
+}
+
+func (s *PostgresStore) admitModelBrokerRequest(input CreateModelBrokerRequestInput, requestedStatus string, maxActive int) (ModelBrokerRequest, bool, error) {
+	if strings.TrimSpace(input.ID) == "" || strings.TrimSpace(input.Model) == "" || maxActive < 0 {
+		return ModelBrokerRequest{}, false, ErrInvalid
+	}
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ModelBrokerRequest{}, false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `select pg_advisory_xact_lock($1)`, int64(7_031_270_001)); err != nil {
+		return ModelBrokerRequest{}, false, err
+	}
+	if existing, err := scanModelBrokerRequestRow(tx.QueryRowContext(ctx, `select `+modelBrokerRequestColumns+` from model_broker_requests where id=$1`, input.ID)); err == nil {
+		if err := tx.Commit(); err != nil {
+			return ModelBrokerRequest{}, false, err
+		}
+		if existing.Status == ModelBrokerRequestDropped && existing.Error == "queue capacity exceeded" {
+			return existing, false, ErrQueueFull
+		}
+		return existing, false, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return ModelBrokerRequest{}, false, err
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, `select count(*) from model_broker_requests where status in ($1,$2,$3)`, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested).Scan(&active); err != nil {
+		return ModelBrokerRequest{}, false, err
+	}
+	status, errorText := requestedStatus, ""
+	if maxActive > 0 && active >= maxActive {
+		status, errorText = ModelBrokerRequestDropped, "queue capacity exceeded"
 	}
 	body := redactPersistedJSON(input.RequestBody)
-	if _, err := s.db.ExecContext(s.operationContext(), `
-		insert into model_broker_requests(id, status, model, path, client, client_priority, request_body, correlation_ids, created_at, updated_at)
-		values($1,$2,$3,$4,$5,$6,$7::jsonb,'{}'::jsonb,now(),now())
-		on conflict(id) do nothing`, input.ID, ModelBrokerRequestQueued, input.Model, input.Path, input.Client, input.Priority, body); err != nil {
+	row := tx.QueryRowContext(ctx, `insert into model_broker_requests(id,status,model,path,client,client_priority,request_body,error,correlation_ids,started_at,finished_at,created_at,updated_at) values($1,$2,$3,$4,$5,$6,$7::jsonb,$8,'{}'::jsonb,case when $2=$9 then now() end,case when $2=$10 then now() end,now(),now()) on conflict(id) do nothing returning `+modelBrokerRequestColumns, input.ID, status, input.Model, input.Path, input.Client, input.Priority, body, errorText, ModelBrokerRequestRunning, ModelBrokerRequestDropped)
+	req, err := scanModelBrokerRequestRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		req, err = scanModelBrokerRequestRow(tx.QueryRowContext(ctx, `select `+modelBrokerRequestColumns+` from model_broker_requests where id=$1`, input.ID))
+		if err == nil {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return ModelBrokerRequest{}, false, commitErr
+			}
+			if req.Status == ModelBrokerRequestDropped && req.Error == "queue capacity exceeded" {
+				return req, false, ErrQueueFull
+			}
+			return req, false, nil
+		}
+	}
+	if err != nil {
+		return ModelBrokerRequest{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ModelBrokerRequest{}, false, err
+	}
+	if status == ModelBrokerRequestDropped {
+		return req, false, ErrQueueFull
+	}
+	return req, true, nil
+}
+
+func (s *PostgresStore) ModelBrokerQueueSnapshot(idLimit int) (ModelBrokerQueueSnapshot, error) {
+	if idLimit < 0 {
+		return ModelBrokerQueueSnapshot{}, ErrInvalid
+	}
+	ctx := s.operationContext()
+	var snapshot ModelBrokerQueueSnapshot
+	err := s.db.QueryRowContext(ctx, `select count(*) filter (where status=$1), count(*) filter (where status=$2), count(*) filter (where status=$3) from model_broker_requests where status in ($1,$2,$3)`, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested).Scan(&snapshot.Queued, &snapshot.Running, &snapshot.CancelRequested)
+	if err != nil {
+		return ModelBrokerQueueSnapshot{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `select id from model_broker_requests where status in ($1,$2) order by created_at asc, id asc limit $3`, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, idLimit)
+	if err != nil {
+		return ModelBrokerQueueSnapshot{}, err
+	}
+	defer rows.Close()
+	snapshot.InFlightIDs = []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return ModelBrokerQueueSnapshot{}, err
+		}
+		snapshot.InFlightIDs = append(snapshot.InFlightIDs, id)
+	}
+	return snapshot, rows.Err()
+}
+
+func (s *PostgresStore) TransitionModelBrokerRequest(id string, input TransitionModelBrokerRequestInput) (ModelBrokerRequest, error) {
+	if !ModelBrokerRequestTransitionAllowed(input.ExpectedStatus, input.Status) {
+		return ModelBrokerRequest{}, ErrConflict
+	}
+	correlation, err := json.Marshal(mergeStringMaps(nil, input.CorrelationIDs))
+	if err != nil {
 		return ModelBrokerRequest{}, err
 	}
-	return s.ModelBrokerRequest(input.ID)
+	response := redactPersistedJSON(input.ResponseBody)
+	errorText := embeddedSecretPattern.ReplaceAllString(input.Error, `${1}${2}${3}[REDACTED]`)
+	terminal := isTerminalModelBrokerRequest(input.Status)
+	row := s.db.QueryRowContext(s.operationContext(), `update model_broker_requests set status=$3, response_body=case when $7 then $4::jsonb else response_body end, error=case when $7 then $5 else error end, correlation_ids=`+modelCorrelationMergeSQL("$6")+`, started_at=case when $3=$8 then coalesce(started_at,now()) else started_at end, cancel_requested_at=case when $3 in ($9,$10) then coalesce(cancel_requested_at,now()) else cancel_requested_at end, finished_at=case when $7 then coalesce(finished_at,now()) else finished_at end, updated_at=now() where id=$1 and status=$2 returning `+modelBrokerRequestColumns, id, input.ExpectedStatus, input.Status, response, errorText, string(correlation), terminal, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled)
+	req, err := scanModelBrokerRequestRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, lookupErr := s.ModelBrokerRequest(id); lookupErr != nil {
+			return ModelBrokerRequest{}, lookupErr
+		}
+		return ModelBrokerRequest{}, ErrConflict
+	}
+	return req, err
 }
 
 func (s *PostgresStore) StartModelBrokerRequest(id string) (ModelBrokerRequest, error) {
@@ -57,7 +164,7 @@ func (s *PostgresStore) FinishModelBrokerRequest(id string, input FinishModelBro
 	}
 	response := redactPersistedJSON(input.ResponseBody)
 	errorText := embeddedSecretPattern.ReplaceAllString(input.Error, `${1}${2}${3}[REDACTED]`)
-	row := s.db.QueryRowContext(s.operationContext(), `update model_broker_requests set status=$2, response_body=$3::jsonb, error=$4, correlation_ids=correlation_ids || $5::jsonb, finished_at=now(), updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, status, response, errorText, string(correlation))
+	row := s.db.QueryRowContext(s.operationContext(), `update model_broker_requests set status=$2, response_body=$3::jsonb, error=$4, correlation_ids=`+modelCorrelationMergeSQL("$5")+`, finished_at=now(), updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, status, response, errorText, string(correlation))
 	req, err := scanModelBrokerRequestRow(row)
 	return req, mapScanErr(err)
 }
@@ -71,7 +178,7 @@ func (s *PostgresStore) MergeModelBrokerRequestCorrelationIDs(id string, correla
 	if err != nil {
 		return ModelBrokerRequest{}, err
 	}
-	row := tx.QueryRowContext(s.operationContext(), `update model_broker_requests set correlation_ids=correlation_ids || $2::jsonb, updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, string(correlation))
+	row := tx.QueryRowContext(s.operationContext(), `update model_broker_requests set correlation_ids=`+modelCorrelationMergeSQL("$2")+`, updated_at=now() where id=$1 returning `+modelBrokerRequestColumns, id, string(correlation))
 	req, err := scanModelBrokerRequestRow(row)
 	if err != nil {
 		_ = tx.Rollback()
@@ -90,18 +197,51 @@ func (s *PostgresStore) MergeModelBrokerRequestCorrelationIDs(id string, correla
 }
 
 func (s *PostgresStore) CancelModelBrokerRequest(id string) (ModelBrokerRequest, error) {
-	row := s.db.QueryRowContext(s.operationContext(), `update model_broker_requests set status=$2, cancel_requested_at=now(), updated_at=now() where id=$1 and status in ($3,$4,$5) returning `+modelBrokerRequestColumns, id, ModelBrokerRequestCancelRequested, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested)
-	req, err := scanModelBrokerRequestRow(row)
-	return req, mapScanErr(err)
+	for {
+		req, err := s.ModelBrokerRequest(id)
+		if err != nil || isTerminalModelBrokerRequest(req.Status) || req.Status == ModelBrokerRequestCancelRequested {
+			return req, err
+		}
+		status, errorText := ModelBrokerRequestCancelRequested, ""
+		if req.Status == ModelBrokerRequestQueued {
+			status, errorText = ModelBrokerRequestCanceled, "request canceled before execution"
+		}
+		req, err = s.TransitionModelBrokerRequest(id, TransitionModelBrokerRequestInput{ExpectedStatus: req.Status, Status: status, Error: errorText})
+		if errors.Is(err, ErrConflict) {
+			continue
+		}
+		return req, err
+	}
 }
 
 func (s *PostgresStore) CancelAllModelBrokerRequests() (int, error) {
-	result, err := s.db.ExecContext(s.operationContext(), `update model_broker_requests set status=$1, cancel_requested_at=now(), updated_at=now() where status in ($2,$3,$4)`, ModelBrokerRequestCancelRequested, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested)
+	requests, err := s.RequestCancelModelBrokerRequests(nil)
+	return len(requests), err
+}
+
+func (s *PostgresStore) RequestCancelModelBrokerRequests(correlationIDs map[string]string) ([]ModelBrokerRequest, error) {
+	correlation, err := json.Marshal(mergeStringMaps(nil, correlationIDs))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	count, _ := result.RowsAffected()
-	return int(count), nil
+	rows, err := s.db.QueryContext(s.operationContext(), `update model_broker_requests set status=case when status=$1 then $4 else $3 end, error=case when status=$1 then 'request canceled before execution' else error end, correlation_ids=`+modelCorrelationMergeSQL("$5")+`, cancel_requested_at=coalesce(cancel_requested_at,now()), finished_at=case when status=$1 then coalesce(finished_at,now()) else finished_at end, updated_at=now() where status in ($1,$2) returning `+modelBrokerRequestColumns, ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled, string(correlation))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ModelBrokerRequest{}
+	for rows.Next() {
+		req, err := scanModelBrokerRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, req)
+	}
+	return out, rows.Err()
+}
+
+func modelCorrelationMergeSQL(parameter string) string {
+	return `case when correlation_ids ? 'audit_action' then correlation_ids || (` + parameter + `::jsonb - 'audit_action' - 'audit_actor' - 'audit_reason') else correlation_ids || ` + parameter + `::jsonb end`
 }
 
 func (s *PostgresStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error) {
@@ -140,11 +280,7 @@ func (s *PostgresStore) ListModelBrokerRequestsContext(ctx context.Context, filt
 		query += ` where ` + strings.Join(where, ` and `)
 	}
 	args = append(args, limit)
-	if len(filter.Statuses) > 0 {
-		query += fmt.Sprintf(` order by client_priority desc, created_at asc, id asc limit $%d`, len(args))
-	} else {
-		query += fmt.Sprintf(` order by created_at desc, id desc limit $%d`, len(args))
-	}
+	query += fmt.Sprintf(` order by created_at desc, id desc limit $%d`, len(args))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -214,7 +350,7 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 		_ = tx.Rollback()
 		return RetentionResult{}, err
 	}
-	requestResult, err := tx.ExecContext(s.operationContext(), `delete from model_broker_requests where created_at < $1 and status in ($2,$3,$4)`, before.UTC(), ModelBrokerRequestCompleted, ModelBrokerRequestFailed, ModelBrokerRequestCanceled)
+	requestResult, err := tx.ExecContext(s.operationContext(), `delete from model_broker_requests where created_at < $1 and status in ($2,$3,$4,$5)`, before.UTC(), ModelBrokerRequestCompleted, ModelBrokerRequestFailed, ModelBrokerRequestCanceled, ModelBrokerRequestDropped)
 	if err != nil {
 		_ = tx.Rollback()
 		return RetentionResult{}, err

@@ -24,6 +24,7 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 - **Native runtime core:** Go interfaces separate domain policy from stores and external executors.
 - **Durable execution:** pipeline snapshots, step/event/artifact records, workers with leases, retries, scheduling, and retention.
 - **Boundary safety:** authenticated operator routes and provider-compatible model routes are exposed through different handlers/listeners.
+- **Model lifecycle:** one native `ModelService` owns durable admission, queue workers, recovery, active cancellation, and terminal transition arbitration; compatibility handlers only adapt legacy envelopes.
 - **First-party workflows:** Open Pilot, Changemaker, and Devlog use generic runtime mechanics rather than owning schedulers.
 - **Managed agent runtime:** Blacktower is represented by OpenCode profiles, prompts, plugins, and model defaults—not a separate app.
 - **Operator visibility:** the web SPA consumes typed API contracts for runs, queues, observability, adapters, and configuration.

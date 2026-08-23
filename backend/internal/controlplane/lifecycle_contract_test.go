@@ -20,6 +20,40 @@ type lifecycleStoreFactory struct {
 func TestStoreLifecycleContract(t *testing.T) {
 	for _, factory := range lifecycleStoreFactories() {
 		t.Run(factory.name, func(t *testing.T) {
+			t.Run("model_cancel_audit_is_first_write_wins", func(t *testing.T) {
+				now := time.Unix(1_000, 0).UTC()
+				store := factory.new(t, &now)
+				req, _, err := store.BeginModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "audit-first", Model: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req, err = store.TransitionModelBrokerRequest(req.ID, controlplane.TransitionModelBrokerRequestInput{ExpectedStatus: controlplane.ModelBrokerRequestRunning, Status: controlplane.ModelBrokerRequestCancelRequested, CorrelationIDs: map[string]string{"audit_action": "cancel", "audit_actor": "first", "audit_reason": "first reason"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				firstRequestedAt := *req.CancelRequestedAt
+				now = now.Add(time.Hour)
+				rows, err := store.RequestCancelModelBrokerRequests(map[string]string{"audit_action": "cancel_all", "audit_actor": "second", "audit_reason": "second reason"})
+				if err != nil || len(rows) != 0 {
+					t.Fatalf("recancel rows=%d err=%v", len(rows), err)
+				}
+				stored, err := store.ModelBrokerRequest(req.ID)
+				if err != nil || stored.CorrelationIDs["audit_action"] != "cancel" || stored.CorrelationIDs["audit_actor"] != "first" || stored.CorrelationIDs["audit_reason"] != "first reason" || stored.CancelRequestedAt == nil || !stored.CancelRequestedAt.Equal(firstRequestedAt) {
+					t.Fatalf("stored=%+v err=%v", stored, err)
+				}
+				partial, _, err := store.BeginModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "audit-partial", Model: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				partial, err = store.TransitionModelBrokerRequest(partial.ID, controlplane.TransitionModelBrokerRequestInput{ExpectedStatus: controlplane.ModelBrokerRequestRunning, Status: controlplane.ModelBrokerRequestCancelRequested, CorrelationIDs: map[string]string{"audit_action": "cancel"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				partial, err = store.MergeModelBrokerRequestCorrelationIDs(partial.ID, map[string]string{"audit_action": "drop", "audit_actor": "later", "audit_reason": "later reason"})
+				if err != nil || partial.CorrelationIDs["audit_action"] != "cancel" || partial.CorrelationIDs["audit_actor"] != "" || partial.CorrelationIDs["audit_reason"] != "" {
+					t.Fatalf("partial audit tuple mixed: %+v err=%v", partial.CorrelationIDs, err)
+				}
+			})
 			t.Run("failed_attempt_requeues_after_delay_and_completes", func(t *testing.T) {
 				now := time.Unix(1_000, 0).UTC()
 				store := factory.new(t, &now)
@@ -258,6 +292,36 @@ func TestStoreLifecycleContract(t *testing.T) {
 				}
 				if len(detail.Steps) != 1 || detail.Steps[0].Status != controlplane.StepFailed || detail.Steps[0].Error != "Worker lease expired" || detail.Steps[0].CorrelationIDs[controlplane.CorrelationDeprecatedBackend] != "llama-line" {
 					t.Fatalf("terminal recovered steps = %+v", detail.Steps)
+				}
+			})
+
+			t.Run("model_admission_and_cancel_timestamps_match", func(t *testing.T) {
+				now := time.Unix(8_000, 0).UTC()
+				store := factory.new(t, &now)
+				accepted, admitted, err := store.AdmitModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "accepted-" + factory.name, Model: "test"}, 1)
+				if err != nil || !admitted || accepted.Status != controlplane.ModelBrokerRequestQueued {
+					t.Fatalf("accepted=%+v admitted=%v err=%v", accepted, admitted, err)
+				}
+				dropped, admitted, err := store.AdmitModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "dropped-" + factory.name, Model: "test"}, 1)
+				if err != controlplane.ErrQueueFull || admitted || dropped.Status != controlplane.ModelBrokerRequestDropped {
+					t.Fatalf("dropped=%+v admitted=%v err=%v", dropped, admitted, err)
+				}
+				replayed, admitted, err := store.AdmitModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: dropped.ID, Model: "changed"}, 1)
+				if err != controlplane.ErrQueueFull || admitted || replayed.Model != "test" {
+					t.Fatalf("replayed=%+v admitted=%v err=%v", replayed, admitted, err)
+				}
+				running, _, err := store.BeginModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "running-" + factory.name, Model: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				first, err := store.CancelModelBrokerRequest(running.ID)
+				if err != nil || first.CancelRequestedAt == nil {
+					t.Fatalf("first cancel=%+v err=%v", first, err)
+				}
+				now = now.Add(time.Hour)
+				second, err := store.CancelModelBrokerRequest(running.ID)
+				if err != nil || second.CancelRequestedAt == nil || !second.CancelRequestedAt.Equal(*first.CancelRequestedAt) {
+					t.Fatalf("second cancel=%+v err=%v first=%v", second, err, first.CancelRequestedAt)
 				}
 			})
 		})

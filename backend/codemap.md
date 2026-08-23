@@ -5,12 +5,13 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 
 ## Design
 - Two binaries share `internal/controlplane`: `cmd/app` is the server and `cmd/switchyard` is the operator CLI.
-- Interfaces (`Store`, `WorkflowExecutor`, `ModelBroker`, `OpenCodeExecutor`) isolate persistence and compatibility backends; memory and PostgreSQL implementations are split by workflow, run, Open Pilot, and broker domains.
+- `ModelService` is the single model-runtime lifecycle owner. Workflows receive the narrow `ModelGeneration` capability; authenticated control and compatibility handlers receive lifecycle operations through `ModelRuntimeControl` or a thin facade.
+- Interfaces (`Store`, `WorkflowExecutor`, `ModelGeneration`, `ModelRuntimeControl`, `OpenCodeExecutor`) isolate persistence and compatibility backends; memory and PostgreSQL implementations are split by workflow, run, Open Pilot, and broker domains.
 - The API and model-compatible ingress use separate handlers and are intended for separate listeners.
 
 ## Flow
 1. `cmd/app` loads telemetry and selects memory or PostgreSQL storage.
-2. Defaults are seeded, then `Runner`, `API`, workers, scheduler, and retention are assembled.
+2. Defaults are seeded, then one `ModelService` is shared by workflow generation, control handlers, and compatibility adapters before workers, scheduler, and retention are assembled.
 3. HTTP or scheduled triggers create runs; workers claim and execute pipeline snapshots.
 4. Executors call models, OpenCode, Gitea, Git, or allowlisted commands and persist steps, events, artifacts, resolved backend decisions, and compatibility evidence.
 

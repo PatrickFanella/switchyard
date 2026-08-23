@@ -31,13 +31,18 @@ type llamaLineCompatChatRequest struct {
 }
 
 func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-	status := a.modelBroker.Status(ctx)
-	queued, inflight := a.compatBroker.snapshot(r.Context())
-	inFlightIDs := a.compatBroker.inFlightIDs(r.Context())
-	if len(inFlightIDs) > 0 {
-		status.InFlightRequestIDs = inFlightIDs
+	upstreamCtx, cancelUpstream := context.WithTimeout(r.Context(), 2*time.Second)
+	status := a.modelBroker.Status(upstreamCtx)
+	cancelUpstream()
+	queueCtx, cancelQueue := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancelQueue()
+	queued, inflight, queueStatus, err := a.compatBroker.snapshot(queueCtx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(queueStatus.InFlightIDs) > 0 {
+		status.InFlightRequestIDs = queueStatus.InFlightIDs
 		status.ActiveRequest = true
 	}
 	body := map[string]any{
@@ -45,9 +50,9 @@ func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
 		"backend":               "switchyard-native",
 		"effective_selector":    status.EffectiveSelector,
 		"compatibility_warning": status.CompatibilityWarning,
-		"queue_depth":           len(queued),
-		"max_depth":             status.MaxDepth,
-		"active_request":        len(inflight) > 0 || status.ActiveRequest,
+		"queue_depth":           queueStatus.Queued + queueStatus.CancelRequested,
+		"max_depth":             queueStatus.MaxDepth,
+		"active_request":        queueStatus.Running+queueStatus.CancelRequested > 0 || status.ActiveRequest,
 		"connected_clients":     status.ConnectedClients,
 		"in_flight_ids":         status.InFlightRequestIDs,
 		"queue":                 queued,
@@ -93,7 +98,12 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 		model = firstNonEmpty(r.URL.Query().Get("model"), "gpt-5.4")
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "path": r.URL.Path, "stream": true})
-	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
+	req, ctx, finish, err := a.compatBroker.begin(r, model, string(requestBody))
+	if err != nil {
+		a.writeCompatBeginError(w, req, err)
+		return
+	}
+	requestID := req.ID
 	ctx, span := startControlPlaneSpan(ctx, "http.model_compat.stream",
 		attribute.String("path", r.URL.Path),
 		attribute.String("model", model),
@@ -112,40 +122,55 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 		)
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
-	broker := NewEnvModelBroker()
-	setDeprecatedBackendHeaders(w.Header(), resolveModelExecutionRoute(model, strings.TrimSpace(broker.ollamaBaseURL) != ""))
+	setDeprecatedBackendHeaders(w.Header(), a.compatBroker.runtime.ExecutionDecision(model))
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-OCQ-Status", "running")
-	w.Header().Set("X-OCQ-Streaming-Mode", broker.StreamingMode(model))
+	w.Header().Set("X-OCQ-Streaming-Mode", a.compatBroker.runtime.StreamingMode(model))
 	w.WriteHeader(http.StatusOK)
-	writeCompatSSE(w, "status", map[string]any{"status": "queued", "request_id": requestID, "backend": "switchyard-native"})
-	writeCompatSSE(w, "status", map[string]any{"status": "running", "request_id": requestID, "backend": "switchyard-native"})
-	flushCompatSSE(w)
+	if err := writeCompatSSE(w, "status", map[string]any{"status": "queued", "request_id": requestID, "backend": "switchyard-native"}); err != nil {
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), nil)
+		return
+	}
+	if err := writeCompatSSE(w, "status", map[string]any{"status": "running", "request_id": requestID, "backend": "switchyard-native"}); err != nil {
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), nil)
+		return
+	}
+	if err := flushCompatSSE(w); err != nil {
+		finish(ModelBrokerRequestFailed, `{}`, err.Error(), nil)
+		return
+	}
 
 	var streamed strings.Builder
 	var correlation map[string]string
-	response, err := broker.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
-		_, mergeErr := a.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(requestID, decision.CorrelationIDs())
+	response, err := a.compatBroker.runtime.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := a.compatBroker.runtime.MergeCorrelation(ctx, requestID, decision.CorrelationIDs())
 		return mergeErr
 	}}, func(event ModelStreamEvent) error {
-		if event.CorrelationIDs != nil {
-			correlation = event.CorrelationIDs
-		}
-		if event.Content != "" {
-			streamed.WriteString(event.Content)
-			payload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, event.Content, false))
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-			flushCompatSSE(w)
-		}
-		return nil
+		return a.compatBroker.runtime.Emit(ctx, requestID, event, func(committed ModelStreamEvent) error {
+			if committed.CorrelationIDs != nil {
+				correlation = committed.CorrelationIDs
+			}
+			if committed.Content != "" {
+				streamed.WriteString(committed.Content)
+				payload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, committed.Content, false))
+				if err := setCompatWriteDeadline(w); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+					return err
+				}
+				return flushCompatSSE(w)
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		spanErr = err
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
-		writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		_ = writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
+		_ = writeCompatRaw(w, "data: [DONE]\n\n")
 		return
 	}
 	if response.CorrelationIDs == nil {
@@ -161,9 +186,14 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	setCompatRequestHeaders(w.Header(), requestID, response.CorrelationIDs)
 	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
-	writeCompatSSE(w, "status", map[string]any{"status": "completed", "request_id": requestID, "backend": "switchyard-native"})
+	if !a.modelRequestCompleted(ctx, requestID) {
+		_ = writeCompatSSE(w, "error", map[string]any{"status": "canceled", "request_id": requestID, "error": "request canceled", "backend": "switchyard-native"})
+		_ = writeCompatRaw(w, "data: [DONE]\n\n")
+		return
+	}
+	_ = writeCompatSSE(w, "status", map[string]any{"status": "completed", "request_id": requestID, "backend": "switchyard-native"})
 	finishPayload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, "", true))
-	_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", finishPayload)
+	_ = writeCompatRaw(w, fmt.Sprintf("data: %s\n\ndata: [DONE]\n\n", finishPayload))
 }
 
 func (a *API) llamaLineCompatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +296,12 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 		return ModelResponse{}, false
 	}
 	requestBody, _ := json.Marshal(map[string]any{"model": model, "messages": input.Messages, "tools": input.Tools, "path": r.URL.Path})
-	requestID, ctx, finish := a.compatBroker.begin(r, model, string(requestBody))
+	req, ctx, finish, err := a.compatBroker.begin(r, model, string(requestBody))
+	if err != nil {
+		a.writeCompatBeginError(w, req, err)
+		return ModelResponse{}, false
+	}
+	requestID := req.ID
 	ctx, span := startControlPlaneSpan(ctx, "http.model_compat.generate",
 		attribute.String("path", r.URL.Path),
 		attribute.String("model", model),
@@ -285,10 +320,9 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 		)
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
-	broker := NewEnvModelBroker()
-	setDeprecatedBackendHeaders(w.Header(), resolveModelExecutionRoute(model, strings.TrimSpace(broker.ollamaBaseURL) != ""))
-	response, err := broker.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
-		_, mergeErr := a.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(requestID, decision.CorrelationIDs())
+	setDeprecatedBackendHeaders(w.Header(), a.compatBroker.runtime.ExecutionDecision(model))
+	response, err := a.compatBroker.runtime.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+		_, mergeErr := a.compatBroker.runtime.MergeCorrelation(ctx, requestID, decision.CorrelationIDs())
 		return mergeErr
 	}})
 	if err != nil {
@@ -306,7 +340,22 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("X-OCQ-Status", "completed")
 	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "tool_calls": response.ToolCalls, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
+	if !a.modelRequestCompleted(ctx, requestID) {
+		w.Header().Set("X-OCQ-Status", "failed")
+		writeError(w, http.StatusBadGateway, "request canceled")
+		return ModelResponse{}, false
+	}
 	return response, true
+}
+
+func (a *API) modelRequestAllowsOutput(ctx context.Context, id string) bool {
+	req, err := a.modelRuntime.Get(ctx, id)
+	return err == nil && req.Status == ModelBrokerRequestRunning
+}
+
+func (a *API) modelRequestCompleted(ctx context.Context, id string) bool {
+	req, err := a.modelRuntime.Get(ctx, id)
+	return err == nil && req.Status == ModelBrokerRequestCompleted
 }
 
 func validateModelRequestSize(model string, messages []ModelMessage) error {
@@ -419,17 +468,66 @@ func setDeprecatedBackendHeaders(header http.Header, decision BackendDecision) {
 	header.Set("X-Switchyard-Compatibility-Warning", decision.CompatibilityWarning)
 }
 
-func writeCompatSSE(w http.ResponseWriter, event string, payload map[string]any) {
+func writeCompatSSE(w http.ResponseWriter, event string, payload map[string]any) error {
+	if err := setCompatWriteDeadline(w); err != nil {
+		return err
+	}
 	encoded, _ := json.Marshal(payload)
 	if event != "" {
-		_, _ = fmt.Fprintf(w, "event: %s\n", event)
+		if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+			return err
+		}
 	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+	_, err := fmt.Fprintf(w, "data: %s\n\n", encoded)
+	return err
 }
 
-func flushCompatSSE(w http.ResponseWriter) {
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
+func flushCompatSSE(w http.ResponseWriter) error {
+	err := http.NewResponseController(w).Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
+}
+
+func setCompatWriteDeadline(w http.ResponseWriter) error {
+	err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
+}
+
+func writeCompatRaw(w http.ResponseWriter, payload string) error {
+	if err := setCompatWriteDeadline(w); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, payload)
+	return err
+}
+
+func (a *API) writeCompatBeginError(w http.ResponseWriter, req ModelBrokerRequest, err error) {
+	if !errors.Is(err, ErrConflict) {
+		writeControlError(w, err)
+		return
+	}
+	resultURL := "/api/requests/" + req.ID + "/result"
+	w.Header().Set("Location", resultURL)
+	setCompatRequestHeaders(w.Header(), req.ID, req.CorrelationIDs)
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"id": req.ID, "request_id": req.ID, "status": req.Status, "replayed": true,
+		"result_url": resultURL, "history_url": "/api/history/" + req.ID, "backend": "switchyard-native",
+	})
+}
+
+func writeCompatCancelError(w http.ResponseWriter, id string, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "cancelled": 0, "backend": "switchyard-native"})
+	case errors.Is(err, ErrConflict):
+		writeJSON(w, http.StatusConflict, map[string]any{"status": "conflict", "id": id, "cancelled": 0, "backend": "switchyard-native"})
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
 	}
 }
 
@@ -562,27 +660,40 @@ func openAIModelsResponse(ollama map[string]any) map[string]any {
 }
 
 func (a *API) llamaLineCompatQueue(w http.ResponseWriter, r *http.Request) {
-	queued, inflight := a.compatBroker.snapshot(r.Context())
 	if r.Method == http.MethodDelete {
-		cancelled := a.compatBroker.cancelAll(r.Context(), "canceled")
+		cancelled, err := a.compatBroker.cancelAll(r.Context(), "canceled")
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "cancelled": cancelled, "backend": "switchyard-native"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"queue": queued, "queue_depth": len(queued), "inflight_depth": len(inflight), "max_depth": a.compatBroker.maxDepth, "backend": "switchyard-native"})
+	queued, _, status, err := a.compatBroker.snapshot(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"queue": queued, "queue_depth": status.Queued + status.CancelRequested, "inflight_depth": status.Running, "max_depth": status.MaxDepth, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatQueueItem(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if a.compatBroker.cancel(r.Context(), id) {
+	if err := a.compatBroker.cancel(r.Context(), id); err == nil {
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "canceled", "id": id, "backend": "switchyard-native"})
 		return
+	} else {
+		writeCompatCancelError(w, id, err)
 	}
-	writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatInflight(w http.ResponseWriter, r *http.Request) {
-	_, inflight := a.compatBroker.snapshot(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"inflight": inflight, "active_request": len(inflight) > 0, "inflight_depth": len(inflight), "backend": "switchyard-native"})
+	_, inflight, status, err := a.compatBroker.snapshot(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"inflight": inflight, "active_request": status.Running > 0, "inflight_depth": status.Running, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatInflightCancel(w http.ResponseWriter, r *http.Request) {
@@ -593,14 +704,19 @@ func (a *API) llamaLineCompatInflightCancel(w http.ResponseWriter, r *http.Reque
 	_ = json.NewDecoder(r.Body).Decode(&input)
 	id := firstNonEmpty(input.ID, input.RequestID, r.URL.Query().Get("id"), r.URL.Query().Get("request_id"))
 	if id != "" {
-		if a.compatBroker.cancel(r.Context(), id) {
+		if err := a.compatBroker.cancel(r.Context(), id); err == nil {
 			writeJSON(w, http.StatusAccepted, map[string]any{"status": "canceled", "id": id, "cancelled": 1, "backend": "switchyard-native"})
 			return
+		} else {
+			writeCompatCancelError(w, id, err)
+			return
 		}
-		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "cancelled": 0, "backend": "switchyard-native"})
+	}
+	cancelled, err := a.compatBroker.cancelAll(r.Context(), "canceled")
+	if err != nil {
+		writeControlError(w, err)
 		return
 	}
-	cancelled := a.compatBroker.cancelAll(r.Context(), "canceled")
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "cancelled": cancelled, "backend": "switchyard-native"})
 }
 
@@ -656,7 +772,7 @@ func (a *API) llamaLineCompatRequestResult(w http.ResponseWriter, r *http.Reques
 	switch req.Status {
 	case ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested:
 		writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": false, "history_url": "/api/history/" + req.ID, "backend": "switchyard-native"})
-	case ModelBrokerRequestCanceled:
+	case ModelBrokerRequestCanceled, ModelBrokerRequestDropped:
 		writeJSON(w, http.StatusGone, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": false, "error": req.Error, "backend": "switchyard-native"})
 	case ModelBrokerRequestFailed:
 		writeJSON(w, http.StatusBadGateway, map[string]any{"id": req.ID, "request_id": req.ID, "status": req.Status, "result_available": true, "error": req.Error, "backend": "switchyard-native"})
@@ -741,8 +857,12 @@ func (a *API) llamaLineCompatStatsSummary(w http.ResponseWriter, r *http.Request
 			byModel[req.Model]++
 		}
 	}
-	queued, inflight := a.compatBroker.snapshot(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"requests_total": len(requests), "by_status": byStatus, "by_model": byModel, "queue_depth": len(queued), "inflight_depth": len(inflight), "backend": "switchyard-native"})
+	_, _, status, err := a.compatBroker.snapshot(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests_total": len(requests), "by_status": byStatus, "by_model": byModel, "queue_depth": status.Queued + status.CancelRequested, "inflight_depth": status.Running, "backend": "switchyard-native"})
 }
 
 func (a *API) llamaLineCompatFeedback(w http.ResponseWriter, r *http.Request) {
@@ -825,11 +945,15 @@ func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model broker metrics unavailable")
 		return
 	}
-	queued, inflight := a.compatBroker.snapshot(r.Context())
+	_, _, queueStatus, err := a.compatBroker.snapshot(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "model broker metrics unavailable")
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintln(w, "# HELP switchyard_model_broker_records Durable model broker requests currently retained by status.")
 	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_records gauge")
-	for _, status := range []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled, ModelBrokerRequestCompleted, ModelBrokerRequestFailed} {
+	for _, status := range []string{ModelBrokerRequestQueued, ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested, ModelBrokerRequestCanceled, ModelBrokerRequestDropped, ModelBrokerRequestCompleted, ModelBrokerRequestFailed} {
 		_, _ = fmt.Fprintf(w, "switchyard_model_broker_records{status=%q} %d\n", status, metrics.ModelRequestStatusCounts[status])
 	}
 	_, _ = fmt.Fprintln(w, "# TYPE switchyard_workflow_runs gauge")
@@ -840,9 +964,9 @@ func (a *API) llamaLineCompatMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "switchyard_model_broker_latency_milliseconds_count %d\n", metrics.ModelLatencyCount)
 	_, _ = fmt.Fprintf(w, "switchyard_model_broker_latency_milliseconds_sum %.3f\n", metrics.ModelLatencyMilliseconds)
 	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_queue_depth gauge")
-	_, _ = fmt.Fprintf(w, "switchyard_model_broker_queue_depth %d\n", len(queued))
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_queue_depth %d\n", queueStatus.Queued+queueStatus.CancelRequested)
 	_, _ = fmt.Fprintln(w, "# TYPE switchyard_model_broker_inflight gauge")
-	_, _ = fmt.Fprintf(w, "switchyard_model_broker_inflight %d\n", len(inflight))
+	_, _ = fmt.Fprintf(w, "switchyard_model_broker_inflight %d\n", queueStatus.Running)
 	if a.workerPool != nil {
 		status := a.workerPool.Status()
 		_, _ = fmt.Fprintln(w, "# TYPE switchyard_worker_active gauge")

@@ -190,10 +190,6 @@ func TestAPIWorkflowDefinitionActivationVersionsAndRollback(t *testing.T) {
 
 func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
 	store := controlplane.NewStore(time.Now)
-	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
-	srv := httptest.NewServer(api.Handler())
-	t.Cleanup(srv.Close)
-
 	req, err := store.CreateModelBrokerRequest(controlplane.CreateModelBrokerRequestInput{ID: "req-1", Model: "qwen3.5:latest", Path: "/api/generate", Client: "test", RequestBody: `{"prompt":"redacted"}`})
 	if err != nil {
 		t.Fatalf("create request: %v", err)
@@ -204,6 +200,9 @@ func TestAPIModelBrokerObservabilitySummarizesLedger(t *testing.T) {
 	if _, err := store.FinishModelBrokerRequest(req.ID, controlplane.FinishModelBrokerRequestInput{Status: controlplane.ModelBrokerRequestCompleted, ResponseBody: `{"response":"redacted"}`, CorrelationIDs: map[string]string{"trace_id": "abc"}}); err != nil {
 		t.Fatalf("finish request: %v", err)
 	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/api/observability/model-broker")
 	if err != nil {
@@ -944,6 +943,75 @@ func TestAPILlamaLineCompatSetsCorrelationHeaders(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream did not receive request")
+	}
+}
+
+func TestAPILlamaLineCompatDuplicateRequestReplaysWithoutGeneration(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "original"}, "done": true})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	request := func() (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewBufferString(`{"model":"ollama/llama3.2","messages":[{"role":"user","content":"hello"}]}`))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", "duplicate-sync-1")
+		return http.DefaultClient.Do(req)
+	}
+	firstResult := make(chan *http.Response, 1)
+	firstErr := make(chan error, 1)
+	go func() {
+		resp, err := request()
+		firstResult <- resp
+		firstErr <- err
+	}()
+	<-started
+
+	duplicate, err := request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer duplicate.Body.Close()
+	if duplicate.StatusCode != http.StatusConflict || duplicate.Header.Get("Location") != "/api/requests/duplicate-sync-1/result" {
+		t.Fatalf("duplicate status=%d location=%q", duplicate.StatusCode, duplicate.Header.Get("Location"))
+	}
+	var replay struct {
+		ID       string `json:"id"`
+		Status   string `json:"status"`
+		Replayed bool   `json:"replayed"`
+	}
+	if err := json.NewDecoder(duplicate.Body).Decode(&replay); err != nil || replay.ID != "duplicate-sync-1" || replay.Status != controlplane.ModelBrokerRequestRunning || !replay.Replayed {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	select {
+	case <-started:
+		t.Fatal("duplicate reached upstream generator")
+	default:
+	}
+	close(release)
+	first := <-firstResult
+	if err := <-firstErr; err != nil {
+		t.Fatal(err)
+	}
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("original status=%s body=%s", first.Status, mustReadBody(t, first.Body))
+	}
+	stored, err := store.ModelBrokerRequest("duplicate-sync-1")
+	if err != nil || stored.Status != controlplane.ModelBrokerRequestCompleted || !strings.Contains(stored.ResponseBody, "original") {
+		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 }
 

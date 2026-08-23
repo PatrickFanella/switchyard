@@ -159,10 +159,10 @@ Exit criteria:
 
 Current status:
 
-- `backend/internal/controlplane/model_executor.go` defines the native `ModelBroker` contract.
+- `backend/internal/controlplane/model_executor.go` defines the narrow native `ModelGeneration` contract, and `model_service.go` owns durable queue admission, recovery, cancellation, dropping, and execution.
 - `EnvModelBroker` handles compatibility ingress requests and marks responses with `model_broker=switchyard` correlation metadata.
 - Native routing sends provider-style models to OpenCode and Ollama/local models to `OLLAMA_BASE_URL` when configured; `ollama/<model>` forces Ollama routing.
-- `GET /api/model-broker/status` exposes a native Switchyard broker status surface; `/broker/status` mirrors that status on the compatibility ingress.
+- Authenticated `/api/model-broker/status`, `/queue`, and `/requests` routes expose separate upstream and queue health plus bounded lifecycle controls. These routes are unavailable on model ingress; `/broker/status` preserves the compatibility envelope.
 
 ## Phase 3 — OpenCode executor
 

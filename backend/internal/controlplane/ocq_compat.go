@@ -88,11 +88,12 @@ func (a *API) ocqCompatAbort(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "request id required")
 		return
 	}
-	if a.compatBroker.cancel(r.Context(), id) {
+	if err := a.compatBroker.cancel(r.Context(), id); err == nil {
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "aborted", "id": id, "request_id": id, "backend": "switchyard-native"})
 		return
+	} else {
+		writeCompatCancelError(w, id, err)
 	}
-	writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "id": id, "backend": "switchyard-native"})
 }
 
 func (a *API) ocqCompatSettings(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +130,7 @@ func compatLimit(r *http.Request, fallback int) int {
 
 func isTerminalModelBrokerRequest(status string) bool {
 	switch strings.TrimSpace(status) {
-	case ModelBrokerRequestCompleted, ModelBrokerRequestFailed, ModelBrokerRequestCanceled:
+	case ModelBrokerRequestCompleted, ModelBrokerRequestFailed, ModelBrokerRequestCanceled, ModelBrokerRequestDropped:
 		return true
 	default:
 		return false
