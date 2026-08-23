@@ -32,6 +32,7 @@ make docker-down      # stop the local stack
 make verify-production # run database, race, security, image, smoke, and release gates
 make api-soak-extended # run the release-grade 15-minute API soak
 make alert-lifecycle  # manually verify Alertmanager-to-ntfy firing and resolution
+make production-config-check # validate exported production transport settings
 ```
 
 See [`docs/status.md`](docs/status.md) for the current capability and release-evidence state. Dated readiness reports prove only the revision they name.
@@ -76,7 +77,13 @@ Docker port defaults are configurable through `.env` or inline variables:
 WEB_PORT=8081 API_PORT=18080 POSTGRES_PORT=5432 make docker-up
 ```
 
-Published ports bind to `127.0.0.1` by default. `SWITCHYARD_BIND_HOST` controls the API and Postgres, `SWITCHYARD_WEB_BIND_HOST` controls the web UI, and `SWITCHYARD_MODEL_BIND_HOST` controls model-compatible ingress. Keep API/control and Postgres loopback-bound. The current homelab deployment binds web on Kvant's LAN address (`SWITCHYARD_WEB_BIND_HOST=10.0.0.50`); Almaz Caddy proxies to `10.0.0.50:28081`, and nginx accepts requests only from Almaz's exact address (`SWITCHYARD_WEB_TRUSTED_PROXY_CIDR=10.0.0.200/32`). `SWITCHYARD_DASHBOARD_CIDR` may add one exact dashboard-backend address for bearer-authenticated, read-only API calls while retaining the nginx deny-by-default boundary. Direct access from every other address is denied. This is a trusted-LAN fallback; prefer a Tailscale ACL or authenticated encrypted proxy hop when available. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
+Published ports bind to `127.0.0.1` by default. `SWITCHYARD_BIND_HOST` controls the API and Postgres, `SWITCHYARD_WEB_BIND_HOST` controls the web UI, and `SWITCHYARD_MODEL_BIND_HOST` controls model-compatible ingress. Keep API/control and Postgres loopback-bound. Local development uses `SWITCHYARD_WEB_TRANSPORT=http`.
+
+Production uses only the approved host-managed Tailscale path for the web hop. Set `SWITCHYARD_WEB_TRANSPORT=tailscale`, bind the web port to this host's Tailscale address, and set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR` to the proxy host's distinct Tailscale `/32`. Both addresses must be within `100.64.0.0/10`. nginx still denies every other source and clears client-supplied `X-Forwarded-User` before it forwards the proxy's `Remote-User`. The host Tailscale daemon and central tailnet ACL own encryption and peer authentication. Keep Tailscale credentials and policy outside Compose and this repository. Do not add nginx certificates, nginx mTLS, container Tailscale credentials, or a plaintext LAN fallback.
+
+Before a production smoke, export the deployed `.env` values and run `make production-config-check`. The check also requires an HTTPS `SWITCHYARD_PUBLIC_URL`, reverse-proxy authentication, a loopback control bind, and separate control/model listeners. It validates configuration only. Gitea issues #18 and #19 still require human action and target-path evidence.
+
+`SWITCHYARD_DASHBOARD_CIDR` may add one exact dashboard-backend address for bearer-authenticated, read-only API calls while retaining the nginx deny-by-default boundary. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
 
 ## Control-plane storage
 
@@ -179,7 +186,7 @@ API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintain
 
 Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented in [`docs/reference/client-compatibility.md`](docs/reference/client-compatibility.md).
 
-The deployed operator dashboard is exposed as `https://switchyard.subcult.tv` through Almaz Caddy and Authelia, proxying to Kvant's web service on `10.0.0.50:28081`. Kvant binds this listener only with `SWITCHYARD_WEB_BIND_HOST=10.0.0.50`; nginx permits only Almaz's `10.0.0.200/32` proxy address, so direct access is denied. The API/control listener remains loopback-bound.
+The public operator dashboard remains an HTTPS route protected by Caddy and Authelia. The approved private web hop is host-managed Tailscale, with nginx restricted to the proxy peer's exact Tailscale `/32`. The API/control listener remains loopback-bound. Repository validation does not prove that the tailnet ACL or deployed route works.
 
 ## Host service ownership
 

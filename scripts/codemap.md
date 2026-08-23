@@ -16,6 +16,7 @@ Scripts use strict shell mode, isolated temporary/container resources, explicit 
 - `report-compatibility-usage.sh` summarizes durable deprecated-backend attempts without treating configuration alone as usage.
 - `check-docs-consistency.sh` keeps current-status documents and stable API references aligned.
 - `validate_release_evidence.py` validates local candidate/deployment proof and generated manifest checksums without third-party packages or network access.
+- `validate_production_config.py` checks the environment-only production Tailscale, proxy-authentication, URL, and listener-isolation contract; its standard-library unit tests run in the baseline gate.
 - `alert_lifecycle.py` is an opt-in, standard-library-only manual check of Alertmanager firing and resolved delivery through ntfy; its fake-server unit tests run in the baseline gate without contacting live services.
 
 ## Integration

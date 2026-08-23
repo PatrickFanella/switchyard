@@ -18,6 +18,11 @@ Before qualification, record:
 The checkout, tag, CI revision, image labels, and deployment evidence must all
 identify the same commit.
 
+Production web transport is host-managed Tailscale. The Tailscale daemon and
+central tailnet policy remain outside Compose. Keep their credentials in the
+host secret store. Do not add nginx TLS or mTLS, container credentials, or a
+plaintext fallback.
+
 ## Qualification
 
 Run from a clean checkout on the dedicated production runner:
@@ -61,6 +66,21 @@ docker compose images
 ss -ltn
 ```
 
+Export the deployed `.env` without printing it, then validate the static
+production contract:
+
+```bash
+set -a
+. ./.env
+set +a
+make production-config-check
+```
+
+The check requires `SWITCHYARD_WEB_TRANSPORT=tailscale`, distinct web and proxy
+peer addresses in `100.64.0.0/10`, an exact trusted proxy `/32`, an HTTPS public
+URL, reverse-proxy authentication, a loopback control bind, and non-colliding
+control/model listeners. A pass does not prove the tailnet ACL or target route.
+
 Create and verify a pre-deployment backup:
 
 ```bash
@@ -97,8 +117,12 @@ that:
 - control API and PostgreSQL remain loopback-only;
 - model ingress cannot access control-plane routes;
 - the public route reaches Authelia;
-- direct dashboard access is denied except from the approved proxy;
+- the web hop uses the approved host-managed Tailscale peers;
+- direct dashboard access is denied except from the approved Tailscale proxy `/32`;
 - Ollama is reached on its real upstream port.
+
+Do not close Gitea issues #18 or #19 from static validation. Record human and
+target-path proof separately.
 
 Update the JSON evidence to the deployed phase. Record the deployed SHA, host,
 deployment time, backup/restore proof, and production-smoke proof. Run
