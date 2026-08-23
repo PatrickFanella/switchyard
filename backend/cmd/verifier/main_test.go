@@ -408,7 +408,7 @@ func TestVerifierCancellationKillsDescendantProcess(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		if processTerminated(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -438,12 +438,27 @@ func TestVerifierTimeoutKillsDescendantProcess(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		if processTerminated(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("descendant process %d survived timeout", pid)
+}
+
+func processTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	closing := bytes.LastIndexByte(status, ')')
+	return closing >= 0 && len(status) > closing+2 && status[closing+2] == 'Z'
 }
 
 func waitForFile(t *testing.T, path string) {
