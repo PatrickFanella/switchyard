@@ -8,10 +8,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"git.subcult.tv/PatrickFanella/switchyard/internal/gitworktree"
 )
 
 type OpenPilotCommitResult struct {
@@ -446,6 +449,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 		if corr := mergeResumeCorrelation(issueState.ResumeInputs, "resume.open-pilot.push-branch.correlation."); len(corr) > 0 {
 			state["open-pilot.push-correlation"] = corr
 		}
+		if manifest := issueState.ResumeInputs["resume.open-pilot.verify-command.manifest"]; manifest != "" {
+			state["open-pilot.verify-command.manifest"] = manifest
+		}
 	}
 	branchPlan := openPilotWorktreePlanFromResume(mergedInputs)
 	if branchPlan.Branch != "" {
@@ -503,6 +509,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run
 	if response := run.Inputs["resume.open-pilot.agent-work.response"]; response != "" {
 		state["open-pilot.agent-completed"] = true
 		state["open-pilot.response"] = response
+	}
+	if manifest := run.Inputs["resume.open-pilot.verify-command.manifest"]; manifest != "" {
+		state["open-pilot.verify-command.manifest"] = manifest
 	}
 	if pushPlan := openPilotPushPlanFromResume(run.Inputs); pushPlan.Branch != "" {
 		state["open-pilot.push-plan"] = pushPlan
@@ -670,6 +679,9 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 	}
 	if verifySummary, ok := state["open-pilot.verify-summary"].(string); ok {
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.verify-command.summary", verifySummary)
+	}
+	if manifest, ok := state["open-pilot.verify-command.manifest"].(string); ok {
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.verify-command.manifest", manifest)
 	}
 	if response, ok := state["open-pilot.response"].(string); ok {
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.agent-work.response", response)
@@ -1082,6 +1094,27 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 			return PipelineStepExecution{Summary: diffResult.Output, Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, err
 		}
+		manifest := strings.TrimSpace(result.Manifest)
+		diffManifest := strings.TrimSpace(diffResult.Manifest)
+		if manifest == "" || diffManifest == "" {
+			err := errors.New("open-pilot verification requires nonempty worktree manifests from the test command and git diff --check")
+			state["open-pilot.verify-command.command"] = command
+			state["open-pilot.verify-command.diff-check"] = "git diff --check"
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, err
+		}
+		if manifest != diffManifest {
+			err := errors.New("open-pilot worktree manifest changed between the test command and git diff --check")
+			state["open-pilot.verify-command.command"] = command
+			state["open-pilot.verify-command.diff-check"] = "git diff --check"
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{Inputs: map[string]string{"command": command, "diff_check": "git diff --check"}, CorrelationIDs: correlation}, err
+		}
+		correlation["worktree_manifest"] = manifest
 		summary := "Command allowed"
 		if result.Decision.DryRun {
 			summary = "Command allowed by policy in dry-run mode"
@@ -1091,6 +1124,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		summary += "; git diff --check passed"
 		state["open-pilot.verify-command.command"] = command
 		state["open-pilot.verify-command.diff-check"] = "git diff --check"
+		state["open-pilot.verify-command.manifest"] = manifest
 		state["open-pilot.verify-summary"] = summary
 		state["open-pilot.gate-status"] = map[string]string{"local_verify": "passed"}
 		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseVerified, step.Name, "", state); err != nil {
@@ -1126,12 +1160,27 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		pushPlan := o.env.openPilotPushPlan(branchPlan)
 		pushCorrelation := map[string]string{"mode": pushPlan.Mode}
+		var pushIdentity gitworktree.Identity
 		if branchPlan.Executed && branchPlan.WorktreePath != "" {
-			remoteHeadExists, err := o.env.openPilotRemoteBranchExists(ctx, branchPlan.WorktreePath, pushPlan.Remote, pushPlan.Branch)
+			var err error
+			pushIdentity, err = validateOpenPilotWorktreeIdentity(ctx, pushPlan.Repo, pushPlan.RepoPath, pushPlan.WorktreePath, pushPlan.Branch, false)
 			if err != nil {
-				return PipelineStepExecution{Inputs: pushPlan.StepInputs(), CorrelationIDs: pushCorrelation}, err
+				return PipelineStepExecution{Inputs: pushPlan.StepInputs(), CorrelationIDs: pushCorrelation}, fmt.Errorf("validate managed worktree before push operation: %w", err)
 			}
-			pushPlan.RemoteHeadExists = remoteHeadExists
+			if pushPlan.Executed || o.env.openPilotWriteMode == "allow" {
+				_ = pushIdentity.Close()
+				pushIdentity, err = validateOpenPilotAuthenticatedWorktree(ctx, pushPlan)
+				if err != nil {
+					return PipelineStepExecution{Inputs: pushPlan.StepInputs(), CorrelationIDs: pushCorrelation}, fmt.Errorf("validate managed worktree before remote operation: %w", err)
+				}
+				remoteHeadExists, remoteErr := o.env.openPilotRemoteBranchExistsValidated(ctx, pushPlan, pushIdentity)
+				if remoteErr != nil {
+					_ = pushIdentity.Close()
+					return PipelineStepExecution{Inputs: pushPlan.StepInputs(), CorrelationIDs: pushCorrelation}, remoteErr
+				}
+				pushPlan.RemoteHeadExists = remoteHeadExists
+			}
+			defer pushIdentity.Close()
 		}
 		state["open-pilot.push-plan"] = pushPlan
 		state["open-pilot.push-correlation"] = pushCorrelation
@@ -1145,7 +1194,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		}
 		out := PipelineStepExecution{Inputs: pushPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}}, CorrelationIDs: pushCorrelation}
 		if branchPlan.Executed && branchPlan.WorktreePath != "" {
-			status, err := o.env.openPilotWorktreeStatus(ctx, branchPlan.WorktreePath)
+			status, err := identityGitStatus(ctx, pushIdentity)
 			if err != nil {
 				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
 					return out, errors.Join(err, persistErr)
@@ -1156,7 +1205,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			if pushPlan.Executed && strings.TrimSpace(status) != "clean" {
 				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires a clean worktree; commit or discard uncommitted changes")
 			}
-			ahead, err := o.env.openPilotWorktreeAheadCount(ctx, branchPlan)
+			ahead, err := o.env.openPilotWorktreeAheadCountValidated(ctx, branchPlan, pushIdentity)
 			if err != nil {
 				return out, err
 			}
@@ -1166,11 +1215,17 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires committed changes ahead of base branch")
 			}
 		}
-		if err := o.env.executeOpenPilotPush(ctx, pushPlan); err != nil {
-			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
-				return out, errors.Join(err, persistErr)
+		var pushErr error
+		if pushPlan.Executed {
+			pushErr = o.env.executeOpenPilotPushValidated(ctx, pushPlan, pushIdentity)
+		} else {
+			pushErr = o.env.executeOpenPilotPush(ctx, pushPlan)
+		}
+		if pushErr != nil {
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, pushErr.Error(), state); persistErr != nil {
+				return out, errors.Join(pushErr, persistErr)
 			}
-			return out, err
+			return out, pushErr
 		}
 		out.Summary = "Git push disabled; plan artifact attached"
 		if pushPlan.DryRun {
@@ -1968,7 +2023,7 @@ func openPilotCommitSummaryForContext(inputs map[string]string, state map[string
 }
 
 func (e *EnvWorkflowExecutors) openPilotPushPlan(branchPlan OpenPilotWorktreePlan) OpenPilotPushPlan {
-	plan := OpenPilotPushPlan{Mode: e.openPilotGitPushMode, Remote: "origin", Branch: branchPlan.Branch}
+	plan := OpenPilotPushPlan{Repo: branchPlan.Repo, RepoPath: branchPlan.RepoPath, Mode: e.openPilotGitPushMode, Remote: "origin", Branch: branchPlan.Branch}
 	if branchPlan.Executed {
 		plan.WorktreePath = branchPlan.WorktreePath
 	}
@@ -2000,14 +2055,19 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 	if strings.TrimSpace(run.Inputs["test_command"]) != "" && gateStatus["local_verify"] != "passed" {
 		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE requires local verification to pass before committing")
 	}
-	branch, err := gitOutput(ctx, plan.WorktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	identity, err := validateOpenPilotWorktreeIdentity(ctx, plan.Repo, plan.RepoPath, plan.WorktreePath, plan.Branch, false)
+	if err != nil {
+		return result, fmt.Errorf("validate managed worktree before commit: %w", err)
+	}
+	defer identity.Close()
+	branch, err := identityGitOutput(ctx, identity, nil, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return result, err
 	}
 	if plan.Branch != "" && strings.TrimSpace(branch) != plan.Branch {
 		return result, fmt.Errorf("open-pilot worktree branch %q does not match planned branch %q", strings.TrimSpace(branch), plan.Branch)
 	}
-	status, err := e.openPilotWorktreeStatus(ctx, plan.WorktreePath)
+	status, err := identityGitStatus(ctx, identity)
 	if err != nil {
 		return result, err
 	}
@@ -2015,33 +2075,47 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 	if strings.TrimSpace(status) == "clean" {
 		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow requires worktree changes to commit")
 	}
-	if err := gitRun(ctx, plan.WorktreePath, "diff", "--check"); err != nil {
+	if _, err := identityGitOutput(ctx, identity, nil, "diff", "--check"); err != nil {
 		return result, err
 	}
-	diffStat, _ := gitOutput(ctx, plan.WorktreePath, "diff", "--stat")
-	nameStatus, _ := gitOutput(ctx, plan.WorktreePath, "diff", "--name-status")
+	diffStat, _ := identityGitOutput(ctx, identity, nil, "diff", "--stat")
+	nameStatus, _ := identityGitOutput(ctx, identity, nil, "diff", "--name-status")
 	result.DiffStat = diffStat
 	result.NameStatus = nameStatus
 	if mode == "dry-run" {
 		result.DryRun = true
 		return result, nil
 	}
-	if err := gitRun(ctx, plan.WorktreePath, "add", "-A"); err != nil {
+	if strings.TrimSpace(run.Inputs["test_command"]) != "" {
+		verifiedManifest, _ := state["open-pilot.verify-command.manifest"].(string)
+		verifiedManifest = strings.TrimSpace(verifiedManifest)
+		if verifiedManifest == "" {
+			return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE requires a persisted verification manifest before committing")
+		}
+		manifest, err := identity.Manifest(ctx)
+		if err != nil {
+			return result, fmt.Errorf("compute managed worktree manifest before commit: %w", err)
+		}
+		if strings.TrimSpace(manifest) != verifiedManifest {
+			return result, errors.New("open-pilot worktree changed after verification; refusing to commit")
+		}
+	}
+	if _, err := identityGitOutput(ctx, identity, nil, "add", "-A"); err != nil {
 		return result, err
 	}
-	if err := gitRun(ctx, plan.WorktreePath, "diff", "--cached", "--quiet"); err == nil {
+	if _, err := identityGitOutput(ctx, identity, nil, "diff", "--cached", "--quiet"); err == nil {
 		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow found no staged changes to commit")
 	}
 	message := firstNonEmpty(strings.TrimSpace(run.Inputs["commit_message"]), "Open Pilot: issue "+run.Inputs["issue"])
-	if err := gitRun(ctx, plan.WorktreePath, "-c", "user.name=Switchyard Open Pilot", "-c", "user.email=open-pilot@switchyard.local", "commit", "-m", message); err != nil {
+	if _, err := identityGitOutput(ctx, identity, nil, "-c", "user.name=Switchyard Open Pilot", "-c", "user.email=open-pilot@switchyard.local", "commit", "-m", message); err != nil {
 		return result, err
 	}
-	sha, err := gitOutput(ctx, plan.WorktreePath, "rev-parse", "--short", "HEAD")
+	sha, err := identityGitOutput(ctx, identity, nil, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return result, err
 	}
-	subject, _ := gitOutput(ctx, plan.WorktreePath, "log", "-1", "--pretty=%s")
-	statusAfter, err := e.openPilotWorktreeStatus(ctx, plan.WorktreePath)
+	subject, _ := identityGitOutput(ctx, identity, nil, "log", "-1", "--pretty=%s")
+	statusAfter, err := identityGitStatus(ctx, identity)
 	if err != nil {
 		return result, err
 	}
@@ -2073,13 +2147,8 @@ func openPilotCommitArtifacts(result OpenPilotCommitResult) []CreateArtifactInpu
 	return artifacts
 }
 
-func gitRun(ctx context.Context, worktreePath string, args ...string) error {
-	_, err := gitOutput(ctx, worktreePath, args...)
-	return err
-}
-
-func gitOutput(ctx context.Context, worktreePath string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", worktreePath}, args...)...)
+func identityGitOutput(ctx context.Context, identity gitworktree.Identity, env []string, args ...string) (string, error) {
+	cmd := identity.Command(ctx, env, args...)
 	output, err := cmd.CombinedOutput()
 	message := strings.TrimSpace(string(output))
 	if err != nil {
@@ -2119,6 +2188,8 @@ func openPilotWorktreePlanFromResume(inputs map[string]string) OpenPilotWorktree
 func openPilotPushPlanFromResume(inputs map[string]string) OpenPilotPushPlan {
 	prefix := "resume.open-pilot.push-branch."
 	return OpenPilotPushPlan{
+		Repo:             firstNonEmpty(inputs[prefix+"repo"], inputs["resume.open-pilot.branch-plan.repo"], inputs["repo"]),
+		RepoPath:         firstNonEmpty(inputs[prefix+"repo_path"], inputs["resume.open-pilot.branch-plan.repo_path"]),
 		Mode:             inputs[prefix+"mode"],
 		Remote:           firstNonEmpty(inputs[prefix+"remote"], inputs["resume.open-pilot.push-branch.correlation.remote"]),
 		Branch:           firstNonEmpty(inputs[prefix+"branch"], inputs["resume.open-pilot.push-branch.correlation.branch"]),
@@ -2137,42 +2208,62 @@ func (e *EnvWorkflowExecutors) executeOpenPilotPush(ctx context.Context, plan Op
 		if plan.WorktreePath == "" {
 			return errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires an executed worktree")
 		}
-		cmd := exec.CommandContext(ctx, "git", "-C", plan.WorktreePath, "push", plan.Remote, "HEAD:"+plan.Branch)
-		env, cleanup, err := openPilotGitCredentialEnv()
+		identity, err := validateOpenPilotAuthenticatedWorktree(ctx, plan)
 		if err != nil {
-			return err
+			return fmt.Errorf("validate managed worktree before push: %w", err)
 		}
-		defer cleanup()
-		if len(env) > 0 {
-			cmd.Env = env
-		}
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			message := strings.TrimSpace(string(output))
-			if message == "" {
-				message = err.Error()
-			}
-			return errors.New(message)
-		}
-		return nil
+		defer identity.Close()
+		return e.executeOpenPilotPushValidated(ctx, plan, identity)
 	default:
 		return fmt.Errorf("unsupported OPEN_PILOT_GIT_PUSH_MODE %q", plan.Mode)
 	}
 }
 
-func (e *EnvWorkflowExecutors) openPilotRemoteBranchExists(ctx context.Context, worktreePath string, remote string, branch string) (bool, error) {
-	if strings.TrimSpace(worktreePath) == "" || strings.TrimSpace(remote) == "" || strings.TrimSpace(branch) == "" {
+func (e *EnvWorkflowExecutors) executeOpenPilotPushValidated(ctx context.Context, plan OpenPilotPushPlan, identity gitworktree.Identity) error {
+	if identity.OriginURL == "" {
+		return errors.New("source origin is required for Git push operations")
+	}
+	cmd := identity.Command(ctx, nil, "push", identity.OriginURL, "HEAD:"+plan.Branch)
+	env, cleanup, err := openPilotGitCredentialEnv()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	cmd.Env = append(cmd.Env, env...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return errors.New(message)
+	}
+	return nil
+}
+
+func (e *EnvWorkflowExecutors) openPilotRemoteBranchExists(ctx context.Context, plan OpenPilotPushPlan) (bool, error) {
+	if strings.TrimSpace(plan.WorktreePath) == "" || strings.TrimSpace(plan.Remote) == "" || strings.TrimSpace(plan.Branch) == "" {
 		return false, nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "ls-remote", "--exit-code", "--heads", remote, branch)
+	identity, err := validateOpenPilotAuthenticatedWorktree(ctx, plan)
+	if err != nil {
+		return false, fmt.Errorf("validate managed worktree before remote check: %w", err)
+	}
+	defer identity.Close()
+	return e.openPilotRemoteBranchExistsValidated(ctx, plan, identity)
+}
+
+func (e *EnvWorkflowExecutors) openPilotRemoteBranchExistsValidated(ctx context.Context, plan OpenPilotPushPlan, identity gitworktree.Identity) (bool, error) {
+	if identity.OriginURL == "" {
+		return false, nil
+	}
+	cmd := identity.Command(ctx, nil, "ls-remote", "--exit-code", "--heads", identity.OriginURL, plan.Branch)
 	env, cleanup, authErr := openPilotGitCredentialEnv()
 	if authErr != nil {
 		return false, authErr
 	}
 	defer cleanup()
-	if len(env) > 0 {
-		cmd.Env = env
-	}
+	cmd.Env = append(cmd.Env, env...)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return strings.TrimSpace(string(output)) != "", nil
@@ -2190,10 +2281,43 @@ func (e *EnvWorkflowExecutors) openPilotRemoteBranchExists(ctx context.Context, 
 	return false, errors.New(message)
 }
 
+func validateOpenPilotAuthenticatedWorktree(ctx context.Context, plan OpenPilotPushPlan) (gitworktree.Identity, error) {
+	if plan.Remote != "origin" {
+		return gitworktree.Identity{}, errors.New("Git push operations require the origin remote")
+	}
+	allowLocal := strings.EqualFold(strings.TrimSpace(os.Getenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE")), "true")
+	baseURL := strings.TrimSpace(os.Getenv("GITEA_BASE_URL"))
+	if !allowLocal && baseURL == "" {
+		return gitworktree.Identity{}, errors.New("GITEA_BASE_URL is required for Open Pilot Git remote operations")
+	}
+	identity, err := validateOpenPilotWorktreeIdentityWithLocalOverride(ctx, plan.Repo, plan.RepoPath, plan.WorktreePath, plan.Branch, allowLocal)
+	if err != nil {
+		return gitworktree.Identity{}, err
+	}
+	return identity, nil
+}
+
+func validateOpenPilotWorktreeIdentityWithLocalOverride(ctx context.Context, repo, repoPath, worktreePath, branch string, allowLocal bool) (gitworktree.Identity, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		return gitworktree.Identity{}, errors.New("persisted source repository path is required")
+	}
+	if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) != repoPath {
+		return gitworktree.Identity{}, errors.New("source repository path must be an exact absolute path")
+	}
+	canonicalRepo, err := filepath.EvalSymlinks(repoPath)
+	if err != nil || canonicalRepo != repoPath {
+		return gitworktree.Identity{}, errors.New("source repository lexical path does not match its canonical path")
+	}
+	return gitworktree.ValidatePath(ctx, gitworktree.Expected{
+		WorktreePath: worktreePath, CommonDir: filepath.Join(repoPath, ".git"), Branch: branch,
+		Repo: repo, RequireOrigin: true, OriginBaseURL: os.Getenv("GITEA_BASE_URL"), AllowLocalOrigin: allowLocal,
+	})
+}
+
 func openPilotGitCredentialEnv() ([]string, func(), error) {
 	token := strings.TrimSpace(os.Getenv("GITEA_TOKEN"))
 	if token == "" {
-		return nil, func() {}, nil
+		return []string{"GIT_ASKPASS=", "GIT_TERMINAL_PROMPT=0"}, func() {}, nil
 	}
 	username := firstNonEmpty(strings.TrimSpace(os.Getenv("GITEA_GIT_USERNAME")), strings.TrimSpace(os.Getenv("GITEA_USERNAME")), "oauth2")
 	file, err := os.CreateTemp("", "switchyard-open-pilot-askpass-*")
@@ -2216,46 +2340,33 @@ func openPilotGitCredentialEnv() ([]string, func(), error) {
 		cleanup()
 		return nil, func() {}, err
 	}
-	env := append(os.Environ(), "GIT_ASKPASS="+path, "GIT_TERMINAL_PROMPT=0", "OPEN_PILOT_GIT_USERNAME="+username)
+	env := []string{"GIT_ASKPASS=" + path, "GIT_TERMINAL_PROMPT=0", "OPEN_PILOT_GIT_USERNAME=" + username, "GITEA_TOKEN=" + token}
 	return env, cleanup, nil
 }
 
-func (e *EnvWorkflowExecutors) openPilotWorktreeStatus(ctx context.Context, worktreePath string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "status", "--porcelain=v1")
-	output, err := cmd.CombinedOutput()
-	message := strings.TrimSpace(string(output))
+func identityGitStatus(ctx context.Context, identity gitworktree.Identity) (string, error) {
+	output, err := identityGitOutput(ctx, identity, nil, "status", "--porcelain=v1")
 	if err != nil {
-		if message == "" {
-			message = err.Error()
-		}
-		return "", errors.New(message)
+		return "", err
 	}
-	if message == "" {
+	if strings.TrimSpace(output) == "" {
 		return "clean\n", nil
 	}
-	return message + "\n", nil
+	return output, nil
 }
 
-func (e *EnvWorkflowExecutors) openPilotWorktreeAheadCount(ctx context.Context, plan OpenPilotWorktreePlan) (int, error) {
-	if !plan.Executed || strings.TrimSpace(plan.WorktreePath) == "" {
-		return 0, nil
-	}
+func (e *EnvWorkflowExecutors) openPilotWorktreeAheadCountValidated(ctx context.Context, plan OpenPilotWorktreePlan, identity gitworktree.Identity) (int, error) {
 	baseBranch := strings.TrimSpace(plan.BaseBranch)
 	if baseBranch == "" {
 		baseBranch = e.openPilotBaseBranch
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", plan.WorktreePath, "rev-list", "--count", baseBranch+"..HEAD")
-	output, err := cmd.CombinedOutput()
-	message := strings.TrimSpace(string(output))
+	message, err := identityGitOutput(ctx, identity, nil, "rev-list", "--count", baseBranch+"..HEAD")
 	if err != nil {
-		if message == "" {
-			message = err.Error()
-		}
-		return 0, errors.New(message)
+		return 0, err
 	}
 	var ahead int
-	if _, err := fmt.Sscanf(message, "%d", &ahead); err != nil {
-		return 0, fmt.Errorf("parse git ahead count %q: %w", message, err)
+	if _, err := fmt.Sscanf(strings.TrimSpace(message), "%d", &ahead); err != nil {
+		return 0, fmt.Errorf("parse git ahead count %q: %w", strings.TrimSpace(message), err)
 	}
 	return ahead, nil
 }

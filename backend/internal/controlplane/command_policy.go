@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"git.subcult.tv/PatrickFanella/switchyard/internal/gitworktree"
 )
 
 type CommandPolicyMode string
@@ -40,6 +42,7 @@ type CommandDecision struct {
 type CommandResult struct {
 	Decision CommandDecision
 	Output   string
+	Manifest string
 	Executed bool
 }
 
@@ -95,6 +98,12 @@ func (r *PolicyCommandRunner) Run(ctx context.Context, command string, workdir .
 	}
 	if decision.DryRun {
 		result.Output = "dry-run: " + strings.Join(decision.Command, " ")
+		result.Manifest = "dry-run"
+		if cmdDir := r.commandWorkdir(workdir...); cmdDir != "" {
+			if manifest, err := manifestForCommandWorkdir(ctx, cmdDir); err == nil {
+				result.Manifest = manifest
+			}
+		}
 		return result, nil
 	}
 	if r.verifierURL != "" {
@@ -103,10 +112,7 @@ func (r *PolicyCommandRunner) Run(ctx context.Context, command string, workdir .
 	runCtx, cancel := context.WithTimeout(ctx, r.policy.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, decision.Command[0], decision.Command[1:]...)
-	cmdDir := r.policy.Workdir
-	if len(workdir) > 0 && strings.TrimSpace(workdir[0]) != "" {
-		cmdDir = strings.TrimSpace(workdir[0])
-	}
+	cmdDir := r.commandWorkdir(workdir...)
 	if cmdDir != "" {
 		cmd.Dir = cmdDir
 	}
@@ -116,7 +122,30 @@ func (r *PolicyCommandRunner) Run(ctx context.Context, command string, workdir .
 	if err != nil {
 		return result, err
 	}
+	if cmdDir != "" {
+		result.Manifest, err = manifestForCommandWorkdir(ctx, cmdDir)
+		if err != nil {
+			return result, fmt.Errorf("compute command worktree manifest: %w", err)
+		}
+	}
 	return result, nil
+}
+
+func (r *PolicyCommandRunner) commandWorkdir(workdir ...string) string {
+	cmdDir := r.policy.Workdir
+	if len(workdir) > 0 && strings.TrimSpace(workdir[0]) != "" {
+		cmdDir = strings.TrimSpace(workdir[0])
+	}
+	return cmdDir
+}
+
+func manifestForCommandWorkdir(ctx context.Context, workdir string) (string, error) {
+	directory, err := os.Open(workdir)
+	if err != nil {
+		return "", err
+	}
+	defer directory.Close()
+	return gitworktree.Manifest(ctx, directory)
 }
 
 type verifierRequest struct {
@@ -126,15 +155,13 @@ type verifierRequest struct {
 }
 
 type verifierResponse struct {
-	Output string `json:"output"`
-	Error  string `json:"error"`
+	Output   string `json:"output"`
+	Error    string `json:"error"`
+	Manifest string `json:"manifest"`
 }
 
 func (r *PolicyCommandRunner) runViaVerifier(ctx context.Context, decision CommandDecision, workdir ...string) (CommandResult, error) {
-	cmdDir := r.policy.Workdir
-	if len(workdir) > 0 && strings.TrimSpace(workdir[0]) != "" {
-		cmdDir = strings.TrimSpace(workdir[0])
-	}
+	cmdDir := r.commandWorkdir(workdir...)
 	payload, err := json.Marshal(verifierRequest{Command: decision.Command, Workdir: cmdDir, Timeout: r.policy.Timeout.String()})
 	if err != nil {
 		return CommandResult{Decision: decision}, fmt.Errorf("encode verifier request: %w", err)
@@ -153,7 +180,7 @@ func (r *PolicyCommandRunner) runViaVerifier(ctx context.Context, decision Comma
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		return CommandResult{Decision: decision}, fmt.Errorf("decode verifier response: %w", err)
 	}
-	result := CommandResult{Decision: decision, Executed: true, Output: strings.TrimSpace(body.Output)}
+	result := CommandResult{Decision: decision, Executed: true, Output: strings.TrimSpace(body.Output), Manifest: strings.TrimSpace(body.Manifest)}
 	if response.StatusCode != http.StatusOK {
 		return result, fmt.Errorf("verifier rejected command: %s", firstNonEmpty(body.Error, response.Status))
 	}

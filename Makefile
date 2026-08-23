@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup postgres-restore-drill security-audit docker-build docker-smoke api-smoke production-smoke production-config-check production-config-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config docs-check open-pilot-check release-evidence-test alert-lifecycle-test production-config-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check release-evidence-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -55,8 +55,12 @@ security-audit: ## Audit Go and web dependencies for known vulnerabilities
 docker-build: ## Build all pinned container images
 	docker compose build
 
-docker-smoke: docker-build ## Exercise auth, listener isolation, readiness, migrations, and shutdown in isolated containers
+docker-smoke: docker-build ## Exercise auth, listeners, hardening, and linked-worktree isolation in containers
 	./scripts/test-docker-api.sh
+	./scripts/test-linked-worktree-compose.sh
+
+linked-worktree-smoke: docker-build ## Prove isolated OpenCode/verifier linked Git discovery and diff
+	./scripts/test-linked-worktree-compose.sh
 
 web-test: ## Run Switchyard web tests
 	pnpm --dir web run test
@@ -109,10 +113,16 @@ production-config-check: ## Validate the production transport contract from the 
 production-config-test: ## Test the production configuration contract
 	python3 -m unittest discover -s scripts -p 'test_validate_production_config.py'
 
+workspace-init: ## Prepare the dedicated local OpenCode workspace without changing ownership
+	python3 scripts/prepare_opencode_workspace.py
+
+workspace-init-test: ## Test safe local OpenCode workspace preparation
+	python3 -m unittest discover -s scripts -p 'test_prepare_opencode_workspace.py'
+
 compatibility-report: ## Summarize deprecated backend attempts from durable broker history
 	./scripts/report-compatibility-usage.sh
 
-docker-up: ## Start local Switchyard stack
+docker-up: workspace-init ## Prepare workspace and start local Switchyard stack
 	docker compose up --build
 
 docker-down: ## Stop local Switchyard stack
@@ -127,6 +137,12 @@ clean: ## Remove generated build artifacts
 
 compose-config: ## Validate Docker Compose config
 	docker compose config --quiet
+
+compose-runtime-test: ## Test the rendered Compose runtime-isolation contract
+	python3 -m unittest discover -s scripts -p 'test_compose_runtime_isolation.py'
+
+opencode-config-test: ## Test strict managed OpenCode command permissions
+	python3 -m unittest discover -s scripts -p 'test_opencode_config.py'
 
 docs-check: ## Verify current-status documents and stable API references agree
 	./scripts/check-docs-consistency.sh

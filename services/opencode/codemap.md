@@ -5,8 +5,8 @@ Builds the managed OpenCode server image used as Switchyard's agent execution se
 
 ## Design
 - A pinned Node/Alpine image installs OpenCode, RTK, Git, Go, and build tooling.
-- `install.sh` copies managed plugins/agents/skills and merge-preserves user configuration.
-- Persistent OpenCode config/data and a shared workspace are mounted at runtime.
+- In strict mode, `install.sh` removes unmanaged extension trees, replaces persisted configuration without reading it, and atomically sanitizes persistent `auth.json` to mode `0600`, retaining only valid API/OAuth provider credentials. The session DB is in memory. Development mode leaves auth state untouched, may merge reviewed local configuration, and may use persistent state.
+- Persistent OpenCode config/data are pre-owned bind mounts; startup fails closed instead of recursively changing host ownership.
 
 ## Flow
 1. The image installs locked dependencies and a checksum-verified RTK installer.

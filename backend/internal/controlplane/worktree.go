@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"git.subcult.tv/PatrickFanella/switchyard/internal/gitworktree"
+	"golang.org/x/sys/unix"
 )
 
 type OpenPilotWorktreeMode string
@@ -75,6 +79,8 @@ type OpenPilotWorktreeCleanupPlan struct {
 }
 
 type OpenPilotPushPlan struct {
+	Repo             string `json:"repo,omitempty"`
+	RepoPath         string `json:"repo_path,omitempty"`
 	Mode             string `json:"mode"`
 	Remote           string `json:"remote"`
 	Branch           string `json:"branch"`
@@ -86,6 +92,12 @@ type OpenPilotPushPlan struct {
 
 func (p OpenPilotPushPlan) StepInputs() map[string]string {
 	inputs := map[string]string{"mode": p.Mode, "remote": p.Remote, "branch": p.Branch}
+	if p.Repo != "" {
+		inputs["repo"] = p.Repo
+	}
+	if p.RepoPath != "" {
+		inputs["repo_path"] = p.RepoPath
+	}
 	if p.WorktreePath != "" {
 		inputs["worktree_path"] = p.WorktreePath
 	}
@@ -107,14 +119,12 @@ type GitOpenPilotWorktreeManager struct {
 	repoPath    string
 	root        string
 	timeout     time.Duration
+	beforeAdd   func()
 }
 
 func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
 	repoPath := firstNonEmpty(os.Getenv("OPEN_PILOT_REPO_PATH"), os.Getenv("OPEN_PILOT_WORKDIR"))
 	root := os.Getenv("OPEN_PILOT_WORKTREE_ROOT")
-	if root == "" {
-		root = filepath.Join(os.TempDir(), "switchyard-open-pilot-worktrees")
-	}
 	timeout := 120 * time.Second
 	if raw := os.Getenv("OPEN_PILOT_WORKTREE_TIMEOUT"); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil {
@@ -159,26 +169,84 @@ func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo
 	case OpenPilotWorktreeDisabled:
 		return plan, nil
 	case OpenPilotWorktreeDryRun:
-		plan.PlannedWorktreePath = filepath.Join(m.root, safePathSegment(repo), safePathSegment(run.ID+"-"+branch))
+		root := m.root
+		if root == "" {
+			root = filepath.Join(os.TempDir(), "switchyard-open-pilot-worktrees")
+		}
+		plan.PlannedWorktreePath = filepath.Join(root, safePathSegment(repo), safePathSegment(run.ID+"-"+branch))
 		plan.DryRun = true
 		return plan, nil
 	case OpenPilotWorktreeAllow:
-		plan.PlannedWorktreePath = filepath.Join(m.root, safePathSegment(repo), safePathSegment(run.ID+"-"+branch))
-		plan.WorktreePath = plan.PlannedWorktreePath
 		if strings.TrimSpace(m.repoPath) == "" {
 			return plan, errors.New("OPEN_PILOT_REPO_PATH or OPEN_PILOT_WORKDIR is required when OPEN_PILOT_WORKTREE_MODE=allow")
 		}
+		if strings.TrimSpace(m.root) == "" {
+			return plan, errors.New("OPEN_PILOT_WORKTREE_ROOT is required when OPEN_PILOT_WORKTREE_MODE=allow")
+		}
+		source, root, err := m.validatedPaths(ctx, false)
+		if err != nil {
+			return plan, err
+		}
+		if err := m.validateRepoMatchesRequest(ctx, source, repo); err != nil {
+			return plan, err
+		}
+		plan.RepoPath = source
+		plan.PlannedWorktreePath = filepath.Join(root, safePathSegment(repo), safePathSegment(run.ID+"-"+branch))
+		plan.PlannedWorktreePath, err = canonicalPath(plan.PlannedWorktreePath)
+		if err != nil {
+			return plan, fmt.Errorf("canonicalize planned worktree path: %w", err)
+		}
+		if err := requirePathWithin(root, plan.PlannedWorktreePath); err != nil {
+			return plan, fmt.Errorf("validate planned worktree path: %w", err)
+		}
+		plan.WorktreePath = plan.PlannedWorktreePath
 		if err := os.MkdirAll(filepath.Dir(plan.WorktreePath), 0o755); err != nil {
 			return plan, err
 		}
-		if err := m.runGit(ctx, "-C", m.repoPath, "rev-parse", "--is-inside-work-tree"); err != nil {
-			return plan, fmt.Errorf("validate source repository: %w", err)
+		root, err = canonicalExistingPath(m.root)
+		if err != nil {
+			return plan, fmt.Errorf("canonicalize OPEN_PILOT_WORKTREE_ROOT: %w", err)
 		}
-		if err := m.validateRepoMatchesRequest(ctx, repo); err != nil {
-			return plan, err
+		parent, err := canonicalExistingPath(filepath.Dir(plan.PlannedWorktreePath))
+		if err != nil {
+			return plan, fmt.Errorf("canonicalize planned worktree parent: %w", err)
 		}
-		if err := m.runGit(ctx, "-C", m.repoPath, "worktree", "add", "-b", branch, plan.WorktreePath, baseBranch); err != nil {
+		if err := requirePathWithin(root, parent); err != nil {
+			return plan, fmt.Errorf("revalidate planned worktree parent: %w", err)
+		}
+		plan.PlannedWorktreePath = filepath.Join(parent, filepath.Base(plan.PlannedWorktreePath))
+		if err := requirePathWithin(root, plan.PlannedWorktreePath); err != nil {
+			return plan, fmt.Errorf("revalidate planned worktree path: %w", err)
+		}
+		plan.WorktreePath = plan.PlannedWorktreePath
+		parentFD, err := openDirectoryWithoutSymlinks(parent)
+		if err != nil {
+			return plan, errors.New("open planned worktree parent without symlinks")
+		}
+		parentDirectory := os.NewFile(uintptr(parentFD), parent)
+		defer parentDirectory.Close()
+		leaf := filepath.Base(plan.PlannedWorktreePath)
+		var destination unix.Stat_t
+		if statErr := unix.Fstatat(parentFD, leaf, &destination, unix.AT_SYMLINK_NOFOLLOW); statErr == nil {
+			return plan, errors.New("planned worktree destination already exists")
+		} else if !errors.Is(statErr, unix.ENOENT) {
+			return plan, errors.New("inspect planned worktree destination")
+		}
+		if m.beforeAdd != nil {
+			m.beforeAdd()
+		}
+		if err := m.runGitWithFile(ctx, parentDirectory, "-C", source, "worktree", "add", "-b", branch, "/proc/self/fd/3/"+leaf, baseBranch); err != nil {
 			return plan, fmt.Errorf("create git worktree: %w", err)
+		}
+		canonicalCreated, canonicalErr := canonicalExistingPath(plan.WorktreePath)
+		registered, registeredErr := m.registeredWorktreePaths(ctx, source)
+		if canonicalErr != nil || canonicalCreated != plan.WorktreePath || registeredErr != nil {
+			_ = m.runGitWithFile(ctx, parentDirectory, "-C", source, "worktree", "remove", "--force", "/proc/self/fd/3/"+leaf)
+			return plan, errors.New("created worktree is not registered at the canonical intended path")
+		}
+		if _, ok := registered[plan.WorktreePath]; !ok {
+			_ = m.runGitWithFile(ctx, parentDirectory, "-C", source, "worktree", "remove", "--force", "/proc/self/fd/3/"+leaf)
+			return plan, errors.New("created worktree is not registered at the canonical intended path")
 		}
 		plan.Executed = true
 		return plan, nil
@@ -214,23 +282,101 @@ func (m *GitOpenPilotWorktreeManager) Cleanup(ctx context.Context, plan OpenPilo
 		cleanup.Reason = "branch not pushed or published"
 		return cleanup, nil
 	}
-	status, err := m.runGitOutput(ctx, "-C", plan.WorktreePath, "status", "--porcelain=v1")
+	if strings.TrimSpace(m.repoPath) == "" {
+		return cleanup, errors.New("OPEN_PILOT_REPO_PATH or OPEN_PILOT_WORKDIR is required for worktree cleanup")
+	}
+	source, root, err := m.validatedPaths(ctx, true)
 	if err != nil {
-		return cleanup, fmt.Errorf("inspect worktree before cleanup: %w", err)
+		return cleanup, err
+	}
+	if strings.TrimSpace(plan.RepoPath) == "" {
+		return cleanup, errors.New("persisted source repository path is required for worktree cleanup")
+	}
+	persistedSource, err := canonicalExistingPath(plan.RepoPath)
+	if err != nil || filepath.Clean(plan.RepoPath) != persistedSource || persistedSource != source {
+		return cleanup, errors.New("persisted source repository path no longer matches the configured repository")
+	}
+	if !filepath.IsAbs(plan.WorktreePath) {
+		return cleanup, errors.New("persisted worktree path must be absolute")
+	}
+	worktreePath := filepath.Clean(plan.WorktreePath)
+	canonicalWorktreePath, err := canonicalExistingPath(worktreePath)
+	if err != nil {
+		return cleanup, fmt.Errorf("canonicalize persisted worktree path: %w", err)
+	}
+	if worktreePath != canonicalWorktreePath {
+		return cleanup, errors.New("persisted worktree lexical path no longer matches its canonical path")
+	}
+	if strings.TrimSpace(plan.PlannedWorktreePath) == "" || filepath.Clean(plan.PlannedWorktreePath) != worktreePath {
+		return cleanup, errors.New("persisted planned worktree path does not match the executed worktree path")
+	}
+	if err := requirePathWithin(root, worktreePath); err != nil {
+		return cleanup, fmt.Errorf("validate persisted worktree path: %w", err)
+	}
+	cleanup.WorktreePath = worktreePath
+	registered, err := m.registeredWorktreePaths(ctx, source)
+	if err != nil {
+		return cleanup, fmt.Errorf("list registered worktrees: %w", err)
+	}
+	if _, ok := registered[worktreePath]; !ok {
+		return cleanup, errors.New("persisted worktree path is not registered in the source repository")
+	}
+	actualBranch, err := m.runGitOutput(ctx, "-C", worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return cleanup, fmt.Errorf("inspect worktree branch before cleanup: %w", err)
+	}
+	if strings.TrimSpace(actualBranch) != plan.Branch {
+		return cleanup, fmt.Errorf("worktree branch %q does not match planned branch %q", strings.TrimSpace(actualBranch), plan.Branch)
+	}
+	status, err := m.runGitOutput(ctx, "-C", worktreePath, "status", "--porcelain=v1")
+	if err != nil {
+		return cleanup, fmt.Errorf("revalidate worktree before cleanup: %w", err)
 	}
 	if strings.TrimSpace(status) != "" {
 		cleanup.Skipped = true
 		cleanup.Reason = "worktree has uncommitted changes"
 		return cleanup, nil
 	}
-	if strings.TrimSpace(m.repoPath) == "" {
-		return cleanup, errors.New("OPEN_PILOT_REPO_PATH or OPEN_PILOT_WORKDIR is required for worktree cleanup")
-	}
-	if err := m.runGit(ctx, "-C", m.repoPath, "worktree", "remove", plan.WorktreePath); err != nil {
+	if err := m.runGit(ctx, "-C", source, "worktree", "remove", worktreePath); err != nil {
 		return cleanup, fmt.Errorf("remove git worktree: %w", err)
 	}
 	cleanup.Executed = true
 	return cleanup, nil
+}
+
+func validateOpenPilotWorktreeIdentity(ctx context.Context, repo, repoPath, worktreePath, branch string, requireOrigin bool) (gitworktree.Identity, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		return gitworktree.Identity{}, errors.New("persisted source repository path is required")
+	}
+	if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) != repoPath {
+		return gitworktree.Identity{}, errors.New("source repository path must be an exact absolute path")
+	}
+	canonicalRepo, err := filepath.EvalSymlinks(repoPath)
+	if err != nil || canonicalRepo != repoPath {
+		return gitworktree.Identity{}, errors.New("source repository lexical path does not match its canonical path")
+	}
+	return gitworktree.ValidatePath(ctx, gitworktree.Expected{
+		WorktreePath:  worktreePath,
+		CommonDir:     filepath.Join(repoPath, ".git"),
+		Branch:        branch,
+		Repo:          repo,
+		RequireOrigin: requireOrigin,
+		OriginBaseURL: os.Getenv("GITEA_BASE_URL"),
+	})
+}
+
+func (m *GitOpenPilotWorktreeManager) registeredWorktreePaths(ctx context.Context, source string) (map[string]struct{}, error) {
+	output, err := m.runGitOutput(ctx, "-C", source, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	paths := make(map[string]struct{})
+	for _, field := range strings.Split(output, "\x00") {
+		if path, ok := strings.CutPrefix(field, "worktree "); ok {
+			paths[path] = struct{}{}
+		}
+	}
+	return paths, nil
 }
 
 func (m *GitOpenPilotWorktreeManager) runGit(ctx context.Context, args ...string) error {
@@ -245,7 +391,8 @@ func (m *GitOpenPilotWorktreeManager) runGitOutput(ctx context.Context, args ...
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "git", args...)
+	cmd := exec.CommandContext(runCtx, "git", append(gitworktree.SafeCommandArgs(false), args...)...)
+	cmd.Env = gitworktree.SanitizedEnvironment(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
@@ -257,50 +404,177 @@ func (m *GitOpenPilotWorktreeManager) runGitOutput(ctx context.Context, args ...
 	return string(output), nil
 }
 
-func (m *GitOpenPilotWorktreeManager) validateRepoMatchesRequest(ctx context.Context, repo string) error {
-	remote, err := m.runGitOutput(ctx, "-C", m.repoPath, "config", "--get", "remote.origin.url")
+func (m *GitOpenPilotWorktreeManager) runGitWithFile(ctx context.Context, file *os.File, args ...string) error {
+	timeout := m.timeout
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, "git", append(gitworktree.SafeCommandArgs(false), args...)...)
+	cmd.ExtraFiles = []*os.File{file}
+	cmd.Env = gitworktree.SanitizedEnvironment(nil)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		message = err.Error()
+	}
+	return errors.New(message)
+}
+
+func openDirectoryWithoutSymlinks(path string) (int, error) {
+	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil
+		return -1, err
 	}
-	remoteRepo := openPilotRepoSlugFromRemote(remote)
-	if remoteRepo == "" {
-		return nil
+	for _, component := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if openErr != nil {
+			return -1, openErr
+		}
+		fd = next
 	}
-	requested := normalizeOpenPilotRepoSlug(repo)
-	if requested == "" || requested != remoteRepo {
+	return fd, nil
+}
+
+func (m *GitOpenPilotWorktreeManager) validateRepoMatchesRequest(ctx context.Context, repoPath string, repo string) error {
+	remote, err := m.runGitOutput(ctx, "-C", repoPath, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return errors.New("OPEN_PILOT_REPO_PATH origin is missing or unreadable")
+	}
+	requested, ok := exactOpenPilotRepoSlug(repo)
+	if !ok {
+		return fmt.Errorf("requested repo %q must be exact owner/repo", repo)
+	}
+	remoteRepo, ok := openPilotRepoSlugFromRemote(remote)
+	if !ok {
+		return errors.New("OPEN_PILOT_REPO_PATH origin is unparseable")
+	}
+	if requested != remoteRepo {
 		return fmt.Errorf("OPEN_PILOT_REPO_PATH origin %q does not match requested repo %q", remoteRepo, repo)
 	}
 	return nil
 }
 
-func openPilotRepoSlugFromRemote(remote string) string {
-	remote = strings.TrimSpace(remote)
-	remote = strings.TrimSuffix(remote, ".git")
-	if remote == "" || strings.HasPrefix(remote, "/") || strings.HasPrefix(remote, "./") || strings.HasPrefix(remote, "../") {
-		return ""
+func (m *GitOpenPilotWorktreeManager) validatedPaths(ctx context.Context, requireRoot bool) (string, string, error) {
+	if !filepath.IsAbs(m.repoPath) {
+		return "", "", errors.New("OPEN_PILOT_REPO_PATH or OPEN_PILOT_WORKDIR must be absolute")
 	}
-	if strings.HasPrefix(remote, "git@") {
-		if _, path, ok := strings.Cut(remote, ":"); ok {
-			return normalizeOpenPilotRepoSlug(path)
-		}
+	if !filepath.IsAbs(m.root) {
+		return "", "", errors.New("OPEN_PILOT_WORKTREE_ROOT must be absolute")
 	}
-	if strings.Contains(remote, "://") {
-		parts := strings.Split(strings.Trim(remote, "/"), "/")
-		if len(parts) >= 2 {
-			return normalizeOpenPilotRepoSlug(parts[len(parts)-2] + "/" + parts[len(parts)-1])
-		}
+	source, err := canonicalExistingPath(m.repoPath)
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize source repository: %w", err)
 	}
-	return ""
+	var root string
+	if requireRoot {
+		root, err = canonicalExistingPath(m.root)
+	} else {
+		root, err = canonicalPath(m.root)
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize OPEN_PILOT_WORKTREE_ROOT: %w", err)
+	}
+	if root == string(filepath.Separator) {
+		return "", "", errors.New("OPEN_PILOT_WORKTREE_ROOT must not be /")
+	}
+	if source == root {
+		return "", "", errors.New("source repository and OPEN_PILOT_WORKTREE_ROOT must differ")
+	}
+	topLevel, err := m.runGitOutput(ctx, "-C", source, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", "", fmt.Errorf("validate source repository: %w", err)
+	}
+	topLevel, err = canonicalExistingPath(strings.TrimSpace(topLevel))
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize source repository top-level: %w", err)
+	}
+	if topLevel != source {
+		return "", "", fmt.Errorf("source repository %q is not Git top-level %q", source, topLevel)
+	}
+	if err := gitworktree.RejectUnsafeLocalConfig(ctx, filepath.Join(source, ".git")); err != nil {
+		return "", "", err
+	}
+	return source, root, nil
 }
 
-func normalizeOpenPilotRepoSlug(repo string) string {
-	repo = strings.TrimSpace(strings.Trim(repo, "/"))
-	repo = strings.TrimSuffix(repo, ".git")
-	parts := strings.Split(repo, "/")
-	if len(parts) < 2 {
-		return ""
+func canonicalExistingPath(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("path must be absolute")
 	}
-	return strings.ToLower(parts[len(parts)-2] + "/" + parts[len(parts)-1])
+	return filepath.EvalSymlinks(filepath.Clean(path))
+}
+
+func canonicalPath(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("path must be absolute")
+	}
+	current := filepath.Clean(path)
+	missing := make([]string, 0)
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func requirePathWithin(root string, path string) error {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q must be below root %q", path, root)
+	}
+	return nil
+}
+
+func openPilotRepoSlugFromRemote(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+	if !strings.Contains(remote, "://") {
+		host, path, ok := strings.Cut(remote, ":")
+		if !ok || !strings.HasPrefix(host, "git@") || len(host) == len("git@") {
+			return "", false
+		}
+		return exactOpenPilotRepoSlug(strings.TrimSuffix(path, ".git"))
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	return exactOpenPilotRepoSlug(strings.TrimSuffix(strings.TrimPrefix(parsed.EscapedPath(), "/"), ".git"))
+}
+
+func exactOpenPilotRepoSlug(repo string) (string, bool) {
+	if repo == "" || repo != strings.TrimSpace(repo) || repo != strings.Trim(repo, "/") {
+		return "", false
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	return repo, true
 }
 
 func safePathSegment(value string) string {

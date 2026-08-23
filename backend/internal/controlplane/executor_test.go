@@ -264,7 +264,7 @@ func TestRunnerPausesOpenPilotAgentWorkWithoutExecutedWorktree(t *testing.T) {
 func TestRunnerRejectsOpenPilotMismatchedRepoPathOrigin(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
-	runGitForTest(t, repoPath, "remote", "add", "origin", "https://git.example.test/OWNER/OTHER.git")
+	runGitForTest(t, repoPath, "remote", "set-url", "origin", "https://git.example.test/OWNER/OTHER.git")
 	var ocqCalls int32
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&ocqCalls, 1)
@@ -296,7 +296,7 @@ func TestRunnerRejectsOpenPilotMismatchedRepoPathOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.branch-plan" || !strings.Contains(state.LastError, "owner/other") {
+	if state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.branch-plan" || !strings.Contains(state.LastError, "OWNER/OTHER") {
 		t.Fatalf("state = %+v", state)
 	}
 }
@@ -528,14 +528,16 @@ func TestRunnerPersistsOpenPilotStateThroughAgentWork(t *testing.T) {
 }
 
 func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
-	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
-	runGitForTest(t, repoPath, "push", "origin", "main")
-	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
+	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
+	runGitForTest(t, repoPath, "push", "test-origin", "main")
+	runGitForTest(t, repoPath, "push", "test-origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -586,14 +588,16 @@ func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
 }
 
 func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
-	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
-	runGitForTest(t, repoPath, "push", "origin", "main")
-	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
+	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
+	runGitForTest(t, repoPath, "push", "test-origin", "main")
+	runGitForTest(t, repoPath, "push", "test-origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -910,9 +914,12 @@ func TestRunnerSkipsOpenPilotWorktreeCleanupWithoutDurableHandoff(t *testing.T) 
 }
 
 func TestRunnerRejectsOpenPilotPullRequestForUnpushedWorktreeBranch(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	remotePath := addLocalBareTestRemote(t, repoPath)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -945,14 +952,16 @@ func TestRunnerRejectsOpenPilotPullRequestForUnpushedWorktreeBranch(t *testing.T
 }
 
 func TestRunnerCreatesOpenPilotPullRequestForExistingRemoteHead(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
-	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
-	runGitForTest(t, repoPath, "push", "origin", "main")
-	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123")
+	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
+	runGitForTest(t, repoPath, "push", "test-origin", "main")
+	runGitForTest(t, repoPath, "push", "test-origin", "main:refs/heads/open-pilot/issue-123")
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -1004,9 +1013,12 @@ func TestRunnerCreatesOpenPilotPullRequestForExistingRemoteHead(t *testing.T) {
 }
 
 func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	remotePath := addLocalBareTestRemote(t, repoPath)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -1046,12 +1058,13 @@ func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
 }
 
 func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
-	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
-	runGitForTest(t, repoPath, "push", "origin", "main")
+	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
+	runGitForTest(t, repoPath, "push", "test-origin", "main")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1061,6 +1074,7 @@ func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
 		if workdir == "" {
 			t.Fatal("missing OCQ directory")
 		}
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		if err := os.WriteFile(filepath.Join(workdir, "generated.txt"), []byte("generated\n"), 0o644); err != nil {
 			t.Fatalf("write generated: %v", err)
 		}
@@ -1112,9 +1126,12 @@ func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
 }
 
 func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	remotePath := addLocalBareTestRemote(t, repoPath)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -1157,14 +1174,16 @@ func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
 }
 
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
-	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
-	runGitForTest(t, repoPath, "push", "origin", "main")
-	runGitForTest(t, repoPath, "push", "origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
+	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
+	runGitForTest(t, repoPath, "push", "test-origin", "main")
+	runGitForTest(t, repoPath, "push", "test-origin", "main:refs/heads/open-pilot/issue-123-fix-switchyard")
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runGitForTest(t, repoPath, "remote", "set-url", "origin", remotePath)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"implementation summary"}}]}`))
 	}))
 	t.Cleanup(ocq.Close)
@@ -1310,6 +1329,7 @@ func initTestGitRepo(t *testing.T) string {
 	runGitForTest(t, dir, "add", "README.md")
 	runGitForTest(t, dir, "commit", "-m", "initial")
 	runGitForTest(t, dir, "branch", "-M", "main")
+	runGitForTest(t, dir, "remote", "add", "origin", "https://git.example.test/OWNER/REPO.git")
 	return dir
 }
 
@@ -1321,6 +1341,15 @@ func runGitForTest(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
+}
+
+func addLocalBareTestRemote(t *testing.T, repoPath string) string {
+	t.Helper()
+	remotePath := filepath.Join(t.TempDir(), "remote.git")
+	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
+	runGitForTest(t, repoPath, "push", "test-origin", "main")
+	return remotePath
 }
 
 func TestRunnerGeneratesDevlogWithModel(t *testing.T) {

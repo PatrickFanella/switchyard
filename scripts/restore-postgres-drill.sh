@@ -69,6 +69,8 @@ PY
 
 docker build --quiet --tag "$api_image" "$root/backend" >/dev/null
 docker run --detach --rm --name "$api_name" --network host \
+  --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,exec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=16m \
   --env "DATABASE_URL=host=127.0.0.1 port=$port user=switchyard_restore password=$password dbname=switchyard_restore sslmode=disable" \
   --env "SWITCHYARD_LISTEN_ADDR=127.0.0.1:$api_port" \
   --env SWITCHYARD_CONTROL_API_TOKEN=restore-drill-token \

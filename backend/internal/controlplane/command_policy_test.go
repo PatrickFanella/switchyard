@@ -117,7 +117,7 @@ func TestEnvCommandRunnerExecutesAllowedCommandInVerifier(t *testing.T) {
 		if strings.Join(request.Command, " ") != "git diff --check" || request.Workdir != "/workspace/.open-pilot-worktrees/issue-1" {
 			t.Fatalf("request = %+v", request)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"output": "clean"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "clean", "manifest": "sha256:worktree"})
 	}))
 	defer server.Close()
 	t.Setenv("OPEN_PILOT_COMMAND_POLICY_MODE", "allow")
@@ -128,7 +128,7 @@ func TestEnvCommandRunnerExecutesAllowedCommandInVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !result.Executed || result.Output != "clean" {
+	if !result.Executed || result.Output != "clean" || result.Manifest != "sha256:worktree" {
 		t.Fatalf("result = %+v", result)
 	}
 }

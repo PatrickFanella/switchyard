@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -286,5 +287,182 @@ func TestEnvOpenCodeExecutorPersistsNativeSessionCorrelationBeforeMessageComplet
 	close(releaseMessage)
 	if err := <-done; err != nil {
 		t.Fatalf("SendPrompt() error = %v", err)
+	}
+}
+
+func TestEnvOpenCodeExecutorReplacesStaleNativeSessionOnce(t *testing.T) {
+	tests := []struct {
+		name      string
+		staleAt   string
+		wantPosts int
+	}{
+		{name: "status before prompt", staleAt: "get", wantPosts: 1},
+		{name: "prompt post", staleAt: "post", wantPosts: 2},
+		{name: "status poll", staleAt: "poll", wantPosts: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			created := 0
+			oldPosted := false
+			newPosted := false
+			postBodies := make([]string, 0, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case r.URL.Path == "/session" && r.Method == http.MethodPost:
+					created++
+					_, _ = w.Write([]byte(`{"id":"replacement"}`))
+				case r.URL.Path == "/session/stale/message" && r.Method == http.MethodGet:
+					if tt.staleAt == "get" || (tt.staleAt == "poll" && oldPosted) {
+						http.Error(w, "session not found", http.StatusNotFound)
+						return
+					}
+					_, _ = w.Write([]byte(`[]`))
+				case r.URL.Path == "/session/stale/message" && r.Method == http.MethodPost:
+					body := json.RawMessage{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode stale post: %v", err)
+					}
+					postBodies = append(postBodies, string(body))
+					oldPosted = true
+					if tt.staleAt == "post" {
+						http.Error(w, "session not found", http.StatusNotFound)
+						return
+					}
+					_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"queued"}]}`))
+				case r.URL.Path == "/session/replacement/message" && r.Method == http.MethodGet:
+					if !newPosted {
+						_, _ = w.Write([]byte(`[]`))
+						return
+					}
+					_, _ = w.Write([]byte(`[{"info":{"id":"done","role":"assistant","finish":"stop"},"parts":[{"type":"text","text":"recovered"}]}]`))
+				case r.URL.Path == "/session/replacement/message" && r.Method == http.MethodPost:
+					body := json.RawMessage{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode replacement post: %v", err)
+					}
+					postBodies = append(postBodies, string(body))
+					newPosted = true
+					_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"queued"}]}`))
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+					http.Error(w, "unexpected", http.StatusInternalServerError)
+				}
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("OPENCODE_SERVER_URL", server.URL)
+			t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+			t.Setenv("OPENCODE_SESSION_STATUS_POLL_INTERVAL", "1ms")
+
+			var preAttempts atomic.Int32
+			var correlations []string
+			response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{
+				Model:     "openai/gpt-test",
+				Prompt:    "same exact prompt",
+				SessionID: "stale",
+				RequestID: "request-stale",
+				PreAttempt: func(controlplane.BackendDecision) error {
+					preAttempts.Add(1)
+					return nil
+				},
+				OnCorrelation: func(correlation map[string]string) error {
+					correlations = append(correlations, correlation["opencode_session_id"])
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("SendPrompt() error = %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if response.Content != "recovered" || response.SessionID != "replacement" || response.CorrelationIDs["opencode_session_id"] != "replacement" {
+				t.Fatalf("response = %+v", response)
+			}
+			if created != 1 || len(postBodies) != tt.wantPosts {
+				t.Fatalf("created=%d posts=%d bodies=%v", created, len(postBodies), postBodies)
+			}
+			if len(postBodies) == 2 && postBodies[0] != postBodies[1] {
+				t.Fatalf("retried prompt changed: first=%s second=%s", postBodies[0], postBodies[1])
+			}
+			if preAttempts.Load() != 1 {
+				t.Fatalf("PreAttempt calls = %d, want 1", preAttempts.Load())
+			}
+			if len(correlations) != 2 || correlations[0] != "stale" || correlations[1] != "replacement" {
+				t.Fatalf("correlations = %v", correlations)
+			}
+		})
+	}
+}
+
+func TestEnvOpenCodeExecutorAbortsReplacementSessionOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	var aborted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session/stale/message" && r.Method == http.MethodGet:
+			http.Error(w, "session not found", http.StatusNotFound)
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":"replacement"}`))
+		case r.URL.Path == "/session/replacement/message" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/session/replacement/message" && r.Method == http.MethodPost:
+			cancel()
+			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"queued"}]}`))
+		case r.URL.Path == "/session/replacement/abort" && r.Method == http.MethodPost:
+			aborted.Store(true)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case r.URL.Path == "/session/stale/abort" && r.Method == http.MethodPost:
+			t.Error("stale session was aborted instead of replacement")
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+	t.Setenv("OPENCODE_ABORT_TIMEOUT", "1s")
+
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(ctx, controlplane.OpenCodeRequest{Prompt: "cancel", SessionID: "stale"})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendPrompt() response=%+v error=%v, want cancellation", response, err)
+	}
+	if response.SessionID != "replacement" || response.CorrelationIDs["opencode_session_id"] != "replacement" {
+		t.Fatalf("response = %+v", response)
+	}
+	if !aborted.Load() {
+		t.Fatal("replacement session was not aborted")
+	}
+}
+
+func TestEnvOpenCodeExecutorDoesNotReplaceStaleNativeSessionTwice(t *testing.T) {
+	var creates atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			creates.Add(1)
+			_, _ = w.Write([]byte(`{"id":"also-stale"}`))
+		case r.Method == http.MethodGet:
+			http.Error(w, "session not found", http.StatusNotFound)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Prompt: "work", SessionID: "stale"})
+	if err == nil {
+		t.Fatalf("SendPrompt() response=%+v, want stale-session error", response)
+	}
+	if creates.Load() != 1 {
+		t.Fatalf("replacement creates = %d, want 1", creates.Load())
+	}
+	if response.SessionID != "also-stale" || response.CorrelationIDs["opencode_session_id"] != "also-stale" {
+		t.Fatalf("response = %+v", response)
 	}
 }

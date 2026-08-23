@@ -1,10 +1,10 @@
 # backend/cmd/
 
 ## Responsibility
-Contains the executable entry points for the Switchyard server and operator CLI.
+Contains executable entry points for the Switchyard server, isolated verifier, and operator CLI.
 
 ## Design
-Entry points remain thin: server composition lives in `cmd/app`, while CLI transport and presentation live in `cmd/switchyard`; domain behavior stays in `internal/controlplane`.
+Entry points remain thin: server composition lives in `cmd/app`, verifier request execution in `cmd/verifier`, and CLI transport and presentation in `cmd/switchyard`; domain behavior stays in `internal/controlplane`. The verifier keeps direct Git fd-bound to a validated identity, runs other commands in bounded private snapshots, binds results to source manifests, and reaps escaped children between serialized requests.
 
 ## Flow
 1. A built binary receives environment configuration or command-line flags.
