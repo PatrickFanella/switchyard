@@ -83,6 +83,18 @@ func TestClaimAndCreateOpenPilotInitialRunIsAtomic(t *testing.T) {
 	}
 }
 
+func TestValidatePolledOpenPilotIssueRequiresClaimedIdentity(t *testing.T) {
+	run := Run{TriggerID: "gitea-open-pilot-poll", Inputs: map[string]string{"issue": "7", "issue_id": "10"}}
+	if err := validatePolledOpenPilotIssue(run, &GiteaIssue{ID: 10, Number: 7}); err != nil {
+		t.Fatal(err)
+	}
+	for _, issue := range []*GiteaIssue{nil, {ID: 11, Number: 7}, {ID: 10, Number: 8}} {
+		if err := validatePolledOpenPilotIssue(run, issue); err == nil {
+			t.Fatalf("accepted issue %+v", issue)
+		}
+	}
+}
+
 func TestOpenPilotPhaseAllowsV1Transitions(t *testing.T) {
 	allowed := []struct{ from, to OpenPilotPhase }{
 		{OpenPilotPhaseRequested, OpenPilotPhaseValidated},

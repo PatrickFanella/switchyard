@@ -929,13 +929,26 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		state["open-pilot.issue-summary"] = issueSummary
 		state["open-pilot.fetched-issue"] = fetchedIssue
 		if fetchErr != nil {
-			if strings.TrimSpace(os.Getenv("GITEA_BASE_URL")) == "" {
+			if run.TriggerID == "gitea-open-pilot-poll" {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, fetchErr.Error(), state); persistErr != nil {
+					return out, errors.Join(fetchErr, persistErr)
+				}
+				return out, fetchErr
+			} else if strings.TrimSpace(os.Getenv("GITEA_BASE_URL")) == "" {
 				out.Events = append(out.Events, WorkflowExecutionEvent{Type: "open-pilot.issue.fetch.skipped", Message: fetchErr.Error()})
 			} else {
 				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, fetchErr.Error(), state); persistErr != nil {
 					return out, errors.Join(fetchErr, persistErr)
 				}
 				return out, fetchErr
+			}
+		}
+		if run.TriggerID == "gitea-open-pilot-poll" {
+			if err := validatePolledOpenPilotIssue(run, fetchedIssue); err != nil {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+					return out, errors.Join(err, persistErr)
+				}
+				return out, err
 			}
 		}
 		if fetchedIssue != nil {
@@ -1321,6 +1334,17 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)
 	}
+}
+
+func validatePolledOpenPilotIssue(run Run, issue *GiteaIssue) error {
+	if issue == nil || issue.ID < 1 || issue.Number < 1 {
+		return errors.New("polled Open Pilot issue could not be re-fetched")
+	}
+	expectedID, err := strconv.Atoi(strings.TrimSpace(run.Inputs["issue_id"]))
+	if err != nil || expectedID < 1 || expectedID != issue.ID || strconv.Itoa(issue.Number) != strings.TrimSpace(run.Inputs["issue"]) {
+		return errors.New("polled Open Pilot issue identity changed after assignment")
+	}
+	return nil
 }
 
 type openPilotCICheckResult struct {
