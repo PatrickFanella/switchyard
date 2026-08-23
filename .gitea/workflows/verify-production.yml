@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       pull_request:
-        description: Full pull request proof/reference URL
+        description: Credential-free HTTPS repository /pulls/<positive integer> URL
         required: true
         type: string
       rollback_target:
-        description: Previous release tag or immutable rollback reference
+        description: Previous semver-like release tag or full lowercase Git SHA
         required: true
         type: string
   schedule:
@@ -96,7 +96,7 @@ jobs:
               "release_tag": manifest["release_tag"],
               "pull_request": os.environ["RELEASE_PULL_REQUEST"],
               "ci_run": run_url,
-              "migration_head": sorted(Path("backend/internal/controlplane/migrations").glob("*.sql"))[-1].name,
+              "migration_head": manifest["migration_head"],
               "rollback_target": os.environ["ROLLBACK_TARGET"],
               "exceptions": [],
               "recorded_at": now,
@@ -117,6 +117,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: candidate-release-evidence-${{ github.sha }}
-          path: release/candidate-evidence.json
+          path: |
+            release/candidate-evidence.json
+            release/manifest.json
+            release/SHA256SUMS
+            release/*.oci.tar
           if-no-files-found: error
           retention-days: 30

@@ -7,6 +7,8 @@ revision=$(git -C "$root" rev-parse HEAD)
 tag=$(git -C "$root" describe --tags --exact-match 2>/dev/null || true)
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ci_url=${CI_RUN_URL:-}
+migrations=("$root"/backend/internal/controlplane/migrations/*.sql)
+migration_head=${migrations[$((${#migrations[@]} - 1))]##*/}
 archives=(
   switchyard-api.oci.tar
   switchyard-web.oci.tar
@@ -32,6 +34,7 @@ json_escape() {
   printf '  "release_tag": "%s",\n' "$(json_escape "$tag")"
   printf '  "built_at": "%s",\n' "$(json_escape "$built_at")"
   printf '  "ci_run_url": "%s",\n' "$(json_escape "$ci_url")"
+  printf '  "migration_head": "%s",\n' "$(json_escape "$migration_head")"
   printf '  "images": [\n'
   for index in "${!archives[@]}"; do
     archive=${archives[$index]}

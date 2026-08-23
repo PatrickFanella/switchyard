@@ -17,6 +17,13 @@ record. Run it against the annotated release tag and supply the reviewed pull
 request URL and immutable rollback target. Scheduled qualification runs test the
 contract but do not publish a release candidate record.
 
+The pull request must be a credential-free HTTPS repository URL ending in
+`/pulls/<positive integer>`. The rollback target must be either a full lowercase
+Git SHA or a semver-like release tag, and it must differ from both the candidate
+SHA and release tag. JSON evidence and manifests must not contain duplicate
+keys. Candidate workflow artifacts contain the evidence, manifest, checksums,
+and the exact `release/*.oci.tar` archives named by the manifest.
+
 After promotion, change the phase to `deployed`. Add `deployment`,
 `backup_restore`, and `production_smoke` proof. The deployed SHA must equal the
 candidate SHA. Historical records remain valid indefinitely when the candidate,

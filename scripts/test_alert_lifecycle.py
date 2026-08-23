@@ -5,8 +5,11 @@ import json
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
+from http.client import InvalidURL
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 import alert_lifecycle
@@ -24,6 +27,9 @@ class FakeState:
         self.resolved = False
         self.invalid_ntfy = False
         self.fail_first_post = False
+        self.fail_resolution_attempts = 0
+        self.resolution_attempts = 0
+        self.same_ntfy_message_id = False
         self.redirect_url: str | None = None
 
 
@@ -36,7 +42,9 @@ def handler_for(state: FakeState):
             body = self.rfile.read(int(self.headers["Content-Length"]))
             alerts = json.loads(body)
             state.posts.append({"alerts": alerts, "authorization": self.headers.get("Authorization")})
-            state.resolved = alerts[0]["endsAt"] < alerts[0]["startsAt"]
+            resolving = " resolved " in alerts[0]["annotations"]["summary"]
+            if resolving:
+                state.resolution_attempts += 1
             if state.redirect_url:
                 self.send_response(307)
                 self.send_header("Location", state.redirect_url)
@@ -45,6 +53,10 @@ def handler_for(state: FakeState):
             if state.fail_first_post and len(state.posts) == 1:
                 self.send_error(500)
                 return
+            if resolving and state.resolution_attempts <= state.fail_resolution_attempts:
+                self.send_error(500)
+                return
+            state.resolved = resolving
             self.send_response(200)
             self.end_headers()
 
@@ -68,7 +80,10 @@ def handler_for(state: FakeState):
                     return
                 correlation = state.posts[0]["alerts"][0]["labels"]["switchyard_correlation"]
                 status = "resolved" if state.resolved else "firing"
-                self._json(json.dumps({"event": "message", "message": f"{status} {correlation}"}) + "\n")
+                message_id = "firing-message" if not state.resolved or state.same_ntfy_message_id else "resolved-message"
+                self._json(
+                    json.dumps({"event": "message", "id": message_id, "message": f"{status} {correlation}"}) + "\n"
+                )
                 return
             self.send_error(404)
 
@@ -120,7 +135,10 @@ class AlertLifecycleTest(unittest.TestCase):
     def test_firing_and_resolved_flow_writes_redacted_evidence(self) -> None:
         config = alert_lifecycle.load_config(self.env())
         assert config is not None
-        alert_lifecycle.Lifecycle(config).run()
+        firing_at = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+        resolved_at = firing_at + timedelta(minutes=1)
+        utcnow = lambda: resolved_at if self.state.posts else firing_at
+        alert_lifecycle.Lifecycle(config, utcnow=utcnow).run()
 
         self.assertEqual(len(self.state.posts), 2)
         firing, resolved = [post["alerts"][0] for post in self.state.posts]
@@ -129,7 +147,9 @@ class AlertLifecycleTest(unittest.TestCase):
         self.assertIn(correlation, firing["annotations"]["summary"])
         self.assertIn(correlation, firing["annotations"]["description"])
         self.assertGreater(firing["endsAt"], firing["startsAt"])
-        self.assertLess(resolved["endsAt"], resolved["startsAt"])
+        self.assertEqual(resolved["startsAt"], firing["startsAt"])
+        self.assertEqual(resolved["endsAt"], resolved_at.isoformat().replace("+00:00", "Z"))
+        self.assertGreaterEqual(resolved["endsAt"], resolved["startsAt"])
         self.assertEqual(self.state.posts[0]["authorization"], "Bearer alert-secret")
         self.assertTrue(
             all(
@@ -150,6 +170,10 @@ class AlertLifecycleTest(unittest.TestCase):
         evidence = json.loads(evidence_text)
         self.assertEqual(evidence["result"], "passed")
         self.assertEqual(evidence["alert"], {"fingerprint": "abc123", "status": "resolved"})
+        self.assertEqual(
+            evidence["ntfy"],
+            {"firing_message_id": "firing-message", "resolved_message_id": "resolved-message"},
+        )
         self.assertNotIn("switchyard", evidence["endpoints"]["topic_sha256"])
         for secret in ("alert-secret", "ntfy-secret", "ntfy-user", "/switchyard", "Authorization"):
             self.assertNotIn(secret, evidence_text)
@@ -161,9 +185,9 @@ class AlertLifecycleTest(unittest.TestCase):
         with self.assertRaisesRegex(alert_lifecycle.HarnessError, "invalid newline JSON"):
             alert_lifecycle.Lifecycle(config).run()
         self.assertEqual(len(self.state.posts), 2)
-        self.assertLess(
-            self.state.posts[1]["alerts"][0]["endsAt"],
+        self.assertEqual(
             self.state.posts[1]["alerts"][0]["startsAt"],
+            self.state.posts[0]["alerts"][0]["startsAt"],
         )
         evidence = json.loads(config.evidence_path.read_text(encoding="utf-8"))
         self.assertEqual(evidence["result"], "failed")
@@ -175,10 +199,55 @@ class AlertLifecycleTest(unittest.TestCase):
         with self.assertRaisesRegex(alert_lifecycle.HarnessError, "HTTP 500"):
             alert_lifecycle.Lifecycle(config).run()
         self.assertEqual(len(self.state.posts), 2)
-        self.assertLess(
-            self.state.posts[1]["alerts"][0]["endsAt"],
+        self.assertEqual(
             self.state.posts[1]["alerts"][0]["startsAt"],
+            self.state.posts[0]["alerts"][0]["startsAt"],
         )
+
+    def test_failed_resolution_is_retried_once(self) -> None:
+        self.state.fail_resolution_attempts = 1
+        config = alert_lifecycle.load_config(self.env())
+        assert config is not None
+        with self.assertRaisesRegex(alert_lifecycle.HarnessError, "HTTP 500"):
+            alert_lifecycle.Lifecycle(config).run()
+        self.assertEqual(len(self.state.posts), 3)
+        firing, failed_resolution, retried_resolution = [post["alerts"][0] for post in self.state.posts]
+        self.assertEqual(failed_resolution["startsAt"], firing["startsAt"])
+        self.assertEqual(retried_resolution["startsAt"], firing["startsAt"])
+        self.assertTrue(self.state.resolved)
+
+    def test_same_ntfy_message_id_cannot_satisfy_firing_and_resolved(self) -> None:
+        self.state.same_ntfy_message_id = True
+        env = self.env()
+        env["SWITCHYARD_ALERT_LIFECYCLE_TIMEOUT"] = "1"
+        config = alert_lifecycle.load_config(env)
+        assert config is not None
+
+        with self.assertRaisesRegex(alert_lifecycle.HarnessError, "timed out"):
+            alert_lifecycle.Lifecycle(config).run()
+
+        evidence = json.loads(config.evidence_path.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["result"], "failed")
+        self.assertEqual(evidence["ntfy"]["firing_message_id"], "firing-message")
+        self.assertIsNone(evidence["ntfy"]["resolved_message_id"])
+
+    def test_cleanup_resolution_retries_are_bounded_and_record_failure(self) -> None:
+        self.state.fail_resolution_attempts = 10
+        config = alert_lifecycle.load_config(self.env())
+        assert config is not None
+
+        with self.assertRaisesRegex(alert_lifecycle.HarnessError, "HTTP 500"):
+            alert_lifecycle.Lifecycle(config).run()
+
+        self.assertEqual(self.state.resolution_attempts, 4)
+        evidence_text = config.evidence_path.read_text(encoding="utf-8")
+        evidence = json.loads(evidence_text)
+        self.assertEqual(evidence["result"], "failed")
+        self.assertEqual(
+            evidence["cleanup"],
+            {"attempts": 3, "error": "upstream returned HTTP 500", "status": "failed"},
+        )
+        self.assertNotIn("alert-secret", evidence_text)
 
     def test_redirect_does_not_forward_credentials(self) -> None:
         target_state = FakeState()
@@ -221,6 +290,53 @@ class AlertLifecycleTest(unittest.TestCase):
             alert_lifecycle.load_config(env)
         self.assertEqual(self.state.posts, [])
 
+    def test_rejects_control_characters_in_authorization_values(self) -> None:
+        cases = (
+            {"SWITCHYARD_ALERTMANAGER_BEARER_TOKEN": "secret\r\nX-Evil: yes"},
+            {
+                "SWITCHYARD_ALERTMANAGER_BEARER_TOKEN": "",
+                "SWITCHYARD_ALERTMANAGER_BASIC_USERNAME": "user\nname",
+                "SWITCHYARD_ALERTMANAGER_BASIC_PASSWORD": "password",
+            },
+            {
+                "SWITCHYARD_ALERTMANAGER_BEARER_TOKEN": "",
+                "SWITCHYARD_ALERTMANAGER_BASIC_USERNAME": "username",
+                "SWITCHYARD_ALERTMANAGER_BASIC_PASSWORD": "pass\x7fword",
+            },
+        )
+        for values in cases:
+            with self.subTest(values=values):
+                env = self.env()
+                env.update(values)
+                with self.assertRaises(alert_lifecycle.HarnessError) as raised:
+                    alert_lifecycle.load_config(env)
+                self.assertEqual(
+                    str(raised.exception),
+                    "SWITCHYARD_ALERTMANAGER credentials contain control characters",
+                )
+                self.assertIsNone(raised.exception.__cause__)
+        self.assertEqual(self.state.posts, [])
+
+    def test_request_construction_errors_are_redacted(self) -> None:
+        config = alert_lifecycle.load_config(self.env())
+        assert config is not None
+        lifecycle = alert_lifecycle.Lifecycle(config)
+        with mock.patch.object(alert_lifecycle, "Request", side_effect=ValueError("alert-secret")):
+            with self.assertRaises(alert_lifecycle.HarnessError) as raised:
+                lifecycle._alertmanager_alerts()
+        self.assertEqual(str(raised.exception), "upstream request is invalid")
+        self.assertIsNone(raised.exception.__cause__)
+
+    def test_request_send_errors_are_redacted(self) -> None:
+        config = alert_lifecycle.load_config(self.env())
+        assert config is not None
+        lifecycle = alert_lifecycle.Lifecycle(config)
+        with mock.patch.object(alert_lifecycle._OPENER, "open", side_effect=InvalidURL("ntfy-secret")):
+            with self.assertRaises(alert_lifecycle.HarnessError) as raised:
+                lifecycle._alertmanager_alerts()
+        self.assertEqual(str(raised.exception), "upstream request is invalid")
+        self.assertIsNone(raised.exception.__cause__)
+
     def test_ntfy_metadata_cannot_satisfy_correlation(self) -> None:
         config = alert_lifecycle.load_config(self.env())
         assert config is not None
@@ -229,6 +345,17 @@ class AlertLifecycleTest(unittest.TestCase):
             "topic": f"firing-{lifecycle.correlation}",
             "title": "unrelated",
             "message": "unrelated",
+        }
+        self.assertFalse(lifecycle._matches_ntfy_message(message, "firing"))
+
+    def test_ntfy_non_message_event_cannot_satisfy_correlation(self) -> None:
+        config = alert_lifecycle.load_config(self.env())
+        assert config is not None
+        lifecycle = alert_lifecycle.Lifecycle(config)
+        message = {
+            "event": "open",
+            "id": "message-id",
+            "message": f"firing {lifecycle.correlation}",
         }
         self.assertFalse(lifecycle._matches_ntfy_message(message, "firing"))
 

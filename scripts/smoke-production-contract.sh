@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-control_url=${SWITCHYARD_PRODUCTION_CONTROL_URL:-http://127.0.0.1:28080}
-model_url=${SWITCHYARD_PRODUCTION_MODEL_URL:-http://127.0.0.1:11434}
-public_url=${SWITCHYARD_PRODUCTION_PUBLIC_URL:-https://switchyard.subcult.tv}
+control_url=${SWITCHYARD_PRODUCTION_CONTROL_URL:-http://${SWITCHYARD_BIND_HOST:-127.0.0.1}:${API_PORT:-18080}}
+model_url=${SWITCHYARD_PRODUCTION_MODEL_URL:-http://${SWITCHYARD_MODEL_BIND_HOST:-${SWITCHYARD_BIND_HOST:-127.0.0.1}}:${LLAMA_LINE_PORT:-11434}}
+public_url=${SWITCHYARD_PUBLIC_URL:-}
 token=${SWITCHYARD_CONTROL_API_TOKEN:-}
 probe_user=${SWITCHYARD_CONTROL_PROBE_USER:-}
 model=${SWITCHYARD_SMOKE_MODEL:-}
+
+if [[ -z "$public_url" ]]; then
+  echo "Set validated SWITCHYARD_PUBLIC_URL" >&2
+  exit 2
+fi
+if [[ -n "${SWITCHYARD_PRODUCTION_PUBLIC_URL:-}" && "$SWITCHYARD_PRODUCTION_PUBLIC_URL" != "$public_url" ]]; then
+  echo "SWITCHYARD_PRODUCTION_PUBLIC_URL must match SWITCHYARD_PUBLIC_URL" >&2
+  exit 2
+fi
 
 if [[ -z "$token" && -z "$probe_user" ]]; then
   echo "Set SWITCHYARD_CONTROL_API_TOKEN or SWITCHYARD_CONTROL_PROBE_USER" >&2

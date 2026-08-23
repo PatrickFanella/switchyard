@@ -9,9 +9,11 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.client import InvalidURL
 from pathlib import Path
 from typing import Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -29,6 +31,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 _OPENER = build_opener(_NoRedirect)
+CLEANUP_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,8 @@ def _authorization(env: Mapping[str, str], prefix: str) -> str | None:
     bearer = env.get(f"{prefix}_BEARER_TOKEN", "")
     username = env.get(f"{prefix}_BASIC_USERNAME", "")
     password = env.get(f"{prefix}_BASIC_PASSWORD", "")
+    if any(unicodedata.category(character) == "Cc" for value in (bearer, username, password) for character in value):
+        raise HarnessError(f"{prefix} credentials contain control characters")
     if bearer and (username or password):
         raise HarnessError(f"{prefix} credentials are ambiguous")
     if bool(username) != bool(password):
@@ -159,7 +164,9 @@ class Lifecycle:
         self.correlation = uuid.uuid4().hex
         self.deadline = clock() + config.timeout
         self.firing_posted = False
-        self.resolve_attempted = False
+        self.resolution_posted = False
+        self.firing_starts_at: datetime | None = None
+        self.firing_message_id: str | None = None
         self.labels = {
             "alertname": "SwitchyardAlertLifecycleTest",
             "switchyard_correlation": self.correlation,
@@ -177,6 +184,7 @@ class Lifecycle:
                 "topic_sha256": hashlib.sha256(parsed_ntfy.path.encode()).hexdigest(),
             },
             "alert": {"fingerprint": None, "status": "not_started"},
+            "ntfy": {"firing_message_id": None, "resolved_message_id": None},
             "timestamps": {"started_at": _timestamp(self.utcnow())},
             "result": "failed",
         }
@@ -196,26 +204,40 @@ class Lifecycle:
             code = exc.code
             exc.close()
             raise HarnessError(f"upstream returned HTTP {code}") from None
+        except (ValueError, InvalidURL):
+            raise HarnessError("upstream request is invalid") from None
         except (URLError, TimeoutError, OSError):
             raise HarnessError("upstream request failed") from None
+
+    def _build_request(self, url: str, **kwargs) -> Request:
+        try:
+            return Request(url, **kwargs)
+        except (ValueError, InvalidURL):
+            raise HarnessError("upstream request is invalid") from None
 
     def _post_alert(self, status: str, *, cleanup: bool = False) -> None:
         now = self.utcnow()
         firing = status == "firing"
+        if firing:
+            if self.firing_starts_at is None:
+                self.firing_starts_at = now
+        elif self.firing_starts_at is None:
+            raise HarnessError("cannot resolve an alert that was not fired")
+        starts_at = self.firing_starts_at
         alert = {
             "labels": self.labels,
             "annotations": {
                 "summary": f"Switchyard alert lifecycle {status} {self.correlation}",
                 "description": f"Correlation {self.correlation}; receiver {self.config.receiver}; revision {self.config.revision}",
             },
-            "startsAt": _timestamp(now),
-            "endsAt": _timestamp(now + timedelta(minutes=10) if firing else now - timedelta(seconds=1)),
+            "startsAt": _timestamp(starts_at),
+            "endsAt": _timestamp(starts_at + timedelta(minutes=10) if firing else max(now, starts_at)),
             "generatorURL": "https://switchyard.invalid/alert-lifecycle",
         }
         headers = {"Content-Type": "application/json"}
         if self.config.alertmanager_authorization:
             headers["Authorization"] = self.config.alertmanager_authorization
-        request = Request(
+        request = self._build_request(
             self.config.alertmanager_url + "/api/v2/alerts",
             data=json.dumps([alert], separators=(",", ":")).encode(),
             headers=headers,
@@ -232,7 +254,7 @@ class Lifecycle:
         headers = {}
         if self.config.alertmanager_authorization:
             headers["Authorization"] = self.config.alertmanager_authorization
-        raw = self._request(Request(self.config.alertmanager_url + "/api/v2/alerts?" + query, headers=headers))
+        raw = self._request(self._build_request(self.config.alertmanager_url + "/api/v2/alerts?" + query, headers=headers))
         try:
             value = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -261,7 +283,7 @@ class Lifecycle:
         headers = {}
         if self.config.ntfy_authorization:
             headers["Authorization"] = self.config.ntfy_authorization
-        raw = self._request(Request(self.config.ntfy_topic_url + "/json?" + query, headers=headers))
+        raw = self._request(self._build_request(self.config.ntfy_topic_url + "/json?" + query, headers=headers))
         messages = []
         try:
             for line in raw.splitlines():
@@ -277,11 +299,20 @@ class Lifecycle:
         while True:
             for message in self._ntfy_messages(since):
                 if self._matches_ntfy_message(message, status):
+                    message_id = message["id"].strip()
+                    if status == "firing":
+                        self.firing_message_id = message_id
+                    self.evidence["ntfy"][f"{status}_message_id"] = message_id
                     self.evidence["timestamps"][f"ntfy_{status}_observed_at"] = _timestamp(self.utcnow())
                     return
             self.sleep(min(self.config.poll_interval, self._remaining()))
 
     def _matches_ntfy_message(self, message: dict, status: str) -> bool:
+        message_id = message.get("id")
+        if message.get("event") != "message" or not isinstance(message_id, str) or not message_id.strip():
+            return False
+        if status == "resolved" and (self.firing_message_id is None or message_id.strip() == self.firing_message_id):
+            return False
         values = (message.get("title"), message.get("message"))
         text = " ".join(value for value in values if isinstance(value, str)).lower()
         return self.correlation in text and status in text
@@ -300,8 +331,23 @@ class Lifecycle:
             self.sleep(min(self.config.poll_interval, self._remaining()))
 
     def _resolve(self, *, cleanup: bool = False) -> None:
-        self.resolve_attempted = True
         self._post_alert("resolved", cleanup=cleanup)
+        self.resolution_posted = True
+
+    def _cleanup_resolution(self) -> None:
+        for attempt in range(1, CLEANUP_MAX_ATTEMPTS + 1):
+            try:
+                self._resolve(cleanup=True)
+            except HarnessError as exc:
+                if attempt == CLEANUP_MAX_ATTEMPTS:
+                    self.evidence["cleanup"] = {
+                        "attempts": attempt,
+                        "error": str(exc),
+                        "status": "failed",
+                    }
+            else:
+                self.evidence["cleanup"] = {"attempts": attempt, "status": "succeeded"}
+                return
 
     def run(self) -> None:
         since = int(self.utcnow().timestamp()) - 1
@@ -318,11 +364,8 @@ class Lifecycle:
         except HarnessError as exc:
             failure = exc
         finally:
-            if self.firing_posted and not self.resolve_attempted:
-                try:
-                    self._resolve(cleanup=True)
-                except HarnessError:
-                    pass
+            if self.firing_posted and not self.resolution_posted:
+                self._cleanup_resolution()
             self.evidence["timestamps"]["finished_at"] = _timestamp(self.utcnow())
             self._write_evidence()
         if failure:

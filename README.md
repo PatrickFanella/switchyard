@@ -81,9 +81,11 @@ Published ports bind to `127.0.0.1` by default. `SWITCHYARD_BIND_HOST` controls 
 
 Production uses only the approved host-managed Tailscale path for the web hop. Set `SWITCHYARD_WEB_TRANSPORT=tailscale`, bind the web port to this host's Tailscale address, and set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR` to the proxy host's distinct Tailscale `/32`. Both addresses must be within `100.64.0.0/10`. nginx still denies every other source and clears client-supplied `X-Forwarded-User` before it forwards the proxy's `Remote-User`. The host Tailscale daemon and central tailnet ACL own encryption and peer authentication. Keep Tailscale credentials and policy outside Compose and this repository. Do not add nginx certificates, nginx mTLS, container Tailscale credentials, or a plaintext LAN fallback.
 
-Before a production smoke, export the deployed `.env` values and run `make production-config-check`. The check also requires an HTTPS `SWITCHYARD_PUBLIC_URL`, reverse-proxy authentication, a loopback control bind, and separate control/model listeners. It validates configuration only. Gitea issues #18 and #19 still require human action and target-path evidence.
+Before a production smoke, export the deployed `.env` values and run `make production-config-check`, or validate the file directly with `python3 scripts/validate_production_config.py --env-file .env`. Environment variables override file values. The parser does not perform shell expansion or print values. The check also requires an HTTPS `SWITCHYARD_PUBLIC_URL`, reverse-proxy authentication, a literal loopback IPv4 control bind, a literal non-wildcard IPv4 model bind, a literal loopback IPv4 `/32` dashboard CIDR, integer host ports, and distinct effective bind-and-port pairs for Postgres, API, model, and web. The model bind may use any specific IPv4 address required by model clients. The check validates configuration only. Gitea issues #18 and #19 still require human action and target-path evidence.
 
-`SWITCHYARD_DASHBOARD_CIDR` may add one exact dashboard-backend address for bearer-authenticated, read-only API calls while retaining the nginx deny-by-default boundary. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
+The production smoke uses `SWITCHYARD_PUBLIC_URL` for the public probe. `SWITCHYARD_PRODUCTION_PUBLIC_URL`, when set, must match it. Unless explicit `SWITCHYARD_PRODUCTION_CONTROL_URL` or `SWITCHYARD_PRODUCTION_MODEL_URL` overrides are set, the smoke derives local probe URLs from the validated API and model bind and port settings.
+
+Production requires `SWITCHYARD_DASHBOARD_CIDR` to identify one loopback IPv4 address with `/32`; it cannot admit a remote peer. For LAN clients, set `SWITCHYARD_MODEL_BIND_HOST` to the host's LAN address to expose only model-compatible ingress. The control-plane API and model-compatible ingress use separate in-container listeners; the model port does not serve run, trigger, workflow, history, audit, or administrative routes.
 
 ## Control-plane storage
 
@@ -198,7 +200,7 @@ To replace a legacy standalone llama-line systemd unit with Switchyard's Docker 
 sudo ./deploy/install-systemd.sh
 ```
 
-The installer renders `/etc/systemd/system/switchyard.service`, disables/removes `/etc/systemd/system/llama-line.service` when present, starts Switchyard with `docker compose up -d --remove-orphans`, and enables it at boot. Use `sudo systemctl reload switchyard` after pulling code when you want a rebuild via `docker compose up -d --build --remove-orphans`.
+The installer renders `/etc/systemd/system/switchyard.service`, disables/removes `/etc/systemd/system/llama-line.service` when present, validates the repository `.env`, starts Switchyard with that file, and enables it at boot. Use `sudo systemctl reload switchyard` after pulling code; reload validates `.env` again before rebuilding the Compose stack.
 
 Model inventory and pulls:
 
