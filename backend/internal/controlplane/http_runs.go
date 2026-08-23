@@ -67,6 +67,10 @@ func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, err)
 		return
 	}
+	if input.WorkflowID == string(WorkflowOpenPilot) && input.TriggerID == "gitea-open-pilot-poll" {
+		writeError(w, http.StatusBadRequest, "Open Pilot poll runs are scheduler-owned")
+		return
+	}
 	if input.WorkflowID == string(WorkflowOpenPilot) && (input.Inputs["retry_from_step"] != "" || input.Inputs["retry_from_step_position"] != "") {
 		writeError(w, http.StatusBadRequest, "use the Open Pilot lifecycle resume action")
 		return
