@@ -1,0 +1,41 @@
+{
+  "contract_version": "switchyard.postgres-object-set.v1",
+  "provider": "postgres",
+  "migration_head": "020_allow_committed_open_pilot_phase.sql",
+  "migration_ledger": [
+    "001_controlplane.sql",
+    "002_trigger_scheduler.sql",
+    "003_run_steps.sql",
+    "004_run_queue_leases.sql",
+    "006_open_pilot_state.sql",
+    "007_open_pilot_failure_diagnostics.sql",
+    "008_workflow_creator.sql",
+    "009_archive_legacy_changemaker.sql",
+    "010_native_runtime_metadata.sql",
+    "011_clear_archived_changemaker_metadata.sql",
+    "012_model_broker_request_ledger.sql",
+    "013_model_broker_client_priority.sql",
+    "014_run_pipeline_snapshot.sql",
+    "015_retention_indexes.sql",
+    "016_model_broker_feedback.sql",
+    "017_workflow_definition_versions.sql",
+    "018_activate_native_workflows.sql",
+    "019_artifact_lifecycle_and_compatibility_usage.sql",
+    "020_allow_committed_open_pilot_phase.sql"
+  ],
+  "required_objects": [
+    "artifacts",
+    "compatibility_usage_daily",
+    "model_broker_feedback",
+    "model_broker_requests",
+    "open_pilot_issue_states",
+    "run_events",
+    "run_steps",
+    "runs",
+    "schema_migrations",
+    "triggers",
+    "workflow_definition_versions",
+    "workflow_definitions",
+    "workflows"
+  ]
+}

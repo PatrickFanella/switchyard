@@ -2,7 +2,7 @@
 
 Switchyard is the monorepo for one cohesive automation runtime. OCQ, llama-line, and Changemaker are historical references whose useful ideas have been rebuilt as native Switchyard modules; the imported directories were removed.
 
-Switchyard Runtime phases 1–6 are implemented: durable linear workflows, native model brokering, native OpenCode execution, first-party workflow policy, and release qualification exist. The active phase is to make autonomous execution controllable and constrained, finish profile enforcement and selected operator surfaces, and close production recovery obligations.
+Switchyard Runtime phases 1–6 are implemented: durable linear workflows, native model brokering, native OpenCode execution, first-party workflow policy, and release qualification exist. Scheduled disposable restore-drill evidence, deadline telemetry, and external alerts are implemented. The active phase is to make autonomous execution controllable and constrained and finish selected operator surfaces.
 
 ## North star
 
@@ -280,7 +280,10 @@ Exit criteria:
 ## Phase 6 — runtime hardening
 
 Status: code-complete and deployed at `v0.1.2`. Production backup, isolated
-restore, monitoring scrape/rules, and live application rollback are proven.
+restore, monitoring scrape/rules, and live application rollback are proven for
+that release. A newer provider-neutral restore-evidence contract now requires
+manifest-last policy-bound bundles and a disposable PostgreSQL adapter; old
+evidence does not qualify the new contract.
 Acknowledged alert delivery and encrypted proxy transport remain operational
 prerequisites.
 
@@ -385,6 +388,9 @@ Exit criteria:
    backend.
 5. Keep `docs/openapi.yaml`, codemaps, current release evidence, and
    environment defaults aligned with implementation.
+6. Obtain live timer evidence for the bounded restore-drill scheduler under
+   Gitea #24. The implementation and automated tests are verified; no live
+   timer execution is claimed.
 
 ## Non-goals for the next phase
 

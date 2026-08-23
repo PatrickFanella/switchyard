@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "switchyard.operator-policy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "policy_id", "policy_version", "provider", "storage_owner", "encryption_owner", "encryption_expectation", "retention_duration", "declared_rpo_seconds", "declared_rto_seconds", "drill_calendar", "max_drill_interval_seconds", "alert_grace_seconds"],
+  "properties": {
+    "contract_version": {"const": "switchyard.operator-policy.v1"},
+    "policy_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "policy_version": {"type": "integer", "minimum": 1},
+    "provider": {"const": "postgres"},
+    "storage_owner": {"type": "string", "minLength": 1, "maxLength": 256},
+    "encryption_owner": {"type": "string", "minLength": 1, "maxLength": 256},
+    "encryption_expectation": {"type": "string", "minLength": 1, "maxLength": 256},
+    "retention_duration": {"type": "string", "pattern": "^P[1-9][0-9]*D$"},
+    "declared_rpo_seconds": {"type": "integer", "minimum": 1, "maximum": 315576000},
+    "declared_rto_seconds": {"type": "integer", "minimum": 1, "maximum": 315576000},
+    "drill_calendar": {"type": "string", "minLength": 1, "maxLength": 256},
+    "max_drill_interval_seconds": {"type": "integer", "minimum": 1, "maximum": 315576000},
+    "alert_grace_seconds": {"type": "integer", "minimum": 0, "maximum": 315576000}
+  }
+}

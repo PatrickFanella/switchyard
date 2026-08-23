@@ -84,12 +84,22 @@ control/model listeners. A pass does not prove the tailnet ACL or target route.
 Create and verify a pre-deployment backup:
 
 ```bash
-SWITCHYARD_BACKUP_DIR=/approved/encrypted/path make postgres-backup
-BACKUP=/approved/encrypted/path/<file>.dump make postgres-restore-drill
+SWITCHYARD_BACKUP_DIR=/approved/encrypted/backups \
+SWITCHYARD_BACKUP_POLICY=/approved/non-secret/backup-policy.json \
+make postgres-backup
+SWITCHYARD_RESTORE_BUNDLE=/approved/encrypted/backups/<bundle>.complete.json \
+SWITCHYARD_RESTORE_ACTIVE_POLICY=/approved/non-secret/backup-policy.json \
+SWITCHYARD_RESTORE_EVIDENCE_DIR=/approved/private/restore-evidence \
+SWITCHYARD_RESTORE_TIMEOUT_SECONDS=900 \
+make restore-drill
 ```
 
-Record the previous release tag, image IDs, backup path/checksum, migration
-version, listener owner, and rollback decision-maker.
+Retain the schema-valid evidence basename. Confirm bundle validity against the
+archived policy and inspect current-policy qualification separately. The
+measured backup age and isolated drill duration do not prove production RPO or
+RTO. Record the previous release tag, image IDs, bundle ID/checksum, migration
+head, listener owner, and rollback decision-maker without copying absolute
+paths or credentials into evidence.
 
 ## Deployment
 

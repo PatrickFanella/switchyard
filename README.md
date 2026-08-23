@@ -44,22 +44,37 @@ See [`docs/status.md`](docs/status.md) for the current capability and release-ev
 
 Both workflows target the dedicated `switchyard-production` runner label. Its reproducible job image is defined in `deploy/runner/Dockerfile` and must be published and configured by immutable digest. The baseline CI runner contract is Go `1.26.5`, Node.js major `24`, Corepack-provided pnpm `10.33.0`, Make, Docker Engine, and the Docker Compose plugin. The production runner contract adds Docker Buildx with a bootstrappable BuildKit builder that can produce an OCI archive with the pinned SBOM generator and `--provenance=mode=max` options used by `make release-artifacts`. Both workflows validate these contracts before running Make; CI supplies only the non-secret `POSTGRES_PASSWORD=switchyard-ci-only-not-a-secret` needed for clean-checkout Compose validation. No CI setup action supplies these tools.
 
-Production releases are pinned OCI archives with BuildKit SBOM and provenance attestations. `make release-verify` writes and verifies `release/SHA256SUMS` and records the source revision in `release/manifest.json`; generated release artifacts remain outside git. Runtime logs are newline-delimited JSON with credential-shaped values redacted. `GET /metrics` exports Prometheus-format workflow, model-request, queue, latency, worker, and configured backup-freshness metrics.
+Production releases are pinned OCI archives with BuildKit SBOM and provenance attestations. `make release-verify` writes and verifies `release/SHA256SUMS` and records the source revision in `release/manifest.json`; generated release artifacts remain outside git. Runtime logs are newline-delimited JSON with credential-shaped values redacted. `GET /metrics` exports Prometheus-format workflow, model-request, queue, latency, worker, backup-freshness, and restore-drill deadline/result metrics.
 
 `make api-soak` runs a 30-second concurrent authenticated API soak by default. Increase `SWITCHYARD_SOAK_DURATION`, `SWITCHYARD_SOAK_CLIENTS`, and `SWITCHYARD_SOAK_MIN_REQUESTS` for extended release qualification.
 
 Production promotion also requires a verified backup/restore drill and the real target contract smoke:
 
 ```bash
-SWITCHYARD_BACKUP_DIR=/approved/encrypted/path make postgres-backup
-BACKUP=/approved/encrypted/path/<backup>.dump make postgres-restore-drill
+SWITCHYARD_BACKUP_DIR=/approved/encrypted/backups \
+SWITCHYARD_BACKUP_POLICY=/approved/non-secret/backup-policy.json \
+make postgres-backup
+SWITCHYARD_RESTORE_BUNDLE=/approved/encrypted/backups/<bundle>.complete.json \
+SWITCHYARD_RESTORE_ACTIVE_POLICY=/approved/non-secret/backup-policy.json \
+SWITCHYARD_RESTORE_EVIDENCE_DIR=/approved/private/restore-evidence \
+SWITCHYARD_RESTORE_TIMEOUT_SECONDS=900 \
+make restore-drill
 make production-smoke
 ```
+
+Backups publish a private archive, archived policy and object contract,
+metadata, then a completion manifest last. Restore evidence is
+provider-neutral; PostgreSQL is the only
+approved adapter. RPO and isolated-drill RTO comparisons qualify the active
+policy but do not prove production recovery performance.
 
 For backup-freshness metrics, keep
 `SWITCHYARD_BACKUP_METRICS_DIR` separate from backup archives and set
 `SWITCHYARD_BACKUP_METRICS_FILE` to its `backup.prom` file. Compose mounts the
 directory read-only so atomic metric updates remain visible to the API.
+Scheduled restore drills are opt-in. Their systemd calendar, maximum interval,
+and alert grace come only from the validated operator policy. See the backup and
+restore runbook for directory rules, installation, alerts, and rollback.
 
 Follow [`docs/runbooks/release-and-rollback.md`](docs/runbooks/release-and-rollback.md); do not infer production health from a local checkout or a running container.
 
