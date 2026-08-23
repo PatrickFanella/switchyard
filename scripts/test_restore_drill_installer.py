@@ -22,20 +22,23 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.bin.mkdir(mode=0o700)
         self.log = self.root / "mutations.log"
         uid = os.getuid()
+        self.runtime_uid = uid or 1000
         self.user = pwd.getpwuid(uid).pw_name
         self.group = grp.getgrgid(os.getgid()).gr_name
         tools = {
-            "id": f"#!/bin/sh\nif [ \"$1\" = -u ] && [ $# -eq 1 ]; then echo 0; elif [ \"$1\" = -u ]; then echo {uid}; else exec /usr/bin/id \"$@\"; fi\n",
+            "id": "#!/bin/sh\nif [ \"$1\" = -u ] && [ $# -eq 1 ]; then echo 0; elif [ \"$1\" = -u ]; then echo \"$RUNTIME_UID\"; else exec /usr/bin/id \"$@\"; fi\n",
             "docker": "#!/bin/sh\nexit 0\n",
-            "systemd-analyze": "#!/bin/sh\nprintf 'analyze %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nexit 0\n",
-            "systemctl": "#!/bin/sh\nprintf 'systemctl %s\\n' \"$*\" >>\"$MUTATION_LOG\"\ncase \"$*\" in\n  'is-enabled --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ACTIVE:-0}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ACTIVE:-0}\" = 1 ]; exit;;\nesac\nif [ \"${FAIL_RESTORE_ENABLE:-0}\" = 1 ] && [ \"$*\" = 'enable --now switchyard-restore-drill.timer' ]; then exit 1; fi\n[ \"$1\" != list-unit-files ]\n",
-            "install": "#!/bin/sh\nprintf 'install %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nexec /usr/bin/install \"$@\"\n",
-            "runuser": "#!/bin/sh\nshift 3\ncase \"$*\" in *initialize-deadline*) printf 'initialize-deadline\\n' >>\"$MUTATION_LOG\";; esac\nexec \"$@\"\n",
+            "systemd-analyze": "#!/bin/sh\nexit 0\n",
+            "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'is-enabled --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ACTIVE:-0}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ACTIVE:-0}\" = 1 ]; exit;;\n  list-unit-files*) exit 1;;\nesac\nprintf 'systemctl %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nif [ \"${FAIL_RESTORE_ENABLE:-0}\" = 1 ] && [ \"$*\" = 'enable --now switchyard-restore-drill.timer' ]; then exit 1; fi\nexit 0\n",
+            "install": "#!/bin/sh\n/usr/bin/install \"$@\" || exit\nprintf 'install %s\\n' \"$*\" >>\"$MUTATION_LOG\"\n",
+            "runuser": "#!/bin/sh\nshift 3\npython3 - \"$RUNTIME_UID\" \"$@\" <<'PY'\nimport os, sys\nos.setuid(int(sys.argv[1]))\nos.execvp(sys.argv[2], sys.argv[2:])\nPY\nstatus=$?\n[ $status -eq 0 ] || exit $status\ncase \"$*\" in *initialize-deadline*) printf 'initialize-deadline\\n' >>\"$MUTATION_LOG\";; esac\n",
         }
         for name, content in tools.items():
             path = self.bin / name
             path.write_text(content)
             path.chmod(0o700)
+            if uid == 0:
+                os.chown(path, self.runtime_uid, -1)
         self.backup = self.private("backup")
         self.evidence = self.private("evidence")
         self.metrics = self.private("metrics")
@@ -49,6 +52,9 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "alert_grace_seconds": 5,
         }))
         self.env_file = self.root / "switchyard.env"
+        if uid == 0:
+            for path in (self.root, self.bin, self.backup, self.evidence, self.metrics):
+                os.chown(path, self.runtime_uid, -1)
 
     def private(self, name):
         path = self.root / name
@@ -66,18 +72,23 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "SWITCHYARD_BACKUP_METRICS_DIR": self.metrics,
             "SWITCHYARD_RESTORE_DRILL_METRICS_FILE": self.metrics / "restore-drill.prom",
             "SWITCHYARD_RESTORE_TIMEOUT_SECONDS": "10",
+            "OPENCODE_RUNTIME_UID": str(self.runtime_uid),
         }
         if not complete:
             values.pop("SWITCHYARD_RESTORE_POLICY")
         self.env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 
     def run_installer(self, extra_env=None):
+        metrics_file = self.metrics / "restore-drill.prom"
+        if os.getuid() == 0 and metrics_file.exists():
+            os.chown(metrics_file, self.runtime_uid, -1)
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}", "MUTATION_LOG": str(self.log),
             "SWITCHYARD_INSTALL_RESTORE_DRILL_TIMER": "1", "SWITCHYARD_ENV_FILE": str(self.env_file),
             "SWITCHYARD_SYSTEMD_UNIT_DIR": str(self.units), "SWITCHYARD_RUN_USER": self.user,
             "SWITCHYARD_RUN_GROUP": self.group,
+            "RUNTIME_UID": str(self.runtime_uid),
         })
         env.update(extra_env or {})
         return subprocess.run([str(ROOT / "deploy/install-systemd.sh")], env=env, text=True, capture_output=True)
@@ -118,6 +129,17 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.log.exists())
 
+    def test_runtime_uid_mismatch_is_rejected_before_mutation(self):
+        self.write_env()
+        configured = self.runtime_uid + 1
+        self.env_file.write_text(self.env_file.read_text().replace(
+            f"OPENCODE_RUNTIME_UID={self.runtime_uid}\n", f"OPENCODE_RUNTIME_UID={configured}\n"))
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restore drill run user must match OPENCODE_RUNTIME_UID", result.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertEqual(list(self.units.iterdir()), [])
+
     def test_timer_enable_failure_removes_initialized_deadline_and_restore_units(self):
         self.write_env()
         result = self.run_installer({"FAIL_RESTORE_ENABLE": "1"})
@@ -136,6 +158,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(metrics.read_bytes(), original)
         self.assertEqual(metrics.stat().st_mode & 0o777, 0o600)
+        self.assertIn("initialize-deadline", self.log.read_text().splitlines())
 
     def test_reinstall_failure_restores_existing_units_and_runtime_state(self):
         self.write_env()

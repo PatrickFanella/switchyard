@@ -33,6 +33,7 @@ ATTEMPT_OVERHEAD_SECONDS = 120
 FINALIZATION_RESERVE_SECONDS = 30
 SYSTEMD_BACKSTOP_SECONDS = 30
 MAX_ATTEMPT_SECONDS = 24 * 60 * 60
+MAX_RUNTIME_UID = 2147483647
 PROCESS_GROUP_GRACE_SECONDS = 1
 CLOCK_SKEW_ALLOWANCE_SECONDS = 300
 PR_SET_CHILD_SUBREAPER = 36
@@ -76,6 +77,16 @@ def settings(env_file: str | None) -> dict[str, str]:
     if env_file:
         values.update(dotenv(Path(env_file)))
     return values
+
+
+def runtime_uid(values: dict[str, str]) -> int:
+    raw = values.get("OPENCODE_RUNTIME_UID") or "1000"
+    if not raw.isascii() or not raw.isdecimal():
+        raise SchedulerError("invalid_runtime_uid")
+    value = int(raw)
+    if value < 1 or value > MAX_RUNTIME_UID:
+        raise SchedulerError("invalid_runtime_uid")
+    return value
 
 
 def canonical_directory(raw: str, owner_uid: int) -> Path:
@@ -613,8 +624,10 @@ def main() -> int:
         if args.command == "preflight":
             policy, _, _, _, _ = preflight(values, args.owner_uid)
             _, _, timeout = policy_backup(values, args.owner_uid)
+            expected_uid = runtime_uid(values)
             print(policy["drill_calendar"])
             print(attempt_timeout_seconds(policy, timeout) + SYSTEMD_BACKSTOP_SECONDS)
+            print(expected_uid)
             return 0
         if args.command == "initialize-deadline":
             initialize(values, args.owner_uid)

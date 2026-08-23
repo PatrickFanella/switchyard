@@ -57,10 +57,6 @@ if [[ "${SWITCHYARD_INSTALL_RESTORE_DRILL_TIMER:-0}" == "1" ]]; then
     exit 1
   fi
   run_uid="$(id -u "$run_user")"
-  if [[ "$run_uid" -ne 1000 ]]; then
-    echo "restore drill run user must map to the API metrics UID 1000" >&2
-    exit 1
-  fi
   if ! command -v runuser >/dev/null 2>&1; then
     echo "runuser is required for restore drill metric initialization" >&2
     exit 1
@@ -71,14 +67,25 @@ if [[ "${SWITCHYARD_INSTALL_RESTORE_DRILL_TIMER:-0}" == "1" ]]; then
   fi
   preflight_output="$(runuser -u "$run_user" -- python3 "$repo_root/scripts/restore_drill_scheduler.py" preflight --env-file "$env_file" --owner-uid "$run_uid")"
   mapfile -t preflight_lines <<<"$preflight_output"
-  if [[ "${#preflight_lines[@]}" -ne 2 || ! "${preflight_lines[1]}" =~ ^[1-9][0-9]*$ ]]; then
+  if [[ "${#preflight_lines[@]}" -ne 3 || ${#preflight_lines[0]} -gt 256 ||
+        ! "${preflight_lines[1]}" =~ ^[1-9][0-9]{0,8}$ ||
+        ! "${preflight_lines[2]}" =~ ^[1-9][0-9]{0,9}$ ]]; then
     echo "restore drill preflight returned unsafe output" >&2
     exit 1
   fi
   drill_calendar="${preflight_lines[0]}"
   drill_timeout="${preflight_lines[1]}"
+  expected_runtime_uid="${preflight_lines[2]}"
   if [[ -z "$drill_calendar" || "$drill_calendar" == *$'\n'* || "$drill_calendar" == *$'\r'* || "$drill_calendar" == *%* ]]; then
     echo "restore drill calendar is unsafe" >&2
+    exit 1
+  fi
+  if (( drill_timeout > 86430 || expected_runtime_uid > 2147483647 )); then
+    echo "restore drill preflight returned unsafe output" >&2
+    exit 1
+  fi
+  if [[ "$run_uid" != "$expected_runtime_uid" ]]; then
+    echo "restore drill run user must match OPENCODE_RUNTIME_UID" >&2
     exit 1
   fi
   systemd-analyze calendar "$drill_calendar" >/dev/null

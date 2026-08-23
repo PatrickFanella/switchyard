@@ -338,6 +338,24 @@ class RestoreDrillSchedulerTest(unittest.TestCase):
         with self.assertRaises(scheduler.SchedulerError):
             scheduler.preflight(bad, os.getuid())
 
+    def test_runtime_uid_defaults_and_rejects_invalid_values(self):
+        self.assertEqual(scheduler.runtime_uid({}), 1000)
+        for raw in ("0", "-1", "user", "2147483648", "１２３"):
+            with self.subTest(raw=raw), self.assertRaises(scheduler.SchedulerError):
+                scheduler.runtime_uid({"OPENCODE_RUNTIME_UID": raw})
+
+    def test_preflight_cli_returns_only_bounded_render_values(self):
+        env_file = self.root / "restore.env"
+        values = dict(self.values, OPENCODE_RUNTIME_UID="12345")
+        env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+        result = subprocess.run([
+            "python3", str(ROOT / "scripts/restore_drill_scheduler.py"), "preflight",
+            "--env-file", str(env_file), "--owner-uid", str(os.getuid()),
+        ], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["Sun *-*-01..07 03:00:00 UTC", "210", "12345"])
+        self.assertEqual(result.stderr, "")
+
     def test_command_output_contains_no_paths_or_credentials(self):
         env = os.environ.copy()
         env.update(self.values)
