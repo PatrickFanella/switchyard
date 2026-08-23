@@ -1023,12 +1023,12 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 			return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
 		}
-		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
+		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
 		request.PreAttempt = preAttemptFromContext(ctx)
 		request.OnCorrelation = runStepCorrelationFromContext(ctx)
 		response, err := o.env.openCodeExecutor.SendPrompt(ctx, request)
 		if err != nil {
-			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
+			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, "open-pilot.agent-correlation": response.CorrelationIDs}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), fallbackState); persistErr != nil {
 				return PipelineStepExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
@@ -1876,6 +1876,14 @@ func (e *EnvWorkflowExecutors) openPilotBranchName(repo string, issue string, fe
 
 func openCodeSessionID(inputs map[string]string) string {
 	return firstNonEmpty(inputs["opencode_session_id"], inputs["ocq_session_id"])
+}
+
+func openPilotAgentSessionID(inputs map[string]string, state map[string]any) string {
+	if sessionID := openCodeSessionID(inputs); sessionID != "" {
+		return sessionID
+	}
+	correlation, _ := state["open-pilot.agent-correlation"].(map[string]string)
+	return firstNonEmpty(correlation["opencode_session_id"], correlation["ocq_session_id"])
 }
 
 const openPilotAgentWorkRequiresWorktreeMessage = "open-pilot agent-work requires OPEN_PILOT_WORKTREE_MODE=allow to create an isolated worktree"

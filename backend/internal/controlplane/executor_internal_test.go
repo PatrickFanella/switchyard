@@ -106,3 +106,13 @@ func TestOpenCodeSessionIDPrefersNativeKey(t *testing.T) {
 		t.Fatalf("openCodeSessionID() = %q", got)
 	}
 }
+
+func TestOpenPilotAgentSessionIDReusesHydratedCorrelation(t *testing.T) {
+	state := map[string]any{"open-pilot.agent-correlation": map[string]string{"opencode_session_id": "ses-reuse"}}
+	if got := openPilotAgentSessionID(nil, state); got != "ses-reuse" {
+		t.Fatalf("session = %q", got)
+	}
+	if got := openPilotAgentSessionID(map[string]string{"opencode_session_id": "ses-explicit"}, state); got != "ses-explicit" {
+		t.Fatalf("explicit session = %q", got)
+	}
+}
