@@ -344,6 +344,15 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 		return RetentionResult{}, err
 	}
 	defer tx.Rollback()
+	var webhookReceipts int
+	if err := tx.QueryRowContext(ctx, `with expired as (select d.trigger_id,d.delivery_id from webhook_deliveries d cross join webhook_auth_config c where c.singleton=true and d.accepted_at <= clock_timestamp()-make_interval(secs => c.receipt_retention_seconds::int) order by d.accepted_at,d.trigger_id,d.delivery_id limit $1 for update of d skip locked), removed as (delete from webhook_deliveries d using expired e where d.trigger_id=e.trigger_id and d.delivery_id=e.delivery_id returning 1) select count(*) from removed`, retentionBatchSize).Scan(&webhookReceipts); err != nil {
+		return RetentionResult{}, err
+	}
+	if webhookReceipts > 0 {
+		if _, err := tx.ExecContext(ctx, `update webhook_receipt_metrics set receipts_pruned=receipts_pruned+$1 where singleton=true`, webhookReceipts); err != nil {
+			return RetentionResult{}, err
+		}
+	}
 	runRows, err := tx.QueryContext(ctx, `select id from runs where created_at < $1 and status in ($2,$3,$4,$5,$6) order by created_at, id limit $7 for update skip locked`, before.UTC(), RunSucceeded, RunFailed, RunCanceled, RunPaused, RunTimedOut, retentionBatchSize)
 	if err != nil {
 		return RetentionResult{}, err
@@ -390,7 +399,7 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 		runs, _ = runResult.RowsAffected()
 	}
 	requests, _ := requestResult.RowsAffected()
-	return RetentionResult{Runs: int(runs), ModelRequests: int(requests), Artifacts: int(artifacts), ArtifactBytes: artifactBytes, ArtifactBytesUnmeasured: int(artifactBytesUnmeasured)}, nil
+	return RetentionResult{Runs: int(runs), ModelRequests: int(requests), Artifacts: int(artifacts), ArtifactBytes: artifactBytes, ArtifactBytesUnmeasured: int(artifactBytesUnmeasured), WebhookReceipts: webhookReceipts}, nil
 }
 
 const retentionBatchSize = 500
@@ -424,6 +433,9 @@ func (s *PostgresStore) RuntimeMetricsSince(ctx context.Context, since time.Time
 	}
 	defer tx.Rollback()
 	if err := tx.QueryRowContext(ctx, `select observation_started_at, retained_count, retained_bytes, retained_bytes_unmeasured, created_count, created_bytes, pruned_count, pruned_bytes, pruned_bytes_unmeasured from artifact_lifecycle_totals where singleton=true`).Scan(&metrics.ArtifactObservationStartedAt, &metrics.ArtifactsRetained, &metrics.ArtifactBytesRetained, &metrics.ArtifactBytesRetainedUnmeasured, &metrics.ArtifactsCreated, &metrics.ArtifactBytesCreated, &metrics.ArtifactsPruned, &metrics.ArtifactBytesPruned, &metrics.ArtifactBytesPrunedUnmeasured); err != nil {
+		return RuntimeMetrics{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `select (select count(*) from webhook_deliveries),receipts_pruned from webhook_receipt_metrics where singleton=true`).Scan(&metrics.WebhookReceiptsRetained, &metrics.WebhookReceiptsPruned); err != nil {
 		return RuntimeMetrics{}, err
 	}
 	rows, err := tx.QueryContext(ctx, `select status, count(*) from runs group by status`)

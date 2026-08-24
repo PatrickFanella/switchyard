@@ -2,11 +2,18 @@
   "version": 1,
   "listeners": {
     "control": {"runtime_env": "SWITCHYARD_LISTEN_ADDR", "bind_env": "SWITCHYARD_BIND_HOST", "port_env": "API_PORT", "published_default": 18080, "target": 8080},
-    "model": {"runtime_env": "LLAMA_LINE_LISTEN_ADDR", "bind_env": "SWITCHYARD_MODEL_BIND_HOST", "port_env": "LLAMA_LINE_PORT", "published_default": 11434, "target": 11434}
+    "model": {"runtime_env": "LLAMA_LINE_LISTEN_ADDR", "bind_env": "SWITCHYARD_MODEL_BIND_HOST", "port_env": "LLAMA_LINE_PORT", "published_default": 11434, "target": 11434},
+    "webhook": {"runtime_env": "SWITCHYARD_WEBHOOK_LISTEN_ADDR", "published_default": 0, "target": 8082, "disabled_by_default": true}
   },
   "defaults": {
     "SWITCHYARD_LISTEN_ADDR": {"runtime": ":8080", "compose": ":8080", "example": ":8080"},
     "LLAMA_LINE_LISTEN_ADDR": {"runtime": "", "compose": ":11434", "example": ":11434", "deployment_override": "Compose enables the isolated model listener; a bare API process does not."},
+    "SWITCHYARD_WEBHOOK_LISTEN_ADDR": {"runtime": "", "compose": "", "example": "", "deployment_override": "Webhook ingress is disabled and unpublished until an operator supplies a dedicated listener and private config mount."},
+    "SWITCHYARD_WEBHOOK_CONFIG_FILE": {"runtime": "", "compose": "", "example": ""},
+    "SWITCHYARD_WEBHOOK_SECRET_DIR": {"runtime": "", "compose": "", "example": ""},
+    "SWITCHYARD_WEBHOOK_TIMEOUT": {"runtime": "5s", "compose": "5s", "example": "5s"},
+    "SWITCHYARD_WEBHOOK_MAX_CONCURRENCY": {"runtime": "32", "compose": "32", "example": "32"},
+    "SWITCHYARD_WEBHOOK_RATE_LIMIT_PER_SECOND": {"runtime": "20", "compose": "20", "example": "20"},
     "SWITCHYARD_CONTROL_API_TOKEN": {"runtime": "", "compose": "", "example": "replace-with-a-long-random-secret", "secret": true},
     "SWITCHYARD_WORKER_ENABLED": {"runtime": "true", "compose": "true", "example": "true"},
     "SWITCHYARD_WORKER_COUNT": {"runtime": "1", "compose": "1", "example": "1"},

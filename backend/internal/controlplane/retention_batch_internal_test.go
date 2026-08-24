@@ -48,3 +48,12 @@ func TestRetentionManagerImmediatelyDrainsBoundedBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRetentionManagerReportsWebhookReceiptPruning(t *testing.T) {
+	store := &batchedRetentionStore{Store: NewStore(nil), results: []RetentionResult{{WebhookReceipts: 7}}, drained: make(chan struct{})}
+	manager := NewRetentionManager(store, time.Hour, time.Hour, nil)
+	manager.prune()
+	if got := manager.Status().LastPrune.WebhookReceipts; got != 7 {
+		t.Fatalf("webhook receipts=%d", got)
+	}
+}

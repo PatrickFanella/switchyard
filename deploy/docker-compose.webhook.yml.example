@@ -1,0 +1,21 @@
+services:
+  api:
+    environment:
+      SWITCHYARD_WEBHOOK_LISTEN_ADDR: :8082
+      SWITCHYARD_WEBHOOK_CONFIG_FILE: /run/switchyard-webhooks.json
+      SWITCHYARD_WEBHOOK_SECRET_DIR: /run/switchyard-webhook-secrets
+    ports:
+      - "${SWITCHYARD_WEBHOOK_BIND_HOST:-127.0.0.1}:${SWITCHYARD_WEBHOOK_PORT:-18082}:8082"
+    volumes:
+      - type: bind
+        source: ${SWITCHYARD_WEBHOOK_CONFIG_HOST_FILE:?set SWITCHYARD_WEBHOOK_CONFIG_HOST_FILE}
+        target: /run/switchyard-webhooks.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SWITCHYARD_WEBHOOK_SECRET_HOST_DIR:?set SWITCHYARD_WEBHOOK_SECRET_HOST_DIR}
+        target: /run/switchyard-webhook-secrets
+        read_only: true
+        bind:
+          create_host_path: false

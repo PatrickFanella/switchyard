@@ -1,0 +1,44 @@
+openapi: 3.1.0
+info:
+  title: Switchyard webhook ingress
+  version: 1.0.0
+  description: Dedicated HMAC-authenticated webhook listener. This listener exposes no control, model, health, metrics, history, or administrative routes.
+servers:
+  - url: http://127.0.0.1:8082
+    description: Example opt-in loopback listener; no listener is enabled or published by default.
+paths:
+  /hooks/v1/{triggerID}:
+    post:
+      operationId: dispatchWebhook
+      summary: Validate a webhook delivery and atomically enqueue its workflow run
+      parameters:
+        - {name: triggerID, in: path, required: true, schema: {type: string, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}
+        - {name: X-Switchyard-Delivery, in: header, required: true, schema: {type: string, maxLength: 128}}
+        - {name: X-Switchyard-Timestamp, in: header, required: true, description: Canonical Unix seconds within five minutes of server time., schema: {type: string, pattern: '^[0-9]{1,11}$'}}
+        - {name: X-Switchyard-Key-Id, in: header, required: true, schema: {type: string, maxLength: 128}}
+        - {name: X-Switchyard-Signature, in: header, required: true, schema: {type: string, pattern: '^v1=[0-9a-f]{64}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        '202': {description: New delivery admitted, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookAdmission'}}}}
+        '200': {description: Identical delivery replay; returns the original run, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookAdmission'}}}}
+        '400': {description: Invalid JSON or projection}
+        '401': {description: Missing, duplicate, stale, unknown-key, or invalid signature headers}
+        '409': {description: Delivery digest conflict or stale authentication revision}
+        '413': {description: Body exceeds 64 KiB}
+        '415': {description: Content type is not parameter-free application/json or content encoding is not identity}
+        '422': {description: Trigger, active workflow input shape, or projected inputs cannot be admitted}
+        '429': {description: Per-client request rate exceeded}
+        '503': {description: Concurrent request bound reached}
+        '504': {description: Admission timeout}
+components:
+  schemas:
+    WebhookAdmission:
+      type: object
+      required: [run_id, replayed]
+      properties:
+        run_id: {type: string}
+        replayed: {type: boolean}

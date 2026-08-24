@@ -363,6 +363,17 @@ def validate_defaults(root: Path, compose: dict | None = None) -> None:
     if not isinstance(ports, list) or not all(isinstance(port, dict) for port in ports):
         raise ContractError("docker-compose.yml: rendered ports are malformed")
     for listener, values in listeners.items():
+        if values.get("disabled_by_default") is True:
+            try:
+                runtime_env = values["runtime_env"]
+                target = values["target"]
+            except (KeyError, TypeError):
+                raise ContractError("runtime defaults contract: malformed disabled listener entry") from None
+            if values.get("published_default") != 0 or example.get(runtime_env) != "":
+                raise ContractError(f"runtime defaults contract: {listener} listener must be disabled by default")
+            if any(port.get("target") == target for port in ports):
+                raise ContractError(f"docker-compose.yml: disabled {listener} listener must not be published")
+            continue
         try:
             bind = example.get(values["bind_env"])
             published = example.get(values["port_env"])

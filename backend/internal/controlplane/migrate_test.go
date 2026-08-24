@@ -86,6 +86,18 @@ func TestRunPipelineSnapshotMigrationDeclaresVersionedSnapshotFields(t *testing.
 	}
 }
 
+func TestWebhookMigrationDeclaresAtomicAdmissionLedger(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/024_webhook_dispatch.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"webhook_auth_config", "owner text not null", "generation bigint not null", "receipt_retention_seconds", "webhook_receipt_metrics", "receipts_pruned", "webhook_trigger_auth", "webhook_trigger_auth_keys", "webhook_deliveries", "primary key(trigger_id, delivery_id)", "unique(run_id)", "body_sha256"} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("webhook migration missing %q", field)
+		}
+	}
+}
+
 func TestRetentionMigrationDeclaresPartialIndexes(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/015_retention_indexes.sql")
 	if err != nil {
