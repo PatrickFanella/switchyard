@@ -246,7 +246,7 @@ if [[ -f "$renderer_dst" && "$(stat -Lc '%u %g %a' "$renderer_dst")" != "0 0 755
 if [[ -f "$ufw_helper_dst" && "$(stat -Lc '%u %g %a' "$ufw_helper_dst")" != "0 0 755" ]]; then changed=1; fi
 
 enforcement_active=0
-if verify_live_gate; then enforcement_active=1; fi
+if [[ -x "$ufw_helper_dst" ]] && verify_live_gate; then enforcement_active=1; fi
 
 web_running=0
 if docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" ps --status running --services | grep -Fxq web; then
