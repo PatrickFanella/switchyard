@@ -74,10 +74,11 @@
         "report": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["artifact", "sha256", "source_revision", "source_identity", "source_segment"],
+          "required": ["artifact", "raw_sha256", "canonical_sha256", "source_revision", "source_identity", "source_segment"],
           "properties": {
             "artifact": { "const": "compatibility-retirement-report.json" },
-            "sha256": { "$ref": "#/$defs/sha256" },
+            "raw_sha256": { "$ref": "#/$defs/sha256" },
+            "canonical_sha256": { "$ref": "#/$defs/sha256" },
             "source_revision": { "$ref": "#/$defs/git_sha" },
             "source_identity": { "$ref": "#/$defs/safe_identity" },
             "source_segment": { "$ref": "#/$defs/safe_identity" }
@@ -176,19 +177,15 @@
     "qualifying_release": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["release_tag", "release_sha", "evidence_artifact", "evidence_sha256", "manifest_artifact", "manifest_sha256", "report_artifact", "report_sha256"],
+      "required": ["release_tag", "release_sha", "qualification_artifact", "qualification_raw_sha256"],
       "properties": {
         "release_tag": {
           "type": "string",
           "pattern": "^v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
         },
         "release_sha": { "$ref": "#/$defs/git_sha" },
-        "evidence_artifact": { "$ref": "#/$defs/non_placeholder_text" },
-        "evidence_sha256": { "$ref": "#/$defs/sha256" },
-        "manifest_artifact": { "$ref": "#/$defs/non_placeholder_text" },
-        "manifest_sha256": { "$ref": "#/$defs/sha256" },
-        "report_artifact": { "$ref": "#/$defs/non_placeholder_text" },
-        "report_sha256": { "$ref": "#/$defs/sha256" }
+        "qualification_artifact": { "$ref": "#/$defs/non_placeholder_text" },
+        "qualification_raw_sha256": { "$ref": "#/$defs/sha256" }
       }
     }
   }

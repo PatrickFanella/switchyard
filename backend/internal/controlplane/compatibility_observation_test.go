@@ -368,10 +368,12 @@ func TestCompatibilityReportAuthAndListenerIsolation(t *testing.T) {
 func TestPostgresStoreCompatibilityObservationIntegration(t *testing.T) {
 	day := utcDay(time.Now().UTC()).AddDate(0, 0, -1)
 	store, db, _ := newPostgresArtifactIntegrationStore(t, day)
+	_, _ = db.ExecContext(t.Context(), `delete from compatibility_observation_daily where usage_date between $1::date and $2::date`, day.Format(time.DateOnly), day.AddDate(0, 0, 1).Format(time.DateOnly))
 	if _, err := db.ExecContext(t.Context(), `delete from compatibility_usage_daily where usage_date between $1::date and $2::date`, day.Format(time.DateOnly), day.AddDate(0, 0, 1).Format(time.DateOnly)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `delete from compatibility_observation_daily where usage_date between $1::date and $2::date`, day.Format(time.DateOnly), day.AddDate(0, 0, 1).Format(time.DateOnly))
 		_, _ = db.ExecContext(context.Background(), `delete from compatibility_usage_daily where usage_date between $1::date and $2::date`, day.Format(time.DateOnly), day.AddDate(0, 0, 1).Format(time.DateOnly))
 	})
 	if _, err := db.ExecContext(t.Context(), `set timezone='America/Los_Angeles'`); err != nil {
@@ -379,7 +381,7 @@ func TestPostgresStoreCompatibilityObservationIntegration(t *testing.T) {
 	}
 	identity := CompatibilityObservationIdentity{SourceRevision: "0123456789abcdef0123456789abcdef01234567", DeploymentID: "postgres-production", SegmentID: "segment-postgres"}
 	seedPostgresCompatibilityDay(t, db, day, identity)
-	if _, err := db.ExecContext(t.Context(), `update compatibility_usage_daily set attempts=1,first_attempt_at=($1::date::timestamp at time zone 'UTC') + interval '23 hours',last_attempt_at=($1::date::timestamp at time zone 'UTC') + interval '23 hours' where usage_date=$1::date and backend='llama-line'`, day.Format(time.DateOnly)); err != nil {
+	if _, err := db.ExecContext(t.Context(), `insert into compatibility_usage_daily(usage_date,backend,attempts,first_attempt_at,last_attempt_at) values($1::date,'llama-line',1,($1::date::timestamp at time zone 'UTC') + interval '23 hours',($1::date::timestamp at time zone 'UTC') + interval '23 hours')`, day.Format(time.DateOnly)); err != nil {
 		t.Fatal(err)
 	}
 	report, err := store.CompatibilityReport(t.Context(), CompatibilityReportInput{Start: day, End: day, GeneratedAt: time.Date(2001, 2, 3, 0, 0, 0, 0, time.UTC), Identity: identity})
@@ -400,7 +402,7 @@ func seedPostgresCompatibilityDay(t *testing.T, db interface {
 }, day time.Time, identity CompatibilityObservationIdentity) {
 	t.Helper()
 	for _, backend := range compatibilityBackends {
-		_, err := db.ExecContext(t.Context(), `insert into compatibility_usage_daily(usage_date,backend,attempts,source_revision,deployment_id,observation_segment,observation_started_at,observation_completed_at,closed_at) values($1::date,$2,0,$3,$4,$5,$1::date::timestamp at time zone 'UTC',($1::date + 1)::timestamp at time zone 'UTC',clock_timestamp()) on conflict(usage_date,backend) do update set source_revision=excluded.source_revision,deployment_id=excluded.deployment_id,observation_segment=excluded.observation_segment,observation_started_at=excluded.observation_started_at,observation_completed_at=excluded.observation_completed_at,closed_at=excluded.closed_at`, day.Format(time.DateOnly), backend, identity.SourceRevision, identity.DeploymentID, identity.SegmentID)
+		_, err := db.ExecContext(t.Context(), `insert into compatibility_observation_daily(usage_date,backend,source_revision,deployment_id,observation_segment,observation_started_at,observation_completed_at,closed_at) values($1::date,$2,$3,$4,$5,$1::date::timestamp at time zone 'UTC',($1::date + 1)::timestamp at time zone 'UTC',clock_timestamp()) on conflict(usage_date,backend) do update set source_revision=excluded.source_revision,deployment_id=excluded.deployment_id,observation_segment=excluded.observation_segment,observation_started_at=excluded.observation_started_at,observation_completed_at=excluded.observation_completed_at,closed_at=excluded.closed_at`, day.Format(time.DateOnly), backend, identity.SourceRevision, identity.DeploymentID, identity.SegmentID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -411,7 +413,7 @@ func TestPostgresCompatibilityHeartbeatUsesDatabaseClockIntegration(t *testing.T
 	dbDay := utcDay(time.Now().UTC())
 	store, db, _ := newPostgresArtifactIntegrationStore(t, dbDay)
 	callerDay := time.Date(2001, 2, 3, 0, 0, 0, 0, time.UTC)
-	_, _ = db.ExecContext(t.Context(), `delete from compatibility_usage_daily where usage_date in ($1::date,$2::date)`, callerDay.Format(time.DateOnly), dbDay.Format(time.DateOnly))
+	_, _ = db.ExecContext(t.Context(), `delete from compatibility_observation_daily where usage_date in ($1::date,$2::date)`, callerDay.Format(time.DateOnly), dbDay.Format(time.DateOnly))
 	base := CompatibilityObservationIdentity{SourceRevision: "0123456789abcdef0123456789abcdef01234567", DeploymentID: "clock-production"}
 	lease, identity, err := store.AcquireCompatibilityObserverLease(t.Context(), base)
 	if err != nil {
@@ -426,7 +428,7 @@ func TestPostgresCompatibilityHeartbeatUsesDatabaseClockIntegration(t *testing.T
 		t.Fatalf("observed_at=%s want database day %s", result.ObservedAt, dbDay)
 	}
 	var callerRows, databaseRows int
-	if err := db.QueryRowContext(t.Context(), `select count(*) filter(where usage_date=$1::date),count(*) filter(where usage_date=$2::date) from compatibility_usage_daily where deployment_id=$3`, callerDay.Format(time.DateOnly), dbDay.Format(time.DateOnly), identity.DeploymentID).Scan(&callerRows, &databaseRows); err != nil {
+	if err := db.QueryRowContext(t.Context(), `select count(*) filter(where usage_date=$1::date),count(*) filter(where usage_date=$2::date) from compatibility_observation_daily where deployment_id=$3`, callerDay.Format(time.DateOnly), dbDay.Format(time.DateOnly), identity.DeploymentID).Scan(&callerRows, &databaseRows); err != nil {
 		t.Fatal(err)
 	}
 	if callerRows != 0 || databaseRows != len(compatibilityBackends) {
@@ -437,8 +439,10 @@ func TestPostgresCompatibilityHeartbeatUsesDatabaseClockIntegration(t *testing.T
 func TestPostgresStoreCompatibilityDayClosureSerializesLateAttemptIntegration(t *testing.T) {
 	day := utcDay(time.Now().UTC())
 	store, db, _ := newPostgresArtifactIntegrationStore(t, day)
+	_, _ = db.ExecContext(t.Context(), `delete from compatibility_observation_daily where usage_date=$1::date`, day.Format(time.DateOnly))
 	_, _ = db.ExecContext(t.Context(), `delete from compatibility_usage_daily where usage_date=$1::date`, day.Format(time.DateOnly))
 	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `delete from compatibility_observation_daily where usage_date=$1::date`, day.Format(time.DateOnly))
 		_, _ = db.ExecContext(context.Background(), `delete from compatibility_usage_daily where usage_date=$1::date`, day.Format(time.DateOnly))
 	})
 	tx, err := db.BeginTx(t.Context(), nil)
@@ -470,6 +474,7 @@ func TestPostgresStoreCompatibilityDayClosureSerializesLateAttemptIntegration(t 
 func TestPostgresStoreCompatibilityObserverLeaseFencesTakeoverIntegration(t *testing.T) {
 	day := utcDay(time.Now().UTC())
 	store, db, _ := newPostgresArtifactIntegrationStore(t, day)
+	_, _ = db.ExecContext(t.Context(), `delete from compatibility_observation_daily where usage_date=$1::date`, day.Format(time.DateOnly))
 	_, _ = db.ExecContext(t.Context(), `delete from compatibility_usage_daily where usage_date=$1::date`, day.Format(time.DateOnly))
 	base := CompatibilityObservationIdentity{SourceRevision: "0123456789abcdef0123456789abcdef01234567", DeploymentID: "lease-production"}
 	first, firstIdentity, err := store.AcquireCompatibilityObserverLease(t.Context(), base)
@@ -517,9 +522,9 @@ func TestPostgresStoreObserverLeaseRestartInspectsPreviousSegmentHeartbeatIntegr
 	day := utcDay(time.Now().UTC())
 	store, db, _ := newPostgresArtifactIntegrationStore(t, day)
 	base := CompatibilityObservationIdentity{SourceRevision: "0123456789abcdef0123456789abcdef01234567", DeploymentID: "restart-production"}
-	_, _ = db.ExecContext(t.Context(), `delete from compatibility_usage_daily where deployment_id=$1`, base.DeploymentID)
+	_, _ = db.ExecContext(t.Context(), `delete from compatibility_observation_daily where deployment_id=$1`, base.DeploymentID)
 	t.Cleanup(func() {
-		_, _ = db.ExecContext(context.Background(), `delete from compatibility_usage_daily where deployment_id=$1`, base.DeploymentID)
+		_, _ = db.ExecContext(context.Background(), `delete from compatibility_observation_daily where deployment_id=$1`, base.DeploymentID)
 	})
 	first, firstIdentity, err := store.AcquireCompatibilityObserverLease(t.Context(), base)
 	if err != nil {
@@ -528,7 +533,7 @@ func TestPostgresStoreObserverLeaseRestartInspectsPreviousSegmentHeartbeatIntegr
 	if _, err := store.RecordCompatibilityHeartbeat(t.Context(), firstIdentity, time.Time{}, 3*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `update compatibility_usage_daily set observation_started_at=clock_timestamp()-interval '10 minutes',observation_completed_at=clock_timestamp()-interval '10 minutes' where deployment_id=$1 and observation_segment=$2`, base.DeploymentID, firstIdentity.SegmentID); err != nil {
+	if _, err := db.ExecContext(t.Context(), `update compatibility_observation_daily set observation_started_at=clock_timestamp()-interval '10 minutes',observation_completed_at=clock_timestamp()-interval '10 minutes' where deployment_id=$1 and observation_segment=$2`, base.DeploymentID, firstIdentity.SegmentID); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Close(); err != nil {
@@ -548,7 +553,7 @@ func TestPostgresStoreObserverLeaseRestartInspectsPreviousSegmentHeartbeatIntegr
 	}
 	var segment string
 	var started time.Time
-	if err := db.QueryRowContext(t.Context(), `select observation_segment,observation_started_at from compatibility_usage_daily where deployment_id=$1 and backend='ocq' and usage_date=$2::date`, base.DeploymentID, result.ObservedAt.Format(time.DateOnly)).Scan(&segment, &started); err != nil {
+	if err := db.QueryRowContext(t.Context(), `select observation_segment,observation_started_at from compatibility_observation_daily where deployment_id=$1 and backend='ocq' and usage_date=$2::date`, base.DeploymentID, result.ObservedAt.Format(time.DateOnly)).Scan(&segment, &started); err != nil {
 		t.Fatal(err)
 	}
 	if segment != secondIdentity.SegmentID || started.Before(result.ObservedAt.Add(-time.Second)) {

@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -14,6 +15,37 @@ def git_track(root: Path, *paths: str) -> None:
 
 
 class DocsConsistencyTest(unittest.TestCase):
+    def test_docs_check_runs_from_git_archive(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            tree = subprocess.run(
+                ["git", "write-tree"], cwd=repository, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            commit = subprocess.run(
+                ["git", "commit-tree", tree, "-p", "HEAD"],
+                cwd=repository,
+                check=True,
+                input="docs archive test\n",
+                capture_output=True,
+                text=True,
+                env={**__import__("os").environ, "GIT_AUTHOR_NAME": "Docs Test", "GIT_AUTHOR_EMAIL": "docs@example.invalid", "GIT_COMMITTER_NAME": "Docs Test", "GIT_COMMITTER_EMAIL": "docs@example.invalid"},
+            ).stdout.strip()
+            archive = temporary / "source.tar"
+            subprocess.run(
+                ["git", "archive", "--format=tar", f"--output={archive}", commit],
+                cwd=repository,
+                check=True,
+            )
+            extracted = temporary / "source"
+            extracted.mkdir()
+            with tarfile.open(archive) as bundle:
+                bundle.extractall(extracted, filter="data")
+            result = subprocess.run(
+                ["make", "docs-check"], cwd=extracted, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_release_pointer_matches_record_without_consulting_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -43,7 +75,7 @@ class DocsConsistencyTest(unittest.TestCase):
                 "capabilities": [{"name": "Runtime", "state": "test-verified", "implementation": ["impl.go"], "tests": []}],
             }
             (root / "docs/capabilities-v1.json").write_text(json.dumps(contract), encoding="utf-8")
-            git_track(root, "impl.go")
+            git_track(root, "docs/capabilities-v1.json", "impl.go")
             with self.assertRaisesRegex(checks.ContractError, "requires test evidence"):
                 checks.validate_capabilities(root)
 
@@ -54,7 +86,7 @@ class DocsConsistencyTest(unittest.TestCase):
             (root / "docs/status.md").write_text("", encoding="utf-8")
             contract = {"version": 1, "states": ["anything"], "capabilities": []}
             (root / "docs/capabilities-v1.json").write_text(json.dumps(contract), encoding="utf-8")
-            git_track(root)
+            git_track(root, "docs/capabilities-v1.json")
             with self.assertRaisesRegex(checks.ContractError, "fixed capability enum"):
                 checks.validate_capabilities(root)
 
@@ -73,7 +105,7 @@ class DocsConsistencyTest(unittest.TestCase):
                 "capabilities": [{"name": "Runtime", "state": "test-verified", "implementation": ["impl.go"], "tests": ["impl.go"]}],
             }
             (root / "docs/capabilities-v1.json").write_text(json.dumps(contract), encoding="utf-8")
-            git_track(root, "impl.go")
+            git_track(root, "docs/capabilities-v1.json", "impl.go")
             with self.assertRaisesRegex(checks.ContractError, "must name test files"):
                 checks.validate_capabilities(root)
 
@@ -124,7 +156,7 @@ class DocsConsistencyTest(unittest.TestCase):
                 "capabilities": [{"name": "Runtime", "state": "implemented", "implementation": ["impl.go"], "tests": []}],
             }
             (root / "docs/capabilities-v1.json").write_text(json.dumps(contract), encoding="utf-8")
-            git_track(root)
+            git_track(root, "docs/capabilities-v1.json")
             with self.assertRaisesRegex(checks.ContractError, "tracked by git"):
                 checks.validate_capabilities(root)
 
@@ -145,7 +177,7 @@ class DocsConsistencyTest(unittest.TestCase):
                 "capabilities": [{"name": "Runtime", "state": "implemented", "implementation": ["evidence.go"], "tests": []}],
             }
             (root / "docs/capabilities-v1.json").write_text(json.dumps(contract), encoding="utf-8")
-            git_track(root, "evidence.go")
+            git_track(root, "docs/capabilities-v1.json", "evidence.go")
             with self.assertRaisesRegex(checks.ContractError, "escapes the repository"):
                 checks.validate_capabilities(root)
 
@@ -177,9 +209,22 @@ class DocsConsistencyTest(unittest.TestCase):
             root = Path(directory)
             (root / "docs").mkdir()
             (root / "docs/capabilities-v1.json").write_text("{secret", encoding="utf-8")
+            git_track(root, "docs/capabilities-v1.json")
             with self.assertRaisesRegex(checks.ContractError, "invalid JSON") as raised:
                 checks.validate_capabilities(root)
             self.assertNotIn("secret", str(raised.exception))
+
+    def test_capability_contract_itself_must_be_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            (root / "docs/capabilities-v1.json").write_text(
+                json.dumps({"version": 1, "states": sorted(checks.CAPABILITY_STATES), "capabilities": []}),
+                encoding="utf-8",
+            )
+            git_track(root)
+            with self.assertRaisesRegex(checks.ContractError, "contract must be tracked by git"):
+                checks.validate_capabilities(root)
 
     def test_malformed_codemap_is_contract_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -237,13 +282,46 @@ class DocsConsistencyTest(unittest.TestCase):
             contract = {
                 "version": 1,
                 "defaults": {},
-                "listeners": {"control": {"bind_env": "SWITCHYARD_BIND_HOST", "port_env": "API_PORT", "target": 8080}},
+                "listeners": {"control": {"bind_env": "SWITCHYARD_BIND_HOST", "port_env": "API_PORT", "published_default": 18080, "target": 8080}},
             }
             (root / "backend/internal/runtimeconfig/defaults-v1.json").write_text(json.dumps(contract), encoding="utf-8")
             compose = {"services": {"api": {"environment": {}, "ports": [{"target": 8080, "host_ip": "127.0.0.1", "published": "18080"}]}, "opencode": {"environment": {}}}}
             with self.assertRaisesRegex(checks.ContractError, "URL or port is malformed") as raised:
                 checks.validate_defaults(root, compose)
             self.assertNotIn("secret", str(raised.exception))
+
+    def test_listener_published_port_must_match_runtime_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "backend/internal/runtimeconfig").mkdir(parents=True)
+            (root / ".env.example").write_text(
+                "SWITCHYARD_API_URL=http://127.0.0.1:28080\nSWITCHYARD_BIND_HOST=127.0.0.1\nAPI_PORT=28080\n",
+                encoding="utf-8",
+            )
+            contract = {
+                "version": 1,
+                "defaults": {},
+                "listeners": {
+                    "control": {
+                        "bind_env": "SWITCHYARD_BIND_HOST",
+                        "port_env": "API_PORT",
+                        "published_default": 18080,
+                        "target": 8080,
+                    }
+                },
+            }
+            (root / "backend/internal/runtimeconfig/defaults-v1.json").write_text(json.dumps(contract), encoding="utf-8")
+            compose = {
+                "services": {
+                    "api": {
+                        "environment": {},
+                        "ports": [{"target": 8080, "host_ip": "127.0.0.1", "published": "28080"}],
+                    },
+                    "opencode": {"environment": {}},
+                }
+            }
+            with self.assertRaisesRegex(checks.ContractError, "listener default port mismatch"):
+                checks.validate_defaults(root, compose)
 
 
 if __name__ == "__main__":

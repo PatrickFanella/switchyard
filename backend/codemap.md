@@ -6,7 +6,7 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 ## Design
 - Two binaries share `internal/controlplane`: `cmd/app` is the server and `cmd/switchyard` is the operator CLI.
 - `internal/runtimeconfig/defaults-v1.json` is the versioned source for critical runtime defaults consumed by Go and checked against rendered Compose and `.env.example`.
-- `ModelService` is the single model-runtime lifecycle owner. Workflows receive the narrow `ModelGeneration` capability; authenticated control and compatibility handlers receive lifecycle operations through `ModelRuntimeControl` or a thin facade.
+- `ModelService` is the single model-runtime lifecycle owner. PostgreSQL mode continuously watches its dedicated session advisory lock, permanently fences the runtime on first loss, and rejects a second healthy owner; memory mode remains process-local. Workflows receive the narrow `ModelGeneration` capability; authenticated control and compatibility handlers receive lifecycle operations through `ModelRuntimeControl` or a thin facade.
 - Interfaces (`Store`, `WorkflowExecutor`, `ModelGeneration`, `ModelRuntimeControl`, `OpenCodeExecutor`) isolate persistence and compatibility backends; memory and PostgreSQL implementations are split by workflow, run, Open Pilot, broker, and artifact measurement domains.
 - The API and model-compatible ingress use separate handlers and are intended for separate listeners.
 
@@ -14,7 +14,7 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 1. `cmd/app` loads telemetry and selects memory or PostgreSQL storage.
 2. Defaults are seeded, then one `ModelService` is shared by workflow generation, control handlers, and compatibility adapters before workers, scheduler, and retention are assembled.
 3. HTTP or scheduled triggers create runs; workers claim and execute pipeline snapshots.
-4. Executors call models, OpenCode, Gitea, Git, or allowlisted commands and persist steps, events, artifacts, resolved backend decisions, and compatibility evidence. Artifact writes and run-retention pruning update durable aggregate count/byte measurements in the same transaction; the API process records revision-bound daily compatibility coverage for both deprecated backends.
+4. Executors call models, OpenCode, Gitea, Git, or allowlisted commands and persist steps, events, artifacts, resolved backend decisions, and compatibility evidence. PostgreSQL artifact triggers maintain retained and lifecycle count/byte aggregates in each mutation transaction; the API process records revision-bound daily compatibility coverage for both deprecated backends in a table separate from positive-use rows.
 
 ## Integration
 - Serves `web/` and `cmd/switchyard` through the control-plane API.

@@ -1,7 +1,7 @@
 {
   "contract_version": "switchyard.postgres-object-set.v1",
   "provider": "postgres",
-  "migration_head": "022_compatibility_observations.sql",
+  "migration_head": "023_transactional_artifact_and_compatibility_accounting.sql",
   "migration_ledger": [
     "001_controlplane.sql",
     "002_trigger_scheduler.sql",
@@ -23,12 +23,14 @@
     "019_artifact_lifecycle_and_compatibility_usage.sql",
     "020_allow_committed_open_pilot_phase.sql",
     "021_artifact_measurement.sql",
-    "022_compatibility_observations.sql"
+    "022_compatibility_observations.sql",
+    "023_transactional_artifact_and_compatibility_accounting.sql"
   ],
   "required_objects": [
     "artifact_lifecycle_daily",
     "artifact_lifecycle_totals",
     "artifacts",
+    "compatibility_observation_daily",
     "compatibility_observer_fence",
     "compatibility_usage_daily",
     "model_broker_feedback",

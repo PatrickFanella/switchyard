@@ -85,13 +85,13 @@ func (s *PostgresStore) ArtifactReport(ctx context.Context, input ArtifactReport
 		return ArtifactReport{}, err
 	}
 	defer tx.Rollback()
-	if err := tx.QueryRowContext(ctx, `select observation_started_at, created_count, created_bytes, pruned_count, pruned_bytes, pruned_bytes_unmeasured from artifact_lifecycle_totals where singleton=true`).Scan(
-		&report.ObservationStartedAt, &report.CreatedTotal, &report.CreatedBytesTotal, &report.PrunedTotal, &report.PrunedBytesTotal, &report.PrunedBytesUnmeasuredTotal,
+	if err := tx.QueryRowContext(ctx, `select observation_started_at, observation_retained_floor_count, observation_retained_floor_bytes, observation_retained_floor_bytes_unmeasured, retained_count, retained_bytes, retained_bytes_unmeasured, created_count, created_bytes, pruned_count, pruned_bytes, pruned_bytes_unmeasured from artifact_lifecycle_totals where singleton=true`).Scan(
+		&report.ObservationStartedAt, &report.ObservationRetainedFloor, &report.ObservationRetainedFloorBytes, &report.ObservationRetainedFloorBytesUnmeasured, &report.Retained, &report.RetainedBytes, &report.RetainedBytesUnmeasured, &report.CreatedTotal, &report.CreatedBytesTotal, &report.PrunedTotal, &report.PrunedBytesTotal, &report.PrunedBytesUnmeasuredTotal,
 	); err != nil {
 		return ArtifactReport{}, err
 	}
-	if err := tx.QueryRowContext(ctx, `select count(*), coalesce(sum(byte_size) filter (where storage_class='inline-data-uri'),0), count(*) filter (where storage_class<>'inline-data-uri'), count(*) filter (where retention_until is null), count(*) filter (where retention_until <= $1), coalesce(sum(byte_size) filter (where retention_until <= $1 and storage_class='inline-data-uri'),0), count(*) filter (where retention_until <= $1 and storage_class<>'inline-data-uri') from artifacts`, input.End.UTC()).Scan(
-		&report.Retained, &report.RetainedBytes, &report.RetainedBytesUnmeasured, &report.DeclaredRetentionMissing, &report.DeclaredRetentionExpired, &report.DeclaredExpiredBytes, &report.DeclaredExpiredBytesUnmeasured,
+	if err := tx.QueryRowContext(ctx, `select count(*) filter (where retention_until is null), count(*) filter (where retention_until <= $1), coalesce(sum(byte_size) filter (where retention_until <= $1 and storage_class='inline-data-uri'),0), count(*) filter (where retention_until <= $1 and storage_class<>'inline-data-uri') from artifacts`, input.End.UTC()).Scan(
+		&report.DeclaredRetentionMissing, &report.DeclaredRetentionExpired, &report.DeclaredExpiredBytes, &report.DeclaredExpiredBytesUnmeasured,
 	); err != nil {
 		return ArtifactReport{}, err
 	}

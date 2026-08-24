@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "states": [
+    "implemented",
+    "test-verified",
+    "qualified-with-exceptions",
+    "historical-evidence"
+  ],
+  "capabilities": [
+    {
+      "name": "Durable linear workflow runtime",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/worker.go", "backend/internal/controlplane/scheduler.go"],
+      "tests": ["backend/internal/controlplane/worker_test.go", "backend/internal/controlplane/scheduler_test.go"]
+    },
+    {
+      "name": "Native model broker and compatible ingress",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/model_service.go", "backend/internal/controlplane/http_model_runtime.go"],
+      "tests": ["backend/internal/controlplane/model_service_test.go", "backend/internal/controlplane/http_model_runtime_test.go"]
+    },
+    {
+      "name": "Native OpenCode execution",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/ocq_executor.go", "services/opencode/entrypoint.sh"],
+      "tests": ["backend/internal/controlplane/ocq_executor_test.go", "scripts/test_compose_runtime_isolation.py"]
+    },
+    {
+      "name": "Open Pilot policy pipeline",
+      "state": "implemented",
+      "implementation": ["backend/internal/controlplane/executor_open_pilot.go"],
+      "tests": []
+    },
+    {
+      "name": "Devlog and Changemaker policy",
+      "state": "implemented",
+      "implementation": ["backend/internal/controlplane/executor.go"],
+      "tests": []
+    },
+    {
+      "name": "Agent profiles",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/profiles.go"],
+      "tests": ["backend/internal/controlplane/profiles_test.go"]
+    },
+    {
+      "name": "Operator UI",
+      "state": "test-verified",
+      "implementation": ["web/src/App.tsx"],
+      "tests": ["web/src/App.test.tsx"]
+    },
+    {
+      "name": "Scale and lifecycle",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/retention.go", "backend/internal/controlplane/artifact_report.go", "backend/internal/controlplane/compatibility_usage.go"],
+      "tests": ["backend/internal/controlplane/artifact_report_test.go", "backend/internal/controlplane/compatibility_observation_test.go"]
+    },
+    {
+      "name": "Release qualification",
+      "state": "qualified-with-exceptions",
+      "implementation": ["scripts/validate_release_evidence.py"],
+      "tests": ["scripts/test_validate_release_evidence.py"]
+    },
+    {
+      "name": "Production recovery",
+      "state": "test-verified",
+      "implementation": ["scripts/restore_evidence.py", "scripts/restore_drill_scheduler.py"],
+      "tests": ["scripts/test_restore_evidence.py", "scripts/test_restore_drill_scheduler.py"]
+    }
+  ]
+}

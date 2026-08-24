@@ -26,7 +26,6 @@ UTC_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLOCK_TOLERANCE = timedelta(minutes=5)
 RETIREMENT_BACKENDS = {"llama-line", "ocq"}
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
-MAX_RETIREMENT_DEPTH = 8
 DEFAULT_ARTIFACT_ROOT: Path | None = None
 PLACEHOLDERS = {"", "todo", "tbd", "unknown", "changeme", "replace_me", "placeholder"}
 PLACEHOLDER_TOKEN = re.compile(
@@ -183,6 +182,10 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def raw_sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
 def compatibility_report_payload(report: dict[str, Any]) -> bytes:
     observations = [
         {
@@ -220,7 +223,7 @@ def validate_retirement_report(
     require_exact_keys(
         report_link,
         "evidence.retirement_proposal.report",
-        {"artifact", "sha256", "source_revision", "source_identity", "source_segment"},
+        {"artifact", "raw_sha256", "canonical_sha256", "source_revision", "source_identity", "source_segment"},
     )
     artifact = require_text(
         report_link["artifact"], "evidence.retirement_proposal.report.artifact"
@@ -229,11 +232,11 @@ def validate_retirement_report(
         raise EvidenceError(
             "evidence.retirement_proposal.report.artifact must be compatibility-retirement-report.json"
         )
-    digest = require_text(
-        report_link["sha256"], "evidence.retirement_proposal.report.sha256"
+    canonical_digest = require_text(
+        report_link["canonical_sha256"], "evidence.retirement_proposal.report.canonical_sha256"
     )
-    if not SHA256.fullmatch(digest):
-        raise EvidenceError("evidence.retirement_proposal.report.sha256 must be a lowercase SHA-256")
+    if not SHA256.fullmatch(canonical_digest):
+        raise EvidenceError("evidence.retirement_proposal.report.canonical_sha256 must be a lowercase SHA-256")
     if report_value is None:
         raise EvidenceError("retirement proposal requires a compatibility retirement report")
     report = require_object(report_value, "retirement report")
@@ -255,8 +258,8 @@ def validate_retirement_report(
         raise EvidenceError("retirement report.version is unsupported")
     if report["qualification_eligible"] is not True:
         raise EvidenceError("retirement report is diagnostic and not qualification eligible")
-    if canonical_sha256(report) != digest:
-        raise EvidenceError("retirement report hash does not match candidate evidence")
+    if canonical_sha256(report) != canonical_digest:
+        raise EvidenceError("retirement report canonical hash does not match candidate evidence")
     internal_digest = require_text(report["canonical_sha256"], "retirement report.canonical_sha256")
     if not SHA256.fullmatch(internal_digest):
         raise EvidenceError("retirement report.canonical_sha256 must be a lowercase SHA-256")
@@ -346,17 +349,16 @@ def validate_retirement_proposal(
     recorded_at: datetime,
     artifact_root: Path | None = None,
     active: frozenset[Path] = frozenset(),
-    depth: int = 0,
 ) -> None:
     proposal = require_object(value, "evidence.retirement_proposal")
     require_exact_keys(proposal, "evidence.retirement_proposal", {"report", "prior_qualifying_releases"})
     report_link = require_object(proposal["report"], "evidence.retirement_proposal.report")
     if artifact_root is None:
         raise EvidenceError("retirement proposal requires an artifact root")
-    report_artifact, candidate_report_path = load_canonical_artifact_json(
+    report_artifact, candidate_report_path = load_artifact_json(
         artifact_root,
         require_text(report_link.get("artifact"), "evidence.retirement_proposal.report.artifact"),
-        require_text(report_link.get("sha256"), "evidence.retirement_proposal.report.sha256"),
+        require_text(report_link.get("raw_sha256"), "evidence.retirement_proposal.report.raw_sha256"),
         "candidate retirement report",
         active,
     )
@@ -376,14 +378,14 @@ def validate_retirement_proposal(
     seen_tags: set[str] = set()
     seen_shas: set[str] = set()
     seen_hashes: set[str] = set()
-    previous_report_time: datetime | None = None
+    previous_qualification_time: datetime | None = None
     for index, release_value in enumerate(releases):
         location = f"evidence.retirement_proposal.prior_qualifying_releases[{index}]"
         release = require_object(release_value, location)
         require_exact_keys(
             release,
             location,
-            {"release_tag", "release_sha", "evidence_artifact", "evidence_sha256", "manifest_artifact", "manifest_sha256", "report_artifact", "report_sha256"},
+            {"release_tag", "release_sha", "qualification_artifact", "qualification_raw_sha256"},
         )
         tag = require_text(release["release_tag"], f"{location}.release_tag")
         if not SEMVER_TAG.fullmatch(tag):
@@ -391,56 +393,90 @@ def validate_retirement_proposal(
         sha = require_text(release["release_sha"], f"{location}.release_sha")
         if not GIT_SHA.fullmatch(sha):
             raise EvidenceError(f"{location}.release_sha must be a full lowercase Git SHA")
-        evidence_hash = require_text(
-            release["evidence_sha256"], f"{location}.evidence_sha256"
+        qualification_hash = require_text(
+            release["qualification_raw_sha256"], f"{location}.qualification_raw_sha256"
         )
-        if not SHA256.fullmatch(evidence_hash):
-            raise EvidenceError(f"{location}.evidence_sha256 must be a lowercase SHA-256")
-        manifest_hash = require_text(
-            release["manifest_sha256"], f"{location}.manifest_sha256"
-        )
-        if not SHA256.fullmatch(manifest_hash):
-            raise EvidenceError(f"{location}.manifest_sha256 must be a lowercase SHA-256")
+        if not SHA256.fullmatch(qualification_hash):
+            raise EvidenceError(f"{location}.qualification_raw_sha256 must be a lowercase SHA-256")
         normalized_tag = normalized_release_tag(tag)
         if normalized_tag == normalized_release_tag(release_tag) or sha == candidate_sha:
             raise EvidenceError("candidate release cannot count as prior qualifying release evidence")
-        if normalized_tag in seen_tags or sha in seen_shas or evidence_hash in seen_hashes:
+        if normalized_tag in seen_tags or sha in seen_shas or qualification_hash in seen_hashes:
             raise EvidenceError("prior qualifying releases must be distinct immutable records")
-        if artifact_root is None:
-            raise EvidenceError("prior qualifying releases require an artifact root")
-        report_hash = require_text(release["report_sha256"], f"{location}.report_sha256")
-        if not SHA256.fullmatch(report_hash):
-            raise EvidenceError(f"{location}.report_sha256 must be a lowercase SHA-256")
-        prior_evidence, evidence_path = load_artifact_json(artifact_root, require_text(release["evidence_artifact"], f"{location}.evidence_artifact"), evidence_hash, f"{location} evidence", active | {candidate_report_path})
-        prior_manifest, manifest_path = load_artifact_json(artifact_root, require_text(release["manifest_artifact"], f"{location}.manifest_artifact"), manifest_hash, f"{location} manifest", active | {candidate_report_path, evidence_path})
-        prior_report, report_path = load_artifact_json(artifact_root, require_text(release["report_artifact"], f"{location}.report_artifact"), report_hash, f"{location} report", active | {candidate_report_path, evidence_path, manifest_path})
+        qualification, qualification_path = load_artifact_json(
+            artifact_root,
+            require_text(release["qualification_artifact"], f"{location}.qualification_artifact"),
+            qualification_hash,
+            f"{location} qualification",
+            active | {candidate_report_path},
+        )
+        qualification = require_object(qualification, f"{location} qualification")
+        require_exact_keys(
+            qualification,
+            f"{location} qualification",
+            {
+                "schema_version", "release_tag", "release_sha", "qualified_at",
+                "evidence_artifact", "evidence_raw_sha256", "manifest_artifact",
+                "manifest_raw_sha256", "report_artifact", "report_raw_sha256",
+                "report_canonical_sha256",
+            },
+        )
+        if qualification["schema_version"] != "switchyard.compatibility-qualification/v1":
+            raise EvidenceError(f"{location} qualification schema_version is unsupported")
+        if normalized_release_tag(require_text(qualification["release_tag"], f"{location} qualification.release_tag")) != normalized_tag or qualification["release_sha"] != sha:
+            raise EvidenceError(f"{location} qualification release identity does not match its binding")
+        qualified_at = require_timestamp(qualification["qualified_at"], f"{location} qualification.qualified_at")
+        evidence_hash = require_text(qualification["evidence_raw_sha256"], f"{location} qualification.evidence_raw_sha256")
+        manifest_hash = require_text(qualification["manifest_raw_sha256"], f"{location} qualification.manifest_raw_sha256")
+        report_hash = require_text(qualification["report_raw_sha256"], f"{location} qualification.report_raw_sha256")
+        report_canonical_hash = require_text(qualification["report_canonical_sha256"], f"{location} qualification.report_canonical_sha256")
+        if not all(SHA256.fullmatch(value) for value in (evidence_hash, manifest_hash, report_hash, report_canonical_hash)):
+            raise EvidenceError(f"{location} qualification artifact hashes must be lowercase SHA-256 values")
+        component_root = qualification_path.parent
+        prior_evidence, evidence_path = load_artifact_json(component_root, require_artifact_basename(qualification["evidence_artifact"], f"{location} qualification.evidence_artifact"), evidence_hash, f"{location} evidence", active | {candidate_report_path, qualification_path})
+        prior_manifest, manifest_path = load_artifact_json(component_root, require_artifact_basename(qualification["manifest_artifact"], f"{location} qualification.manifest_artifact"), manifest_hash, f"{location} manifest", active | {candidate_report_path, qualification_path, evidence_path})
+        prior_report, report_path = load_artifact_json(component_root, require_artifact_basename(qualification["report_artifact"], f"{location} qualification.report_artifact"), report_hash, f"{location} report", active | {candidate_report_path, qualification_path, evidence_path, manifest_path})
+        if canonical_sha256(prior_report) != report_canonical_hash:
+            raise EvidenceError(f"{location} report canonical hash does not match qualification")
         prior_record = require_object(prior_evidence, f"{location} evidence")
         if prior_record.get("candidate_sha") != sha or normalized_release_tag(require_text(prior_record.get("release_tag"), f"{location} evidence.release_tag")) != normalized_tag:
             raise EvidenceError(f"{location} evidence release identity does not match its binding")
         if prior_record.get("phase") != "deployed":
             raise EvidenceError(f"{location} evidence must be deployed phase")
+        if "retirement_proposal" in prior_record:
+            raise EvidenceError(f"{location} evidence must not contain retirement_proposal")
+        prior_recorded_at = require_timestamp(prior_record.get("recorded_at"), f"{location} evidence.recorded_at")
+        if qualified_at < prior_recorded_at or qualified_at > recorded_at:
+            raise EvidenceError("prior qualification time must follow evidence finalization and predate candidate evidence")
+        deployment = require_object(prior_record.get("deployment"), f"{location} evidence.deployment")
+        deployed_at = require_timestamp(deployment.get("deployed_at"), f"{location} evidence.deployment.deployed_at")
+        report_window_start = require_date(prior_report.get("window_start"), f"{location} report.window_start")
+        if deployed_at > report_window_start:
+            raise EvidenceError("prior qualifying release deployment must precede its zero-use observation window")
+        smoke_at = require_timestamp(require_object(prior_record.get("gates"), f"{location} evidence.gates").get("production_smoke", {}).get("completed_at"), f"{location} evidence.gates.production_smoke.completed_at")
+        if smoke_at > report_window_start:
+            raise EvidenceError("prior qualifying release production smoke must precede its zero-use observation window")
         validate(
             sha,
             prior_record,
             prior_manifest,
-            recorded_at,
-            prior_report if "retirement_proposal" in prior_record else None,
+            qualified_at,
             artifact_root=artifact_root,
-            active=active | {candidate_report_path, report_path, evidence_path, manifest_path},
-            depth=depth + 1,
         )
-        prior_link = {"artifact": "compatibility-retirement-report.json", "sha256": canonical_sha256(prior_report), "source_revision": prior_report.get("source_revision"), "source_identity": prior_report.get("source_identity"), "source_segment": prior_report.get("source_segment")}
-        prior_generated = validate_retirement_report(prior_link, prior_report, recorded_at)
+        prior_link = {"artifact": "compatibility-retirement-report.json", "raw_sha256": report_hash, "canonical_sha256": report_canonical_hash, "source_revision": prior_report.get("source_revision"), "source_identity": prior_report.get("source_identity"), "source_segment": prior_report.get("source_segment")}
+        prior_generated = validate_retirement_report(prior_link, prior_report, prior_recorded_at)
         if prior_report.get("source_revision") != sha:
             raise EvidenceError(f"{location} report source_revision does not match release_sha")
         if prior_generated >= generated_at:
             raise EvidenceError("prior qualifying release report must predate the candidate report")
-        if previous_report_time is not None and prior_generated <= previous_report_time:
+        if previous_qualification_time is not None and qualified_at <= previous_qualification_time:
             raise EvidenceError("prior qualifying releases must be ordered by qualification time")
-        previous_report_time = prior_generated
+        if prior_generated > prior_recorded_at:
+            raise EvidenceError("prior qualifying release report must exist before deployed evidence finalization")
+        previous_qualification_time = qualified_at
         seen_tags.add(normalized_tag)
         seen_shas.add(sha)
-        seen_hashes.add(evidence_hash)
+        seen_hashes.add(qualification_hash)
 
 
 def validate(
@@ -451,10 +487,7 @@ def validate(
     retirement_report: Any = None,
     artifact_root: Path | None = None,
     active: frozenset[Path] = frozenset(),
-    depth: int = 0,
 ) -> None:
-    if depth > MAX_RETIREMENT_DEPTH:
-        raise EvidenceError("retirement evidence nesting is too deep")
     artifact_root = artifact_root or DEFAULT_ARTIFACT_ROOT
     if not GIT_SHA.fullmatch(candidate_sha):
         raise EvidenceError("candidate SHA must be a full lowercase 40-character Git SHA")
@@ -535,7 +568,6 @@ def validate(
             recorded_at,
             artifact_root,
             active,
-            depth,
         )
     elif retirement_report is not None:
         raise EvidenceError("retirement report supplied without a retirement proposal")
@@ -617,6 +649,14 @@ def resolve_artifact(root: Path, artifact: str, location: str) -> Path:
     return resolved
 
 
+def require_artifact_basename(value: Any, location: str) -> str:
+    artifact = require_text(value, location)
+    path = PurePosixPath(artifact)
+    if "\\" in artifact or len(path.parts) != 1 or path.name != artifact or artifact.startswith(".") or not artifact.endswith(".json"):
+        raise EvidenceError(f"{location} must be a visible JSON artifact basename")
+    return artifact
+
+
 def artifact_json_bytes(root: Path, artifact: str, label: str, active: frozenset[Path]) -> tuple[bytes, Path]:
     path = resolve_artifact(root, artifact, f"{label} artifact")
     if path in active:
@@ -631,6 +671,8 @@ def artifact_json_bytes(root: Path, artifact: str, label: str, active: frozenset
 
 
 def load_artifact_json(root: Path, artifact: str, expected_hash: str, label: str, active: frozenset[Path]) -> tuple[Any, Path]:
+    if not SHA256.fullmatch(expected_hash):
+        raise EvidenceError(f"{label} raw hash must be a lowercase SHA-256")
     payload, path = artifact_json_bytes(root, artifact, label, active)
     if hashlib.sha256(payload).hexdigest() != expected_hash:
         raise EvidenceError(f"{label} raw byte hash does not match evidence")

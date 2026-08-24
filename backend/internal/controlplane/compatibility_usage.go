@@ -384,7 +384,7 @@ func (s *PostgresStore) RecordCompatibilityUsage(ctx context.Context, backend st
 	return tx.Commit()
 }
 
-const compatibilityAttemptUpsertSQL = `insert into compatibility_usage_daily(usage_date, backend, attempts, first_attempt_at, last_attempt_at) values($1::date,$2,1,$3,$3) on conflict(usage_date, backend) do update set attempts=compatibility_usage_daily.attempts+1, first_attempt_at=least(compatibility_usage_daily.first_attempt_at, excluded.first_attempt_at), last_attempt_at=greatest(compatibility_usage_daily.last_attempt_at, excluded.last_attempt_at) where compatibility_usage_daily.closed_at is null`
+const compatibilityAttemptUpsertSQL = `insert into compatibility_usage_daily(usage_date, backend, attempts, first_attempt_at, last_attempt_at) values($1::date,$2,1,$3,$3) on conflict(usage_date, backend) do update set attempts=compatibility_usage_daily.attempts+1, first_attempt_at=least(compatibility_usage_daily.first_attempt_at, excluded.first_attempt_at), last_attempt_at=greatest(compatibility_usage_daily.last_attempt_at, excluded.last_attempt_at)`
 
 const compatibilityDayLockNamespace = int64(0x53575944)
 
@@ -411,6 +411,13 @@ func recordCompatibilityAttemptTx(ctx context.Context, tx *sql.Tx, backend strin
 		if err := lockCompatibilityDay(ctx, tx, actualDay); err != nil {
 			return time.Time{}, err
 		}
+	}
+	var closed bool
+	if err := tx.QueryRowContext(ctx, `select exists(select 1 from compatibility_observation_daily where usage_date=$1::date and backend=$2 and closed_at is not null)`, attemptedAt.Format(time.DateOnly), backend).Scan(&closed); err != nil {
+		return time.Time{}, err
+	}
+	if closed {
+		return time.Time{}, ErrCompatibilityCoverageIncomplete
 	}
 	result, err := tx.ExecContext(ctx, compatibilityAttemptUpsertSQL, attemptedAt.Format(time.DateOnly), backend, attemptedAt)
 	if err != nil {
@@ -465,13 +472,13 @@ func (s *PostgresStore) RecordCompatibilityHeartbeat(ctx context.Context, identi
 		return compatibilityHeartbeat{}, fmt.Errorf("compatibility observer lease lost: %w", ErrInvalid)
 	}
 	var last sql.NullTime
-	if err := tx.QueryRowContext(ctx, `select max(observation_completed_at) from compatibility_usage_daily where source_revision=$1 and deployment_id=$2 and observation_segment=$3`, identity.SourceRevision, identity.DeploymentID, identity.SegmentID).Scan(&last); err != nil {
+	if err := tx.QueryRowContext(ctx, `select max(observation_completed_at) from compatibility_observation_daily where source_revision=$1 and deployment_id=$2 and observation_segment=$3`, identity.SourceRevision, identity.DeploymentID, identity.SegmentID).Scan(&last); err != nil {
 		return compatibilityHeartbeat{}, err
 	}
 	result := compatibilityHeartbeat{ObservedAt: observedAt}
 	if !last.Valid {
 		var previousSegmentLast sql.NullTime
-		if err := tx.QueryRowContext(ctx, `select max(observation_completed_at) from compatibility_usage_daily where source_revision=$1 and deployment_id=$2 and observation_segment<>$3`, identity.SourceRevision, identity.DeploymentID, identity.SegmentID).Scan(&previousSegmentLast); err != nil {
+		if err := tx.QueryRowContext(ctx, `select max(observation_completed_at) from compatibility_observation_daily where source_revision=$1 and deployment_id=$2 and observation_segment<>$3`, identity.SourceRevision, identity.DeploymentID, identity.SegmentID).Scan(&previousSegmentLast); err != nil {
 			return compatibilityHeartbeat{}, err
 		}
 		if previousSegmentLast.Valid {
@@ -529,7 +536,7 @@ func recordCompatibilityObservationTx(ctx context.Context, tx *sql.Tx, identity 
 		day = day.AddDate(0, 0, -1)
 	}
 	for _, backend := range compatibilityBackends {
-		if _, err := tx.ExecContext(ctx, `insert into compatibility_usage_daily(usage_date,backend,attempts,source_revision,deployment_id,observation_segment,observation_started_at,observation_completed_at,closed_at) values($1::date,$2,0,$3,$4,$5,$6::timestamptz,$7::timestamptz,case when $7::timestamptz >= ($1::date::timestamp at time zone 'UTC') + interval '1 day' then $8::timestamptz end) on conflict(usage_date,backend) do update set source_revision=excluded.source_revision,deployment_id=excluded.deployment_id,observation_segment=excluded.observation_segment,observation_started_at=case when compatibility_usage_daily.source_revision=excluded.source_revision and compatibility_usage_daily.deployment_id=excluded.deployment_id and compatibility_usage_daily.observation_segment=excluded.observation_segment and excluded.observation_started_at <= compatibility_usage_daily.observation_completed_at then least(compatibility_usage_daily.observation_started_at,excluded.observation_started_at) else excluded.observation_started_at end,observation_completed_at=case when compatibility_usage_daily.source_revision=excluded.source_revision and compatibility_usage_daily.deployment_id=excluded.deployment_id and compatibility_usage_daily.observation_segment=excluded.observation_segment and excluded.observation_started_at <= compatibility_usage_daily.observation_completed_at then greatest(compatibility_usage_daily.observation_completed_at,excluded.observation_completed_at) else excluded.observation_completed_at end,closed_at=case when excluded.observation_completed_at >= (excluded.usage_date::timestamp at time zone 'UTC') + interval '1 day' then $8::timestamptz end where compatibility_usage_daily.closed_at is null`, day.Format(time.DateOnly), backend, identity.SourceRevision, identity.DeploymentID, identity.SegmentID, startedAt, completedAt, closedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into compatibility_observation_daily(usage_date,backend,source_revision,deployment_id,observation_segment,observation_started_at,observation_completed_at,closed_at) values($1::date,$2,$3,$4,$5,$6::timestamptz,$7::timestamptz,case when $7::timestamptz >= ($1::date::timestamp at time zone 'UTC') + interval '1 day' then $8::timestamptz end) on conflict(usage_date,backend) do update set source_revision=excluded.source_revision,deployment_id=excluded.deployment_id,observation_segment=excluded.observation_segment,observation_started_at=case when compatibility_observation_daily.source_revision=excluded.source_revision and compatibility_observation_daily.deployment_id=excluded.deployment_id and compatibility_observation_daily.observation_segment=excluded.observation_segment and excluded.observation_started_at <= compatibility_observation_daily.observation_completed_at then least(compatibility_observation_daily.observation_started_at,excluded.observation_started_at) else excluded.observation_started_at end,observation_completed_at=case when compatibility_observation_daily.source_revision=excluded.source_revision and compatibility_observation_daily.deployment_id=excluded.deployment_id and compatibility_observation_daily.observation_segment=excluded.observation_segment and excluded.observation_started_at <= compatibility_observation_daily.observation_completed_at then greatest(compatibility_observation_daily.observation_completed_at,excluded.observation_completed_at) else excluded.observation_completed_at end,closed_at=case when excluded.observation_completed_at >= (excluded.usage_date::timestamp at time zone 'UTC') + interval '1 day' then $8::timestamptz end where compatibility_observation_daily.closed_at is null`, day.Format(time.DateOnly), backend, identity.SourceRevision, identity.DeploymentID, identity.SegmentID, startedAt, completedAt, closedAt); err != nil {
 			return err
 		}
 	}
@@ -562,7 +569,7 @@ func (s *PostgresStore) CompatibilityReport(ctx context.Context, input Compatibi
 		return CompatibilityReport{}, err
 	}
 	input.GeneratedAt = input.GeneratedAt.UTC()
-	items, err := compatibilityUsageRowsQuery(ctx, tx, utcDay(input.Start), utcDay(input.End))
+	items, err := compatibilityObservationRowsQuery(ctx, tx, utcDay(input.Start), utcDay(input.End))
 	if err != nil {
 		return CompatibilityReport{}, err
 	}
@@ -589,13 +596,45 @@ type compatibilityQueryer interface {
 }
 
 func compatibilityUsageRowsQuery(ctx context.Context, queryer compatibilityQueryer, start, end time.Time) ([]CompatibilityUsageDaily, error) {
-	query := `select usage_date::text,backend,attempts,first_attempt_at,last_attempt_at,source_revision,deployment_id,observation_started_at,observation_completed_at,observation_segment,closed_at from compatibility_usage_daily`
+	query := `select usage_date::text,backend,attempts,first_attempt_at,last_attempt_at from compatibility_usage_daily`
 	args := []any{}
 	if !start.IsZero() || !end.IsZero() {
 		query += ` where usage_date between $1::date and $2::date`
 		args = append(args, start.Format(time.DateOnly), end.Format(time.DateOnly))
 	}
 	query += ` order by usage_date,backend`
+	rows, err := queryer.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CompatibilityUsageDaily{}
+	for rows.Next() {
+		var item CompatibilityUsageDaily
+		var date string
+		var first, last sql.NullTime
+		if err := rows.Scan(&date, &item.Backend, &item.Attempts, &first, &last); err != nil {
+			return nil, err
+		}
+		item.Date, err = time.Parse(time.DateOnly, date)
+		if err != nil {
+			return nil, err
+		}
+		item.FirstAttemptAt = nullableTime(first)
+		item.LastAttemptAt = nullableTime(last)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func compatibilityObservationRowsQuery(ctx context.Context, queryer compatibilityQueryer, start, end time.Time) ([]CompatibilityUsageDaily, error) {
+	query := `select o.usage_date::text,o.backend,coalesce(u.attempts,0),u.first_attempt_at,u.last_attempt_at,o.source_revision,o.deployment_id,o.observation_started_at,o.observation_completed_at,o.observation_segment,o.closed_at from compatibility_observation_daily o left join compatibility_usage_daily u using(usage_date,backend)`
+	args := []any{}
+	if !start.IsZero() || !end.IsZero() {
+		query += ` where o.usage_date between $1::date and $2::date`
+		args = append(args, start.Format(time.DateOnly), end.Format(time.DateOnly))
+	}
+	query += ` order by o.usage_date,o.backend`
 	rows, err := queryer.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

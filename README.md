@@ -156,7 +156,7 @@ List runs with bounded cursor pagination using `GET /api/runs?limit=50&cursor=..
 
 Workflow-definition PUTs create immutable draft versions. Validate and publish the latest draft with `POST /api/workflow-definitions/{id}/activate`, inspect history at `GET .../{id}/versions`, and restore an earlier snapshot with `POST .../{id}/rollback` and `{"version": N}`; rollback creates a new active version rather than rewriting history. Generic HTTP steps are supported only when the definition opts in with `allow_http=true`, the target host matches `SWITCHYARD_HTTP_ALLOWED_HOSTS`, and HTTPS is used (`SWITCHYARD_HTTP_ALLOW_INSECURE=true` is intended only for controlled local testing). Redirects, methods, timeout, and response size are constrained. Compatibility feedback now requires `request_id`, a rating from `-1` to `1`, and an optional redacted comment, and is durably queryable from `/admin/feedback`.
 
-Every control-plane request except health checks requires authentication. Set `SWITCHYARD_CONTROL_API_TOKEN` to a long random bearer token; the CLI reads the same variable automatically. `SWITCHYARD_CONTROL_READ_TOKEN` optionally grants GET/HEAD-only access. Browser deployments may instead set `SWITCHYARD_REVERSE_PROXY_AUTH=true` after an authenticated proxy reliably supplies `X-Forwarded-User` or `Remote-User`; never enable that trust flag on an independently reachable listener. Cross-origin access is disabled by default and may be allowlisted with comma-separated `SWITCHYARD_CORS_ALLOWED_ORIGINS`. Set `SWITCHYARD_PUBLIC_URL` for operator metadata. `GET /api/operator-safety` reports the proxy assumption and warns when full Open Pilot autonomy is enabled without it.
+Every control-plane request except health checks requires authentication. Set `SWITCHYARD_CONTROL_API_TOKEN` to a long random bearer token; the CLI reads the same variable automatically. `SWITCHYARD_CONTROL_READ_TOKEN` optionally grants GET/HEAD-only access: on the control listener, every supported GET route also supports HEAD as its bodyless alias with the same authentication. Browser deployments may instead set `SWITCHYARD_REVERSE_PROXY_AUTH=true` after an authenticated proxy reliably supplies `X-Forwarded-User` or `Remote-User`; never enable that trust flag on an independently reachable listener. Cross-origin access is disabled by default and may be allowlisted with comma-separated `SWITCHYARD_CORS_ALLOWED_ORIGINS`. Set `SWITCHYARD_PUBLIC_URL` for operator metadata. `GET /api/operator-safety` reports the proxy assumption and warns when full Open Pilot autonomy is enabled without it.
 
 Phoenix / OTLP tracing is optional. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://10.0.0.200:6006`) plus optional `OTEL_EXPORTER_OTLP_HEADERS=x-project-name=switchyard` to export traces over OTLP/HTTP; leave the endpoint unset for no-op tracing.
 
@@ -249,10 +249,10 @@ Model inventory and pulls:
 
 ```bash
 # List installed Ollama models plus OpenCode provider/model metadata.
-switchyard models list --api-url http://127.0.0.1:28080
+switchyard models list --api-url http://127.0.0.1:18080
 
 # Pull Ollama models through Switchyard's configured OLLAMA_BASE_URL.
-switchyard models pull --models qwen3.5:latest,nomic-embed-text:v1.5 --api-url http://127.0.0.1:28080
+switchyard models pull --models qwen3.5:latest,nomic-embed-text:v1.5 --api-url http://127.0.0.1:18080
 
 # Refresh OpenCode model metadata when the opencode CLI is available locally.
 switchyard models refresh-opencode

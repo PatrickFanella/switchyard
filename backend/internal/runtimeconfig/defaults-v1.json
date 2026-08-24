@@ -1,8 +1,8 @@
 {
   "version": 1,
   "listeners": {
-    "control": {"runtime_env": "SWITCHYARD_LISTEN_ADDR", "bind_env": "SWITCHYARD_BIND_HOST", "port_env": "API_PORT", "target": 8080},
-    "model": {"runtime_env": "LLAMA_LINE_LISTEN_ADDR", "bind_env": "SWITCHYARD_MODEL_BIND_HOST", "port_env": "LLAMA_LINE_PORT", "target": 11434}
+    "control": {"runtime_env": "SWITCHYARD_LISTEN_ADDR", "bind_env": "SWITCHYARD_BIND_HOST", "port_env": "API_PORT", "published_default": 18080, "target": 8080},
+    "model": {"runtime_env": "LLAMA_LINE_LISTEN_ADDR", "bind_env": "SWITCHYARD_MODEL_BIND_HOST", "port_env": "LLAMA_LINE_PORT", "published_default": 11434, "target": 11434}
   },
   "defaults": {
     "SWITCHYARD_LISTEN_ADDR": {"runtime": ":8080", "compose": ":8080", "example": ":8080"},

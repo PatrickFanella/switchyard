@@ -70,6 +70,47 @@ def tracked_files(root: Path) -> set[str]:
         raise ContractError("capability evidence check returned invalid paths") from None
 
 
+def verified_archive_files(root: Path) -> set[str]:
+    marker = root / ".git_archival.txt"
+    match = re.fullmatch(r"node: ([0-9a-f]{40})\n?", read_text(marker, ".git_archival.txt"))
+    if match is None:
+        raise ContractError("source tree has neither repository metadata nor verified archive metadata")
+    files = set()
+    canonical_root = root.resolve()
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        try:
+            relative = candidate.resolve(strict=True).relative_to(canonical_root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            raise ContractError("verified archive contains an escaping file") from None
+        files.add(relative)
+    return files
+
+
+def source_files(root: Path) -> tuple[set[str], bool]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        result = None
+    if result is not None and result.returncode == 0:
+        try:
+            if Path(result.stdout.strip()).resolve() != root.resolve():
+                raise ContractError("documentation root is not the Git repository root")
+        except (OSError, RuntimeError):
+            raise ContractError("capability evidence check could not identify the repository root") from None
+        return tracked_files(root), True
+    if (root / ".git").exists():
+        raise ContractError("capability evidence check could not read repository metadata")
+    return verified_archive_files(root), False
+
+
 def dotenv(path: Path) -> dict[str, str]:
     values = {}
     for line in read_text(path, ".env.example").splitlines():
@@ -82,6 +123,11 @@ def dotenv(path: Path) -> dict[str, str]:
 
 def validate_capabilities(root: Path) -> None:
     label = "docs/capabilities-v1.json"
+    files, git_context = source_files(root)
+    if label not in files:
+        if not git_context:
+            raise ContractError(f"{label}: capability contract is missing from the verified archive")
+        raise ContractError(f"{label}: capability contract must be tracked by git")
     contract = read_json(root / label, label)
     if contract.get("version") != 1:
         raise ContractError("docs/capabilities-v1.json: unsupported version")
@@ -100,7 +146,6 @@ def validate_capabilities(root: Path) -> None:
     capabilities = contract.get("capabilities", [])
     if not isinstance(capabilities, list):
         raise ContractError(f"{label}: capabilities must be an array")
-    tracked = tracked_files(root)
     for capability in capabilities:
         if not isinstance(capability, dict):
             raise ContractError(f"{label}: each capability must be an object")
@@ -128,7 +173,9 @@ def validate_capabilities(root: Path) -> None:
             candidate = contained_path(root, evidence, f"{label}: {name}: evidence")
             if not candidate.is_file():
                 raise ContractError(f"{label}: {name}: evidence must name a file")
-            if evidence not in tracked:
+            if evidence not in files:
+                if not git_context:
+                    raise ContractError(f"{label}: {name}: evidence is missing from the verified archive")
                 raise ContractError(f"{label}: {name}: evidence must be tracked by git")
         expected[name] = state
     if rows != expected:
@@ -157,6 +204,9 @@ def validate_release_pointer(root: Path) -> None:
 
 
 def tracked_markdown(root: Path) -> list[Path]:
+    _, git_context = source_files(root)
+    if not git_context:
+        return [root / path for path in sorted(verified_archive_files(root)) if Path(path).suffix.lower() == ".md"]
     result = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.md"],
         cwd=root,
@@ -316,9 +366,12 @@ def validate_defaults(root: Path, compose: dict | None = None) -> None:
         try:
             bind = example.get(values["bind_env"])
             published = example.get(values["port_env"])
+            published_default = str(values["published_default"])
             match = next((port for port in ports if port.get("target") == values["target"]), None)
         except (KeyError, TypeError):
             raise ContractError("runtime defaults contract: malformed listener entry") from None
+        if published != published_default:
+            raise ContractError(f".env.example: {listener} listener default port mismatch")
         if match is None or match.get("host_ip") != bind or str(match.get("published")) != published:
             raise ContractError(f"docker-compose.yml: rendered {listener} listener bind/port mismatch")
     try:

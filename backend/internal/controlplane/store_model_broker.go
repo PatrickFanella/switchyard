@@ -263,6 +263,15 @@ func mergeModelCorrelationIDs(base, updates map[string]string) map[string]string
 			}
 		}
 	}
+	if base["audit_drop_action"] != "" {
+		for _, key := range []string{"audit_drop_action", "audit_drop_actor", "audit_drop_reason"} {
+			if value, ok := base[key]; ok {
+				merged[key] = value
+			} else {
+				delete(merged, key)
+			}
+		}
+	}
 	return merged
 }
 

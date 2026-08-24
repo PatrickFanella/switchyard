@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1057,6 +1058,69 @@ func TestAPILlamaLineCompatStreamingUsesNativeSSEChunksAndStatusEvents(t *testin
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream body missing %q: %s", want, body)
 		}
+	}
+}
+
+type cancellationStreamGenerator struct {
+	started chan struct{}
+}
+
+func (g *cancellationStreamGenerator) Generate(context.Context, controlplane.ModelRequest) (controlplane.ModelResponse, error) {
+	return controlplane.ModelResponse{}, errors.New("unexpected buffered generation")
+}
+
+func (g *cancellationStreamGenerator) Stream(ctx context.Context, request controlplane.ModelRequest, emit func(controlplane.ModelStreamEvent) error) (controlplane.ModelResponse, error) {
+	if err := request.PreAttempt(controlplane.BackendDecision{Backend: "test"}); err != nil {
+		return controlplane.ModelResponse{}, err
+	}
+	if err := emit(controlplane.ModelStreamEvent{Type: "content", Content: "before cancel"}); err != nil {
+		return controlplane.ModelResponse{}, err
+	}
+	close(g.started)
+	<-ctx.Done()
+	return controlplane.ModelResponse{}, ctx.Err()
+}
+
+func TestAPILlamaLineCompatStreamingCancellationUsesCanceledEnvelope(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	generator := &cancellationStreamGenerator{started: make(chan struct{})}
+	service := controlplane.NewModelService(store, generator, controlplane.ModelServiceOptions{DisableStart: true})
+	t.Cleanup(func() { _ = service.Close(context.Background()) })
+	api := controlplane.NewAPIWithModelService(store, controlplane.NewRunner(store), service)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewBufferString(`{"model":"test","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "compat-stream-cancel")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	select {
+	case <-generator.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not start")
+	}
+	if _, err := service.Cancel(t.Context(), "compat-stream-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	body := mustReadBody(t, resp.Body)
+	for _, want := range []string{`"status":"canceled"`, `"error":"request canceled"`, "data: [DONE]"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, context.Canceled.Error()) {
+		t.Fatalf("stream exposed raw cancellation error: %s", body)
+	}
+	stored, err := service.Get(t.Context(), "compat-stream-cancel")
+	if err != nil || stored.Status != controlplane.ModelBrokerRequestCanceled {
+		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 }
 

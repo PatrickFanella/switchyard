@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "retirement-prior-references-v1.schema.json",
+  "title": "Switchyard prior retirement qualification artifact references v1",
+  "type": "array",
+  "minItems": 2,
+  "maxItems": 2,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["run_id", "artifact_id"],
+    "properties": {
+      "run_id": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+      "artifact_id": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+    }
+  }
+}

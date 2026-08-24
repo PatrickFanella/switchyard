@@ -243,24 +243,27 @@ type ArtifactDailyBucket struct {
 }
 
 type ArtifactReport struct {
-	WindowStart                    time.Time             `json:"window_start"`
-	WindowEnd                      time.Time             `json:"window_end"`
-	Bucket                         string                `json:"bucket"`
-	ObservationStartedAt           time.Time             `json:"observation_started_at"`
-	Retained                       int64                 `json:"retained"`
-	RetainedBytes                  int64                 `json:"retained_bytes"`
-	RetainedBytesUnmeasured        int64                 `json:"retained_bytes_unmeasured"`
-	CreatedTotal                   int64                 `json:"created_total"`
-	CreatedBytesTotal              int64                 `json:"created_bytes_total"`
-	PrunedTotal                    int64                 `json:"pruned_total"`
-	PrunedBytesTotal               int64                 `json:"pruned_bytes_total"`
-	PrunedBytesUnmeasuredTotal     int64                 `json:"pruned_bytes_unmeasured_total"`
-	DeclaredRetentionMissing       int64                 `json:"declared_retention_missing"`
-	DeclaredRetentionExpired       int64                 `json:"declared_retention_expired"`
-	DeclaredExpiredBytes           int64                 `json:"declared_retention_expired_bytes"`
-	DeclaredExpiredBytesUnmeasured int64                 `json:"declared_retention_expired_bytes_unmeasured"`
-	RetentionSemantics             string                `json:"retention_semantics"`
-	Buckets                        []ArtifactDailyBucket `json:"buckets"`
+	WindowStart                             time.Time             `json:"window_start"`
+	WindowEnd                               time.Time             `json:"window_end"`
+	Bucket                                  string                `json:"bucket"`
+	ObservationStartedAt                    time.Time             `json:"observation_started_at"`
+	ObservationRetainedFloor                int64                 `json:"observation_retained_floor"`
+	ObservationRetainedFloorBytes           int64                 `json:"observation_retained_floor_bytes"`
+	ObservationRetainedFloorBytesUnmeasured int64                 `json:"observation_retained_floor_bytes_unmeasured"`
+	Retained                                int64                 `json:"retained"`
+	RetainedBytes                           int64                 `json:"retained_bytes"`
+	RetainedBytesUnmeasured                 int64                 `json:"retained_bytes_unmeasured"`
+	CreatedTotal                            int64                 `json:"created_total"`
+	CreatedBytesTotal                       int64                 `json:"created_bytes_total"`
+	PrunedTotal                             int64                 `json:"pruned_total"`
+	PrunedBytesTotal                        int64                 `json:"pruned_bytes_total"`
+	PrunedBytesUnmeasuredTotal              int64                 `json:"pruned_bytes_unmeasured_total"`
+	DeclaredRetentionMissing                int64                 `json:"declared_retention_missing"`
+	DeclaredRetentionExpired                int64                 `json:"declared_retention_expired"`
+	DeclaredExpiredBytes                    int64                 `json:"declared_retention_expired_bytes"`
+	DeclaredExpiredBytesUnmeasured          int64                 `json:"declared_retention_expired_bytes_unmeasured"`
+	RetentionSemantics                      string                `json:"retention_semantics"`
+	Buckets                                 []ArtifactDailyBucket `json:"buckets"`
 }
 
 type RuntimeMetrics struct {

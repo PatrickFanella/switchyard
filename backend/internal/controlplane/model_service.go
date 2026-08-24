@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -13,11 +14,12 @@ import (
 )
 
 type ModelServiceOptions struct {
-	QueueDepth       int
-	Workers          int
-	StaleAfter       time.Duration
-	RecoveryInterval time.Duration
-	DisableStart     bool
+	QueueDepth             int
+	Workers                int
+	StaleAfter             time.Duration
+	RecoveryInterval       time.Duration
+	SingletonCheckInterval time.Duration
+	DisableStart           bool
 }
 
 // ModelService owns durable admission and request execution. EnvModelBroker
@@ -31,12 +33,24 @@ type ModelService struct {
 	recoveryInterval time.Duration
 	ctx              context.Context
 	cancel           context.CancelFunc
+	fenceCtx         context.Context
+	fenceCancel      context.CancelFunc
 	notify           chan struct{}
 	mu               sync.Mutex
+	operationMu      sync.Mutex
+	operations       int
+	operationsDone   chan struct{}
 	active           map[string]*modelRequestGate
+	poisonState      atomic.Pointer[modelServicePoison]
+	failure          chan error
 	wg               sync.WaitGroup
 	stopOnce         sync.Once
+	startupErr       error
+	singleton        modelServiceSingleton
+	releaseOnce      sync.Once
 }
+
+type modelServicePoison struct{ err error }
 
 type modelRequestGate struct {
 	transitionMu sync.Mutex
@@ -50,6 +64,13 @@ const (
 )
 
 var ErrModelOutputBusy = errors.New("model output write already in progress")
+
+const (
+	modelServiceSingletonMaxCheckInterval = 250 * time.Millisecond
+	modelServiceSingletonHealthTimeout    = 500 * time.Millisecond
+	modelServiceSingletonTakeoverGrace    = time.Second
+	modelServiceFenceDrainTimeout         = time.Second
+)
 
 type ModelQueueStatus struct {
 	Queued          int      `json:"queued"`
@@ -88,8 +109,35 @@ func NewModelService(store Store, generator ModelBroker, options ModelServiceOpt
 			options.RecoveryInterval = time.Second
 		}
 	}
+	if options.SingletonCheckInterval <= 0 {
+		options.SingletonCheckInterval = modelServiceSingletonMaxCheckInterval
+	} else if options.SingletonCheckInterval > modelServiceSingletonMaxCheckInterval {
+		options.SingletonCheckInterval = modelServiceSingletonMaxCheckInterval
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &ModelService{store: store, generator: generator, queueDepth: options.QueueDepth, workers: options.Workers, staleAfter: options.StaleAfter, recoveryInterval: options.RecoveryInterval, ctx: ctx, cancel: cancel, notify: make(chan struct{}, options.Workers), active: map[string]*modelRequestGate{}}
+	fenceCtx, fenceCancel := context.WithCancel(context.Background())
+	s := &ModelService{store: store, generator: generator, queueDepth: options.QueueDepth, workers: options.Workers, staleAfter: options.StaleAfter, recoveryInterval: options.RecoveryInterval, ctx: ctx, cancel: cancel, fenceCtx: fenceCtx, fenceCancel: fenceCancel, notify: make(chan struct{}, options.Workers), active: map[string]*modelRequestGate{}, failure: make(chan error, 1)}
+	if postgres, ok := store.(*PostgresStore); ok {
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.singleton, s.startupErr = postgres.acquireModelServiceSingleton(lockCtx)
+		lockCancel()
+		if s.startupErr != nil {
+			s.cancel()
+			return s
+		}
+		s.startSingletonWatchdog(options.SingletonCheckInterval)
+		timer := time.NewTimer(modelServiceSingletonTakeoverGrace)
+		select {
+		case <-timer.C:
+		case <-s.ctx.Done():
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
 	if !options.DisableStart {
 		s.recover()
 		for range s.workers {
@@ -104,18 +152,94 @@ func NewModelService(store Store, generator ModelBroker, options ModelServiceOpt
 }
 
 func (s *ModelService) Generate(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer releaseOperation()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	request, release, err := s.arbitrateDispatch(ctx, request)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer release()
 	return s.generator.Generate(ctx, request)
 }
 
 func (s *ModelService) Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer releaseOperation()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	request, release, err := s.arbitrateDispatch(ctx, request)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer release()
 	if streamer, ok := s.generator.(ModelStreamer); ok {
 		return streamer.Stream(ctx, request, emit)
 	}
-	response, err := s.Generate(ctx, request)
+	response, err := s.generator.Generate(ctx, request)
 	if err == nil {
 		err = emit(ModelStreamEvent{Type: "content", Content: response.Content, Done: true, CorrelationIDs: response.CorrelationIDs})
 	}
 	return response, err
+}
+
+func (s *ModelService) arbitrateDispatch(ctx context.Context, request ModelRequest) (ModelRequest, func(), error) {
+	if err := s.serviceError(); err != nil {
+		return ModelRequest{}, func() {}, err
+	}
+	gate := s.requestGate(request.RequestID)
+	if gate == nil {
+		request.PreAttempt = s.fencedPreAttempt(request.PreAttempt)
+		return request, func() {}, nil
+	}
+	current, err := s.store.WithContext(ctx).ModelBrokerRequest(request.RequestID)
+	if err != nil || current.Status != ModelBrokerRequestRunning {
+		if err != nil {
+			return ModelRequest{}, func() {}, err
+		}
+		return ModelRequest{}, func() {}, context.Canceled
+	}
+	if request.PreAttempt == nil {
+		return ModelRequest{}, func() {}, errors.New("active model dispatch requires pre-attempt arbitration")
+	}
+	preAttempt := request.PreAttempt
+	request.PreAttempt = func(decision BackendDecision) error {
+		gate.transitionMu.Lock()
+		defer gate.transitionMu.Unlock()
+		if err := s.serviceError(); err != nil {
+			return err
+		}
+		current, err := s.store.WithContext(ctx).ModelBrokerRequest(request.RequestID)
+		if err != nil {
+			return err
+		}
+		if current.Status != ModelBrokerRequestRunning {
+			return context.Canceled
+		}
+		return preAttempt(decision)
+	}
+	return request, func() {}, nil
+}
+
+func (s *ModelService) fencedPreAttempt(preAttempt func(BackendDecision) error) func(BackendDecision) error {
+	return func(decision BackendDecision) error {
+		if err := s.serviceError(); err != nil {
+			return err
+		}
+		if preAttempt != nil {
+			return preAttempt(decision)
+		}
+		return nil
+	}
 }
 
 func (s *ModelService) StreamingMode(model string) string {
@@ -141,6 +265,13 @@ func (s *ModelService) Get(ctx context.Context, id string) (ModelBrokerRequest, 
 }
 
 func (s *ModelService) Admit(ctx context.Context, input CreateModelBrokerRequestInput) (ModelBrokerRequest, bool, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelBrokerRequest{}, false, err
+	}
+	defer releaseOperation()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	req, admitted, err := s.store.WithContext(ctx).AdmitModelBrokerRequest(input, s.queueDepth)
 	if admitted {
 		s.signal()
@@ -149,20 +280,66 @@ func (s *ModelService) Admit(ctx context.Context, input CreateModelBrokerRequest
 }
 
 func (s *ModelService) Begin(ctx context.Context, input CreateModelBrokerRequestInput) (ModelBrokerRequest, context.Context, error) {
-	store := s.store.WithContext(ctx)
-	req, admitted, err := store.BeginModelBrokerRequest(input)
+	releaseOperation, err := s.beginOperation()
 	if err != nil {
 		return ModelBrokerRequest{}, nil, err
 	}
-	if !admitted {
+	defer releaseOperation()
+	storeCtx, storeCancel := s.operationContext(ctx)
+	defer storeCancel()
+	requestCtx, cancel := context.WithCancel(ctx)
+	gate := &modelRequestGate{cancel: cancel}
+	gate.transitionMu.Lock()
+	if !s.registerActive(input.ID, gate) {
+		gate.transitionMu.Unlock()
+		cancel()
+		if err := s.serviceError(); err != nil {
+			return ModelBrokerRequest{}, nil, err
+		}
+		req, err := s.store.WithContext(ctx).ModelBrokerRequest(input.ID)
+		if err != nil {
+			return ModelBrokerRequest{}, nil, err
+		}
 		return req, nil, ErrConflict
 	}
-	requestCtx, cancel := context.WithCancel(ctx)
-	s.setActive(req.ID, cancel)
+	defer gate.transitionMu.Unlock()
+	if err := s.serviceError(); err != nil {
+		s.clearActive(input.ID)
+		cancel()
+		return ModelBrokerRequest{}, nil, err
+	}
+	store := s.store.WithContext(storeCtx)
+	req, admitted, err := store.BeginModelBrokerRequest(input)
+	if err != nil {
+		s.clearActive(input.ID)
+		cancel()
+		return ModelBrokerRequest{}, nil, err
+	}
+	if !admitted {
+		s.clearActive(input.ID)
+		cancel()
+		return req, nil, ErrConflict
+	}
+	req, err = store.ModelBrokerRequest(req.ID)
+	if err != nil || req.Status != ModelBrokerRequestRunning {
+		s.clearActive(req.ID)
+		cancel()
+		if err != nil {
+			return ModelBrokerRequest{}, nil, err
+		}
+		return req, nil, ErrConflict
+	}
 	return req, requestCtx, nil
 }
 
 func (s *ModelService) Finish(ctx context.Context, id, status, responseBody, errorText string, correlation map[string]string) (ModelBrokerRequest, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	defer releaseOperation()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	defer s.clearActive(id)
 	gate := s.requestGate(id)
 	if gate != nil {
@@ -199,6 +376,13 @@ func (s *ModelService) Cancel(ctx context.Context, id string) (ModelBrokerReques
 }
 
 func (s *ModelService) CancelWithEvidence(ctx context.Context, id string, evidence ModelBrokerMutationEvidence) (ModelBrokerRequest, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	defer releaseOperation()
+	ctx, cancelOperation := s.operationContext(ctx)
+	defer cancelOperation()
 	gate := s.requestGate(id)
 	if gate != nil {
 		gate.transitionMu.Lock()
@@ -247,6 +431,13 @@ func (s *ModelService) Drop(ctx context.Context, id, reason string) (ModelBroker
 }
 
 func (s *ModelService) DropWithEvidence(ctx context.Context, id string, evidence ModelBrokerMutationEvidence) (ModelBrokerRequest, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	defer releaseOperation()
+	ctx, cancelOperation := s.operationContext(ctx)
+	defer cancelOperation()
 	gate := s.requestGate(id)
 	if gate != nil {
 		gate.transitionMu.Lock()
@@ -258,10 +449,20 @@ func (s *ModelService) DropWithEvidence(ctx context.Context, id string, evidence
 			return ModelBrokerRequest{}, err
 		}
 		req, err := store.ModelBrokerRequest(id)
-		if err != nil || isTerminalModelBrokerRequest(req.Status) {
+		if err != nil {
 			return req, err
 		}
-		req, err = store.TransitionModelBrokerRequest(id, TransitionModelBrokerRequestInput{ExpectedStatus: req.Status, Status: ModelBrokerRequestDropped, Error: boundedAuditValue(evidence.Reason), CorrelationIDs: mutationEvidence("drop", evidence)})
+		if isTerminalModelBrokerRequest(req.Status) {
+			if req.Status == ModelBrokerRequestCanceled {
+				return store.MergeModelBrokerRequestCorrelationIDs(id, dropAfterCancelEvidence(evidence))
+			}
+			return req, nil
+		}
+		correlation := mutationEvidence("drop", evidence)
+		if req.CorrelationIDs["audit_action"] == "cancel" || req.CorrelationIDs["audit_action"] == "cancel_all" {
+			correlation = mergeStringMaps(correlation, dropAfterCancelEvidence(evidence))
+		}
+		req, err = store.TransitionModelBrokerRequest(id, TransitionModelBrokerRequestInput{ExpectedStatus: req.Status, Status: ModelBrokerRequestDropped, Error: boundedAuditValue(evidence.Reason), CorrelationIDs: correlation})
 		if errors.Is(err, ErrConflict) {
 			continue
 		}
@@ -283,6 +484,13 @@ func (s *ModelService) CancelAll(ctx context.Context) ([]ModelBrokerRequest, err
 }
 
 func (s *ModelService) CancelAllWithEvidence(ctx context.Context, evidence ModelBrokerMutationEvidence) ([]ModelBrokerRequest, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseOperation()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	gates := s.activeGates()
 	for _, gate := range gates {
 		gate.transitionMu.Lock()
@@ -309,6 +517,13 @@ func (s *ModelService) CancelAllWithEvidence(ctx context.Context, evidence Model
 }
 
 func (s *ModelService) QueueStatus(ctx context.Context) (ModelQueueStatus, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelQueueStatus{}, err
+	}
+	defer releaseOperation()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	snapshot, err := s.store.WithContext(ctx).ModelBrokerQueueSnapshot(min(s.queueDepth, 100))
 	return ModelQueueStatus{Queued: snapshot.Queued, Running: snapshot.Running, CancelRequested: snapshot.CancelRequested, MaxDepth: s.queueDepth, InFlightIDs: snapshot.InFlightIDs}, err
 }
@@ -325,12 +540,19 @@ func (s *ModelService) Stop() {
 }
 
 func (s *ModelService) Wait(ctx context.Context) error {
-	shutdownErr := s.shutdownRequests(ctx)
+	if s.startupErr != nil {
+		return s.startupErr
+	}
+	var shutdownErr error
+	if s.poisonedError() == nil {
+		shutdownErr = s.shutdownRequests(ctx)
+	}
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
-		return shutdownErr
+		s.fenceCancel()
+		return errors.Join(shutdownErr, s.releaseSingleton(ctx))
 	case <-ctx.Done():
 		return errors.Join(shutdownErr, ctx.Err())
 	}
@@ -389,6 +611,9 @@ func (s *ModelService) worker() {
 				break
 			}
 			if s.ctx.Err() != nil {
+				if s.poisonedError() != nil {
+					return
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = s.terminalizeCanceled(ctx, row.ID, "model service stopped before dispatch")
 				cancel()
@@ -401,6 +626,9 @@ func (s *ModelService) worker() {
 
 func (s *ModelService) run(row ModelBrokerRequest) {
 	if s.ctx.Err() != nil {
+		if s.poisonedError() != nil {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = s.terminalizeCanceled(ctx, row.ID, "model service stopped before dispatch")
 		cancel()
@@ -412,14 +640,14 @@ func (s *ModelService) run(row ModelBrokerRequest) {
 		return
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
-	s.setActive(row.ID, cancel)
-	defer cancel()
-	defer s.clearActive(row.ID)
-	current, err := s.store.ModelBrokerRequest(row.ID)
-	if err != nil || current.Status != ModelBrokerRequestRunning {
+	gate := &modelRequestGate{cancel: cancel}
+	if !s.registerActive(row.ID, gate) {
+		cancel()
 		return
 	}
-	response, err := s.generator.Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: row.ID, PreAttempt: func(decision BackendDecision) error {
+	defer cancel()
+	defer s.clearActive(row.ID)
+	response, err := s.Generate(ctx, ModelRequest{Model: model, Messages: messages, RequestID: row.ID, PreAttempt: func(decision BackendDecision) error {
 		_, mergeErr := s.store.MergeModelBrokerRequestCorrelationIDs(row.ID, decision.CorrelationIDs())
 		return mergeErr
 	}})
@@ -443,6 +671,9 @@ func (s *ModelService) run(row ModelBrokerRequest) {
 func (s *ModelService) terminalizeCanceled(ctx context.Context, id, errorText string) error {
 	store := s.store.WithContext(ctx)
 	for {
+		if err := s.serviceError(); err != nil {
+			return err
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -473,7 +704,13 @@ func (s *ModelService) terminalizeCanceled(ctx context.Context, id, errorText st
 }
 
 func (s *ModelService) recover() {
+	if s.serviceError() != nil {
+		return
+	}
 	s.recoverStatuses([]string{ModelBrokerRequestRunning, ModelBrokerRequestCancelRequested}, func(req ModelBrokerRequest) {
+		if s.serviceError() != nil {
+			return
+		}
 		if s.requestGate(req.ID) != nil {
 			return
 		}
@@ -488,6 +725,9 @@ func (s *ModelService) recover() {
 		_, _ = s.store.TransitionModelBrokerRequest(req.ID, TransitionModelBrokerRequestInput{ExpectedStatus: req.Status, Status: status, Error: errorText, CorrelationIDs: req.CorrelationIDs})
 	})
 	s.recoverStatuses([]string{ModelBrokerRequestQueued}, func(req ModelBrokerRequest) {
+		if s.serviceError() != nil {
+			return
+		}
 		if _, _, ok := decodeModelBrokerRequestPayload(req); !ok {
 			_, _ = s.store.TransitionModelBrokerRequest(req.ID, TransitionModelBrokerRequestInput{ExpectedStatus: req.Status, Status: ModelBrokerRequestDropped, Error: "invalid recovered request payload"})
 		}
@@ -527,10 +767,160 @@ func (s *ModelService) recoveryLoop() {
 	}
 }
 
-func (s *ModelService) setActive(id string, cancel context.CancelFunc) {
+func (s *ModelService) registerActive(id string, gate *modelRequestGate) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.active[id] = &modelRequestGate{cancel: cancel}
+	if s.poisonedError() != nil || s.active[id] != nil {
+		return false
+	}
+	s.active[id] = gate
+	return true
+}
+
+func (s *ModelService) StartupError() error { return s.startupErr }
+
+func (s *ModelService) Failure() <-chan error { return s.failure }
+
+func (s *ModelService) HealthError(ctx context.Context) error {
+	if err := s.serviceError(); err != nil {
+		return err
+	}
+	if s.singleton != nil {
+		if err := s.singleton.HealthError(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return s.poison(err)
+		}
+	}
+	return nil
+}
+
+func (s *ModelService) serviceError() error {
+	if s.startupErr != nil {
+		return s.startupErr
+	}
+	return s.poisonedError()
+}
+
+func (s *ModelService) poisonedError() error {
+	if poison := s.poisonState.Load(); poison != nil {
+		return poison.err
+	}
+	return nil
+}
+
+func (s *ModelService) poison(cause error) error {
+	candidate := &modelServicePoison{err: fmt.Errorf("%w: %v", ErrModelServiceFenced, cause)}
+	s.operationMu.Lock()
+	if !s.poisonState.CompareAndSwap(nil, candidate) {
+		err := s.poisonState.Load().err
+		s.operationMu.Unlock()
+		return err
+	}
+	done := s.operationsDone
+	s.operationMu.Unlock()
+
+	s.mu.Lock()
+	gates := make([]*modelRequestGate, 0, len(s.active))
+	for _, gate := range s.active {
+		gates = append(gates, gate)
+	}
+	s.mu.Unlock()
+	for _, gate := range gates {
+		gate.closeOutput()
+		gate.cancel()
+	}
+	s.cancel()
+	s.fenceCancel()
+	if s.singleton != nil {
+		s.releaseOnce.Do(func() { _ = s.singleton.Invalidate() })
+	}
+	select {
+	case s.failure <- candidate.err:
+	default:
+	}
+	if done != nil {
+		timer := time.NewTimer(modelServiceFenceDrainTimeout)
+		select {
+		case <-done:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
+		}
+	}
+	return candidate.err
+}
+
+func (s *ModelService) beginOperation() (func(), error) {
+	s.operationMu.Lock()
+	if err := s.serviceError(); err != nil {
+		s.operationMu.Unlock()
+		return func() {}, err
+	}
+	if s.operations == 0 {
+		s.operationsDone = make(chan struct{})
+	}
+	s.operations++
+	s.operationMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.operationMu.Lock()
+			s.operations--
+			if s.operations == 0 {
+				close(s.operationsDone)
+				s.operationsDone = nil
+			}
+			s.operationMu.Unlock()
+		})
+	}, nil
+}
+
+func (s *ModelService) operationContext(ctx context.Context) (context.Context, func()) {
+	operationCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.fenceCtx, cancel)
+	return operationCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (s *ModelService) startSingletonWatchdog(interval time.Duration) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				checkCtx, cancel := context.WithTimeout(s.ctx, modelServiceSingletonHealthTimeout)
+				err := s.singleton.HealthError(checkCtx)
+				cancel()
+				if err != nil && s.ctx.Err() == nil {
+					s.poison(err)
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (s *ModelService) releaseSingleton(ctx context.Context) error {
+	var releaseErr error
+	s.releaseOnce.Do(func() {
+		if s.singleton != nil {
+			releaseErr = s.singleton.Close(ctx)
+		}
+	})
+	return releaseErr
 }
 
 func (s *ModelService) clearActive(id string) {
@@ -570,6 +960,13 @@ func (s *ModelService) activeGates() []*modelRequestGate {
 }
 
 func (s *ModelService) Emit(ctx context.Context, id string, event ModelStreamEvent, emit func(ModelStreamEvent) error) error {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return err
+	}
+	defer releaseOperation()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	gate := s.requestGate(id)
 	if gate == nil {
 		return context.Canceled
@@ -609,6 +1006,13 @@ func (g *modelRequestGate) closeOutput() {
 }
 
 func (s *ModelService) MergeCorrelation(ctx context.Context, id string, correlation map[string]string) (ModelBrokerRequest, error) {
+	releaseOperation, err := s.beginOperation()
+	if err != nil {
+		return ModelBrokerRequest{}, err
+	}
+	defer releaseOperation()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	return s.store.WithContext(ctx).MergeModelBrokerRequestCorrelationIDs(id, correlation)
 }
 
@@ -630,4 +1034,8 @@ func boundedAuditValue(value string) string {
 
 func mutationEvidence(action string, evidence ModelBrokerMutationEvidence) map[string]string {
 	return map[string]string{"audit_action": action, "audit_actor": boundedAuditValue(evidence.Actor), "audit_reason": boundedAuditValue(evidence.Reason)}
+}
+
+func dropAfterCancelEvidence(evidence ModelBrokerMutationEvidence) map[string]string {
+	return map[string]string{"audit_drop_action": "drop", "audit_drop_actor": boundedAuditValue(evidence.Actor), "audit_drop_reason": boundedAuditValue(evidence.Reason)}
 }

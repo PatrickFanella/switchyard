@@ -1,0 +1,128 @@
+name: switchyard-retirement-release-qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact annotated deployed release tag
+        required: true
+        type: string
+      candidate_run_id:
+        description: Gitea run ID containing the durable two-file candidate record
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Gitea artifact ID for that candidate record
+        required: true
+        type: string
+      deployed_at:
+        description: Proven production deployment time (RFC 3339 UTC)
+        required: true
+        type: string
+      deployment_host:
+        description: Exact compatibility report source_identity for this production deployment
+        required: true
+        type: string
+      production_smoke_completed_at:
+        description: Historical deployment smoke completion time (RFC 3339 UTC)
+        required: true
+        type: string
+      production_smoke_proof:
+        description: Durable credential-free proof URL for the deployment smoke
+        required: true
+        type: string
+      restore_evidence_basename:
+        description: Scheduled production restore evidence JSON basename
+        required: true
+        type: string
+
+concurrency:
+  group: retirement-release-qualification-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: switchyard-production
+    timeout-minutes: 30
+    env:
+      GITEA_TOKEN: ${{ gitea.token }}
+      SWITCHYARD_CONTROL_READ_TOKEN: ${{ secrets.SWITCHYARD_CONTROL_READ_TOKEN }}
+      SWITCHYARD_CONTROL_URL: ${{ secrets.SWITCHYARD_CONTROL_URL }}
+      SWITCHYARD_PRODUCTION_ENV_FILE: ${{ secrets.SWITCHYARD_PRODUCTION_ENV_FILE }}
+      SWITCHYARD_RESTORE_DRILL_EVIDENCE_DIR: ${{ secrets.SWITCHYARD_RESTORE_DRILL_EVIDENCE_DIR }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+      - name: Prove exact deployed checkout
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$(git rev-parse HEAD)"
+          test -n "$SWITCHYARD_PRODUCTION_ENV_FILE"
+          test -r "$SWITCHYARD_PRODUCTION_ENV_FILE"
+          test -n "$SWITCHYARD_RESTORE_DRILL_EVIDENCE_DIR"
+          test -d "$SWITCHYARD_RESTORE_DRILL_EVIDENCE_DIR"
+      - name: Re-prove the live production contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$SWITCHYARD_PRODUCTION_ENV_FILE"
+          set +a
+          make production-smoke
+      - name: Produce and validate exact retirement bundle
+        shell: bash
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DEPLOYED_AT: ${{ inputs.deployed_at }}
+          DEPLOYMENT_HOST: ${{ inputs.deployment_host }}
+          PRODUCTION_SMOKE_COMPLETED_AT: ${{ inputs.production_smoke_completed_at }}
+          PRODUCTION_SMOKE_PROOF: ${{ inputs.production_smoke_proof }}
+          RESTORE_EVIDENCE_BASENAME: ${{ inputs.restore_evidence_basename }}
+        run: |
+          set -euo pipefail
+          python3 scripts/produce_retirement_qualification.py \
+            --gitea-api-url "${{ gitea.api_url }}" \
+            --repository "${{ gitea.repository }}" \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --candidate-artifact-id "$CANDIDATE_ARTIFACT_ID" \
+            --checkout-sha "$(git rev-parse HEAD)" \
+            --release-tag "$RELEASE_TAG" \
+            --deployed-at "$DEPLOYED_AT" \
+            --deployment-host "$DEPLOYMENT_HOST" \
+            --production-smoke-completed-at "$PRODUCTION_SMOKE_COMPLETED_AT" \
+            --production-smoke-proof "$PRODUCTION_SMOKE_PROOF" \
+            --restore-evidence-dir "$SWITCHYARD_RESTORE_DRILL_EVIDENCE_DIR" \
+            --restore-evidence-basename "$RESTORE_EVIDENCE_BASENAME" \
+            --control-url "$SWITCHYARD_CONTROL_URL" \
+            --output retirement-qualification
+          test "$(find retirement-qualification -maxdepth 1 -type f | wc -l)" -eq 4
+      - name: Upload durable retirement qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: retirement-release-qualification-${{ inputs.release_tag }}
+          path: |
+            retirement-qualification/retirement-release-qualification.json
+            retirement-qualification/deployed-evidence.json
+            retirement-qualification/manifest.json
+            retirement-qualification/compatibility-retirement-report.json
+          if-no-files-found: error
+          retention-days: 400
+      - name: Upload exact compatibility report reference artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compatibility-retirement-report
+          path: retirement-qualification/compatibility-retirement-report.json
+          if-no-files-found: error
+          retention-days: 400

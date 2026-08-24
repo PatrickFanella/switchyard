@@ -114,6 +114,9 @@ func run() error {
 		slog.Warn("operator safety", "warning", controlplane.RedactForLog(warning))
 	}
 	modelService := controlplane.NewModelService(store, controlplane.NewEnvModelBroker(), controlplane.ModelServiceOptions{})
+	if err := modelService.StartupError(); err != nil {
+		return fmt.Errorf("start model service: %w", err)
+	}
 	runner := controlplane.NewRunner(store, controlplane.NewEnvWorkflowExecutorsWithModel(modelService, store))
 	api := controlplane.NewAPIWithModelService(store, runner, modelService)
 	api.SetCompatibilityObserver(compatibilityObserver)
@@ -258,6 +261,11 @@ func run() error {
 	}
 
 	select {
+	case err := <-modelService.Failure():
+		stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return errors.Join(err, shutdownServers(shutdownCtx), shutdownRuntime())
 	case err := <-errCh:
 		stop()
 		if err == nil || errors.Is(err, http.ErrServerClosed) {

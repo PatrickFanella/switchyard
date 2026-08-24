@@ -241,7 +241,9 @@ func (s *PostgresStore) RequestCancelModelBrokerRequests(correlationIDs map[stri
 }
 
 func modelCorrelationMergeSQL(parameter string) string {
-	return `case when correlation_ids ? 'audit_action' then correlation_ids || (` + parameter + `::jsonb - 'audit_action' - 'audit_actor' - 'audit_reason') else correlation_ids || ` + parameter + `::jsonb end`
+	return `case when correlation_ids ? 'audit_drop_action' then ` +
+		`case when correlation_ids ? 'audit_action' then correlation_ids || (` + parameter + `::jsonb - 'audit_action' - 'audit_actor' - 'audit_reason' - 'audit_drop_action' - 'audit_drop_actor' - 'audit_drop_reason') else correlation_ids || (` + parameter + `::jsonb - 'audit_drop_action' - 'audit_drop_actor' - 'audit_drop_reason') end ` +
+		`else case when correlation_ids ? 'audit_action' then correlation_ids || (` + parameter + `::jsonb - 'audit_action' - 'audit_actor' - 'audit_reason') else correlation_ids || ` + parameter + `::jsonb end end`
 }
 
 func (s *PostgresStore) ListModelBrokerRequests(filter ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error) {
@@ -364,20 +366,15 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 	var artifacts, artifactBytes, artifactBytesUnmeasured int64
 	var runResult sql.Result
 	if len(runIDs) > 0 {
+		if err := enableArtifactTriggerLifecycleAccounting(ctx, tx); err != nil {
+			return RetentionResult{}, err
+		}
 		placeholders, args := retentionIDArgs(runIDs)
 		if err := tx.QueryRowContext(ctx, `with removed as (delete from artifacts where run_id in (`+placeholders+`) returning byte_size, storage_class) select count(*), coalesce(sum(byte_size) filter (where storage_class='inline-data-uri'),0), count(*) filter (where storage_class<>'inline-data-uri') from removed`, args...).Scan(&artifacts, &artifactBytes, &artifactBytesUnmeasured); err != nil {
 			return RetentionResult{}, err
 		}
 		runResult, err = tx.ExecContext(ctx, `delete from runs where id in (`+placeholders+`)`, args...)
 		if err != nil {
-			return RetentionResult{}, err
-		}
-	}
-	if artifacts > 0 {
-		if _, err := tx.ExecContext(ctx, `update artifact_lifecycle_totals set pruned_count=pruned_count+$1, pruned_bytes=pruned_bytes+$2, pruned_bytes_unmeasured=pruned_bytes_unmeasured+$3 where singleton=true`, artifacts, artifactBytes, artifactBytesUnmeasured); err != nil {
-			return RetentionResult{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `insert into artifact_lifecycle_daily(measurement_date, pruned_count, pruned_bytes, pruned_bytes_unmeasured) values(($1::timestamptz at time zone 'UTC')::date,$2,$3,$4) on conflict (measurement_date) do update set pruned_count=artifact_lifecycle_daily.pruned_count+excluded.pruned_count, pruned_bytes=artifact_lifecycle_daily.pruned_bytes+excluded.pruned_bytes, pruned_bytes_unmeasured=artifact_lifecycle_daily.pruned_bytes_unmeasured+excluded.pruned_bytes_unmeasured`, s.now().UTC(), artifacts, artifactBytes, artifactBytesUnmeasured); err != nil {
 			return RetentionResult{}, err
 		}
 	}
@@ -398,6 +395,13 @@ func (s *PostgresStore) PruneRetention(before time.Time) (RetentionResult, error
 
 const retentionBatchSize = 500
 
+const artifactTriggerLifecycleAccountingSQL = `select set_config('switchyard.artifact_lifecycle_accounting','trigger',true)`
+
+func enableArtifactTriggerLifecycleAccounting(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, artifactTriggerLifecycleAccountingSQL)
+	return err
+}
+
 func retentionIDArgs(ids []string) (string, []any) {
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))
@@ -414,13 +418,15 @@ func (s *PostgresStore) RuntimeMetrics() (RuntimeMetrics, error) {
 
 func (s *PostgresStore) RuntimeMetricsSince(ctx context.Context, since time.Time) (RuntimeMetrics, error) {
 	metrics := RuntimeMetrics{RunStatusCounts: map[string]int{}, ModelRequestStatusCounts: map[string]int{}}
-	if err := s.db.QueryRowContext(ctx, `select count(*), coalesce(sum(byte_size) filter (where storage_class='inline-data-uri'),0), count(*) filter (where storage_class<>'inline-data-uri') from artifacts`).Scan(&metrics.ArtifactsRetained, &metrics.ArtifactBytesRetained, &metrics.ArtifactBytesRetainedUnmeasured); err != nil {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
 		return RuntimeMetrics{}, err
 	}
-	if err := s.db.QueryRowContext(ctx, `select observation_started_at, created_count, created_bytes, pruned_count, pruned_bytes, pruned_bytes_unmeasured from artifact_lifecycle_totals where singleton=true`).Scan(&metrics.ArtifactObservationStartedAt, &metrics.ArtifactsCreated, &metrics.ArtifactBytesCreated, &metrics.ArtifactsPruned, &metrics.ArtifactBytesPruned, &metrics.ArtifactBytesPrunedUnmeasured); err != nil {
+	defer tx.Rollback()
+	if err := tx.QueryRowContext(ctx, `select observation_started_at, retained_count, retained_bytes, retained_bytes_unmeasured, created_count, created_bytes, pruned_count, pruned_bytes, pruned_bytes_unmeasured from artifact_lifecycle_totals where singleton=true`).Scan(&metrics.ArtifactObservationStartedAt, &metrics.ArtifactsRetained, &metrics.ArtifactBytesRetained, &metrics.ArtifactBytesRetainedUnmeasured, &metrics.ArtifactsCreated, &metrics.ArtifactBytesCreated, &metrics.ArtifactsPruned, &metrics.ArtifactBytesPruned, &metrics.ArtifactBytesPrunedUnmeasured); err != nil {
 		return RuntimeMetrics{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `select status, count(*) from runs group by status`)
+	rows, err := tx.QueryContext(ctx, `select status, count(*) from runs group by status`)
 	if err != nil {
 		return RuntimeMetrics{}, err
 	}
@@ -439,7 +445,7 @@ func (s *PostgresStore) RuntimeMetricsSince(ctx context.Context, since time.Time
 		where = " where created_at >= $1"
 		args = append(args, since.UTC())
 	}
-	rows, err = s.db.QueryContext(ctx, `select status, count(*) from model_broker_requests`+where+` group by status`, args...)
+	rows, err = tx.QueryContext(ctx, `select status, count(*) from model_broker_requests`+where+` group by status`, args...)
 	if err != nil {
 		return RuntimeMetrics{}, err
 	}
@@ -457,7 +463,10 @@ func (s *PostgresStore) RuntimeMetricsSince(ctx context.Context, since time.Time
 	if !since.IsZero() {
 		latencyWhere += ` and created_at >= $1`
 	}
-	if err := s.db.QueryRowContext(ctx, `select count(*), coalesce(sum(extract(epoch from (finished_at-started_at))*1000),0), coalesce(max(extract(epoch from (finished_at-started_at))*1000),0) from model_broker_requests`+latencyWhere, args...).Scan(&metrics.ModelLatencyCount, &metrics.ModelLatencyMilliseconds, &metrics.ModelLatencyMaxMilliseconds); err != nil {
+	if err := tx.QueryRowContext(ctx, `select count(*), coalesce(sum(extract(epoch from (finished_at-started_at))*1000),0), coalesce(max(extract(epoch from (finished_at-started_at))*1000),0) from model_broker_requests`+latencyWhere, args...).Scan(&metrics.ModelLatencyCount, &metrics.ModelLatencyMilliseconds, &metrics.ModelLatencyMaxMilliseconds); err != nil {
+		return RuntimeMetrics{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return RuntimeMetrics{}, err
 	}
 	return metrics, nil

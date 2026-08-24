@@ -158,7 +158,7 @@ func TestArtifactMetricsHaveFixedNamesValuesAndNoLabels(t *testing.T) {
 	}
 }
 
-func TestPostgresArtifactReportQueryIsBoundedAndAggregateOnly(t *testing.T) {
+func TestPostgresArtifactReportIsBoundedAndMetricsUseAggregateSnapshot(t *testing.T) {
 	source, err := os.ReadFile("artifact_report.go")
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +168,28 @@ func TestPostgresArtifactReportQueryIsBoundedAndAggregateOnly(t *testing.T) {
 		if !strings.Contains(text, contract) {
 			t.Errorf("Postgres report query missing %q", contract)
 		}
+	}
+	metricsSource, err := os.ReadFile("postgres_store_model_broker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsText := string(metricsSource)
+	start := strings.Index(metricsText, "func (s *PostgresStore) RuntimeMetricsSince")
+	if start < 0 {
+		t.Fatal("could not locate RuntimeMetricsSince source")
+	}
+	end := strings.Index(metricsText[start:], "func normalizeJSONText")
+	if end < 0 {
+		t.Fatal("could not locate end of RuntimeMetricsSince source")
+	}
+	metricsBody := metricsText[start : start+end]
+	for _, contract := range []string{"LevelRepeatableRead", "ReadOnly: true", "artifact_lifecycle_totals", "tx.Commit()"} {
+		if !strings.Contains(metricsBody, contract) {
+			t.Errorf("runtime metrics snapshot missing %q", contract)
+		}
+	}
+	if strings.Contains(metricsBody, " from artifacts") {
+		t.Fatal("runtime metrics must not full-scan artifacts")
 	}
 	pruneSource, err := os.ReadFile("postgres_store_model_broker.go")
 	if err != nil {

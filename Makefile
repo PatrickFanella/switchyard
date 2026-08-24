@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify retirement-qualification-test alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -184,6 +184,12 @@ release-verify: release-artifacts ## Verify release archives and checksums
 
 release-evidence-test: ## Test the release-evidence contract
 	python3 -m unittest discover -s scripts -p 'test_validate_release_evidence.py'
+	python3 -m unittest discover -s scripts -p 'test_download_retirement_qualifications.py'
+	python3 -m unittest discover -s scripts -p 'test_download_retirement_report.py'
+	python3 -m unittest discover -s scripts -p 'test_produce_retirement_qualification.py'
+
+retirement-qualification-test: ## Test the durable retirement qualification producer
+	python3 -m unittest discover -s scripts -p 'test_produce_retirement_qualification.py'
 
 alert-lifecycle: ## Manually test Alertmanager-to-ntfy firing and resolution
 	python3 scripts/alert_lifecycle.py

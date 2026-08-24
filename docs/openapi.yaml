@@ -21,14 +21,19 @@ info:
     `/api/requests/{id}/result`; queued jobs are recovered on API startup. On
     the control-plane listener every non-health request requires an admin or
     read-only bearer token, or an identity asserted by an explicitly trusted
-    authenticated reverse proxy. Mutating requests require the admin role.
+    authenticated reverse proxy. Mutating requests require the admin role. On
+    the control listener, HEAD is supported as the bodyless alias of every GET
+    operation available on that listener and uses the same read authentication.
 servers:
-  - url: http://127.0.0.1:28080
-    description: Local Docker Compose API
   - url: http://127.0.0.1:18080
-    description: Local smoke-test API
+    description: Local control API (default API_PORT)
 security:
   - controlPlaneBearer: []
+x-switchyard-method-aliases:
+  - listener: control
+    source: GET
+    alias: HEAD
+    scope: all operations available on the control listener
 paths:
   /api/model-broker/queue:
     get:
@@ -258,7 +263,7 @@ paths:
       description: >-
         Authenticated control-listener metrics. The public model-listener
         operation is specified in docs/openapi-model-ingress.yaml.
-      servers: [{url: "http://127.0.0.1:28080", description: Authenticated control listener}]
+      servers: [{url: "http://127.0.0.1:18080", description: Authenticated control listener (default API_PORT)}]
       responses: { "200": { description: Prometheus text exposition } }
   /api/observability/model-broker:
     get:
@@ -1272,6 +1277,9 @@ components:
         window_end: { type: string, format: date-time }
         bucket: { type: string, const: day }
         observation_started_at: { type: string, format: date-time }
+        observation_retained_floor: { type: integer, format: int64, minimum: 0, description: Retained artifact count captured before lifecycle mutation observation began. }
+        observation_retained_floor_bytes: { type: integer, format: int64, minimum: 0, description: Measured retained bytes captured before lifecycle mutation observation began. }
+        observation_retained_floor_bytes_unmeasured: { type: integer, format: int64, minimum: 0, description: Retained artifacts at the observation floor whose bytes were not measured. }
         retained: { type: integer, format: int64 }
         retained_bytes: { type: integer, format: int64 }
         retained_bytes_unmeasured: { type: integer, format: int64, description: Number of retained legacy artifacts excluded from retained_bytes because decoded size is unknown. }
@@ -1289,7 +1297,7 @@ components:
           type: array
           maxItems: 90
           items: { $ref: "#/components/schemas/ArtifactDailyBucket" }
-      required: [window_start, window_end, bucket, observation_started_at, retained, retained_bytes, retained_bytes_unmeasured, created_total, created_bytes_total, pruned_total, pruned_bytes_total, pruned_bytes_unmeasured_total, declared_retention_missing, declared_retention_expired, declared_retention_expired_bytes, declared_retention_expired_bytes_unmeasured, retention_semantics, buckets]
+      required: [window_start, window_end, bucket, observation_started_at, observation_retained_floor, observation_retained_floor_bytes, observation_retained_floor_bytes_unmeasured, retained, retained_bytes, retained_bytes_unmeasured, created_total, created_bytes_total, pruned_total, pruned_bytes_total, pruned_bytes_unmeasured_total, declared_retention_missing, declared_retention_expired, declared_retention_expired_bytes, declared_retention_expired_bytes_unmeasured, retention_semantics, buckets]
     CompatibilityObservation:
       type: object
       properties:

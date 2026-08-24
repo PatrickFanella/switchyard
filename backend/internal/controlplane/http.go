@@ -169,6 +169,12 @@ func (a *API) readiness(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "storage unavailable")
 		return
 	}
+	if service, ok := a.modelRuntime.(*ModelService); ok {
+		if err := service.HealthError(ctx); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "model service unavailable: "+RedactForLog(err.Error()))
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ready": true})
 }
 
@@ -201,7 +207,7 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 	readToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_READ_TOKEN"))
 	trustProxy := strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && r.Method == http.MethodGet) {
+		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && isReadOnlyControlRequest(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}

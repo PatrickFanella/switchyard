@@ -1,0 +1,46 @@
+name: switchyard-production-deployment-proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact annotated tag deployed to production
+        required: true
+        type: string
+
+concurrency:
+  group: production-deployment-proof
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  production-smoke:
+    name: production-smoke
+    runs-on: switchyard-production
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SWITCHYARD_PRODUCTION_ENV_FILE: ${{ secrets.SWITCHYARD_PRODUCTION_ENV_FILE }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+      - name: Prove annotated deployed checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$(git rev-parse HEAD)"
+          test -n "$SWITCHYARD_PRODUCTION_ENV_FILE"
+          test -r "$SWITCHYARD_PRODUCTION_ENV_FILE"
+      - name: Smoke deployed production
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$SWITCHYARD_PRODUCTION_ENV_FILE"
+          set +a
+          make production-smoke

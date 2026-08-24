@@ -20,6 +20,8 @@ token. `days` accepts 1 through 90 and returns one UTC bucket per day, including
 zero-value days. The report contains:
 
 - exact currently retained count and measured decoded bytes;
+- the retained count, measured bytes, and legacy-unmeasured count captured when
+  observation began, exposed as the immutable observation floor;
 - durable created and pruned count and bytes since `observation_started_at`;
 - retained artifacts whose declared `retention_until` has elapsed, plus legacy
   artifacts missing that metadata;
@@ -29,6 +31,19 @@ Artifacts written before lifecycle metadata was introduced report through the
 `*_bytes_unmeasured` counts and are excluded from byte sums. This avoids
 claiming that a legacy `byte_size=0` default is a measured empty payload.
 
+PostgreSQL triggers account retained state for every artifact insert, update,
+and delete. New writers set the transaction-local
+`switchyard.artifact_lifecycle_accounting=trigger` setting before insert or
+prune mutations, which also selects trigger-owned created/pruned totals. A
+pre-023 writer does not set the setting and continues its direct lifecycle
+updates, so rolling rollback neither double-counts lifecycle events nor loses
+retained-state updates. All trigger and direct changes roll back with the
+artifact transaction. Non-negative aggregate constraints make a missing or
+invalidated floor fail the artifact transaction instead of silently creating a
+measurement gap.
+Migration 023 captures a locked retained snapshot, installs the triggers, and
+restarts lifecycle observation because the earlier application-managed interval
+cannot prove complete accounting across writer rollback.
 Prometheus exports the same retained gauges and durable created/pruned
 counters without labels. The totals do not claim history before
 `observation_started_at`.
@@ -76,8 +91,11 @@ follow-on removal proposal may include the optional `retirement_proposal`
 release-evidence field only after all 90 days report zero attempts for both
 backends and exactly two distinct, chronologically ordered, immutable prior
 qualifying releases are supplied. The candidate release cannot be one of those
-two. Each prior release must provide hashed deployed evidence, manifest, and
-report artifact bytes. The validator binds the candidate report artifact
-digest, source revision, deployment identity, and segment to candidate
+two. Each prior release must provide a non-recursive qualification artifact
+that binds exact raw deployed-evidence, manifest, and report bytes; prior
+evidence must not contain `retirement_proposal`. Qualification order and report
+chronology use each prior release's own finalization times. The validator binds
+the candidate report artifact raw and canonical digests, source revision,
+deployment identity, and segment to candidate
 evidence. Without that optional proposal, normal release evidence remains
 unchanged.

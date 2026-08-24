@@ -168,8 +168,13 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	})
 	if err != nil {
 		spanErr = err
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
-		_ = writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": err.Error(), "backend": "switchyard-native"})
+		finished, finishErr := a.compatBroker.runtime.Finish(context.Background(), requestID, ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
+		if finishErr == nil && finished.Status == ModelBrokerRequestCanceled {
+			_ = writeCompatSSE(w, "error", map[string]any{"status": "canceled", "request_id": requestID, "error": "request canceled", "backend": "switchyard-native"})
+			_ = writeCompatRaw(w, "data: [DONE]\n\n")
+			return
+		}
+		_ = writeCompatSSE(w, "error", map[string]any{"status": "failed", "request_id": requestID, "error": RedactForLog(err.Error()), "backend": "switchyard-native"})
 		_ = writeCompatRaw(w, "data: [DONE]\n\n")
 		return
 	}

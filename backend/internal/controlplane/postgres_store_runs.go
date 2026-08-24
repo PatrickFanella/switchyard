@@ -531,17 +531,13 @@ func (s *PostgresStore) AddArtifact(input CreateArtifactInput) (Artifact, error)
 	if err != nil {
 		return Artifact{}, err
 	}
+	if err := enableArtifactTriggerLifecycleAccounting(s.operationContext(), tx); err != nil {
+		_ = tx.Rollback()
+		return Artifact{}, err
+	}
 	if _, err := tx.ExecContext(s.operationContext(), `insert into artifacts(id, run_id, name, kind, uri, storage_class, content_type, byte_size, sha256, retention_until, created_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, artifact.ID, artifact.RunID, artifact.Name, artifact.Kind, artifact.URI, artifact.StorageClass, artifact.ContentType, artifact.ByteSize, artifact.SHA256, artifact.RetentionUntil, artifact.CreatedAt); err != nil {
 		_ = tx.Rollback()
 		return Artifact{}, mapPgErr(err)
-	}
-	if _, err := tx.ExecContext(s.operationContext(), `update artifact_lifecycle_totals set created_count=created_count+1, created_bytes=created_bytes+$1 where singleton=true`, artifact.ByteSize); err != nil {
-		_ = tx.Rollback()
-		return Artifact{}, err
-	}
-	if _, err := tx.ExecContext(s.operationContext(), `insert into artifact_lifecycle_daily(measurement_date, created_count, created_bytes) values(($1::timestamptz at time zone 'UTC')::date,1,$2) on conflict (measurement_date) do update set created_count=artifact_lifecycle_daily.created_count+1, created_bytes=artifact_lifecycle_daily.created_bytes+excluded.created_bytes`, now, artifact.ByteSize); err != nil {
-		_ = tx.Rollback()
-		return Artifact{}, err
 	}
 	if _, err := tx.ExecContext(s.operationContext(), `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, newID("evt"), artifact.RunID, "artifact.created", artifact.Name+" ("+artifact.Kind+")", now); err != nil {
 		_ = tx.Rollback()

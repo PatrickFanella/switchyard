@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -136,8 +137,13 @@ func TestOpenAPIDocumentsModelRuntimeSecurityAndSchemas(t *testing.T) {
 	if _, exists := metrics["security"]; exists {
 		t.Error("control /metrics must inherit bearer security")
 	}
+	controlPort := runtimeControlPublishedPort(t)
+	documentedServers := fmt.Sprint(document["servers"])
+	if !strings.Contains(documentedServers, ":"+strconv.Itoa(controlPort)) || strings.Contains(documentedServers, ":28080") {
+		t.Errorf("control servers must use runtime default published port %d: %s", controlPort, documentedServers)
+	}
 	servers := fmt.Sprint(metrics["servers"])
-	if !strings.Contains(servers, "28080") || strings.Contains(servers, "11434") {
+	if !strings.Contains(servers, ":"+strconv.Itoa(controlPort)) || strings.Contains(servers, ":28080") || strings.Contains(servers, "11434") {
 		t.Errorf("control /metrics must document only the authenticated control listener: %s", servers)
 	}
 	modelDocumentBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "openapi-model-ingress.yaml"))
@@ -205,6 +211,30 @@ func TestListenerContractsMatchDocumentedRouteMethods(t *testing.T) {
 		}
 	}
 
+	assertControlHeadAliasPolicy(t)
+	routes := NewAPI(NewStore(nil), NewRunner(NewStore(nil))).routes()
+	paths := map[string]bool{}
+	for operation := range control {
+		_, path, _ := strings.Cut(operation, " ")
+		paths[path] = true
+	}
+	for path := range paths {
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions} {
+			request := httptest.NewRequest(method, contractRequestPath(path), nil)
+			candidate := routeContractKey(method, path)
+			want := control[candidate]
+			if method == http.MethodHead {
+				want = control[routeContractKey(http.MethodGet, path)]
+			}
+			want = want && controlPlaneRouteAllowed(request)
+			_, pattern := routes.Handler(request)
+			got := pattern != "" && controlPlaneRouteAllowed(request)
+			if got != want {
+				t.Errorf("control listener route availability for %s = %t, want %t (pattern %q)", candidate, got, want, pattern)
+			}
+		}
+	}
+
 	for _, operation := range []string{
 		"GET /api/model-broker/status",
 		"GET /api/model-broker/queue",
@@ -263,6 +293,53 @@ func TestListenerContractsMatchDocumentedRouteMethods(t *testing.T) {
 	}
 }
 
+func runtimeControlPublishedPort(t *testing.T) int {
+	t.Helper()
+	contents, err := os.ReadFile("../runtimeconfig/defaults-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Listeners map[string]struct {
+			PublishedDefault int `json:"published_default"`
+		} `json:"listeners"`
+	}
+	if err := json.Unmarshal(contents, &contract); err != nil {
+		t.Fatal(err)
+	}
+	port := contract.Listeners["control"].PublishedDefault
+	if port == 0 {
+		t.Fatal("runtime defaults contract omits control published_default")
+	}
+	return port
+}
+
+func assertControlHeadAliasPolicy(t *testing.T) {
+	t.Helper()
+	contents, err := os.ReadFile("../../../docs/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		MethodAliases []struct {
+			Listener string `yaml:"listener"`
+			Source   string `yaml:"source"`
+			Alias    string `yaml:"alias"`
+			Scope    string `yaml:"scope"`
+		} `yaml:"x-switchyard-method-aliases"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document.MethodAliases) != 1 {
+		t.Fatalf("OpenAPI method aliases = %d, want 1", len(document.MethodAliases))
+	}
+	alias := document.MethodAliases[0]
+	if alias.Listener != "control" || alias.Source != http.MethodGet || alias.Alias != http.MethodHead || alias.Scope != "all operations available on the control listener" {
+		t.Errorf("unexpected control HEAD alias policy: %+v", alias)
+	}
+}
+
 func TestControlListenerHeadUsesReadAuthenticationAndExcludesModelRoutes(t *testing.T) {
 	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-token")
 	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "read-token")
@@ -278,6 +355,9 @@ func TestControlListenerHeadUsesReadAuthenticationAndExcludesModelRoutes(t *test
 		{name: "authenticated control HEAD", path: "/api/workflows", token: "admin-token", want: http.StatusOK},
 		{name: "read token control HEAD", path: "/api/workflows", token: "read-token", want: http.StatusOK},
 		{name: "unauthenticated control HEAD", path: "/api/workflows", want: http.StatusUnauthorized},
+		{name: "unauthenticated health HEAD", path: "/health", want: http.StatusOK},
+		{name: "unauthenticated healthz HEAD", path: "/healthz", want: http.StatusOK},
+		{name: "unauthenticated readiness HEAD", path: "/readyz", want: http.StatusOK},
 		{name: "model-only HEAD excluded", path: "/v1/models", token: "admin-token", want: http.StatusNotFound},
 	}
 	for _, test := range tests {
