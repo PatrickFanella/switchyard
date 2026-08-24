@@ -76,12 +76,46 @@ func run() error {
 	if err := controlplane.SeedDefaults(store); err != nil {
 		return fmt.Errorf("seed control plane: %w", err)
 	}
+	deploymentID := strings.TrimSpace(os.Getenv("SWITCHYARD_DEPLOYMENT_ID"))
+	const compatibilityHeartbeatInterval = time.Minute
+	sourceRevision := strings.TrimSpace(os.Getenv("SWITCHYARD_SOURCE_REVISION"))
+	var compatibilityObserver *controlplane.CompatibilityObserver
+	if !envEnabledByDefault("SWITCHYARD_COMPATIBILITY_OBSERVER_ENABLED") {
+		slog.Info("compatibility observation disabled by configuration")
+	} else if sourceRevision == "" || strings.EqualFold(sourceRevision, "unknown") {
+		slog.Warn("compatibility observation disabled", "reason", "SWITCHYARD_SOURCE_REVISION must identify the deployed revision")
+	} else if deploymentID == "" {
+		return fmt.Errorf("SWITCHYARD_DEPLOYMENT_ID is required when compatibility observation is enabled")
+	} else {
+		identity := controlplane.CompatibilityObservationIdentity{SourceRevision: sourceRevision, DeploymentID: deploymentID}
+		var observerLease *controlplane.CompatibilityObserverLease
+		if postgres, ok := store.(*controlplane.PostgresStore); ok {
+			observerLease, identity, err = postgres.AcquireCompatibilityObserverLease(ctx, identity)
+			if err != nil {
+				return fmt.Errorf("acquire compatibility observer lease: %w", err)
+			}
+			defer observerLease.Close()
+		}
+		compatibilityObserver, err = controlplane.NewCompatibilityObserver(store, identity, compatibilityHeartbeatInterval)
+		if err != nil {
+			return fmt.Errorf("configure compatibility observation: %w", err)
+		}
+		if err := compatibilityObserver.Tick(ctx, time.Now().UTC()); err != nil {
+			return fmt.Errorf("record compatibility observation startup heartbeat: %w", err)
+		}
+		go func() {
+			if err := compatibilityObserver.Run(ctx, compatibilityHeartbeatInterval); err != nil {
+				slog.Error("compatibility observation stopped", "error", controlplane.RedactForLog(err.Error()))
+			}
+		}()
+	}
 	for _, warning := range controlplane.NewEnvOperatorSafetyStatus().Warnings {
 		slog.Warn("operator safety", "warning", controlplane.RedactForLog(warning))
 	}
 	modelService := controlplane.NewModelService(store, controlplane.NewEnvModelBroker(), controlplane.ModelServiceOptions{})
 	runner := controlplane.NewRunner(store, controlplane.NewEnvWorkflowExecutorsWithModel(modelService, store))
 	api := controlplane.NewAPIWithModelService(store, runner, modelService)
+	api.SetCompatibilityObserver(compatibilityObserver)
 	var workersPool *controlplane.WorkerPool
 	workerEnabled := envEnabledByDefault("SWITCHYARD_WORKER_ENABLED")
 	if workerEnabled {

@@ -185,7 +185,7 @@ func (s *PostgresStore) MergeModelBrokerRequestCorrelationIDs(id string, correla
 		return ModelBrokerRequest{}, mapScanErr(err)
 	}
 	if backend := strings.TrimSpace(correlationIDs[CorrelationDeprecatedBackend]); backend != "" {
-		if _, err := tx.ExecContext(s.operationContext(), `insert into compatibility_usage_daily(usage_date, backend, attempts, first_attempt_at, last_attempt_at) values(current_date,$1,1,now(),now()) on conflict(usage_date, backend) do update set attempts=compatibility_usage_daily.attempts+1, first_attempt_at=least(compatibility_usage_daily.first_attempt_at, excluded.first_attempt_at), last_attempt_at=greatest(compatibility_usage_daily.last_attempt_at, excluded.last_attempt_at)`, backend); err != nil {
+		if _, err := recordCompatibilityAttemptTx(s.operationContext(), tx, backend); err != nil {
 			_ = tx.Rollback()
 			return ModelBrokerRequest{}, err
 		}

@@ -33,7 +33,7 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 1. Compose starts PostgreSQL, managed OpenCode, the Go API, and web UI.
 2. The API migrates storage, seeds defaults, and starts scheduler/worker/retention loops.
 3. Operators, schedules, polls, or webhooks create queued runs with immutable pipeline snapshots.
-4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence. Durable daily aggregates measure inline artifact creation and run-retention pruning without artifact identifiers in metrics.
+4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence. Durable daily aggregates measure inline artifact creation and run-retention pruning; revision-bound heartbeats separately prove complete deprecated-backend observation days without interpreting missing data as zero.
 5. Model-compatible clients enter the isolated native broker listener, which routes to OpenCode, Ollama, or transitional llama-line compatibility.
 6. The dashboard and CLI query/control the authenticated operator API.
 

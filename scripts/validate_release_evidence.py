@@ -2,17 +2,19 @@
 """Validate release evidence against a candidate and generated manifest."""
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
 
 GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SEMVER_TAG = re.compile(
     r"^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -20,7 +22,12 @@ SEMVER_TAG = re.compile(
 )
 PULL_REQUEST_PATH = re.compile(r"^/(?:[^/?#]+/)+pulls/[1-9]\d*$")
 RFC3339_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+UTC_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLOCK_TOLERANCE = timedelta(minutes=5)
+RETIREMENT_BACKENDS = {"llama-line", "ocq"}
+MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+MAX_RETIREMENT_DEPTH = 8
+DEFAULT_ARTIFACT_ROOT: Path | None = None
 PLACEHOLDERS = {"", "todo", "tbd", "unknown", "changeme", "replace_me", "placeholder"}
 PLACEHOLDER_TOKEN = re.compile(
     r"(?:^|[^a-z0-9])(?:todo|tbd|unknown|changeme|replace[_ -]?me|placeholder)(?:$|[^a-z0-9])",
@@ -66,6 +73,19 @@ def require_text(value: Any, location: str) -> str:
     return text
 
 
+def require_safe_id(value: Any, location: str) -> str:
+    text = require_text(value, location)
+    if not SAFE_ID.fullmatch(text):
+        raise EvidenceError(
+            f"{location} must use 1-128 ASCII letters, digits, dot, underscore, or hyphen"
+        )
+    return text
+
+
+def normalized_release_tag(tag: str) -> str:
+    return tag[1:] if tag.startswith("v") else tag
+
+
 def require_timestamp(value: Any, location: str) -> datetime:
     text = require_text(value, location)
     if not RFC3339_UTC.fullmatch(text):
@@ -77,6 +97,16 @@ def require_timestamp(value: Any, location: str) -> datetime:
     if parsed.tzinfo != timezone.utc:
         raise EvidenceError(f"{location} must be UTC")
     return parsed
+
+
+def require_date(value: Any, location: str) -> datetime:
+    text = require_text(value, location)
+    if not UTC_DATE.fullmatch(text):
+        raise EvidenceError(f"{location} must be a UTC date")
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise EvidenceError(f"{location} must be a valid UTC date") from exc
 
 
 def require_pull_request(value: Any) -> str:
@@ -146,7 +176,286 @@ def artifact_checksums(
     return checksums
 
 
-def validate(candidate_sha: str, evidence: Any, manifest: Any, now: datetime) -> None:
+def canonical_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def compatibility_report_payload(report: dict[str, Any]) -> bytes:
+    observations = [
+        {
+            "date": observation["date"],
+            "backend": observation["backend"],
+            "attempts": observation["attempts"],
+            "source_revision": observation["source_revision"],
+            "deployment_id": observation["deployment_id"],
+            "observation_started_at": observation["observation_started_at"],
+            "observation_completed_at": observation["observation_completed_at"],
+            "observation_segment": observation["observation_segment"],
+        }
+        for observation in report["observations"]
+    ]
+    canonical = {
+        "version": report["version"],
+        "source_revision": report["source_revision"],
+        "source_identity": report["source_identity"],
+        "source_segment": report["source_segment"],
+        "window_start": report["window_start"],
+        "window_end": report["window_end"],
+        "generated_at": report["generated_at"],
+        "observations": observations,
+        "qualification_eligible": report["qualification_eligible"],
+    }
+    return json.dumps(canonical, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def validate_retirement_report(
+    report_link_value: Any,
+    report_value: Any,
+    recorded_at: datetime,
+) -> datetime:
+    report_link = require_object(report_link_value, "evidence.retirement_proposal.report")
+    require_exact_keys(
+        report_link,
+        "evidence.retirement_proposal.report",
+        {"artifact", "sha256", "source_revision", "source_identity", "source_segment"},
+    )
+    artifact = require_text(
+        report_link["artifact"], "evidence.retirement_proposal.report.artifact"
+    )
+    if Path(artifact).name != artifact or artifact != "compatibility-retirement-report.json":
+        raise EvidenceError(
+            "evidence.retirement_proposal.report.artifact must be compatibility-retirement-report.json"
+        )
+    digest = require_text(
+        report_link["sha256"], "evidence.retirement_proposal.report.sha256"
+    )
+    if not SHA256.fullmatch(digest):
+        raise EvidenceError("evidence.retirement_proposal.report.sha256 must be a lowercase SHA-256")
+    if report_value is None:
+        raise EvidenceError("retirement proposal requires a compatibility retirement report")
+    report = require_object(report_value, "retirement report")
+    require_exact_keys(
+        report,
+        "retirement report",
+        {
+            "version",
+            "source_revision",
+            "source_identity",
+            "window_start",
+            "window_end",
+            "generated_at",
+            "observations",
+            "canonical_sha256", "source_segment", "qualification_eligible",
+        },
+    )
+    if report["version"] != "switchyard.compatibility-observation/v1":
+        raise EvidenceError("retirement report.version is unsupported")
+    if report["qualification_eligible"] is not True:
+        raise EvidenceError("retirement report is diagnostic and not qualification eligible")
+    if canonical_sha256(report) != digest:
+        raise EvidenceError("retirement report hash does not match candidate evidence")
+    internal_digest = require_text(report["canonical_sha256"], "retirement report.canonical_sha256")
+    if not SHA256.fullmatch(internal_digest):
+        raise EvidenceError("retirement report.canonical_sha256 must be a lowercase SHA-256")
+    source_revision = require_text(report["source_revision"], "retirement report.source_revision")
+    linked_revision = require_text(
+        report_link["source_revision"],
+        "evidence.retirement_proposal.report.source_revision",
+    )
+    if not GIT_SHA.fullmatch(source_revision) or linked_revision != source_revision:
+        raise EvidenceError("retirement report source_revision does not match candidate evidence")
+    source_identity = require_safe_id(report["source_identity"], "retirement report.source_identity")
+    source_segment = require_safe_id(report["source_segment"], "retirement report.source_segment")
+    linked_identity = require_text(
+        report_link["source_identity"],
+        "evidence.retirement_proposal.report.source_identity",
+    )
+    if source_identity != linked_identity:
+        raise EvidenceError("retirement report source_identity does not match candidate evidence")
+    linked_segment = require_safe_id(
+        report_link["source_segment"],
+        "evidence.retirement_proposal.report.source_segment",
+    )
+    if source_segment != linked_segment:
+        raise EvidenceError("retirement report source_segment does not match candidate evidence")
+
+    window_start = require_date(report["window_start"], "retirement report.window_start")
+    window_end = require_date(report["window_end"], "retirement report.window_end")
+    generated_at = require_timestamp(report["generated_at"], "retirement report.generated_at")
+    elapsed_end = window_end + timedelta(days=1)
+    if elapsed_end - window_start != timedelta(days=90):
+        raise EvidenceError("retirement report must cover exactly 90 elapsed days")
+    if generated_at < elapsed_end:
+        raise EvidenceError("retirement report must be generated at or after its window end")
+    if generated_at > recorded_at + CLOCK_TOLERANCE:
+        raise EvidenceError("retirement report generated after evidence.recorded_at")
+    observations = report["observations"]
+    expected_days = (elapsed_end - window_start).days
+    if not isinstance(observations, list) or len(observations) != expected_days * 2:
+        raise EvidenceError("retirement report must have complete daily coverage for both backends")
+    expected = [
+        ((window_start + timedelta(days=offset)).strftime("%Y-%m-%d"), backend)
+        for offset in range(expected_days)
+        for backend in ("llama-line", "ocq")
+    ]
+    actual: list[tuple[str, str]] = []
+    daily_identity: dict[str, tuple[str, str]] = {}
+    for index, observation_value in enumerate(observations):
+        location = f"retirement report.observations[{index}]"
+        observation = require_object(observation_value, location)
+        require_exact_keys(observation, location, {"date", "backend", "attempts", "source_revision", "deployment_id", "observation_started_at", "observation_completed_at", "observation_segment"})
+        date = require_date(observation["date"], f"{location}.date")
+        backend = require_text(observation["backend"], f"{location}.backend")
+        actual.append((date.strftime("%Y-%m-%d"), backend))
+        if type(observation["attempts"]) is not int or observation["attempts"] != 0:
+            raise EvidenceError(f"{location}.attempts must be integer zero")
+        revision = require_text(observation["source_revision"], f"{location}.source_revision")
+        if not GIT_SHA.fullmatch(revision):
+            raise EvidenceError(f"{location}.source_revision must be a full lowercase Git SHA")
+        if revision != source_revision:
+            raise EvidenceError(f"{location}.source_revision does not match the report source_revision")
+        deployment = require_safe_id(observation["deployment_id"], f"{location}.deployment_id")
+        segment = require_safe_id(observation["observation_segment"], f"{location}.observation_segment")
+        if deployment != source_identity or segment != source_segment:
+            raise EvidenceError(f"{location} does not match the report identity and segment")
+        identity = (revision, deployment)
+        date_text = date.strftime("%Y-%m-%d")
+        if date_text in daily_identity and daily_identity[date_text] != identity:
+            raise EvidenceError(f"{location} does not match the day's revision and deployment identity")
+        daily_identity[date_text] = identity
+        started = require_timestamp(observation["observation_started_at"], f"{location}.observation_started_at")
+        completed = require_timestamp(observation["observation_completed_at"], f"{location}.observation_completed_at")
+        if started > date or completed < date + timedelta(days=1):
+            raise EvidenceError(f"{location} does not cover its complete UTC day")
+    if actual != expected:
+        raise EvidenceError("retirement report must have ordered complete daily coverage for both backends")
+    if hashlib.sha256(compatibility_report_payload(report)).hexdigest() != internal_digest:
+        raise EvidenceError("retirement report canonical_sha256 does not match its contents")
+
+    return generated_at
+
+
+def validate_retirement_proposal(
+    value: Any,
+    report_value: Any,
+    candidate_sha: str,
+    release_tag: str,
+    recorded_at: datetime,
+    artifact_root: Path | None = None,
+    active: frozenset[Path] = frozenset(),
+    depth: int = 0,
+) -> None:
+    proposal = require_object(value, "evidence.retirement_proposal")
+    require_exact_keys(proposal, "evidence.retirement_proposal", {"report", "prior_qualifying_releases"})
+    report_link = require_object(proposal["report"], "evidence.retirement_proposal.report")
+    if artifact_root is None:
+        raise EvidenceError("retirement proposal requires an artifact root")
+    report_artifact, candidate_report_path = load_canonical_artifact_json(
+        artifact_root,
+        require_text(report_link.get("artifact"), "evidence.retirement_proposal.report.artifact"),
+        require_text(report_link.get("sha256"), "evidence.retirement_proposal.report.sha256"),
+        "candidate retirement report",
+        active,
+    )
+    if report_value is None:
+        raise EvidenceError("retirement proposal requires a compatibility retirement report")
+    if canonical_sha256(report_value) != canonical_sha256(report_artifact):
+        raise EvidenceError("supplied retirement report does not match its named artifact")
+    generated_at = validate_retirement_report(report_link, report_artifact, recorded_at)
+    if require_object(report_artifact, "retirement report").get("source_revision") != candidate_sha:
+        raise EvidenceError("retirement report source_revision must match candidate SHA")
+
+    releases = proposal["prior_qualifying_releases"]
+    if not isinstance(releases, list) or len(releases) != 2:
+        raise EvidenceError(
+            "evidence.retirement_proposal.prior_qualifying_releases must contain exactly two releases"
+        )
+    seen_tags: set[str] = set()
+    seen_shas: set[str] = set()
+    seen_hashes: set[str] = set()
+    previous_report_time: datetime | None = None
+    for index, release_value in enumerate(releases):
+        location = f"evidence.retirement_proposal.prior_qualifying_releases[{index}]"
+        release = require_object(release_value, location)
+        require_exact_keys(
+            release,
+            location,
+            {"release_tag", "release_sha", "evidence_artifact", "evidence_sha256", "manifest_artifact", "manifest_sha256", "report_artifact", "report_sha256"},
+        )
+        tag = require_text(release["release_tag"], f"{location}.release_tag")
+        if not SEMVER_TAG.fullmatch(tag):
+            raise EvidenceError(f"{location}.release_tag must be a semver-like release tag")
+        sha = require_text(release["release_sha"], f"{location}.release_sha")
+        if not GIT_SHA.fullmatch(sha):
+            raise EvidenceError(f"{location}.release_sha must be a full lowercase Git SHA")
+        evidence_hash = require_text(
+            release["evidence_sha256"], f"{location}.evidence_sha256"
+        )
+        if not SHA256.fullmatch(evidence_hash):
+            raise EvidenceError(f"{location}.evidence_sha256 must be a lowercase SHA-256")
+        manifest_hash = require_text(
+            release["manifest_sha256"], f"{location}.manifest_sha256"
+        )
+        if not SHA256.fullmatch(manifest_hash):
+            raise EvidenceError(f"{location}.manifest_sha256 must be a lowercase SHA-256")
+        normalized_tag = normalized_release_tag(tag)
+        if normalized_tag == normalized_release_tag(release_tag) or sha == candidate_sha:
+            raise EvidenceError("candidate release cannot count as prior qualifying release evidence")
+        if normalized_tag in seen_tags or sha in seen_shas or evidence_hash in seen_hashes:
+            raise EvidenceError("prior qualifying releases must be distinct immutable records")
+        if artifact_root is None:
+            raise EvidenceError("prior qualifying releases require an artifact root")
+        report_hash = require_text(release["report_sha256"], f"{location}.report_sha256")
+        if not SHA256.fullmatch(report_hash):
+            raise EvidenceError(f"{location}.report_sha256 must be a lowercase SHA-256")
+        prior_evidence, evidence_path = load_artifact_json(artifact_root, require_text(release["evidence_artifact"], f"{location}.evidence_artifact"), evidence_hash, f"{location} evidence", active | {candidate_report_path})
+        prior_manifest, manifest_path = load_artifact_json(artifact_root, require_text(release["manifest_artifact"], f"{location}.manifest_artifact"), manifest_hash, f"{location} manifest", active | {candidate_report_path, evidence_path})
+        prior_report, report_path = load_artifact_json(artifact_root, require_text(release["report_artifact"], f"{location}.report_artifact"), report_hash, f"{location} report", active | {candidate_report_path, evidence_path, manifest_path})
+        prior_record = require_object(prior_evidence, f"{location} evidence")
+        if prior_record.get("candidate_sha") != sha or normalized_release_tag(require_text(prior_record.get("release_tag"), f"{location} evidence.release_tag")) != normalized_tag:
+            raise EvidenceError(f"{location} evidence release identity does not match its binding")
+        if prior_record.get("phase") != "deployed":
+            raise EvidenceError(f"{location} evidence must be deployed phase")
+        validate(
+            sha,
+            prior_record,
+            prior_manifest,
+            recorded_at,
+            prior_report if "retirement_proposal" in prior_record else None,
+            artifact_root=artifact_root,
+            active=active | {candidate_report_path, report_path, evidence_path, manifest_path},
+            depth=depth + 1,
+        )
+        prior_link = {"artifact": "compatibility-retirement-report.json", "sha256": canonical_sha256(prior_report), "source_revision": prior_report.get("source_revision"), "source_identity": prior_report.get("source_identity"), "source_segment": prior_report.get("source_segment")}
+        prior_generated = validate_retirement_report(prior_link, prior_report, recorded_at)
+        if prior_report.get("source_revision") != sha:
+            raise EvidenceError(f"{location} report source_revision does not match release_sha")
+        if prior_generated >= generated_at:
+            raise EvidenceError("prior qualifying release report must predate the candidate report")
+        if previous_report_time is not None and prior_generated <= previous_report_time:
+            raise EvidenceError("prior qualifying releases must be ordered by qualification time")
+        previous_report_time = prior_generated
+        seen_tags.add(normalized_tag)
+        seen_shas.add(sha)
+        seen_hashes.add(evidence_hash)
+
+
+def validate(
+    candidate_sha: str,
+    evidence: Any,
+    manifest: Any,
+    now: datetime,
+    retirement_report: Any = None,
+    artifact_root: Path | None = None,
+    active: frozenset[Path] = frozenset(),
+    depth: int = 0,
+) -> None:
+    if depth > MAX_RETIREMENT_DEPTH:
+        raise EvidenceError("retirement evidence nesting is too deep")
+    artifact_root = artifact_root or DEFAULT_ARTIFACT_ROOT
     if not GIT_SHA.fullmatch(candidate_sha):
         raise EvidenceError("candidate SHA must be a full lowercase 40-character Git SHA")
     if now.tzinfo is None:
@@ -187,7 +496,7 @@ def validate(candidate_sha: str, evidence: Any, manifest: Any, now: datetime) ->
             "gates",
             "artifacts",
         },
-        {"deployment"},
+        {"deployment", "retirement_proposal"},
     )
     if type(record["schema_version"]) is not int or record["schema_version"] != 1:
         raise EvidenceError("evidence.schema_version must be integer 1")
@@ -217,6 +526,19 @@ def validate(candidate_sha: str, evidence: Any, manifest: Any, now: datetime) ->
     recorded_at = require_timestamp(record["recorded_at"], "evidence.recorded_at")
     if recorded_at > now + CLOCK_TOLERANCE:
         raise EvidenceError("evidence.recorded_at is in the future")
+    if "retirement_proposal" in record:
+        validate_retirement_proposal(
+            record["retirement_proposal"],
+            retirement_report,
+            candidate_sha,
+            release_tag,
+            recorded_at,
+            artifact_root,
+            active,
+            depth,
+        )
+    elif retirement_report is not None:
+        raise EvidenceError("retirement report supplied without a retirement proposal")
 
     gates = require_object(record["gates"], "evidence.gates")
     required_gates = {"verify_production", "extended_soak"}
@@ -258,7 +580,7 @@ def validate(candidate_sha: str, evidence: Any, manifest: Any, now: datetime) ->
     require_text(deployment_object["host"], "evidence.deployment.host")
 
 
-def load_json(path: Path, label: str) -> Any:
+def parse_json_bytes(payload: bytes, label: str) -> Any:
     def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result = {}
         for key, value in pairs:
@@ -268,10 +590,61 @@ def load_json(path: Path, label: str) -> Any:
         return result
 
     try:
-        with path.open(encoding="utf-8") as source:
-            return json.load(source, object_pairs_hook=reject_duplicate_keys)
-    except (OSError, json.JSONDecodeError) as exc:
+        return json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise EvidenceError(f"cannot parse {label}: {exc}") from exc
+
+
+def load_json(path: Path, label: str) -> Any:
+    try:
+        return parse_json_bytes(path.read_bytes(), label)
+    except OSError as exc:
         raise EvidenceError(f"cannot read {label} {path}: {exc}") from exc
+
+
+def resolve_artifact(root: Path, artifact: str, location: str) -> Path:
+    path = PurePosixPath(artifact)
+    if not artifact or "\\" in artifact or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise EvidenceError(f"{location} must be a safe relative POSIX path")
+    root_path = root.resolve()
+    try:
+        resolved = (root_path / Path(*path.parts)).resolve(strict=True)
+        resolved.relative_to(root_path)
+    except (OSError, ValueError) as exc:
+        raise EvidenceError(f"{location} escapes or is missing from artifact root") from exc
+    if not resolved.is_file():
+        raise EvidenceError(f"{location} must reference a regular file")
+    return resolved
+
+
+def artifact_json_bytes(root: Path, artifact: str, label: str, active: frozenset[Path]) -> tuple[bytes, Path]:
+    path = resolve_artifact(root, artifact, f"{label} artifact")
+    if path in active:
+        raise EvidenceError(f"{label} creates a recursive artifact cycle")
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise EvidenceError(f"cannot read {label} {path}: {exc}") from exc
+    if len(payload) > MAX_ARTIFACT_BYTES:
+        raise EvidenceError(f"{label} exceeds {MAX_ARTIFACT_BYTES} bytes")
+    return payload, path
+
+
+def load_artifact_json(root: Path, artifact: str, expected_hash: str, label: str, active: frozenset[Path]) -> tuple[Any, Path]:
+    payload, path = artifact_json_bytes(root, artifact, label, active)
+    if hashlib.sha256(payload).hexdigest() != expected_hash:
+        raise EvidenceError(f"{label} raw byte hash does not match evidence")
+    return parse_json_bytes(payload, label), path
+
+
+def load_canonical_artifact_json(root: Path, artifact: str, expected_hash: str, label: str, active: frozenset[Path]) -> tuple[Any, Path]:
+    if not SHA256.fullmatch(expected_hash):
+        raise EvidenceError(f"{label} canonical hash must be a lowercase SHA-256")
+    payload, path = artifact_json_bytes(root, artifact, label, active)
+    value = parse_json_bytes(payload, label)
+    if canonical_sha256(value) != expected_hash:
+        raise EvidenceError(f"{label} canonical hash does not match evidence")
+    return value, path
 
 
 def main() -> int:
@@ -279,6 +652,8 @@ def main() -> int:
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--retirement-report", type=Path)
+    parser.add_argument("--artifact-root", type=Path, default=Path("."))
     args = parser.parse_args()
     try:
         validate(
@@ -286,6 +661,8 @@ def main() -> int:
             load_json(args.evidence, "evidence"),
             load_json(args.manifest, "manifest"),
             datetime.now(timezone.utc),
+            load_json(args.retirement_report, "retirement report") if args.retirement_report else None,
+            args.artifact_root,
         )
     except EvidenceError as exc:
         print(f"release evidence invalid: {exc}", file=sys.stderr)

@@ -15,19 +15,20 @@ import (
 )
 
 type API struct {
-	store             Store
-	runner            *Runner
-	adapterProbe      AdapterProbe
-	modelBroker       ModelBrokerStatusProvider
-	modelRuntime      ModelRuntimeControl
-	ownedModelService *ModelService
-	compatBroker      *llamaLineCompatTracker
-	openCode          OpenCodeExecutorStatusProvider
-	canceler          CancelDispatcher
-	scheduler         *Scheduler
-	workerPool        *WorkerPool
-	retention         *RetentionManager
-	asyncDispatch     bool
+	store                 Store
+	runner                *Runner
+	adapterProbe          AdapterProbe
+	modelBroker           ModelBrokerStatusProvider
+	modelRuntime          ModelRuntimeControl
+	ownedModelService     *ModelService
+	compatBroker          *llamaLineCompatTracker
+	openCode              OpenCodeExecutorStatusProvider
+	canceler              CancelDispatcher
+	scheduler             *Scheduler
+	workerPool            *WorkerPool
+	retention             *RetentionManager
+	asyncDispatch         bool
+	compatibilityObserver *CompatibilityObserver
 }
 
 type controlPlaneActorContextKey struct{}
@@ -68,6 +69,18 @@ func (a *API) SetRetentionManager(retention *RetentionManager) {
 
 func (a *API) SetAsyncDispatch(enabled bool) {
 	a.asyncDispatch = enabled
+}
+
+func (a *API) SetCompatibilityObserver(observer *CompatibilityObserver) {
+	a.compatibilityObserver = observer
+}
+
+func (a *API) compatibilityObserverStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.compatibilityObserver == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "health": a.compatibilityObserver.Status()})
 }
 
 func (a *API) Handler() http.Handler {
@@ -369,6 +382,38 @@ func (a *API) compatibilityRetirement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *API) compatibilityReport(w http.ResponseWriter, r *http.Request) {
+	start, err := time.Parse(time.DateOnly, strings.TrimSpace(r.URL.Query().Get("start")))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "start must be a UTC date in YYYY-MM-DD format")
+		return
+	}
+	end, err := time.Parse(time.DateOnly, strings.TrimSpace(r.URL.Query().Get("end")))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "end must be a UTC date in YYYY-MM-DD format")
+		return
+	}
+	observations, ok := a.store.(compatibilityObservationStore)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "compatibility report unavailable")
+		return
+	}
+	report, err := observations.CompatibilityReport(r.Context(), CompatibilityReportInput{Start: start, End: end, GeneratedAt: time.Now().UTC(), Identity: CompatibilityObservationIdentity{SourceRevision: strings.TrimSpace(os.Getenv("SWITCHYARD_SOURCE_REVISION")), DeploymentID: compatibilityDeploymentID()}})
+	if errors.Is(err, ErrInvalid) {
+		writeError(w, http.StatusBadRequest, "window must be complete, elapsed, and between 1 and 90 UTC days")
+		return
+	}
+	if errors.Is(err, ErrCompatibilityCoverageIncomplete) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "compatibility report unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"compatibility_report": report})
 }
 
 func pipelinesOrEmpty(items []Pipeline) []Pipeline {

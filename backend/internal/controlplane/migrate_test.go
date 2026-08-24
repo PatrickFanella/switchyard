@@ -111,6 +111,22 @@ func TestArtifactMeasurementMigrationDeclaresDurableAggregates(t *testing.T) {
 	}
 }
 
+func TestCompatibilityObservationMigrationDoesNotBackfillCoverage(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/022_compatibility_observations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(data)
+	for _, field := range []string{"source_revision", "deployment_id", "observation_started_at", "observation_completed_at", "observation_segment", "closed_at", "compatibility_observer_fence"} {
+		if !strings.Contains(sql, field) {
+			t.Errorf("compatibility observation migration missing %q", field)
+		}
+	}
+	if strings.Contains(sql, "update compatibility_usage_daily") {
+		t.Fatal("compatibility observation migration must not fabricate historical coverage")
+	}
+}
+
 func TestModelBrokerFeedbackMigrationDeclaresDurableFeedback(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/016_model_broker_feedback.sql")
 	if err != nil {

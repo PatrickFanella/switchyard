@@ -192,7 +192,7 @@ release-evidence-verify: ## Validate EVIDENCE and MANIFEST for CANDIDATE_SHA
 	@test -n "$(CANDIDATE_SHA)" || (echo "CANDIDATE_SHA is required" >&2; exit 2)
 	@test -n "$(EVIDENCE)" || (echo "EVIDENCE is required" >&2; exit 2)
 	@test -n "$(MANIFEST)" || (echo "MANIFEST is required" >&2; exit 2)
-	python3 scripts/validate_release_evidence.py --candidate-sha "$(CANDIDATE_SHA)" --evidence "$(EVIDENCE)" --manifest "$(MANIFEST)"
+	python3 scripts/validate_release_evidence.py --candidate-sha "$(CANDIDATE_SHA)" --evidence "$(EVIDENCE)" --manifest "$(MANIFEST)" --artifact-root "$(or $(ARTIFACT_ROOT),.)" $(if $(RETIREMENT_REPORT),--retirement-report "$(RETIREMENT_REPORT)",)
 
 reproducible-build-check: ## Build Go binaries twice and compare bytes
 	@set -euo pipefail; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \

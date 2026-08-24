@@ -17,6 +17,36 @@ record. Run it against the annotated release tag and supply the reviewed pull
 request URL and immutable rollback target. Scheduled qualification runs test the
 contract but do not publish a release candidate record.
 
+Leave `retirement_proposal` absent for ordinary releases. When a follow-on
+deprecated-selector removal is explicitly proposed, the manual workflow also
+requires the canonical `compatibility-retirement-report.json` and a JSON array
+of exactly two prior qualifying release records. Validate that artifact with:
+
+```bash
+make release-evidence-verify \
+  CANDIDATE_SHA="$(git rev-parse HEAD)" \
+  EVIDENCE=release/candidate-evidence.json \
+  MANIFEST=release/manifest.json \
+  RETIREMENT_REPORT=release/compatibility-retirement-report.json \
+  ARTIFACT_ROOT=release
+```
+
+The report must contain 90 elapsed, complete UTC days for both `llama-line` and
+`ocq`, all with zero attempts. Candidate evidence binds the report's source
+revision and deployment identity without treating the report source as a prior
+qualifying release.
+Each prior record binds a distinct normalized release tag and release SHA to
+actual deployed evidence, generated manifest, and zero-use report artifact
+paths and their raw-byte SHA-256 values. The validator loads those local files
+beneath `ARTIFACT_ROOT`. It rejects path escapes, cycles, missing deployment
+gates, and mismatched revision, tag, CI, migration, archive, or checksum
+bindings. It never reconstructs a manifest from evidence. The candidate report
+link also resolves beneath `ARTIFACT_ROOT`; its canonical digest and source
+revision, deployment identity, and segment must match the supplied report.
+The candidate tag (with or without `v`) or SHA cannot be reused. This evidence
+permits a separate removal proposal; it does not remove or disable selectors in
+the qualifying release.
+
 The pull request must be a credential-free HTTPS repository URL ending in
 `/pulls/<positive integer>`. The rollback target must be either a full lowercase
 Git SHA or a semver-like release tag, and it must differ from both the candidate

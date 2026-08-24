@@ -11,6 +11,19 @@ on:
         description: Previous semver-like release tag or full lowercase Git SHA
         required: true
         type: string
+      retirement_proposal:
+        description: Request deprecated-selector retirement proposal qualification
+        required: true
+        default: false
+        type: boolean
+      retirement_report:
+        description: Canonical compatibility retirement report JSON; required only for a retirement proposal
+        required: false
+        type: string
+      retirement_prior_releases:
+        description: JSON array of two records with release tag/SHA plus base64 exact evidence, manifest, and report bytes and raw SHA-256 values
+        required: false
+        type: string
   schedule:
     - cron: '0 5 * * 1'
 
@@ -79,8 +92,15 @@ jobs:
         env:
           RELEASE_PULL_REQUEST: ${{ inputs.pull_request }}
           ROLLBACK_TARGET: ${{ inputs.rollback_target }}
+          RETIREMENT_PROPOSAL: ${{ inputs.retirement_proposal }}
+          RETIREMENT_REPORT_JSON: ${{ inputs.retirement_report }}
+          RETIREMENT_PRIOR_RELEASES_JSON: ${{ inputs.retirement_prior_releases }}
         run: |
           CANDIDATE_SHA="$(git rev-parse HEAD)" python3 - <<'PY'
+          import base64
+          import binascii
+          import hashlib
+          import hmac
           import json
           import os
           from datetime import datetime, timezone
@@ -109,9 +129,56 @@ jobs:
                   for image in manifest["images"]
               ],
           }
+          if os.environ.get("RETIREMENT_PROPOSAL", "false").lower() == "true":
+              if not os.environ.get("RETIREMENT_REPORT_JSON", "").strip():
+                  raise SystemExit("retirement_report is required for a retirement proposal")
+              if not os.environ.get("RETIREMENT_PRIOR_RELEASES_JSON", "").strip():
+                  raise SystemExit("retirement_prior_releases is required for a retirement proposal")
+              report = json.loads(os.environ["RETIREMENT_REPORT_JSON"])
+              supplied_releases = json.loads(os.environ["RETIREMENT_PRIOR_RELEASES_JSON"])
+              prior_releases = []
+              prior_dir = Path("release/prior-qualifying-releases")
+              prior_dir.mkdir(parents=True, exist_ok=True)
+              for index, supplied in enumerate(supplied_releases):
+                  bindings = {
+                      "release_tag": supplied["release_tag"],
+                      "release_sha": supplied["release_sha"],
+                  }
+                  for kind in ("evidence", "manifest", "report"):
+                      try:
+                          payload = base64.b64decode(supplied[f"{kind}_base64"], validate=True)
+                      except (binascii.Error, ValueError) as error:
+                          raise SystemExit(f"prior release {index} {kind} is not strict base64: {error}")
+                      expected = supplied[f"{kind}_sha256"]
+                      actual = hashlib.sha256(payload).hexdigest()
+                      if not hmac.compare_digest(actual, expected):
+                          raise SystemExit(f"prior release {index} {kind} raw SHA-256 mismatch")
+                      artifact_path = prior_dir / f"{index}-{kind}.json"
+                      artifact_path.write_bytes(payload)
+                      bindings[f"{kind}_artifact"] = str(artifact_path.relative_to("release"))
+                      bindings[f"{kind}_sha256"] = expected
+                  prior_releases.append(bindings)
+              canonical = json.dumps(report, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+              Path("release/compatibility-retirement-report.json").write_text(
+                  json.dumps(report, indent=2) + "\n"
+              )
+              evidence["retirement_proposal"] = {
+                  "report": {
+                      "artifact": "compatibility-retirement-report.json",
+                      "sha256": hashlib.sha256(canonical).hexdigest(),
+                      "source_revision": report.get("source_revision"),
+                      "source_identity": report.get("source_identity"),
+                      "source_segment": report.get("source_segment"),
+                  },
+                  "prior_qualifying_releases": prior_releases,
+              }
           Path("release/candidate-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
           PY
-          make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json
+          if [ "${RETIREMENT_PROPOSAL,,}" = "true" ]; then
+            make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json RETIREMENT_REPORT=release/compatibility-retirement-report.json ARTIFACT_ROOT=release
+          else
+            make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json
+          fi
       - name: Upload candidate release evidence
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,6 +186,8 @@ jobs:
           name: candidate-release-evidence-${{ github.sha }}
           path: |
             release/candidate-evidence.json
+            release/compatibility-retirement-report.json
+            release/prior-qualifying-releases/*.json
             release/manifest.json
             release/SHA256SUMS
             release/*.oci.tar

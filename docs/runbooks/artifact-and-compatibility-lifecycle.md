@@ -43,9 +43,41 @@ missing values or introduce object storage from a short-term spike. See
 
 `GET /api/compatibility/retirement` reports aggregate UTC daily usage of the
 deprecated `llama-line` and `ocq` routes. It contains no request payloads and
-survives run/model-ledger retention.
+survives run/model-ledger retention. This endpoint remains informational and
+does not establish removal eligibility.
 
-Do not remove a compatibility route merely because a recent history page is
-empty. Require the retirement endpoint to show zero attempts in the preceding
-90 days, then record the observed release SHA and date in a release
-qualification record before removing the selector.
+Set
+`SWITCHYARD_SOURCE_REVISION` to the deployed 40-character Git SHA and
+`SWITCHYARD_DEPLOYMENT_ID` to an explicit stable identity containing only ASCII
+letters, digits, `.`, `_`, or `-`. If the revision is empty or `unknown`,
+observation is disabled. PostgreSQL grants one replica a session-scoped fenced
+observer lease; other enabled replicas fail startup rather than double-write.
+Lease takeover checks the prior segment's final heartbeat to detect a restart
+gap, then starts a new segment at the current instant. It never merges coverage
+across segments or fills an earlier gap. A revision or identity change also
+starts independent coverage. `GET /api/compatibility/observer` exposes retry
+health and detected gaps.
+
+Generate evidence with authenticated
+`GET /api/compatibility/report?start=YYYY-MM-DD&end=YYYY-MM-DD`. The inclusive
+window is limited to 90 elapsed UTC days. The request succeeds only after the
+end day has elapsed and only when every day/backend pair has complete coverage.
+The canonical report includes exact attempt counts, per-day revision,
+deployment identity, one fenced segment, report source identity, durability
+eligibility, and a deterministic SHA-256. Per-day revisions identify the code
+that observed that day; the top-level revision identifies the release that
+generated the report. Every observation deployment ID equals the report source
+identity. Memory-store reports are diagnostic and never qualification eligible.
+Missing days or backends return `409`; absence is never zero use. This route is
+control-listener-only and is not exposed by model ingress.
+
+Do not remove either selector in the release qualified by this report. A
+follow-on removal proposal may include the optional `retirement_proposal`
+release-evidence field only after all 90 days report zero attempts for both
+backends and exactly two distinct, chronologically ordered, immutable prior
+qualifying releases are supplied. The candidate release cannot be one of those
+two. Each prior release must provide hashed deployed evidence, manifest, and
+report artifact bytes. The validator binds the candidate report artifact
+digest, source revision, deployment identity, and segment to candidate
+evidence. Without that optional proposal, normal release evidence remains
+unchanged.

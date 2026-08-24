@@ -13,11 +13,11 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 1. `cmd/app` loads telemetry and selects memory or PostgreSQL storage.
 2. Defaults are seeded, then one `ModelService` is shared by workflow generation, control handlers, and compatibility adapters before workers, scheduler, and retention are assembled.
 3. HTTP or scheduled triggers create runs; workers claim and execute pipeline snapshots.
-4. Executors call models, OpenCode, Gitea, Git, or allowlisted commands and persist steps, events, artifacts, resolved backend decisions, and compatibility evidence. Artifact writes and run-retention pruning update durable aggregate count/byte measurements in the same transaction.
+4. Executors call models, OpenCode, Gitea, Git, or allowlisted commands and persist steps, events, artifacts, resolved backend decisions, and compatibility evidence. Artifact writes and run-retention pruning update durable aggregate count/byte measurements in the same transaction; the API process records revision-bound daily compatibility coverage for both deprecated backends.
 
 ## Integration
 - Serves `web/` and `cmd/switchyard` through the control-plane API.
 - Uses PostgreSQL and the embedded migrations in `internal/controlplane/migrations/`.
 - Calls the managed service in `services/opencode/`, optional Ollama/llama-line endpoints, Gitea, and OTLP collectors.
-- Serves the authenticated bounded artifact report on the control listener and fixed-name artifact metrics on both canonical metrics routes.
+- Serves authenticated bounded artifact and canonical compatibility-observation reports on the control listener and fixed-name artifact metrics on both canonical metrics routes.
 - Built and configured by the root `Makefile` and `docker-compose.yml`.

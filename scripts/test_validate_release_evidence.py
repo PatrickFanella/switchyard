@@ -5,7 +5,7 @@ import json
 import re
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import validate_release_evidence as validator
@@ -13,6 +13,8 @@ import validate_release_evidence as validator
 
 CANDIDATE = "1" * 40
 OTHER_SHA = "2" * 40
+PRIOR_SHA_ONE = "3" * 40
+PRIOR_SHA_TWO = "4" * 40
 CHECKSUM = "a" * 64
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
 
@@ -63,13 +65,409 @@ def manifest() -> dict:
     }
 
 
+def retirement_report(source_revision: str = CANDIDATE, start: datetime | None = None) -> dict:
+    start = start or datetime(2026, 5, 24, tzinfo=timezone.utc)
+    observations = []
+    for offset in range(90):
+        day = start + timedelta(days=offset)
+        for backend in ("llama-line", "ocq"):
+            observations.append({
+                "date": day.strftime("%Y-%m-%d"),
+                "backend": backend,
+                "attempts": 0,
+                "source_revision": source_revision,
+                "deployment_id": "switchyard-production-kvant",
+                "observation_segment": "segment-production-a",
+                "observation_started_at": day.strftime("%Y-%m-%dT00:00:00Z"),
+                "observation_completed_at": (day + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z"),
+            })
+    report = {
+        "version": "switchyard.compatibility-observation/v1",
+        "source_revision": source_revision,
+        "source_identity": "switchyard-production-kvant",
+        "source_segment": "segment-production-a",
+        "window_start": start.strftime("%Y-%m-%d"),
+        "window_end": (start + timedelta(days=89)).strftime("%Y-%m-%d"),
+        "generated_at": (start + timedelta(days=90, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "observations": observations,
+        "qualification_eligible": True,
+    }
+    unsigned = validator.compatibility_report_payload(report)
+    report["canonical_sha256"] = validator.hashlib.sha256(unsigned).hexdigest()
+    return report
+
+
+def retirement_evidence(artifact_root: Path | None = None) -> tuple[dict, dict]:
+    artifact_root = artifact_root or validator.DEFAULT_ARTIFACT_ROOT
+    assert artifact_root is not None
+    evidence = candidate_evidence()
+    report = retirement_report()
+    report_path = artifact_root / "compatibility-retirement-report.json"
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    evidence["retirement_proposal"] = {
+        "report": {
+            "artifact": "compatibility-retirement-report.json",
+            "sha256": validator.canonical_sha256(report),
+            "source_revision": CANDIDATE,
+            "source_identity": report["source_identity"],
+            "source_segment": report["source_segment"],
+        },
+        "prior_qualifying_releases": [
+            {
+                "release_tag": "v1.2.1",
+                "release_sha": PRIOR_SHA_ONE,
+                "evidence_artifact": "prior-one-evidence.json",
+                "evidence_sha256": "b" * 64,
+                "manifest_artifact": "prior-one-manifest.json",
+                "manifest_sha256": "f" * 64,
+                "report_artifact": "prior-one-report.json",
+                "report_sha256": "d" * 64,
+            },
+            {
+                "release_tag": "v1.2.2",
+                "release_sha": PRIOR_SHA_TWO,
+                "evidence_artifact": "prior-two-evidence.json",
+                "evidence_sha256": "c" * 64,
+                "manifest_artifact": "prior-two-manifest.json",
+                "manifest_sha256": "9" * 64,
+                "report_artifact": "prior-two-report.json",
+                "report_sha256": "e" * 64,
+            },
+        ],
+    }
+    for index, (sha, tag, start) in enumerate(((PRIOR_SHA_ONE, "v1.2.1", datetime(2025, 7, 1, tzinfo=timezone.utc)), (PRIOR_SHA_TWO, "v1.2.2", datetime(2025, 11, 1, tzinfo=timezone.utc)))):
+        prior_evidence = candidate_evidence()
+        prior_evidence["candidate_sha"] = sha
+        prior_evidence["release_tag"] = tag
+        prior_evidence["rollback_target"] = "v1.2.0"
+        prior_evidence["phase"] = "deployed"
+        prior_evidence["gates"].update({
+            "backup_restore": gate(),
+            "production_smoke": gate("2026-08-22T11:35:00Z"),
+        })
+        prior_evidence["gates"]["production_smoke"] = gate("2026-08-22T10:35:00Z")
+        prior_evidence["recorded_at"] = "2026-08-22T10:40:00Z"
+        prior_evidence["deployment"] = {
+            "deployed_sha": sha,
+            "deployed_at": "2026-08-22T10:30:00Z",
+            "host": "kvant",
+        }
+        prior_manifest = manifest()
+        prior_manifest["source_revision"] = sha
+        prior_manifest["release_tag"] = tag
+        prior_report = retirement_report(sha, start)
+        release = evidence["retirement_proposal"]["prior_qualifying_releases"][index]
+        evidence_bytes = json.dumps(prior_evidence, separators=(",", ":")).encode()
+        manifest_bytes = json.dumps(prior_manifest, separators=(",", ":")).encode()
+        report_bytes = json.dumps(prior_report, separators=(",", ":")).encode()
+        (artifact_root / release["evidence_artifact"]).write_bytes(evidence_bytes)
+        (artifact_root / release["manifest_artifact"]).write_bytes(manifest_bytes)
+        (artifact_root / release["report_artifact"]).write_bytes(report_bytes)
+        release["evidence_sha256"] = validator.hashlib.sha256(evidence_bytes).hexdigest()
+        release["manifest_sha256"] = validator.hashlib.sha256(manifest_bytes).hexdigest()
+        release["report_sha256"] = validator.hashlib.sha256(report_bytes).hexdigest()
+    return evidence, report
+
+
+def refresh_report_hashes(evidence: dict, report: dict) -> None:
+    report.pop("canonical_sha256", None)
+    unsigned = validator.compatibility_report_payload(report)
+    report["canonical_sha256"] = validator.hashlib.sha256(unsigned).hexdigest()
+    evidence["retirement_proposal"]["report"]["sha256"] = validator.canonical_sha256(report)
+    root = validator.DEFAULT_ARTIFACT_ROOT
+    assert root is not None
+    (root / evidence["retirement_proposal"]["report"]["artifact"]).write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 class ReleaseEvidenceTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.artifact_root = Path(self._temp.name)
+        validator.DEFAULT_ARTIFACT_ROOT = self.artifact_root
+
     def assert_invalid(self, evidence: dict, expected: str, *, release_manifest: dict | None = None) -> None:
         with self.assertRaisesRegex(validator.EvidenceError, expected):
             validator.validate(CANDIDATE, evidence, release_manifest or manifest(), NOW)
 
     def test_candidate_phase_accepts_no_deployment_fields(self) -> None:
         validator.validate(CANDIDATE, candidate_evidence(), manifest(), NOW)
+
+    def test_retirement_proposal_accepts_complete_zero_use_report_and_two_prior_releases(self) -> None:
+        evidence, report = retirement_evidence()
+        validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_is_rejected_without_proposal(self) -> None:
+        with self.assertRaisesRegex(validator.EvidenceError, "without a retirement proposal"):
+            validator.validate(CANDIDATE, candidate_evidence(), manifest(), NOW, retirement_report())
+
+    def test_retirement_proposal_requires_report(self) -> None:
+        evidence, _ = retirement_evidence()
+        self.assert_invalid(evidence, "requires a compatibility retirement report")
+
+    def test_retirement_report_requires_ninety_elapsed_days(self) -> None:
+        evidence, report = retirement_evidence()
+        report["window_start"] = "2026-05-25"
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "exactly 90 elapsed days"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_requires_complete_coverage_for_both_backends(self) -> None:
+        mutations = (
+            lambda report: report["observations"].pop(),
+            lambda report: report["observations"][1].__setitem__("backend", "llama-line"),
+            lambda report: report["observations"][1].__setitem__("date", "2026-05-25"),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                evidence, report = retirement_evidence()
+                mutate(report)
+                refresh_report_hashes(evidence, report)
+                with self.assertRaises(validator.EvidenceError):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_rejects_backend_use(self) -> None:
+        evidence, report = retirement_evidence()
+        report["observations"][0]["attempts"] = 1
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "attempts must be integer zero"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_requires_shared_daily_identity(self) -> None:
+        evidence, report = retirement_evidence()
+        report["observations"][1]["deployment_id"] = "different-deployment"
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "does not match the report identity"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_hash_is_bound_to_candidate_evidence(self) -> None:
+        evidence, report = retirement_evidence()
+        evidence["retirement_proposal"]["report"]["sha256"] = "d" * 64
+        with self.assertRaisesRegex(validator.EvidenceError, "hash does not match"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_candidate_retirement_report_named_artifact_must_exist_and_match(self) -> None:
+        for mutation, expected in (
+            ("missing", "escapes or is missing"),
+            ("tampered", "canonical hash does not match"),
+            ("different", "does not match its named artifact"),
+        ):
+            with self.subTest(mutation=mutation):
+                evidence, report = retirement_evidence()
+                path = self.artifact_root / "compatibility-retirement-report.json"
+                if mutation == "missing":
+                    path.unlink()
+                elif mutation == "tampered":
+                    path.write_bytes(path.read_bytes() + b"\n")
+                    # Whitespace preserves the canonical object, so alter content too.
+                    artifact = json.loads(path.read_text())
+                    artifact["generated_at"] = "2026-08-22T10:59:59Z"
+                    path.write_text(json.dumps(artifact))
+                else:
+                    different = copy.deepcopy(report)
+                    different["generated_at"] = "2026-08-22T10:59:59Z"
+                    path.write_text(json.dumps(different))
+                    evidence["retirement_proposal"]["report"]["sha256"] = validator.canonical_sha256(different)
+                with self.assertRaisesRegex(validator.EvidenceError, expected):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_revision_and_source_identity_are_bound(self) -> None:
+        for field, value, expected in (
+            ("source_revision", OTHER_SHA, "source_revision does not match"),
+            ("source_identity", "another-deployment", "source_identity does not match"),
+            ("source_segment", "another-segment", "source_segment does not match"),
+        ):
+            with self.subTest(field=field):
+                evidence, report = retirement_evidence()
+                evidence["retirement_proposal"]["report"][field] = value
+                with self.assertRaisesRegex(validator.EvidenceError, expected):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_source_revision_is_bound_to_candidate(self) -> None:
+        evidence, report = retirement_evidence()
+        report["source_revision"] = OTHER_SHA
+        evidence["retirement_proposal"]["report"]["source_revision"] = OTHER_SHA
+        for observation in report["observations"]:
+            observation["source_revision"] = OTHER_SHA
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "must match candidate SHA"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_observations_match_report_revision(self) -> None:
+        evidence, report = retirement_evidence()
+        report["observations"][0]["source_revision"] = OTHER_SHA
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "does not match the report source_revision"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_observation_missing_hash_field_is_validation_error(self) -> None:
+        evidence, report = retirement_evidence()
+        del report["observations"][0]["backend"]
+        evidence["retirement_proposal"]["report"]["sha256"] = validator.canonical_sha256(report)
+        (self.artifact_root / "compatibility-retirement-report.json").write_text(json.dumps(report))
+        with self.assertRaisesRegex(validator.EvidenceError, "missing required field"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_rejects_invalid_internal_digest(self) -> None:
+        evidence, report = retirement_evidence()
+        report["canonical_sha256"] = "f" * 64
+        evidence["retirement_proposal"]["report"]["sha256"] = validator.canonical_sha256(report)
+        (self.artifact_root / "compatibility-retirement-report.json").write_text(json.dumps(report))
+        with self.assertRaisesRegex(validator.EvidenceError, "canonical_sha256 does not match"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_report_hash_ignores_input_object_key_order(self) -> None:
+        evidence, report = retirement_evidence()
+        original_digest = report["canonical_sha256"]
+        report = dict(reversed(list(report.items())))
+        report["observations"] = [
+            dict(reversed(list(observation.items())))
+            for observation in report["observations"]
+        ]
+        self.assertEqual(
+            validator.hashlib.sha256(
+                validator.compatibility_report_payload(report)
+            ).hexdigest(),
+            original_digest,
+        )
+        evidence["retirement_proposal"]["report"]["sha256"] = validator.canonical_sha256(report)
+        validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_proposal_requires_exactly_two_prior_releases(self) -> None:
+        for count in (1, 3):
+            with self.subTest(count=count):
+                evidence, report = retirement_evidence()
+                releases = evidence["retirement_proposal"]["prior_qualifying_releases"]
+                if count == 1:
+                    releases.pop()
+                else:
+                    releases.append(copy.deepcopy(releases[-1]))
+                    releases[-1]["release_tag"] = "v1.2.0"
+                    releases[-1]["release_sha"] = "5" * 40
+                    releases[-1]["evidence_sha256"] = "e" * 64
+                with self.assertRaisesRegex(validator.EvidenceError, "exactly two releases"):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_retirement_prior_releases_are_distinct_and_ordered(self) -> None:
+        for field in ("release_tag", "release_sha", "evidence_sha256"):
+            with self.subTest(field=field):
+                evidence, report = retirement_evidence()
+                releases = evidence["retirement_proposal"]["prior_qualifying_releases"]
+                releases[1][field] = releases[0][field]
+                with self.assertRaisesRegex(validator.EvidenceError, "distinct immutable records"):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+        evidence, report = retirement_evidence()
+        releases = evidence["retirement_proposal"]["prior_qualifying_releases"]
+        releases.reverse()
+        with self.assertRaisesRegex(validator.EvidenceError, "ordered by qualification time"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_prior_release_requires_hashed_manifest_artifact(self) -> None:
+        for mutation, expected in (
+            ("missing", "escapes or is missing"),
+            ("tampered", "raw byte hash"),
+        ):
+            with self.subTest(mutation=mutation):
+                evidence, report = retirement_evidence()
+                release = evidence["retirement_proposal"]["prior_qualifying_releases"][0]
+                path = self.artifact_root / release["manifest_artifact"]
+                if mutation == "missing":
+                    path.unlink()
+                else:
+                    path.write_bytes(path.read_bytes() + b"\n")
+                with self.assertRaisesRegex(validator.EvidenceError, expected):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_prior_manifest_binds_release_revision_tag_ci_and_archives(self) -> None:
+        mutations = (
+            ("source_revision", OTHER_SHA, "manifest source_revision"),
+            ("release_tag", "v9.9.9", "release_tag does not match manifest"),
+            ("ci_run_url", "https://gitea.internal/actions/runs/999", "ci_run does not match"),
+            ("images", [{"archive": "other.oci.tar", "archive_sha256": CHECKSUM}], "checksums do not match"),
+        )
+        for field, value, expected in mutations:
+            with self.subTest(field=field):
+                evidence, report = retirement_evidence()
+                release = evidence["retirement_proposal"]["prior_qualifying_releases"][0]
+                path = self.artifact_root / release["manifest_artifact"]
+                prior_manifest = json.loads(path.read_text())
+                prior_manifest[field] = value
+                payload = json.dumps(prior_manifest, separators=(",", ":")).encode()
+                path.write_bytes(payload)
+                release["manifest_sha256"] = validator.hashlib.sha256(payload).hexdigest()
+                with self.assertRaisesRegex(validator.EvidenceError, expected):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_prior_qualifying_evidence_must_be_deployed_with_deployment_gates(self) -> None:
+        for mutation, expected in (
+            ("candidate", "must be deployed phase"),
+            ("missing-gate", "missing required field.*backup_restore"),
+        ):
+            with self.subTest(mutation=mutation):
+                evidence, report = retirement_evidence()
+                release = evidence["retirement_proposal"]["prior_qualifying_releases"][0]
+                path = self.artifact_root / release["evidence_artifact"]
+                prior = json.loads(path.read_text())
+                if mutation == "candidate":
+                    prior["phase"] = "candidate"
+                    prior.pop("deployment")
+                    prior["gates"].pop("backup_restore")
+                    prior["gates"].pop("production_smoke")
+                else:
+                    prior["gates"].pop("backup_restore")
+                payload = json.dumps(prior, separators=(",", ":")).encode()
+                path.write_bytes(payload)
+                release["evidence_sha256"] = validator.hashlib.sha256(payload).hexdigest()
+                with self.assertRaisesRegex(validator.EvidenceError, expected):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_candidate_cannot_be_reused_as_prior_release(self) -> None:
+        for field, value in (("release_tag", "v1.2.3"), ("release_sha", CANDIDATE)):
+            with self.subTest(field=field):
+                evidence, report = retirement_evidence()
+                evidence["retirement_proposal"]["prior_qualifying_releases"][1][field] = value
+                with self.assertRaisesRegex(validator.EvidenceError, "candidate release cannot count"):
+                    validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_candidate_tag_alias_cannot_be_reused_as_prior_release(self) -> None:
+        evidence, report = retirement_evidence()
+        evidence["retirement_proposal"]["prior_qualifying_releases"][1]["release_tag"] = "1.2.3"
+        with self.assertRaisesRegex(validator.EvidenceError, "candidate release cannot count"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_prior_tag_aliases_are_not_distinct(self) -> None:
+        evidence, report = retirement_evidence()
+        releases = evidence["retirement_proposal"]["prior_qualifying_releases"]
+        releases[0]["release_tag"] = "v1.2.1"
+        releases[1]["release_tag"] = "1.2.1"
+        with self.assertRaisesRegex(validator.EvidenceError, "distinct immutable records"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_prior_release_artifact_bytes_are_hashed(self) -> None:
+        evidence, report = retirement_evidence()
+        path = self.artifact_root / evidence["retirement_proposal"]["prior_qualifying_releases"][0]["evidence_artifact"]
+        path.write_bytes(path.read_bytes() + b"\n")
+        with self.assertRaisesRegex(validator.EvidenceError, "raw byte hash"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_diagnostic_report_cannot_qualify(self) -> None:
+        evidence, report = retirement_evidence()
+        report["qualification_eligible"] = False
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "diagnostic"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
+
+    def test_report_identity_uses_same_safe_charset_as_runtime(self) -> None:
+        evidence, report = retirement_evidence()
+        report["source_identity"] = "production&west"
+        evidence["retirement_proposal"]["report"]["source_identity"] = "production&west"
+        for observation in report["observations"]:
+            observation["deployment_id"] = "production&west"
+        refresh_report_hashes(evidence, report)
+        with self.assertRaisesRegex(validator.EvidenceError, "ASCII letters"):
+            validator.validate(CANDIDATE, evidence, manifest(), NOW, report)
 
     def test_checked_in_schema_is_version_one(self) -> None:
         schema_path = (
@@ -109,6 +507,11 @@ class ReleaseEvidenceTest(unittest.TestCase):
         semver_pattern = re.compile(rollback_schema["oneOf"][1]["pattern"])
         self.assertIsNotNone(semver_pattern.fullmatch("v1.2.2"))
         self.assertIsNone(semver_pattern.fullmatch("main"))
+        qualifying = schema["$defs"]["qualifying_release"]
+        self.assertIn("manifest_artifact", qualifying["required"])
+        self.assertIn("manifest_sha256", qualifying["required"])
+        report_link = schema["properties"]["retirement_proposal"]["properties"]["report"]
+        self.assertIn("source_segment", report_link["required"])
 
     def test_deployed_phase_accepts_complete_deployment_proof(self) -> None:
         evidence = candidate_evidence()
@@ -359,10 +762,23 @@ class ReleaseEvidenceTest(unittest.TestCase):
         generator = (root / "scripts" / "write-release-manifest.sh").read_text()
         workflow = (root / ".gitea" / "workflows" / "verify-production.yml").read_text()
         self.assertIn('"migration_head"', generator)
-        for artifact in ("candidate-evidence.json", "manifest.json", "SHA256SUMS"):
+        for artifact in (
+            "candidate-evidence.json",
+            "compatibility-retirement-report.json",
+            "manifest.json",
+            "SHA256SUMS",
+        ):
             with self.subTest(artifact=artifact):
                 self.assertIn(f"release/{artifact}", workflow)
         self.assertIn("release/*.oci.tar", workflow)
+        self.assertIn("retirement_proposal:", workflow)
+        self.assertIn("RETIREMENT_PRIOR_RELEASES_JSON", workflow)
+        self.assertIn('base64.b64decode(supplied[f"{kind}_base64"], validate=True)', workflow)
+        self.assertIn('for kind in ("evidence", "manifest", "report")', workflow)
+        self.assertNotIn('manifest_from_evidence', workflow)
+        makefile = (root / "Makefile").read_text()
+        self.assertIn("RETIREMENT_REPORT", makefile)
+        self.assertIn('--retirement-report', makefile)
 
     def test_rejects_duplicate_json_keys_in_evidence_and_manifest(self) -> None:
         cases = (

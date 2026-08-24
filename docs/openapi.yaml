@@ -699,6 +699,46 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CompatibilityRetirementStatus" }
+  /api/compatibility/report:
+    get:
+      summary: Generate canonical deprecated-backend observation evidence
+      description: >-
+        Returns canonical JSON only when every requested elapsed UTC day has a
+        completed, revision-bound observation for both llama-line and OCQ.
+        Missing rows are never interpreted as zero attempts.
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: Inclusive UTC start date.
+          schema: { type: string, format: date }
+        - name: end
+          in: query
+          required: true
+          description: Inclusive elapsed UTC end date.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Complete canonical compatibility observation report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  compatibility_report: { $ref: "#/components/schemas/CompatibilityReport" }
+                required: [compatibility_report]
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/compatibility/observer:
+    get:
+      summary: Get compatibility observer health and detected gaps
+      responses:
+        "200":
+          description: Observer health, or disabled status
+          content:
+            application/json:
+              schema: { type: object }
   /api/operator-safety:
     get:
       summary: Get operator safety status
@@ -1250,6 +1290,35 @@ components:
           maxItems: 90
           items: { $ref: "#/components/schemas/ArtifactDailyBucket" }
       required: [window_start, window_end, bucket, observation_started_at, retained, retained_bytes, retained_bytes_unmeasured, created_total, created_bytes_total, pruned_total, pruned_bytes_total, pruned_bytes_unmeasured_total, declared_retention_missing, declared_retention_expired, declared_retention_expired_bytes, declared_retention_expired_bytes_unmeasured, retention_semantics, buckets]
+    CompatibilityObservation:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        backend: { type: string, enum: [llama-line, ocq] }
+        attempts: { type: integer, format: int64, minimum: 0 }
+        source_revision: { type: string }
+        deployment_id: { type: string }
+        observation_started_at: { type: string, format: date-time }
+        observation_completed_at: { type: string, format: date-time }
+        observation_segment: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+      required: [date, backend, attempts, source_revision, deployment_id, observation_started_at, observation_completed_at, observation_segment]
+    CompatibilityReport:
+      type: object
+      properties:
+        version: { type: string, const: switchyard.compatibility-observation/v1 }
+        source_revision: { type: string, pattern: "^[0-9a-f]{40}$" }
+        source_identity: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+        source_segment: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+        window_start: { type: string, format: date }
+        window_end: { type: string, format: date }
+        generated_at: { type: string, format: date-time }
+        observations:
+          type: array
+          maxItems: 180
+          items: { $ref: "#/components/schemas/CompatibilityObservation" }
+        canonical_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        qualification_eligible: { type: boolean, description: False for non-durable diagnostic stores. }
+      required: [version, source_revision, source_identity, source_segment, window_start, window_end, generated_at, observations, canonical_sha256, qualification_eligible]
     StringMap:
       type: object
       additionalProperties: { type: string }
