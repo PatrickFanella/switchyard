@@ -9,16 +9,18 @@ lib_dir="${SWITCHYARD_LIB_DIR:-/usr/lib/switchyard}"
 unit_dst="$unit_dir/switchyard-web-gate.service"
 rules_dst="$nft_dir/web-gate.nft"
 renderer_dst="$lib_dir/render_tailscale_web_gate.py"
+ufw_helper_dst="$lib_dir/manage_tailscale_web_forward.py"
 docker_dropin_dir="$unit_dir/docker.service.d"
 docker_dropin_dst="$docker_dropin_dir/50-switchyard-web-gate.conf"
 unit_src="$repo_root/deploy/switchyard-web-gate.service"
 renderer_src="$repo_root/scripts/render_tailscale_web_gate.py"
+ufw_helper_src="$repo_root/scripts/manage_tailscale_web_forward.py"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "install-web-gate.sh must be run with sudo/root" >&2
   exit 1
 fi
-for command in python3 nft systemctl install docker cmp mv stat; do
+for command in python3 nft ufw iptables systemctl install docker cmp mv stat; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required" >&2
     exit 1
@@ -49,7 +51,7 @@ if [[ ! "$env_file" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
   echo "SWITCHYARD_ENV_FILE contains characters unsafe for systemd" >&2
   exit 1
 fi
-if [[ ! -f "$unit_src" || -L "$unit_src" || ! -f "$renderer_src" || -L "$renderer_src" || ! -d "$unit_dir" || -L "$unit_dir" ]]; then
+if [[ ! -f "$unit_src" || -L "$unit_src" || ! -f "$renderer_src" || -L "$renderer_src" || ! -f "$ufw_helper_src" || -L "$ufw_helper_src" || ! -d "$unit_dir" || -L "$unit_dir" ]]; then
   echo "web gate install inputs are missing or unsafe" >&2
   exit 1
 fi
@@ -68,7 +70,7 @@ for install_dir in "$nft_dir" "$lib_dir"; do
     exit 1
   fi
 done
-for destination in "$unit_dst" "$rules_dst" "$renderer_dst" "$docker_dropin_dst"; do
+for destination in "$unit_dst" "$rules_dst" "$renderer_dst" "$ufw_helper_dst" "$docker_dropin_dst"; do
   if [[ -L "$destination" || -e "$destination" && ! -f "$destination" ]]; then
     echo "web gate install destination must be a regular file" >&2
     exit 1
@@ -81,6 +83,7 @@ tmp_dropin="$(mktemp)"
 rules_snapshot="$(mktemp)"
 unit_snapshot="$(mktemp)"
 renderer_snapshot="$(mktemp)"
+ufw_helper_snapshot="$(mktemp)"
 dropin_snapshot="$(mktemp)"
 kernel_snapshot="$(mktemp)"
 live_table="$(mktemp)"
@@ -91,10 +94,12 @@ dropin_dir_created=0
 rules_existed=0
 unit_existed=0
 renderer_existed=0
+ufw_helper_existed=0
 dropin_existed=0
 table_existed=0
 was_enabled=0
 was_active=0
+forward_rule_created=0
 
 atomic_install() {
   local source=$1 destination=$2 mode=$3 temporary="${2}.switchyard-install.$$"
@@ -105,6 +110,7 @@ atomic_install() {
 
 verify_live_gate() {
   systemctl is-active --quiet switchyard-web-gate.service || return 1
+  python3 "$ufw_helper_dst" verify --env-file "$env_file" >/dev/null || return 1
   nft list table inet switchyard_web_gate >"$live_table" 2>/dev/null || return 1
   python3 - "$tmp_rules" "$live_table" <<'PY'
 import pathlib, re, sys
@@ -165,7 +171,11 @@ cleanup() {
   status=$?
   if [[ $status -ne 0 && $mutation_started -eq 1 ]]; then
     systemctl disable --now switchyard-web-gate.service >/dev/null 2>&1 || true
+    if [[ $forward_rule_created -eq 1 ]]; then
+      python3 "$ufw_helper_dst" delete --env-file "$env_file" >/dev/null 2>&1 || true
+    fi
     restore_file "$renderer_snapshot" "$renderer_dst" "$renderer_existed" || true
+    restore_file "$ufw_helper_snapshot" "$ufw_helper_dst" "$ufw_helper_existed" || true
     restore_file "$rules_snapshot" "$rules_dst" "$rules_existed" || true
     restore_file "$unit_snapshot" "$unit_dst" "$unit_existed" || true
     restore_file "$dropin_snapshot" "$docker_dropin_dst" "$dropin_existed" || true
@@ -180,10 +190,11 @@ cleanup() {
     nft delete table inet switchyard_web_gate >/dev/null 2>&1 || true
     [[ $table_existed -eq 0 ]] || nft --file "$kernel_snapshot" >/dev/null 2>&1 || true
   fi
-  rm -f "$tmp_rules" "$tmp_unit" "$tmp_dropin" "$rules_snapshot" "$unit_snapshot" "$renderer_snapshot" "$dropin_snapshot" "$kernel_snapshot" "$live_table"
+  rm -f "$tmp_rules" "$tmp_unit" "$tmp_dropin" "$rules_snapshot" "$unit_snapshot" "$renderer_snapshot" "$ufw_helper_snapshot" "$dropin_snapshot" "$kernel_snapshot" "$live_table"
   rm -f -- "${renderer_dst}.switchyard-install.$$" "${renderer_dst}.switchyard-rollback.$$" \
     "${rules_dst}.switchyard-install.$$" "${rules_dst}.switchyard-rollback.$$" \
     "${unit_dst}.switchyard-install.$$" "${unit_dst}.switchyard-rollback.$$" \
+    "${ufw_helper_dst}.switchyard-install.$$" "${ufw_helper_dst}.switchyard-rollback.$$" \
     "${docker_dropin_dst}.switchyard-install.$$" "${docker_dropin_dst}.switchyard-rollback.$$"
   return "$status"
 }
@@ -191,15 +202,20 @@ trap cleanup EXIT
 
 # Complete all input, Compose, and syntax probes before changing endpoint state.
 python3 "$renderer_src" --env-file "$env_file" --check
+PYTHONPATH="$repo_root/scripts" python3 "$ufw_helper_src" check-config --env-file "$env_file"
 python3 "$renderer_src" --env-file "$env_file" --output "$tmp_rules"
 nft --check --file "$tmp_rules"
-python3 - "$unit_src" "$tmp_unit" "$rules_dst" "$renderer_dst" "$env_file" <<'PY'
+if ! ufw status | grep -Fxq 'Status: active'; then
+  echo "UFW must be active" >&2
+  exit 1
+fi
+python3 - "$unit_src" "$tmp_unit" "$rules_dst" "$renderer_dst" "$ufw_helper_dst" "$env_file" <<'PY'
 import pathlib, sys
-source, target, rules, renderer, env_file = map(pathlib.Path, sys.argv[1:])
+source, target, rules, renderer, ufw_helper, env_file = map(pathlib.Path, sys.argv[1:])
 value = source.read_text(encoding="utf-8")
-for placeholder, replacement in (("__NFT_RULES__", rules), ("__RENDERER__", renderer), ("__ENV_FILE__", env_file)):
+for placeholder, replacement in (("__NFT_RULES__", rules), ("__RENDERER__", renderer), ("__UFW_HELPER__", ufw_helper), ("__ENV_FILE__", env_file)):
     value = value.replace(placeholder, str(replacement))
-if any(placeholder in value for placeholder in ("__NFT_RULES__", "__RENDERER__", "__ENV_FILE__")):
+if any(placeholder in value for placeholder in ("__NFT_RULES__", "__RENDERER__", "__UFW_HELPER__", "__ENV_FILE__")):
     raise SystemExit("unresolved web gate unit placeholder")
 target.write_text(value, encoding="utf-8")
 PY
@@ -213,19 +229,21 @@ docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" config 
 if [[ -e "$rules_dst" ]]; then rules_existed=1; cp -p -- "$rules_dst" "$rules_snapshot"; fi
 if [[ -e "$unit_dst" ]]; then unit_existed=1; cp -p -- "$unit_dst" "$unit_snapshot"; fi
 if [[ -e "$renderer_dst" ]]; then renderer_existed=1; cp -p -- "$renderer_dst" "$renderer_snapshot"; fi
+if [[ -e "$ufw_helper_dst" ]]; then ufw_helper_existed=1; cp -p -- "$ufw_helper_dst" "$ufw_helper_snapshot"; fi
 if [[ -e "$docker_dropin_dst" ]]; then dropin_existed=1; cp -p -- "$docker_dropin_dst" "$dropin_snapshot"; fi
 if nft list table inet switchyard_web_gate >"$kernel_snapshot" 2>/dev/null; then table_existed=1; fi
 if systemctl is-enabled --quiet switchyard-web-gate.service; then was_enabled=1; fi
 if systemctl is-active --quiet switchyard-web-gate.service; then was_active=1; fi
 
 changed=0
-for pair in "$tmp_rules:$rules_dst" "$tmp_unit:$unit_dst" "$renderer_src:$renderer_dst" "$tmp_dropin:$docker_dropin_dst"; do
+for pair in "$tmp_rules:$rules_dst" "$tmp_unit:$unit_dst" "$renderer_src:$renderer_dst" "$ufw_helper_src:$ufw_helper_dst" "$tmp_dropin:$docker_dropin_dst"; do
   source=${pair%%:*}
   destination=${pair#*:}
   if [[ ! -f "$destination" ]] || ! cmp --silent "$source" "$destination"; then changed=1; fi
 done
 if [[ -f "$rules_dst" && "$(stat -Lc '%u %g %a' "$rules_dst")" != "0 0 644" ]]; then changed=1; fi
 if [[ -f "$renderer_dst" && "$(stat -Lc '%u %g %a' "$renderer_dst")" != "0 0 755" ]]; then changed=1; fi
+if [[ -f "$ufw_helper_dst" && "$(stat -Lc '%u %g %a' "$ufw_helper_dst")" != "0 0 755" ]]; then changed=1; fi
 
 enforcement_active=0
 if verify_live_gate; then enforcement_active=1; fi
@@ -247,10 +265,19 @@ if [[ $changed -eq 1 ]]; then
   if [[ ! -d "$lib_dir" ]]; then install -d -o root -g root -m 0755 "$lib_dir"; lib_dir_created=1; fi
   if [[ ! -d "$docker_dropin_dir" ]]; then install -d -o root -g root -m 0755 "$docker_dropin_dir"; dropin_dir_created=1; fi
   atomic_install "$renderer_src" "$renderer_dst" 0755
+  atomic_install "$ufw_helper_src" "$ufw_helper_dst" 0755
   atomic_install "$tmp_rules" "$rules_dst" 0644
   atomic_install "$tmp_unit" "$unit_dst" 0644
   atomic_install "$tmp_dropin" "$docker_dropin_dst" 0644
   systemctl daemon-reload
+fi
+forward_result="$(python3 "$ufw_helper_dst" ensure --env-file "$env_file")"
+if [[ "$forward_result" == "created" ]]; then
+  mutation_started=1
+  forward_rule_created=1
+elif [[ "$forward_result" != "existing" ]]; then
+  echo "UFW helper returned an invalid result" >&2
+  exit 1
 fi
 for property in Requires After; do
   if ! systemctl show docker.service --property="$property" --value | tr ' ' '\n' | grep -Fxq switchyard-web-gate.service; then

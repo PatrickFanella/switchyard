@@ -107,17 +107,20 @@ paths or credentials into evidence.
 Only after qualification and backup verification, switch the clean production
 checkout to the approved tag using the normal non-destructive Git workflow,
 then install the nft gate and repository-owned unit from the same canonical env
-path. The override must be absolute, regular, and not a symlink:
+path. The override must be absolute, regular, and not a symlink. Recreate the
+default network when deploying the pinned bridge name and web address for the
+first time:
 
 ```bash
+sudo systemctl stop switchyard
+docker compose --env-file /absolute/path/to/switchyard.env -f docker-compose.yml down
 sudo SWITCHYARD_ENV_FILE=/absolute/path/to/switchyard.env ./deploy/install-web-gate.sh
 sudo SWITCHYARD_ENV_FILE=/absolute/path/to/switchyard.env ./deploy/install-systemd.sh
-sudo systemctl reload switchyard
 ```
 
 The gate installer checks Compose and rendered nft syntax before mutation and
-installs its root-owned mode-0755 renderer at
-`/usr/lib/switchyard/render_tailscale_web_gate.py`. If gate content changes, it
+installs root-owned mode-0755 renderer and UFW helper scripts under
+`/usr/lib/switchyard`. If gate content changes, it
 stops Compose `web` before replacing files or live rules. Failure restores the
 prior renderer, rules/table, drop-in, unit, enablement, and active state, but
 web stays stopped; correct the failure and rerun both installers. The systemd
@@ -142,7 +145,7 @@ that:
 - the public route reaches Authelia;
 - the web hop uses the approved host-managed Tailscale peers;
 - nft counters show the original approved Tailscale peer before DNAT;
-- nginx admits only the pinned Docker gateway `/32`;
+- UFW admits only the exact Tailscale peer to the pinned web container address and nginx admits that same peer `/32`;
 - the API accepts only the hop token plus authenticated user identity;
 - Ollama is reached on its real upstream port.
 

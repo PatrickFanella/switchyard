@@ -19,6 +19,7 @@ TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 PRIVATE_NETWORKS = tuple(
     ipaddress.IPv4Network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
+LINUX_INTERFACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}\Z")
 DOTENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 NUMERIC_ID = re.compile(r"[0-9]+\Z")
 MAX_RUNTIME_ID = 2_147_483_647
@@ -449,9 +450,24 @@ def validate(env: Mapping[str, str]) -> list[str]:
         except ValueError:
             errors.append("SWITCHYARD_DOCKER_BRIDGE_GATEWAY must be a usable address in SWITCHYARD_DOCKER_BRIDGE_SUBNET")
 
+        bridge_name = _value(env, "SWITCHYARD_DOCKER_BRIDGE_NAME")
+        if bridge_name in {"", ".", ".."} or LINUX_INTERFACE_NAME.fullmatch(bridge_name) is None:
+            errors.append("SWITCHYARD_DOCKER_BRIDGE_NAME must be a safe Linux interface name of at most 15 characters")
+
+        try:
+            web_container = ipaddress.IPv4Address(_value(env, "SWITCHYARD_WEB_CONTAINER_IPV4"))
+            if (
+                bridge is None
+                or web_container not in bridge
+                or web_container in {bridge.network_address, bridge.broadcast_address, gateway}
+            ):
+                raise ValueError
+        except ValueError:
+            errors.append("SWITCHYARD_WEB_CONTAINER_IPV4 must be a usable non-gateway address in SWITCHYARD_DOCKER_BRIDGE_SUBNET")
+
         trusted_proxy = _value(env, "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR")
-        if gateway is not None and trusted_proxy != f"{gateway}/32":
-            errors.append("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_DOCKER_BRIDGE_GATEWAY/32")
+        if proxy is not None and trusted_proxy != f"{proxy}/32":
+            errors.append("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_TAILSCALE_PROXY_IPV4/32")
 
     dashboard_raw = _value(env, "SWITCHYARD_DASHBOARD_CIDR", "127.0.0.1/32")
     try:

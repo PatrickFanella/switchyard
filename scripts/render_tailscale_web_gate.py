@@ -26,7 +26,10 @@ FIELDS = {
     "port": "WEB_PORT",
     "subnet": "SWITCHYARD_DOCKER_BRIDGE_SUBNET",
     "gateway": "SWITCHYARD_DOCKER_BRIDGE_GATEWAY",
+    "bridge_name": "SWITCHYARD_DOCKER_BRIDGE_NAME",
+    "web_container": "SWITCHYARD_WEB_CONTAINER_IPV4",
 }
+LINUX_INTERFACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}\Z")
 
 
 class GateError(Exception):
@@ -40,6 +43,8 @@ class GateConfig:
     port: int
     subnet: ipaddress.IPv4Network
     gateway: ipaddress.IPv4Address
+    bridge_name: str
+    web_container: ipaddress.IPv4Address
 
 
 def read_dotenv(path: Path) -> dict[str, str]:
@@ -143,7 +148,13 @@ def config_from_inputs(args: argparse.Namespace, values: Mapping[str, str]) -> G
     gateway = _ipv4(_required(args.gateway, values, "gateway"), FIELDS["gateway"])
     if gateway not in subnet or gateway in {subnet.network_address, subnet.broadcast_address}:
         raise GateError(f"invalid {FIELDS['gateway']}")
-    return GateConfig(destination, proxy, port, subnet, gateway)
+    bridge_name = _required(args.bridge_name, values, "bridge_name")
+    if bridge_name in {".", ".."} or LINUX_INTERFACE_NAME.fullmatch(bridge_name) is None:
+        raise GateError(f"invalid {FIELDS['bridge_name']}")
+    web_container = _ipv4(_required(args.web_container, values, "web_container"), FIELDS["web_container"])
+    if web_container not in subnet or web_container in {subnet.network_address, subnet.broadcast_address, gateway}:
+        raise GateError(f"invalid {FIELDS['web_container']}")
+    return GateConfig(destination, proxy, port, subnet, gateway, bridge_name, web_container)
 
 
 def render(config: GateConfig) -> str:
@@ -270,6 +281,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--web-port", dest="port")
     result.add_argument("--docker-bridge-subnet", dest="subnet")
     result.add_argument("--docker-bridge-gateway", dest="gateway")
+    result.add_argument("--docker-bridge-name", dest="bridge_name")
+    result.add_argument("--web-container-ipv4", dest="web_container")
     result.add_argument("--output", type=Path)
     result.add_argument("--require-matching-output", type=Path)
     result.add_argument("--check", action="store_true", help="validate and render without writing")

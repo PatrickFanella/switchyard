@@ -34,6 +34,9 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "id": "#!/bin/sh\nif [ \"$1\" = -u ] && [ $# -eq 1 ]; then echo 0; elif [ \"$1\" = -u ]; then echo \"$RUNTIME_UID\"; else exec /usr/bin/id \"$@\"; fi\n",
             "docker": "#!/bin/sh\ncase \"$*\" in\n  *'config --services') [ \"${FAIL_COMPOSE_CONFIG:-0}\" = 0 ] || exit 1; printf 'api\\nweb\\n';;\n  *'ps --status running --services') [ \"${PRIOR_WEB_RUNNING:-0}\" = 1 ] && printf 'web\\n';;\n  *' up -d '*|*' stop '*) printf 'docker %s\\n' \"$*\" >>\"$MUTATION_LOG\";;\nesac\nexit 0\n",
             "nft": "#!/bin/sh\ncase \"$*\" in '--check --file '*|'list table inet switchyard_web_gate') exit 0;; esac\nexit 1\n",
+            "ufw": "#!/bin/sh\n[ \"$*\" = status ] && { printf 'Status: active\\n'; exit; }\nexit 1\n",
+            "iptables": "#!/bin/sh\ncase \"$*\" in '-C ufw-user-forward '*) exit 0;; esac\nexit 1\n",
+            "stat": "#!/bin/sh\ncase \"$3\" in *manage_tailscale_web_forward.py) [ \"${UNSAFE_GATE_HELPER:-0}\" = 0 ] || { printf '1000 1000 777\\n'; exit; };; esac\nprintf '0 0 %s\\n' \"$(case \"$3\" in *web-gate.nft|*switchyard-web-gate.service) printf 644;; *) printf 755;; esac)\"\n",
             "systemd-analyze": "#!/bin/sh\nexit 0\n",
             "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'is-active --quiet switchyard-web-gate.service') [ \"${GATE_ACTIVE:-1}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard.service') [ \"${PRIOR_MAIN_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard.service') { [ -e \"$MAIN_STATE\" ] || [ \"${PRIOR_MAIN_ACTIVE:-0}\" = 1 ]; }; exit;;\n  'show docker.service --property=Requires --value'|'show docker.service --property=After --value') printf 'switchyard-web-gate.service\\n'; exit;;\n  'is-enabled --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ACTIVE:-0}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ACTIVE:-0}\" = 1 ]; exit;;\n  list-unit-files*) exit 1;;\nesac\nprintf 'systemctl %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nif [ \"$*\" = 'restart switchyard.service' ]; then [ \"${FAIL_MAIN_RESTART:-0}\" = 0 ] || exit 1; : >\"$MAIN_STATE\"; fi\nif [ \"${FAIL_RESTORE_ENABLE:-0}\" = 1 ] && [ \"$*\" = 'enable --now switchyard-restore-drill.timer' ]; then exit 1; fi\nexit 0\n",
             "install": "#!/bin/sh\n/usr/bin/install \"$@\" || exit\nprintf 'install %s\\n' \"$*\" >>\"$MUTATION_LOG\"\n",
@@ -94,6 +97,8 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "WEB_PORT": "8081",
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
+            "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+            "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
         }
         if not complete:
             values.pop("SWITCHYARD_RESTORE_POLICY")
@@ -105,10 +110,14 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         renderer = self.lib_dir / "render_tailscale_web_gate.py"
         renderer.write_bytes((ROOT / "scripts/render_tailscale_web_gate.py").read_bytes())
         renderer.chmod(0o755)
+        helper = self.lib_dir / "manage_tailscale_web_forward.py"
+        helper.write_bytes((ROOT / "scripts/manage_tailscale_web_forward.py").read_bytes())
+        helper.chmod(0o755)
         gate = (ROOT / "deploy/switchyard-web-gate.service").read_text()
         gate = gate.replace("__RENDERER__", str(renderer))
         gate = gate.replace("__ENV_FILE__", str(self.env_file))
         gate = gate.replace("__NFT_RULES__", str(self.nft_dir / "web-gate.nft"))
+        gate = gate.replace("__UFW_HELPER__", str(helper))
         (self.units / "switchyard-web-gate.service").write_text(gate)
 
     def run_installer(self, extra_env=None):
@@ -144,6 +153,13 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertFalse(self.log.exists())
         self.assertEqual([path for path in self.units.iterdir() if path.name != "switchyard-web-gate.service"], [])
 
+    def test_unsafe_installed_gate_helper_causes_no_mutation(self):
+        self.write_env()
+        result = self.run_installer({"UNSAFE_GATE_HELPER": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("root-owned", result.stderr)
+        self.assertFalse(self.log.exists())
+
     def test_renders_service_timer_and_initializes_deadline(self):
         self.write_env()
         result = self.run_installer()
@@ -155,7 +171,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertNotIn("infinity", service)
         self.assertIn(f"EnvironmentFile={self.env_file}", service)
         main = (self.units / "switchyard.service").read_text()
-        self.assertEqual(main.count(f"--env-file {self.env_file}"), 7)
+        self.assertEqual(main.count(f"--env-file {self.env_file}"), 11)
         self.assertNotIn(f"--env-file {ROOT / '.env'}", main)
         self.assertIn("OnCalendar=Sun *-*-01..07 03:00:00 UTC", timer)
         self.assertIn("Persistent=true", timer)

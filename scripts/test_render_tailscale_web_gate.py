@@ -35,6 +35,8 @@ class TailscaleWebGateTest(unittest.TestCase):
             "WEB_PORT": "8081",
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.29.0.0/24",
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.29.0.1",
+            "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+            "SWITCHYARD_WEB_CONTAINER_IPV4": "172.29.0.10",
         }
 
     def tearDown(self):
@@ -48,6 +50,8 @@ class TailscaleWebGateTest(unittest.TestCase):
             "port": None,
             "subnet": None,
             "gateway": None,
+            "bridge_name": None,
+            "web_container": None,
         }
         values.update(overrides)
         return argparse.Namespace(**values)
@@ -101,6 +105,10 @@ table inet switchyard_web_gate {
             {"gateway": "172.29.1.1"},
             {"gateway": "172.29.0.0"},
             {"gateway": "172.29.0.255"},
+            {"bridge_name": "bad interface"},
+            {"bridge_name": "interface-name-too-long"},
+            {"web_container": "172.29.0.1"},
+            {"web_container": "172.29.1.10"},
         )
         for overrides in cases:
             with self.subTest(overrides=overrides), self.assertRaises(renderer.GateError):
@@ -226,6 +234,9 @@ table inet switchyard_web_gate {
         gate = (ROOT / "deploy/switchyard-web-gate.service").read_text(encoding="utf-8")
         switchyard = (ROOT / "deploy/switchyard.service").read_text(encoding="utf-8")
         self.assertIn("Before=docker.service switchyard.service", gate)
+        self.assertIn("After=ufw.service", gate)
+        self.assertIn("Wants=ufw.service", gate)
+        self.assertIn("__UFW_HELPER__ ensure --env-file __ENV_FILE__", gate)
         self.assertIn("ExecStartPre=/usr/bin/nft --check --file __NFT_RULES__", gate)
         self.assertIn("ExecStart=/usr/bin/nft --file __NFT_RULES__", gate)
         self.assertNotIn("ExecReload", gate)
@@ -234,6 +245,8 @@ table inet switchyard_web_gate {
         self.assertIn("After=docker.service switchyard-web-gate.service network-online.target", switchyard)
         guard = "--require-matching-output __NFT_RULES__"
         self.assertEqual(switchyard.count(guard), 2)
+        self.assertEqual(switchyard.count("__UFW_HELPER__ verify-gate --env-file __ENV_FILE__"), 2)
+        self.assertEqual(switchyard.count("docker-compose.yml stop web"), 2)
         self.assertNotIn("systemctl reload switchyard-web-gate.service", switchyard)
 
 

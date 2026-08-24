@@ -276,11 +276,14 @@ services:
       - api
     environment:
       SWITCHYARD_WEB_TRANSPORT: ${SWITCHYARD_WEB_TRANSPORT:-http}
-      SWITCHYARD_WEB_TRUSTED_PROXY_CIDR: ${SWITCHYARD_WEB_TRUSTED_PROXY_CIDR:-172.31.250.1/32}
+      SWITCHYARD_WEB_TRUSTED_PROXY_CIDR: ${SWITCHYARD_WEB_TRUSTED_PROXY_CIDR:-100.77.128.80/32}
       SWITCHYARD_DASHBOARD_CIDR: ${SWITCHYARD_DASHBOARD_CIDR:-127.0.0.1/32}
       NGINX_ENVSUBST_FILTER: "^SWITCHYARD_(WEB_TRUSTED_PROXY|DASHBOARD)_CIDR$$"
     ports:
       - "${SWITCHYARD_WEB_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8081}:80"
+    networks:
+      default:
+        ipv4_address: ${SWITCHYARD_WEB_CONTAINER_IPV4:-172.31.250.10}
 
   verifier:
     build:
@@ -345,6 +348,8 @@ volumes:
 
 networks:
   default:
+    driver_opts:
+      com.docker.network.bridge.name: ${SWITCHYARD_DOCKER_BRIDGE_NAME:-switchyard0}
     ipam:
       config:
         - subnet: ${SWITCHYARD_DOCKER_BRIDGE_SUBNET:-172.31.250.0/24}

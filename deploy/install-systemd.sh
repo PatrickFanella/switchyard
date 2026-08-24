@@ -16,6 +16,7 @@ lib_dir="${SWITCHYARD_LIB_DIR:-/usr/lib/switchyard}"
 gate_rules="$nft_dir/web-gate.nft"
 gate_unit="$unit_dir/switchyard-web-gate.service"
 gate_renderer="$lib_dir/render_tailscale_web_gate.py"
+ufw_helper="$lib_dir/manage_tailscale_web_forward.py"
 unit_dst="$unit_dir/switchyard.service"
 backup_unit_dst="$unit_dir/switchyard-backup.service"
 backup_timer_dst="$unit_dir/switchyard-backup.timer"
@@ -60,16 +61,24 @@ if [[ ! -f "$repo_root/docker-compose.yml" ]]; then
   exit 1
 fi
 
-for command in python3 nft systemctl cmp; do
+for command in python3 nft ufw iptables systemctl cmp stat; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required" >&2
     exit 1
   fi
 done
-if [[ ! -f "$gate_rules" || -L "$gate_rules" || ! -f "$gate_unit" || -L "$gate_unit" || ! -f "$gate_renderer" || -L "$gate_renderer" ]]; then
+if [[ ! -f "$gate_rules" || -L "$gate_rules" || ! -f "$gate_unit" || -L "$gate_unit" || ! -f "$gate_renderer" || -L "$gate_renderer" || ! -f "$ufw_helper" || -L "$ufw_helper" ]]; then
   echo "switchyard web gate must be installed from the current environment" >&2
   exit 1
 fi
+for specification in "$gate_rules:0 0 644" "$gate_unit:0 0 644" "$gate_renderer:0 0 755" "$ufw_helper:0 0 755"; do
+  path=${specification%%:*}
+  expected=${specification#*:}
+  if [[ "$(stat -Lc '%u %g %a' "$path")" != "$expected" ]]; then
+    echo "switchyard web gate files must be root-owned with installed modes" >&2
+    exit 1
+  fi
+done
 gate_tmp="$(mktemp)"
 if ! python3 "$gate_renderer" --env-file "$env_file" --check ||
    ! python3 "$gate_renderer" --env-file "$env_file" --output "$gate_tmp" ||
@@ -80,20 +89,20 @@ if ! python3 "$gate_renderer" --env-file "$env_file" --check ||
   exit 1
 fi
 rm -f "$gate_tmp"
-if ! python3 - "$repo_root/deploy/switchyard-web-gate.service" "$gate_unit" "$gate_rules" "$gate_renderer" "$env_file" <<'PY'
+if ! python3 - "$repo_root/deploy/switchyard-web-gate.service" "$gate_unit" "$gate_rules" "$gate_renderer" "$ufw_helper" "$env_file" <<'PY'
 import pathlib, sys
-source, installed, rules, renderer, env_file = map(pathlib.Path, sys.argv[1:])
+source, installed, rules, renderer, ufw_helper, env_file = map(pathlib.Path, sys.argv[1:])
 expected = source.read_text(encoding="utf-8")
-for placeholder, replacement in (("__NFT_RULES__", rules), ("__RENDERER__", renderer), ("__ENV_FILE__", env_file)):
+for placeholder, replacement in (("__NFT_RULES__", rules), ("__RENDERER__", renderer), ("__UFW_HELPER__", ufw_helper), ("__ENV_FILE__", env_file)):
     expected = expected.replace(placeholder, str(replacement))
-if any(placeholder in expected for placeholder in ("__NFT_RULES__", "__RENDERER__", "__ENV_FILE__")) or installed.read_text(encoding="utf-8") != expected:
+if any(placeholder in expected for placeholder in ("__NFT_RULES__", "__RENDERER__", "__UFW_HELPER__", "__ENV_FILE__")) or installed.read_text(encoding="utf-8") != expected:
     raise SystemExit(1)
 PY
 then
   echo "switchyard web gate unit does not match the current environment" >&2
   exit 1
 fi
-if ! nft list table inet switchyard_web_gate >/dev/null 2>&1 || ! systemctl is-active --quiet switchyard-web-gate.service; then
+if ! nft list table inet switchyard_web_gate >/dev/null 2>&1 || ! python3 "$ufw_helper" verify --env-file "$env_file" || ! systemctl is-active --quiet switchyard-web-gate.service; then
   echo "switchyard-web-gate.service must be installed and active; run deploy/install-web-gate.sh first" >&2
   exit 1
 fi
@@ -264,7 +273,7 @@ PY
 
     # Gate/config are now the pre-mutation versions (the main installer never
     # mutates them). Fail closed if that prerequisite cannot be re-proven.
-    if nft list table inet switchyard_web_gate >/dev/null 2>&1 && systemctl is-active --quiet switchyard-web-gate.service; then
+    if nft list table inet switchyard_web_gate >/dev/null 2>&1 && python3 "$ufw_helper" verify --env-file "$env_file" >/dev/null 2>&1 && systemctl is-active --quiet switchyard-web-gate.service; then
       if [[ $main_was_active -eq 1 ]]; then
         systemctl start switchyard.service >/dev/null 2>&1 || true
         stopped_services=()
@@ -289,13 +298,13 @@ PY
 }
 trap cleanup EXIT
 
-python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$env_file" "$gate_renderer" "$gate_rules" <<'PY'
+python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$env_file" "$gate_renderer" "$gate_rules" "$ufw_helper" <<'PY'
 import pathlib, sys
-source, target, root, user, group, env_file, renderer, rules = sys.argv[1:]
+source, target, root, user, group, env_file, renderer, rules, ufw_helper = sys.argv[1:]
 value = pathlib.Path(source).read_text(encoding="utf-8")
-for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__ENV_FILE__", env_file), ("__RENDERER__", renderer), ("__NFT_RULES__", rules)):
+for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__ENV_FILE__", env_file), ("__RENDERER__", renderer), ("__NFT_RULES__", rules), ("__UFW_HELPER__", ufw_helper)):
     value = value.replace(placeholder, replacement)
-if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__ENV_FILE__", "__RENDERER__", "__NFT_RULES__")):
+if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__ENV_FILE__", "__RENDERER__", "__NFT_RULES__", "__UFW_HELPER__")):
     raise SystemExit("unresolved switchyard unit placeholder")
 pathlib.Path(target).write_text(value, encoding="utf-8")
 PY

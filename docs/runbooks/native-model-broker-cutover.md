@@ -23,7 +23,7 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 - `systemctl show ollama -p Environment` includes `OLLAMA_HOST=0.0.0.0:11435` when Docker must reach host Ollama.
 - UFW allows Docker bridge traffic to host Ollama on `11435`.
 - `.env` sets `LLAMA_LINE_PORT=11434`, sets `SWITCHYARD_MODEL_BIND_HOST` to the NUC LAN address when remote clients need ingress, and points `OLLAMA_BASE_URL` at the real Ollama upstream, not Switchyard itself.
-- Keep `SWITCHYARD_BIND_HOST=127.0.0.1` so API/control and Postgres remain loopback-bound. Production sets `SWITCHYARD_WEB_BIND_HOST=100.65.164.66` and `SWITCHYARD_TAILSCALE_PROXY_IPV4=100.77.128.80`. The host nft gate sees Almaz before Docker DNAT. With the default pinned bridge, nginx sees `172.31.250.1`, so set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR=172.31.250.1/32`. The API still requires the hop token and authenticated user. Keep Tailscale credentials outside Compose and do not fall back to plaintext LAN HTTP.
+- Keep `SWITCHYARD_BIND_HOST=127.0.0.1` so API/control and Postgres remain loopback-bound. Production sets `SWITCHYARD_WEB_BIND_HOST=100.65.164.66` and `SWITCHYARD_TAILSCALE_PROXY_IPV4=100.77.128.80`. The host nft gate sees Almaz before Docker DNAT. UFW allows only Almaz through `tailscale0` and the pinned bridge to `172.31.250.10:80`. nginx sees the original Almaz address, so set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR=100.77.128.80/32`. The API still requires the hop token and authenticated user. Keep Tailscale credentials outside Compose and do not fall back to plaintext LAN HTTP.
 - Export the deployed environment and run `make production-config-check`. This does not prove the pending central policy or target route required by Gitea issues #18 and #19.
 
 ## Smoke tests
@@ -84,7 +84,7 @@ From Almaz, the local Caddy route can be checked without public DNS/TLS:
 curl -I -H 'Host: switchyard.subcult.tv' http://127.0.0.1
 ```
 
-Expected: `302` redirect to Authelia. The route lives in `/opt/server/management/config/caddy/Caddyfile`. Its upstream must use Kvant's Tailscale address. The nft gate admits only Almaz (`100.77.128.80`) before DNAT; nginx separately admits only the pinned Docker gateway `/32`.
+Expected: `302` redirect to Authelia. The route lives in `/opt/server/management/config/caddy/Caddyfile`. Its upstream must use Kvant's Tailscale address. The nft gate admits only Almaz (`100.77.128.80`) before DNAT. UFW admits only Almaz to the pinned web container after DNAT, and nginx admits only Almaz `/32`.
 
 ## Incident triage
 

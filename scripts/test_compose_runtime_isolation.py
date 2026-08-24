@@ -211,10 +211,12 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
         self.assertEqual(api_environment.get("OPEN_PILOT_WORKTREE_ROOT"), WORKTREE_ROOT)
         self.assertEqual(verifier_environment.get("OPEN_PILOT_WORKTREE_ROOT"), WORKTREE_ROOT)
 
-    def test_default_network_pins_web_gateway(self) -> None:
+    def test_default_network_pins_bridge_and_web_address(self) -> None:
         network = self.config["networks"]["default"]
+        self.assertEqual(network["driver_opts"], {"com.docker.network.bridge.name": "switchyard0"})
         self.assertEqual(network["ipam"]["config"], [{"subnet": "172.31.250.0/24", "gateway": "172.31.250.1"}])
-        self.assertEqual(self.service("web")["environment"]["SWITCHYARD_WEB_TRUSTED_PROXY_CIDR"], "172.31.250.1/32")
+        self.assertEqual(self.service("web")["networks"]["default"]["ipv4_address"], "172.31.250.10")
+        self.assertEqual(self.service("web")["environment"]["SWITCHYARD_WEB_TRUSTED_PROXY_CIDR"], "100.77.128.80/32")
 
     def test_all_bind_mounts_disable_implicit_host_path_creation(self) -> None:
         for name, service in self.config["services"].items():

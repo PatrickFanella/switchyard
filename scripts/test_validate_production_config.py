@@ -73,7 +73,9 @@ class ProductionConfigTest(unittest.TestCase):
             "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "172.31.250.1/32",
+            "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+            "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
+            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
             "SWITCHYARD_DASHBOARD_CIDR": "127.0.0.1/32",
             "SWITCHYARD_PUBLIC_URL": "https://switchyard.example.test",
             "SWITCHYARD_REVERSE_PROXY_AUTH": "true",
@@ -405,8 +407,12 @@ class ProductionConfigTest(unittest.TestCase):
             ("SWITCHYARD_DOCKER_BRIDGE_SUBNET", "100.64.0.0/24", "SWITCHYARD_DOCKER_BRIDGE_SUBNET must be a private IPv4 /24 or smaller subnet"),
             ("SWITCHYARD_DOCKER_BRIDGE_GATEWAY", "172.31.251.1", "SWITCHYARD_DOCKER_BRIDGE_GATEWAY must be a usable address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
             ("SWITCHYARD_DOCKER_BRIDGE_GATEWAY", "172.31.250.0", "SWITCHYARD_DOCKER_BRIDGE_GATEWAY must be a usable address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
-            ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "172.31.250.0/24", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_DOCKER_BRIDGE_GATEWAY/32"),
-            ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "100.77.128.80/32", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_DOCKER_BRIDGE_GATEWAY/32"),
+            ("SWITCHYARD_DOCKER_BRIDGE_NAME", "bad interface", "SWITCHYARD_DOCKER_BRIDGE_NAME must be a safe Linux interface name of at most 15 characters"),
+            ("SWITCHYARD_DOCKER_BRIDGE_NAME", "interface-name-too-long", "SWITCHYARD_DOCKER_BRIDGE_NAME must be a safe Linux interface name of at most 15 characters"),
+            ("SWITCHYARD_WEB_CONTAINER_IPV4", "172.31.250.1", "SWITCHYARD_WEB_CONTAINER_IPV4 must be a usable non-gateway address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_WEB_CONTAINER_IPV4", "172.31.251.10", "SWITCHYARD_WEB_CONTAINER_IPV4 must be a usable non-gateway address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "172.31.250.1/32", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_TAILSCALE_PROXY_IPV4/32"),
+            ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "100.77.128.0/24", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_TAILSCALE_PROXY_IPV4/32"),
         )
         for name, value, message in cases:
             with self.subTest(name=name, value=value):
@@ -414,7 +420,9 @@ class ProductionConfigTest(unittest.TestCase):
                 self.env[name] = {
                     "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
                     "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
-                    "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "172.31.250.1/32",
+                    "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+                    "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
+                    "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
                 }[name]
 
     def test_rejects_broad_dashboard_cidr(self) -> None:
@@ -606,7 +614,9 @@ class ProductionConfigCLITest(unittest.TestCase):
                 "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",
                 "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
                 "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
-                "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "172.31.250.1/32",
+                "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+                "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
+                "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
                 "SWITCHYARD_DASHBOARD_CIDR": "127.0.0.1/32",
                 "SWITCHYARD_PUBLIC_URL": "https://switchyard.example.test",
                 "SWITCHYARD_REVERSE_PROXY_AUTH": "true",
@@ -694,7 +704,9 @@ class ProductionConfigCLITest(unittest.TestCase):
         self.assertLess(unit.index("ExecStartPre="), unit.index("ExecStart=/usr/bin/docker"))
         self.assertLess(unit.index("ExecReload=/usr/bin/python3"), unit.index("ExecReload=/usr/bin/docker"))
         self.assertEqual(unit.count(validator), 2)
-        self.assertEqual(unit.count("/usr/bin/docker compose --env-file __ENV_FILE__"), 3)
+        self.assertEqual(unit.count("/usr/bin/docker compose --env-file __ENV_FILE__"), 5)
+        self.assertEqual(unit.count("verify-gate --env-file __ENV_FILE__"), 2)
+        self.assertEqual(unit.count("docker-compose.yml stop web"), 2)
         self.assertNotIn("--env-file __REPO_ROOT__/.env", unit)
 
     def test_smoke_rejects_different_public_url(self) -> None:

@@ -26,6 +26,8 @@ class WebGateInstallerTest(unittest.TestCase):
             "WEB_PORT=8081\n"
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET=172.31.250.0/24\n"
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY=172.31.250.1\n"
+            "SWITCHYARD_DOCKER_BRIDGE_NAME=switchyard0\n"
+            "SWITCHYARD_WEB_CONTAINER_IPV4=172.31.250.10\n"
         )
         tools = {
             "id": "#!/bin/sh\n[ \"$1\" = -u ] && { echo 0; exit; }\nexec /usr/bin/id \"$@\"\n",
@@ -49,6 +51,7 @@ esac
 case "$3" in
   *web-gate.nft) printf '0 0 %s\n' "${RULES_MODE:-644}";;
   *render_tailscale_web_gate.py) printf '0 0 %s\n' "${RENDERER_MODE:-755}";;
+  *manage_tailscale_web_forward.py) printf '0 0 %s\n' "${HELPER_MODE:-755}";;
   *nft) [ "${NON_TRAVERSABLE_NFT:-0}" = 0 ] && printf '0 755\n' || printf '0 700\n';;
   *) [ "${UNSAFE_LIB:-0}" = 0 ] && printf '0 755\n' || printf '1000 777\n';;
 esac
@@ -78,6 +81,22 @@ case "$*" in
 esac
 printf 'nft %s\n' "$*" >>"$MUTATION_LOG"
 exit 0
+""",
+            "ufw": """#!/bin/sh
+printf 'ufw %s\n' "$*" >>"$MUTATION_LOG"
+if [ "$*" = status ]; then
+  [ "${UFW_ACTIVE:-1}" = 1 ] && { printf 'Status: active\n'; exit; }
+  printf 'Status: inactive\n'; exit
+fi
+case "$*" in
+  'route allow '*) [ "${FAIL_UFW_ADD:-0}" = 0 ] || exit 1; : >"$UFW_RULE_STATE";;
+  '--force route delete allow '*) rm -f "$UFW_RULE_STATE";;
+  *) exit 2;;
+esac
+""",
+            "iptables": """#!/bin/sh
+printf 'iptables %s\n' "$*" >>"$MUTATION_LOG"
+[ -e "$UFW_RULE_STATE" ]
 """,
             "systemctl": """#!/bin/sh
 case "$*" in
@@ -115,6 +134,7 @@ exit 0
                 "MUTATION_LOG": str(self.log),
                 "STATE": str(self.root / "active"),
                 "TABLE_STATE": str(self.root / "table-active"),
+                "UFW_RULE_STATE": str(self.root / "ufw-rule"),
                 "SWITCHYARD_ENV_FILE": str(self.env_file),
                 "SWITCHYARD_SYSTEMD_UNIT_DIR": str(self.units),
                 "SWITCHYARD_NFT_CONFIG_DIR": str(self.nft_dir),
@@ -133,13 +153,17 @@ exit 0
         self.assertIn("ip saddr 100.77.128.80 ip daddr 100.65.164.66", rules)
         self.assertTrue((self.units / "switchyard-web-gate.service").exists())
         renderer = self.lib_dir / "render_tailscale_web_gate.py"
+        helper = self.lib_dir / "manage_tailscale_web_forward.py"
         rules_path = self.nft_dir / "web-gate.nft"
         self.assertEqual(rules_path.stat().st_mode & 0o777, 0o644)
         self.assertEqual(renderer.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
         self.assertEqual(renderer.read_bytes(), (ROOT / "scripts/render_tailscale_web_gate.py").read_bytes())
+        self.assertEqual(helper.read_bytes(), (ROOT / "scripts/manage_tailscale_web_forward.py").read_bytes())
         self.assertIn("Requires=switchyard-web-gate.service", (self.units / "docker.service.d/50-switchyard-web-gate.conf").read_text())
         self.assertIn(str(self.nft_dir / "web-gate.nft"), (self.units / "switchyard-web-gate.service").read_text())
         self.assertIn(str(renderer), (self.units / "switchyard-web-gate.service").read_text())
+        self.assertIn(str(helper), (self.units / "switchyard-web-gate.service").read_text())
         self.assertIn("--require-matching-output", (self.units / "switchyard-web-gate.service").read_text())
         self.assertNotIn("--output", (self.units / "switchyard-web-gate.service").read_text())
         self.assertNotIn(str(ROOT / "scripts/render_tailscale_web_gate.py"), (self.units / "switchyard-web-gate.service").read_text())
@@ -150,6 +174,10 @@ exit 0
         self.assertIn("-o root -g root", rules_install)
         self.assertLess(mutations.index(rules_install),
                         mutations.index("systemctl restart switchyard-web-gate.service"))
+        exact = "iptables -C ufw-user-forward -i tailscale0 -o switchyard0 -p tcp -s 100.77.128.80/32 -d 172.31.250.10/32 --dport 80 -m comment --comment switchyard-web-gate -j ACCEPT"
+        self.assertIn(exact, mutations)
+        self.assertNotIn("100.64.0.0/10", "\n".join(mutations))
+        self.assertNotIn("172.31.250.0/24", "\n".join(line for line in mutations if line.startswith(("ufw ", "iptables "))))
 
     def test_nft_preflight_failure_makes_no_mutation(self):
         result = self.run_installer({"FAIL_NFT_CHECK": "1"})
@@ -197,6 +225,7 @@ exit 0
         self.assertIn("nft delete table inet switchyard_web_gate", mutations)
         self.assertIn("systemctl enable switchyard-web-gate.service", mutations)
         self.assertIn("systemctl start switchyard-web-gate.service", mutations)
+        self.assertIn("ufw --force route delete allow in on tailscale0 out on switchyard0 proto tcp from 100.77.128.80 to 172.31.250.10 port 80 comment switchyard-web-gate", mutations)
         lines = mutations.splitlines()
         self.assertLess(
             lines.index("systemctl start switchyard-web-gate.service"),
@@ -226,11 +255,25 @@ exit 0
         first = self.run_installer()
         self.assertEqual(first.returncode, 0, first.stderr)
         self.log.unlink()
+        (self.root / "ufw-rule").touch(exist_ok=True)
         result = self.run_installer({"WEB_RUNNING": "1", "PRIOR_ACTIVE": "1", "PRIOR_ENABLED": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         mutations = self.log.read_text().splitlines() if self.log.exists() else []
         self.assertFalse(any(line.startswith("docker ") for line in mutations))
         self.assertNotIn("systemctl restart switchyard-web-gate.service", mutations)
+
+    def test_rollback_keeps_preexisting_exact_ufw_rule(self):
+        (self.root / "ufw-rule").touch()
+        result = self.run_installer({"FAIL_START": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "ufw-rule").exists())
+        self.assertNotIn("ufw --force route delete allow", self.log.read_text())
+
+    def test_refuses_inactive_ufw_before_mutation(self):
+        result = self.run_installer({"UFW_ACTIVE": "0"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "ufw-rule").exists())
+        self.assertFalse(any(line.startswith("install ") for line in self.log.read_text().splitlines()))
 
     def test_reinstalls_unchanged_rules_and_renderer_with_safe_metadata(self):
         first = self.run_installer()
