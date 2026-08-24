@@ -231,7 +231,11 @@ class Lifecycle:
                 "description": f"Correlation {self.correlation}; receiver {self.config.receiver}; revision {self.config.revision}",
             },
             "startsAt": _timestamp(starts_at),
-            "endsAt": _timestamp(starts_at + timedelta(minutes=10) if firing else max(now, starts_at)),
+            "endsAt": _timestamp(
+                starts_at + timedelta(minutes=10)
+                if firing
+                else max(now - timedelta(seconds=1), starts_at)
+            ),
             "generatorURL": "https://switchyard.invalid/alert-lifecycle",
         }
         headers = {"Content-Type": "application/json"}
