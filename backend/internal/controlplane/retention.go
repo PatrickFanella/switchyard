@@ -90,11 +90,12 @@ func (m *RetentionManager) prune() bool {
 		result.Artifacts += batch.Artifacts
 		result.ArtifactBytes += batch.ArtifactBytes
 		result.ArtifactBytesUnmeasured += batch.ArtifactBytesUnmeasured
+		result.WebhookReceipts += batch.WebhookReceipts
 		if err != nil {
 			pruneErr = errors.Join(pruneErr, err)
 			break
 		}
-		more = batch.Runs >= retentionBatchSize || batch.ModelRequests >= retentionBatchSize
+		more = batch.Runs >= retentionBatchSize || batch.ModelRequests >= retentionBatchSize || batch.WebhookReceipts >= retentionBatchSize
 		if !more {
 			break
 		}

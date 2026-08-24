@@ -133,19 +133,22 @@ func (l *requestLimiter) allow(key string, now time.Time) bool {
 	second := now.Unix()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	window := l.windows[key]
-	if window.second != second {
-		window = requestWindow{second: second}
-	}
-	window.count++
-	l.windows[key] = window
-	if len(l.windows) > 10000 {
+	if len(l.windows) >= 10000 {
 		for existingKey, existing := range l.windows {
 			if existing.second < second-1 {
 				delete(l.windows, existingKey)
 			}
 		}
 	}
+	window := l.windows[key]
+	if _, exists := l.windows[key]; !exists && len(l.windows) >= 10000 {
+		return false
+	}
+	if window.second != second {
+		window = requestWindow{second: second}
+	}
+	window.count++
+	l.windows[key] = window
 	return window.count <= l.limit
 }
 
@@ -268,7 +271,7 @@ func isReadOnlyControlRequest(r *http.Request) bool {
 
 func controlPlaneRouteAllowed(r *http.Request) bool {
 	path := r.URL.Path
-	if strings.HasPrefix(path, "/v1/") || path == "/broker/status" {
+	if strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/hooks/") || path == "/broker/status" {
 		return false
 	}
 	switch path {

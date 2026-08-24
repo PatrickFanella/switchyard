@@ -1,7 +1,7 @@
 {
   "contract_version": "switchyard.postgres-object-set.v1",
   "provider": "postgres",
-  "migration_head": "023_transactional_artifact_and_compatibility_accounting.sql",
+  "migration_head": "024_webhook_dispatch.sql",
   "migration_ledger": [
     "001_controlplane.sql",
     "002_trigger_scheduler.sql",
@@ -24,7 +24,8 @@
     "020_allow_committed_open_pilot_phase.sql",
     "021_artifact_measurement.sql",
     "022_compatibility_observations.sql",
-    "023_transactional_artifact_and_compatibility_accounting.sql"
+    "023_transactional_artifact_and_compatibility_accounting.sql",
+    "024_webhook_dispatch.sql"
   ],
   "required_objects": [
     "artifact_lifecycle_daily",
@@ -41,6 +42,11 @@
     "runs",
     "schema_migrations",
     "triggers",
+    "webhook_auth_config",
+    "webhook_deliveries",
+    "webhook_receipt_metrics",
+    "webhook_trigger_auth",
+    "webhook_trigger_auth_keys",
     "workflow_definition_versions",
     "workflow_definitions",
     "workflows"

@@ -224,6 +224,7 @@ type RetentionResult struct {
 	Artifacts               int   `json:"artifacts"`
 	ArtifactBytes           int64 `json:"artifact_bytes"`
 	ArtifactBytesUnmeasured int   `json:"artifact_bytes_unmeasured"`
+	WebhookReceipts         int   `json:"webhook_receipts"`
 }
 
 type ArtifactReportInput struct {
@@ -281,6 +282,8 @@ type RuntimeMetrics struct {
 	ArtifactBytesPruned             int64
 	ArtifactBytesRetainedUnmeasured int64
 	ArtifactBytesPrunedUnmeasured   int64
+	WebhookReceiptsRetained         int64
+	WebhookReceiptsPruned           int64
 }
 
 type CreateRunInput struct {
@@ -289,4 +292,40 @@ type CreateRunInput struct {
 	Inputs           map[string]string `json:"inputs,omitempty"`
 	MaxAttempts      int               `json:"max_attempts,omitempty"`
 	PipelineSnapshot *Pipeline         `json:"-"`
+}
+
+type WebhookAuthKey struct {
+	ID        string
+	NotBefore time.Time
+	NotAfter  time.Time
+}
+
+type WebhookAuthMetadata struct {
+	TriggerID string
+	Revision  string
+	Keys      []WebhookAuthKey
+}
+
+type WebhookAuthConfig struct {
+	Owner            string
+	Generation       int64
+	Digest           string
+	ReceiptRetention time.Duration
+	Triggers         []WebhookAuthMetadata
+}
+
+type AdmitWebhookInput struct {
+	TriggerID      string
+	DeliveryID     string
+	BodySHA256     string
+	AuthGeneration int64
+	AuthRevision   string
+	KeyID          string
+	Inputs         map[string]string
+	InputTypes     map[string]string
+}
+
+type WebhookAdmission struct {
+	Run      Run  `json:"run"`
+	Replayed bool `json:"replayed"`
 }

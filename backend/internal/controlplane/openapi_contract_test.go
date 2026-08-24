@@ -293,6 +293,23 @@ func TestListenerContractsMatchDocumentedRouteMethods(t *testing.T) {
 	}
 }
 
+func TestWebhookOpenAPIAndDedicatedRouteContract(t *testing.T) {
+	operations := openAPIOperations(t, "../../../docs/openapi-webhook-ingress.yaml")
+	if len(operations) != 1 || !operations["POST /hooks/v1/{}"] {
+		t.Fatalf("webhook operations = %v", operations)
+	}
+	documentBytes, err := os.ReadFile("../../../docs/openapi-webhook-ingress.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := string(documentBytes)
+	for _, required := range []string{"X-Switchyard-Delivery", "X-Switchyard-Timestamp", "X-Switchyard-Key-Id", "X-Switchyard-Signature", "64 KiB", "http://127.0.0.1:8082"} {
+		if !strings.Contains(document, required) {
+			t.Errorf("webhook OpenAPI omits %q", required)
+		}
+	}
+}
+
 func runtimeControlPublishedPort(t *testing.T) int {
 	t.Helper()
 	contents, err := os.ReadFile("../runtimeconfig/defaults-v1.json")

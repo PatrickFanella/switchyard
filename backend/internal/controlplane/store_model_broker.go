@@ -363,6 +363,20 @@ func (s *MemoryStore) PruneRetention(before time.Time) (RetentionResult, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := RetentionResult{}
+	if s.webhookReceiptRetention > 0 {
+		receiptCutoff := s.now().UTC().Add(-s.webhookReceiptRetention)
+		for key, receipt := range s.webhookReceipts {
+			if receipt.acceptedAt.After(receiptCutoff) {
+				continue
+			}
+			delete(s.webhookReceipts, key)
+			result.WebhookReceipts++
+			if result.WebhookReceipts == retentionBatchSize {
+				break
+			}
+		}
+		s.webhookReceiptsPruned += int64(result.WebhookReceipts)
+	}
 	for id, run := range s.runs {
 		if !isTerminalRunStatus(run.Status) || !run.CreatedAt.Before(before) {
 			continue
@@ -419,6 +433,8 @@ func (s *MemoryStore) RuntimeMetricsSince(_ context.Context, since time.Time) (R
 	metrics.ArtifactObservationStartedAt = s.artifactObservationStarted
 	metrics.ArtifactsCreated, metrics.ArtifactBytesCreated = s.artifactsCreated, s.artifactBytesCreated
 	metrics.ArtifactsPruned, metrics.ArtifactBytesPruned = s.artifactsPruned, s.artifactBytesPruned
+	metrics.WebhookReceiptsRetained = int64(len(s.webhookReceipts))
+	metrics.WebhookReceiptsPruned = s.webhookReceiptsPruned
 	for _, artifacts := range s.artifacts {
 		metrics.ArtifactsRetained += int64(len(artifacts))
 		for _, artifact := range artifacts {
