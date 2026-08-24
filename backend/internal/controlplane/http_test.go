@@ -2647,6 +2647,207 @@ func TestControlPlaneRequiresAuthenticationAndEnforcesReadRole(t *testing.T) {
 	}
 }
 
+func TestControlPlaneReverseProxyAuthentication(t *testing.T) {
+	const proxyToken = "proxy-hop-token-with-at-least-32-bytes"
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-secret")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "read-secret")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_TOKEN", proxyToken)
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatalf("SeedDefaults() error = %v", err)
+	}
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		name          string
+		remoteUser    string
+		forwardedUser string
+		proxyToken    string
+		bearerToken   string
+		duplicate     string
+		wantStatus    int
+	}{
+		{name: "identity without token", remoteUser: "operator@example.test", wantStatus: http.StatusUnauthorized},
+		{name: "identity with malformed token", remoteUser: "operator@example.test", proxyToken: "short", wantStatus: http.StatusUnauthorized},
+		{name: "identity with wrong token", remoteUser: "operator@example.test", proxyToken: strings.Repeat("x", 40), wantStatus: http.StatusUnauthorized},
+		{name: "valid remote user", remoteUser: "operator@example.test", proxyToken: proxyToken, wantStatus: http.StatusOK},
+		{name: "valid forwarded user", forwardedUser: "operator@example.test", proxyToken: proxyToken, wantStatus: http.StatusOK},
+		{name: "matching identity headers", remoteUser: "operator@example.test", forwardedUser: "operator@example.test", proxyToken: proxyToken, wantStatus: http.StatusOK},
+		{name: "conflicting identity headers", remoteUser: "operator@example.test", forwardedUser: "attacker@example.test", proxyToken: proxyToken, wantStatus: http.StatusUnauthorized},
+		{name: "duplicate remote user", remoteUser: "operator@example.test", proxyToken: proxyToken, duplicate: "Remote-User", wantStatus: http.StatusUnauthorized},
+		{name: "duplicate forwarded user", forwardedUser: "operator@example.test", proxyToken: proxyToken, duplicate: "X-Forwarded-User", wantStatus: http.StatusUnauthorized},
+		{name: "duplicate hop token", remoteUser: "operator@example.test", proxyToken: proxyToken, duplicate: "X-Switchyard-Proxy-Token", wantStatus: http.StatusUnauthorized},
+		{name: "embedded whitespace identity", remoteUser: "operator name", proxyToken: proxyToken, wantStatus: http.StatusUnauthorized},
+		{name: "non ASCII identity", remoteUser: "operátor", proxyToken: proxyToken, wantStatus: http.StatusUnauthorized},
+		{name: "bidi identity", remoteUser: "operator\u202eevil", proxyToken: proxyToken, wantStatus: http.StatusUnauthorized},
+		{name: "identity too long", remoteUser: strings.Repeat("a", 257), proxyToken: proxyToken, wantStatus: http.StatusUnauthorized},
+		{name: "token without identity", proxyToken: proxyToken, wantStatus: http.StatusUnauthorized},
+		{name: "bearer remains valid", bearerToken: "admin-secret", wantStatus: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/runs", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Remote-User", test.remoteUser)
+			req.Header.Set("X-Forwarded-User", test.forwardedUser)
+			req.Header.Set("X-Switchyard-Proxy-Token", test.proxyToken)
+			if test.duplicate != "" {
+				req.Header.Add(test.duplicate, "duplicate-value")
+			}
+			if test.bearerToken != "" {
+				req.Header.Set("Authorization", "Bearer "+test.bearerToken)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, body)
+			}
+			responseText := string(body)
+			for name, values := range resp.Header {
+				responseText += name + strings.Join(values, "")
+			}
+			if strings.Contains(responseText, proxyToken) || (test.proxyToken != "" && strings.Contains(responseText, test.proxyToken)) {
+				t.Fatal("proxy token leaked in response")
+			}
+		})
+	}
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestControlPlaneReverseProxyAuthenticationFailsClosedForInvalidConfiguredToken(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_TOKEN", "short-configured-secret")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/runs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Remote-User", "operator@example.test")
+	req.Header.Set("X-Switchyard-Proxy-Token", "short-configured-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "short-configured-secret") {
+		t.Fatal("configured proxy token leaked in error")
+	}
+	for name, values := range resp.Header {
+		if strings.Contains(name+strings.Join(values, ""), "short-configured-secret") {
+			t.Fatal("configured proxy token leaked in response headers")
+		}
+	}
+}
+
+func TestControlPlaneDoesNotTrustProxyHeadersWhenDisabled(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-secret")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "false")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_TOKEN", "proxy-hop-token-with-at-least-32-bytes")
+	store := controlplane.NewStore(nil)
+	srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+	t.Cleanup(srv.Close)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/runs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Remote-User", "operator@example.test")
+	req.Header.Set("X-Switchyard-Proxy-Token", "proxy-hop-token-with-at-least-32-bytes")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestControlPlaneTrustsForwardedClientIPOnlyWithValidHopToken(t *testing.T) {
+	const proxyToken = "proxy-hop-token-with-at-least-32-bytes"
+	for _, test := range []struct {
+		name           string
+		hopToken       string
+		forwarded      []string
+		duplicateToken bool
+		wantSecond     int
+	}{
+		{name: "missing", forwarded: []string{"192.0.2.1", "192.0.2.2"}, wantSecond: http.StatusTooManyRequests},
+		{name: "wrong", hopToken: "wrong-proxy-hop-token-at-least-32-bytes", forwarded: []string{"192.0.2.1", "192.0.2.2"}, wantSecond: http.StatusTooManyRequests},
+		{name: "valid IPv4", hopToken: proxyToken, forwarded: []string{"192.0.2.1", "192.0.2.2"}, wantSecond: http.StatusOK},
+		{name: "valid IPv6", hopToken: proxyToken, forwarded: []string{"2001:db8::1", "2001:db8::2"}, wantSecond: http.StatusOK},
+		{name: "list rejected", hopToken: proxyToken, forwarded: []string{"192.0.2.1, 198.51.100.1", "192.0.2.2, 198.51.100.2"}, wantSecond: http.StatusTooManyRequests},
+		{name: "invalid rejected", hopToken: proxyToken, forwarded: []string{"not-an-ip", "also-not-an-ip"}, wantSecond: http.StatusTooManyRequests},
+		{name: "duplicate hop token rejected", hopToken: proxyToken, duplicateToken: true, forwarded: []string{"192.0.2.1", "192.0.2.2"}, wantSecond: http.StatusTooManyRequests},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-secret")
+			t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")
+			t.Setenv("SWITCHYARD_REVERSE_PROXY_TOKEN", proxyToken)
+			t.Setenv("SWITCHYARD_RATE_LIMIT_PER_SECOND", "1")
+			store := controlplane.NewStore(nil)
+			srv := httptest.NewServer(controlplane.NewAPI(store, controlplane.NewRunner(store)).ControlPlaneHandler())
+			t.Cleanup(srv.Close)
+			request := func(forwardedFor string) *http.Response {
+				req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/runs", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer admin-secret")
+				req.Header.Set("X-Forwarded-For", forwardedFor)
+				req.Header.Set("X-Switchyard-Proxy-Token", test.hopToken)
+				if test.duplicateToken {
+					req.Header.Add("X-Switchyard-Proxy-Token", proxyToken)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return resp
+			}
+			first := request(test.forwarded[0])
+			first.Body.Close()
+			if first.StatusCode != http.StatusOK {
+				t.Fatalf("first status = %d, want 200", first.StatusCode)
+			}
+			second := request(test.forwarded[1])
+			second.Body.Close()
+			if second.StatusCode != test.wantSecond {
+				t.Fatalf("second status = %d, want %d", second.StatusCode, test.wantSecond)
+			}
+		})
+	}
+}
+
 func TestControlPlaneFailsClosedWithoutAuthenticationConfiguration(t *testing.T) {
 	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "")
 	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "")

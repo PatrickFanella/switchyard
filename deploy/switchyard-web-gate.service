@@ -1,0 +1,13 @@
+[Unit]
+Description=Switchyard host pre-DNAT Tailscale web gate
+Before=docker.service switchyard.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/bin/python3 __RENDERER__ --env-file __ENV_FILE__ --require-matching-output __NFT_RULES__
+ExecStartPre=/usr/bin/nft --check --file __NFT_RULES__
+ExecStart=/usr/bin/nft --file __NFT_RULES__
+
+[Install]
+WantedBy=multi-user.target

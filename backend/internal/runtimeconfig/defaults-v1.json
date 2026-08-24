@@ -15,6 +15,8 @@
     "SWITCHYARD_WEBHOOK_MAX_CONCURRENCY": {"runtime": "32", "compose": "32", "example": "32"},
     "SWITCHYARD_WEBHOOK_RATE_LIMIT_PER_SECOND": {"runtime": "20", "compose": "20", "example": "20"},
     "SWITCHYARD_CONTROL_API_TOKEN": {"runtime": "", "compose": "", "example": "replace-with-a-long-random-secret", "secret": true},
+    "SWITCHYARD_REVERSE_PROXY_AUTH": {"runtime": "false", "compose": "false", "example": "false"},
+    "SWITCHYARD_REVERSE_PROXY_TOKEN": {"runtime": "", "compose": "", "example": "replace-with-at-least-32-random-bytes", "secret": true},
     "SWITCHYARD_WORKER_ENABLED": {"runtime": "true", "compose": "true", "example": "true"},
     "SWITCHYARD_WORKER_COUNT": {"runtime": "1", "compose": "1", "example": "1"},
     "SWITCHYARD_WORKER_LEASE": {"runtime": "5m", "compose": "5m", "example": "5m"},

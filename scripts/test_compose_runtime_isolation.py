@@ -41,6 +41,7 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
                 "OPENCODE_SECURITY_MODE": "strict",
                 "OPEN_PILOT_REPO_PATH": WORKSPACE_TARGET,
                 "OPEN_PILOT_WORKTREE_ROOT": WORKTREE_ROOT,
+                "SWITCHYARD_REVERSE_PROXY_TOKEN": "compose-proxy-token-at-least-32-bytes",
             }
             result = subprocess.run(
                 [
@@ -101,6 +102,7 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
         self.assertEqual(api.get("build", {}).get("target"), "api")
         self.assertEqual(api["environment"].get("GIT_TERMINAL_PROMPT"), "0")
         self.assertEqual(api["environment"].get("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE"), "false")
+        self.assertEqual(api["environment"].get("SWITCHYARD_REVERSE_PROXY_TOKEN"), "compose-proxy-token-at-least-32-bytes")
         self.assertIn("/tmp:rw,exec,nosuid,size=256m", api.get("tmpfs", []))
         self.assertIn("/run:rw,noexec,nosuid,size=16m", api.get("tmpfs", []))
         volumes = api.get("volumes", [])
@@ -209,6 +211,11 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
         self.assertEqual(api_environment.get("OPEN_PILOT_WORKTREE_ROOT"), WORKTREE_ROOT)
         self.assertEqual(verifier_environment.get("OPEN_PILOT_WORKTREE_ROOT"), WORKTREE_ROOT)
 
+    def test_default_network_pins_web_gateway(self) -> None:
+        network = self.config["networks"]["default"]
+        self.assertEqual(network["ipam"]["config"], [{"subnet": "172.31.250.0/24", "gateway": "172.31.250.1"}])
+        self.assertEqual(self.service("web")["environment"]["SWITCHYARD_WEB_TRUSTED_PROXY_CIDR"], "172.31.250.1/32")
+
     def test_all_bind_mounts_disable_implicit_host_path_creation(self) -> None:
         for name, service in self.config["services"].items():
             for volume in service.get("volumes", []):
@@ -229,6 +236,20 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
         for value in ("make=4.4.1-r3", "cargo=1.87.0-r1", "pnpm@10.33.0", "/usr/local/go"):
             self.assertIn(value, verifier_section)
             self.assertNotIn(value, api_section)
+
+    def test_web_proxy_overwrites_forwarding_headers_and_forwards_hop_token(self) -> None:
+        nginx = (REPO_ROOT / "web/nginx.conf").read_text(encoding="utf-8")
+        api_location = nginx.split("location /api/ {", 1)[1].split("}", 1)[0]
+        health_location = nginx.split("location = /healthz {", 1)[1].split("}", 1)[0]
+        self.assertIn("proxy_set_header X-Forwarded-For $http_x_forwarded_for;", api_location)
+        self.assertIn('proxy_set_header X-Forwarded-User "";', api_location)
+        self.assertIn("proxy_set_header Remote-User $http_remote_user;", api_location)
+        self.assertIn("proxy_set_header X-Switchyard-Proxy-Token $http_x_switchyard_proxy_token;", api_location)
+        self.assertIn("proxy_set_header X-Forwarded-For $http_x_forwarded_for;", health_location)
+        self.assertIn('proxy_set_header X-Forwarded-User "";', health_location)
+        self.assertIn('proxy_set_header Remote-User "";', health_location)
+        self.assertIn('proxy_set_header X-Switchyard-Proxy-Token "";', health_location)
+        self.assertNotIn("$proxy_add_x_forwarded_for", nginx)
 
 
 if __name__ == "__main__":

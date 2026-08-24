@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -153,9 +154,13 @@ func (l *requestLimiter) allow(key string, now time.Time) bool {
 }
 
 func requestClientIP(r *http.Request) string {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true") {
-		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
-			return forwarded
+	proxy, err := ReverseProxyAuthFromEnv()
+	if err == nil && proxy.Enabled && validProxyHopToken(r.Header, proxy.Token) {
+		values := r.Header.Values("X-Forwarded-For")
+		if len(values) == 1 && values[0] == strings.TrimSpace(values[0]) {
+			if forwarded := net.ParseIP(values[0]); forwarded != nil {
+				return forwarded.String()
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -208,7 +213,7 @@ func routeBoundary(next http.Handler, allowed func(*http.Request) bool) http.Han
 func controlPlaneAuth(next http.Handler) http.Handler {
 	adminToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_API_TOKEN"))
 	readToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_READ_TOKEN"))
-	trustProxy := strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true")
+	proxy, proxyConfigErr := ReverseProxyAuthFromEnv()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && isReadOnlyControlRequest(r)) {
 			next.ServeHTTP(w, r)
@@ -223,12 +228,12 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 		} else if secureTokenEqual(token, readToken) {
 			role = "read"
 			actor = "token:read"
-		} else if proxyUser := firstNonEmpty(strings.TrimSpace(r.Header.Get("X-Forwarded-User")), strings.TrimSpace(r.Header.Get("Remote-User"))); trustProxy && proxyUser != "" {
+		} else if proxyUser, validIdentity := proxyIdentity(r.Header); proxyConfigErr == nil && proxy.Enabled && validIdentity && validProxyHopToken(r.Header, proxy.Token) {
 			role = "admin"
 			actor = "proxy:" + proxyUser
 		}
 		if role == "" {
-			if adminToken == "" && readToken == "" && !trustProxy {
+			if adminToken == "" && readToken == "" && !proxy.Enabled && proxyConfigErr == nil {
 				writeError(w, http.StatusServiceUnavailable, "control-plane authentication is not configured")
 				return
 			}
@@ -242,6 +247,50 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), controlPlaneActorContextKey{}, actor)))
 	})
+}
+
+func proxyIdentity(header http.Header) (string, bool) {
+	remoteUser, remoteOK := singleHeaderValue(header, "Remote-User")
+	forwardedUser, forwardedOK := singleHeaderValue(header, "X-Forwarded-User")
+	if !remoteOK || !forwardedOK {
+		return "", false
+	}
+	if remoteUser != "" && forwardedUser != "" && remoteUser != forwardedUser {
+		return "", false
+	}
+	identity := firstNonEmpty(remoteUser, forwardedUser)
+	if identity == "" || len(identity) > 256 {
+		return "", false
+	}
+	for index, character := range []byte(identity) {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || (index > 0 && strings.ContainsRune("._@+-", rune(character)))) {
+			return "", false
+		}
+	}
+	return identity, true
+}
+
+func singleHeaderValue(header http.Header, name string) (string, bool) {
+	values := header.Values(name)
+	if len(values) > 1 {
+		return "", false
+	}
+	if len(values) == 0 {
+		return "", true
+	}
+	return values[0], true
+}
+
+func validProxyHopToken(header http.Header, configured string) bool {
+	candidate, single := singleHeaderValue(header, "X-Switchyard-Proxy-Token")
+	return single && secureProxyTokenEqual(candidate, configured)
+}
+
+func secureProxyTokenEqual(candidate, configured string) bool {
+	candidateDigest := sha256.Sum256([]byte(candidate))
+	configuredDigest := sha256.Sum256([]byte(configured))
+	return subtle.ConstantTimeCompare(candidateDigest[:], configuredDigest[:]) == 1
 }
 
 func requestActor(r *http.Request) string {

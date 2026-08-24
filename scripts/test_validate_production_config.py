@@ -70,10 +70,14 @@ class ProductionConfigTest(unittest.TestCase):
             "OPEN_PILOT_WORKTREE_ROOT": "/workspace/.open-pilot-worktrees",
             "SWITCHYARD_WEB_TRANSPORT": "tailscale",
             "SWITCHYARD_WEB_BIND_HOST": "100.65.164.66",
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
+            "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",
+            "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
+            "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
+            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "172.31.250.1/32",
             "SWITCHYARD_DASHBOARD_CIDR": "127.0.0.1/32",
             "SWITCHYARD_PUBLIC_URL": "https://switchyard.example.test",
             "SWITCHYARD_REVERSE_PROXY_AUTH": "true",
+            "SWITCHYARD_REVERSE_PROXY_TOKEN": "production-proxy-token-at-least-32-bytes",
             "SWITCHYARD_BIND_HOST": "127.0.0.1",
             "SWITCHYARD_MODEL_BIND_HOST": "100.65.164.66",
             "POSTGRES_PORT": "5432",
@@ -376,31 +380,42 @@ class ProductionConfigTest(unittest.TestCase):
 
     def test_rejects_non_cgnat_proxy(self) -> None:
         self.assert_rejected(
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR",
-            "10.0.0.200/32",
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must be within 100.64.0.0/10",
+            "SWITCHYARD_TAILSCALE_PROXY_IPV4",
+            "10.0.0.200",
+            "SWITCHYARD_TAILSCALE_PROXY_IPV4 must be within 100.64.0.0/10",
         )
 
-    def test_rejects_broad_proxy_cidr(self) -> None:
+    def test_rejects_proxy_cidr_instead_of_ipv4(self) -> None:
         self.assert_rejected(
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR",
+            "SWITCHYARD_TAILSCALE_PROXY_IPV4",
             "100.77.128.0/24",
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must be an explicit /32",
-        )
-
-    def test_rejects_proxy_without_explicit_prefix(self) -> None:
-        self.assert_rejected(
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR",
-            "100.77.128.80",
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must be an explicit /32",
+            "SWITCHYARD_TAILSCALE_PROXY_IPV4 must be an IPv4 address",
         )
 
     def test_rejects_same_tailscale_peer(self) -> None:
         self.assert_rejected(
-            "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR",
-            "100.65.164.66/32",
-            "SWITCHYARD_WEB_BIND_HOST and SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must identify distinct Tailscale peers",
+            "SWITCHYARD_TAILSCALE_PROXY_IPV4",
+            "100.65.164.66",
+            "SWITCHYARD_WEB_BIND_HOST and SWITCHYARD_TAILSCALE_PROXY_IPV4 must identify distinct Tailscale peers",
         )
+
+    def test_rejects_unsafe_bridge_contract(self) -> None:
+        cases = (
+            ("SWITCHYARD_DOCKER_BRIDGE_SUBNET", "172.31.248.0/23", "SWITCHYARD_DOCKER_BRIDGE_SUBNET must be a private IPv4 /24 or smaller subnet"),
+            ("SWITCHYARD_DOCKER_BRIDGE_SUBNET", "100.64.0.0/24", "SWITCHYARD_DOCKER_BRIDGE_SUBNET must be a private IPv4 /24 or smaller subnet"),
+            ("SWITCHYARD_DOCKER_BRIDGE_GATEWAY", "172.31.251.1", "SWITCHYARD_DOCKER_BRIDGE_GATEWAY must be a usable address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_DOCKER_BRIDGE_GATEWAY", "172.31.250.0", "SWITCHYARD_DOCKER_BRIDGE_GATEWAY must be a usable address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "172.31.250.0/24", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_DOCKER_BRIDGE_GATEWAY/32"),
+            ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "100.77.128.80/32", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_DOCKER_BRIDGE_GATEWAY/32"),
+        )
+        for name, value, message in cases:
+            with self.subTest(name=name, value=value):
+                self.assert_rejected(name, value, message)
+                self.env[name] = {
+                    "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
+                    "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
+                    "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "172.31.250.1/32",
+                }[name]
 
     def test_rejects_broad_dashboard_cidr(self) -> None:
         self.assert_rejected(
@@ -450,6 +465,17 @@ class ProductionConfigTest(unittest.TestCase):
             "false",
             "SWITCHYARD_REVERSE_PROXY_AUTH must be true",
         )
+
+    def test_rejects_missing_short_and_default_reverse_proxy_token(self) -> None:
+        message = "SWITCHYARD_REVERSE_PROXY_TOKEN must be set to a non-default value of at least 32 bytes"
+        for value in (None, "short", "replace-with-at-least-32-random-bytes"):
+            with self.subTest(value=value):
+                env = dict(self.env)
+                if value is None:
+                    env.pop("SWITCHYARD_REVERSE_PROXY_TOKEN")
+                else:
+                    env["SWITCHYARD_REVERSE_PROXY_TOKEN"] = value
+                self.assertIn(message, validate(env))
 
     def test_rejects_non_loopback_control_bind(self) -> None:
         self.assert_rejected(
@@ -577,10 +603,14 @@ class ProductionConfigCLITest(unittest.TestCase):
                 "OPEN_PILOT_WORKTREE_ROOT": "/workspace/.open-pilot-worktrees",
                 "SWITCHYARD_WEB_TRANSPORT": "tailscale",
                 "SWITCHYARD_WEB_BIND_HOST": "100.65.164.66",
-                "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
+                "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",
+                "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
+                "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
+                "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "172.31.250.1/32",
                 "SWITCHYARD_DASHBOARD_CIDR": "127.0.0.1/32",
                 "SWITCHYARD_PUBLIC_URL": "https://switchyard.example.test",
                 "SWITCHYARD_REVERSE_PROXY_AUTH": "true",
+                "SWITCHYARD_REVERSE_PROXY_TOKEN": "never-print-this-proxy-hop-secret-value",
                 "SWITCHYARD_BIND_HOST": "127.0.0.1",
                 "SWITCHYARD_MODEL_BIND_HOST": "100.65.164.66",
                 "POSTGRES_PORT": "5432",
@@ -604,6 +634,7 @@ class ProductionConfigCLITest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("never-print-this-secret", result.stdout + result.stderr)
+        self.assertNotIn("never-print-this-proxy-hop-secret-value", result.stdout + result.stderr)
 
     def test_env_file_errors_do_not_output_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -658,11 +689,13 @@ class ProductionConfigCLITest(unittest.TestCase):
 
     def test_service_validates_env_file_before_start_and_reload(self) -> None:
         unit = (REPO_ROOT / "deploy/switchyard.service").read_text(encoding="utf-8")
-        validator = "scripts/validate_production_config.py --env-file __REPO_ROOT__/.env"
+        validator = "scripts/validate_production_config.py --env-file __ENV_FILE__"
         self.assertIn(f"ExecStartPre=/usr/bin/python3 __REPO_ROOT__/{validator}", unit)
         self.assertLess(unit.index("ExecStartPre="), unit.index("ExecStart=/usr/bin/docker"))
         self.assertLess(unit.index("ExecReload=/usr/bin/python3"), unit.index("ExecReload=/usr/bin/docker"))
         self.assertEqual(unit.count(validator), 2)
+        self.assertEqual(unit.count("/usr/bin/docker compose --env-file __ENV_FILE__"), 3)
+        self.assertNotIn("--env-file __REPO_ROOT__/.env", unit)
 
     def test_smoke_rejects_different_public_url(self) -> None:
         result = subprocess.run(
@@ -732,6 +765,17 @@ else:
                 encoding="utf-8",
             )
             curl_path.chmod(0o755)
+            systemctl_path = directory_path / "systemctl"
+            systemctl_path.write_text("#!/bin/sh\n[ \"$*\" = 'is-active --quiet switchyard-web-gate.service' ]\n")
+            systemctl_path.chmod(0o755)
+            nft_path = directory_path / "nft"
+            nft_path.write_text(
+                "#!/bin/sh\nprintf '%s\\n' "
+                "'counter packets 1 bytes 64 comment \"allow Tailscale proxy to web\"' "
+                "'counter packets 0 bytes 0 comment \"drop other ingress to web\"' "
+                "'counter packets 0 bytes 0 comment \"drop local access to web\"'\n"
+            )
+            nft_path.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(REPO_ROOT / "scripts/smoke-production-contract.sh")],
                 capture_output=True,

@@ -202,14 +202,16 @@ func TestNativeModelDropRejectsBodyActor(t *testing.T) {
 
 func TestNativeModelMutationsPersistBoundedAuthEvidence(t *testing.T) {
 	t.Setenv("SWITCHYARD_REVERSE_PROXY_AUTH", "true")
+	t.Setenv("SWITCHYARD_REVERSE_PROXY_TOKEN", "model-audit-proxy-token-at-least-32-bytes")
 	store := NewStore(nil)
 	service := NewModelService(store, nil, ModelServiceOptions{DisableStart: true, QueueDepth: 4})
 	api := NewAPIWithModelService(store, NewRunner(store), service)
 	_, _, _ = service.Admit(t.Context(), CreateModelBrokerRequestInput{ID: "drop-audit", Model: "test"})
-	actor := strings.Repeat("a", 300)
+	actor := strings.Repeat("a", 256)
 	reason := strings.Repeat("r", 300)
 	request := httptest.NewRequest(http.MethodPost, "/api/model-broker/requests/drop-audit/drop", strings.NewReader(`{"reason":"`+reason+`"}`))
-	request.Header.Set("X-Forwarded-User", actor)
+	request.Header.Set("Remote-User", actor)
+	request.Header.Set("X-Switchyard-Proxy-Token", "model-audit-proxy-token-at-least-32-bytes")
 	response := httptest.NewRecorder()
 	api.ControlPlaneHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -222,7 +224,8 @@ func TestNativeModelMutationsPersistBoundedAuthEvidence(t *testing.T) {
 
 	_, _, _ = service.Admit(t.Context(), CreateModelBrokerRequestInput{ID: "bulk-audit", Model: "test"})
 	bulk := httptest.NewRequest(http.MethodDelete, "/api/model-broker/requests", nil)
-	bulk.Header.Set("X-Forwarded-User", "operator@example.test")
+	bulk.Header.Set("Remote-User", "operator@example.test")
+	bulk.Header.Set("X-Switchyard-Proxy-Token", "model-audit-proxy-token-at-least-32-bytes")
 	bulkResponse := httptest.NewRecorder()
 	api.ControlPlaneHandler().ServeHTTP(bulkResponse, bulk)
 	if bulkResponse.Code != http.StatusOK {
@@ -231,6 +234,11 @@ func TestNativeModelMutationsPersistBoundedAuthEvidence(t *testing.T) {
 	stored, _ = store.ModelBrokerRequest("bulk-audit")
 	if stored.CorrelationIDs["audit_actor"] != "proxy:operator@example.test" || stored.CorrelationIDs["audit_action"] != "cancel_all" || stored.CorrelationIDs["audit_reason"] != "bulk canceled by operator" {
 		t.Fatalf("bulk evidence=%v", stored.CorrelationIDs)
+	}
+	for key, value := range stored.CorrelationIDs {
+		if strings.Contains(key, "model-audit-proxy-token") || strings.Contains(value, "model-audit-proxy-token") {
+			t.Fatal("proxy token persisted in audit evidence")
+		}
 	}
 
 	_, _, _ = service.Begin(t.Context(), CreateModelBrokerRequestInput{ID: "first-audit", Model: "test"})

@@ -42,6 +42,9 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if _, err := controlplane.ReverseProxyAuthFromEnv(); err != nil {
+		return fmt.Errorf("invalid reverse proxy authentication configuration: %w", err)
+	}
 
 	tp, shutdown, err := telemetry.NewTracerProviderFromEnv(ctx)
 	if err != nil {
