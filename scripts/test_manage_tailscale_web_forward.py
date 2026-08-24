@@ -82,7 +82,7 @@ printf 'ip daddr 100.65.164.66 tcp dport 8081 counter packets 0 bytes 0 drop com
         commands = self.log.read_text().splitlines()
         exact = (
             "-i tailscale0 -o switchyard0 -p tcp -s 100.77.128.80/32 "
-            "-d 172.31.250.10/32 --dport 80 -m comment --comment switchyard-web-gate -j ACCEPT"
+            "-d 172.31.250.10/32 --dport 80 -j ACCEPT"
         )
         self.assertIn(f"iptables -C ufw-user-forward {exact}", commands)
         self.assertIn(

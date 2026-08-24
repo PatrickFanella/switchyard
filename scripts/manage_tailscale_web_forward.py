@@ -67,8 +67,6 @@ def commands(config: gate.GateConfig) -> tuple[list[str], list[str], list[str]]:
         "-s", f"{config.proxy}/32",
         "-d", f"{config.web_container}/32",
         "--dport", "80",
-        "-m", "comment",
-        "--comment", COMMENT,
         "-j", "ACCEPT",
     ]
     ufw_rule = [

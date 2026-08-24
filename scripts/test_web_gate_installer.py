@@ -174,7 +174,7 @@ exit 0
         self.assertIn("-o root -g root", rules_install)
         self.assertLess(mutations.index(rules_install),
                         mutations.index("systemctl restart switchyard-web-gate.service"))
-        exact = "iptables -C ufw-user-forward -i tailscale0 -o switchyard0 -p tcp -s 100.77.128.80/32 -d 172.31.250.10/32 --dport 80 -m comment --comment switchyard-web-gate -j ACCEPT"
+        exact = "iptables -C ufw-user-forward -i tailscale0 -o switchyard0 -p tcp -s 100.77.128.80/32 -d 172.31.250.10/32 --dport 80 -j ACCEPT"
         self.assertIn(exact, mutations)
         self.assertNotIn("100.64.0.0/10", "\n".join(mutations))
         self.assertNotIn("172.31.250.0/24", "\n".join(line for line in mutations if line.startswith(("ufw ", "iptables "))))
