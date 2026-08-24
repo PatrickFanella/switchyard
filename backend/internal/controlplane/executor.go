@@ -88,6 +88,10 @@ type EnvWorkflowExecutors struct {
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
+	return NewEnvWorkflowExecutorsWithModel(nil, store...)
+}
+
+func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *EnvWorkflowExecutors {
 	var configuredStore Store
 	if len(store) > 0 {
 		configuredStore = store[0]
@@ -131,7 +135,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		}
 	}
 	giteaClient := NewEnvGiteaClient()
-	return &EnvWorkflowExecutors{
+	env := &EnvWorkflowExecutors{
 		store:                     configuredStore,
 		openPilotCommand:          strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
 		devlogModel:               firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"),
@@ -152,7 +156,7 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		openPilotBaseBranch:       firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
 		openPilotBranchPrefix:     firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
 		openPilotPRDraft:          !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
-		modelExecutor:             NewEnvModelBroker(),
+		modelExecutor:             model,
 		openCodeExecutor:          NewEnvOpenCodeExecutor(),
 		issueFetcher:              giteaClient,
 		giteaReader:               giteaClient,
@@ -162,6 +166,10 @@ func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
 		worktreeManager:           NewEnvOpenPilotWorktreeManager(),
 		client:                    &http.Client{Timeout: 10 * time.Second},
 	}
+	if env.modelExecutor == nil {
+		env.modelExecutor = NewEnvModelBroker()
+	}
+	return env
 }
 
 func (e *EnvWorkflowExecutors) ExecutorFor(workflowID string) WorkflowExecutor {

@@ -99,6 +99,138 @@ func TestRetentionMigrationDeclaresPartialIndexes(t *testing.T) {
 	}
 }
 
+func TestTransactionalAccountingMigrationDeclaresTriggersFloorAndRollbackSafety(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/023_transactional_artifact_and_compatibility_accounting.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(data)
+	for _, field := range []string{"lock table artifacts in share row exclusive mode", "observation_retained_floor_count", "retained_count", "account_artifact_insert", "account_artifact_delete", "current_setting('switchyard.artifact_lifecycle_accounting', true) = 'trigger'", "compatibility_observation_daily", "alter column first_attempt_at set not null", "drop column if exists source_revision"} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("transactional accounting migration missing %q", field)
+		}
+	}
+	if strings.Index(sql, "lock table artifacts") > strings.Index(sql, "from artifacts") {
+		t.Fatal("artifact table must be locked before the retained snapshot")
+	}
+}
+
+func TestNewArtifactWritersSelectTriggerAccountingBeforeMutations(t *testing.T) {
+	runs, err := os.ReadFile("postgres_store_runs.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runsText := string(runs)
+	setAt := strings.Index(runsText, "enableArtifactTriggerLifecycleAccounting")
+	insertAt := strings.Index(runsText, "insert into artifacts")
+	if setAt < 0 || insertAt < 0 || setAt > insertAt {
+		t.Fatal("AddArtifact must select trigger lifecycle accounting before artifact insert")
+	}
+	if strings.Contains(runsText, "created_count=created_count+") {
+		t.Fatal("new artifact writer must not directly update created totals")
+	}
+	retention, err := os.ReadFile("postgres_store_model_broker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retentionText := string(retention)
+	pruneStart := strings.Index(retentionText, "func (s *PostgresStore) PruneRetention")
+	pruneEnd := strings.Index(retentionText[pruneStart:], "const retentionBatchSize")
+	pruneBody := retentionText[pruneStart : pruneStart+pruneEnd]
+	setAt = strings.Index(pruneBody, "enableArtifactTriggerLifecycleAccounting")
+	deleteAt := strings.Index(pruneBody, "delete from artifacts")
+	if setAt < 0 || deleteAt < 0 || setAt > deleteAt {
+		t.Fatal("PruneRetention must select trigger lifecycle accounting before artifact delete")
+	}
+	if strings.Contains(pruneBody, "pruned_count=pruned_count+") {
+		t.Fatal("new retention writer must not directly update pruned totals")
+	}
+}
+
+func TestArtifactAndCompatibilityMigrationsPreserveFloorsAndOldReadersIntegration(t *testing.T) {
+	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set SWITCHYARD_TEST_DATABASE_URL to run migration contract integration test")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	db, err := OpenPostgres(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `drop schema if exists migration_contract_test cascade; create schema migration_contract_test; set local search_path to migration_contract_test`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `create table artifacts(id text primary key, created_at timestamptz not null, storage_class text not null, byte_size integer not null)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `insert into artifacts values('measured',now(),'inline-data-uri',7),('unmeasured',now(),'legacy-inline',19)`); err != nil {
+		t.Fatal(err)
+	}
+	artifactMigration, err := migrationFS.ReadFile("migrations/021_artifact_measurement.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, string(artifactMigration)); err != nil {
+		t.Fatalf("apply artifact migration: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `create table compatibility_usage_daily(usage_date date not null,backend text not null,attempts bigint not null default 0,first_attempt_at timestamptz not null,last_attempt_at timestamptz not null,primary key(usage_date,backend))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `insert into compatibility_usage_daily values(current_date,'ocq',1,now(),now())`); err != nil {
+		t.Fatal(err)
+	}
+	observationMigration, err := migrationFS.ReadFile("migrations/022_compatibility_observations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, string(observationMigration)); err != nil {
+		t.Fatalf("apply compatibility migration: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `insert into compatibility_usage_daily(usage_date,backend,attempts,first_attempt_at,last_attempt_at,source_revision,deployment_id,observation_started_at,observation_completed_at,observation_segment,closed_at) values(current_date-1,'llama-line',0,null,null,'0123456789abcdef0123456789abcdef01234567','deployment',current_date-1,current_date,'segment',now())`); err != nil {
+		t.Fatal(err)
+	}
+	correctionMigration, err := migrationFS.ReadFile("migrations/023_transactional_artifact_and_compatibility_accounting.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, string(correctionMigration)); err != nil {
+		t.Fatalf("apply transactional correction migration: %v", err)
+	}
+	var floorCount, floorBytes, floorUnmeasured, retained, retainedBytes, retainedUnmeasured, created, pruned int64
+	if err := tx.QueryRowContext(ctx, `select observation_retained_floor_count,observation_retained_floor_bytes,observation_retained_floor_bytes_unmeasured,retained_count,retained_bytes,retained_bytes_unmeasured,created_count,pruned_count from artifact_lifecycle_totals where singleton=true`).Scan(&floorCount, &floorBytes, &floorUnmeasured, &retained, &retainedBytes, &retainedUnmeasured, &created, &pruned); err != nil {
+		t.Fatal(err)
+	}
+	if floorCount != 2 || floorBytes != 7 || floorUnmeasured != 1 || retained != 2 || retainedBytes != 7 || retainedUnmeasured != 1 || created != 0 || pruned != 0 {
+		t.Fatalf("artifact observation floor/counts = floor(%d,%d,%d) retained(%d,%d,%d) lifecycle(%d,%d)", floorCount, floorBytes, floorUnmeasured, retained, retainedBytes, retainedUnmeasured, created, pruned)
+	}
+	var attempts int64
+	var first, last time.Time
+	if err := tx.QueryRowContext(ctx, `select attempts,first_attempt_at,last_attempt_at from compatibility_usage_daily where backend='ocq'`).Scan(&attempts, &first, &last); err != nil {
+		t.Fatalf("old usage reader failed: %v", err)
+	}
+	if attempts != 1 || first.IsZero() || last.IsZero() {
+		t.Fatalf("old usage row changed: attempts=%d first=%v last=%v", attempts, first, last)
+	}
+	var nonNullColumns int
+	if err := tx.QueryRowContext(ctx, `select count(*) from pg_attribute where attrelid='compatibility_usage_daily'::regclass and attname in ('attempts','first_attempt_at','last_attempt_at') and attnotnull`).Scan(&nonNullColumns); err != nil {
+		t.Fatal(err)
+	}
+	var observations int
+	if err := tx.QueryRowContext(ctx, `select count(*) from compatibility_observation_daily`).Scan(&observations); err != nil {
+		t.Fatal(err)
+	}
+	if nonNullColumns != 3 || observations != 1 {
+		t.Fatalf("migration contract: non-null old columns=%d observations=%d", nonNullColumns, observations)
+	}
+}
+
 func TestModelBrokerFeedbackMigrationDeclaresDurableFeedback(t *testing.T) {
 	data, err := migrationFS.ReadFile("migrations/016_model_broker_feedback.sql")
 	if err != nil {
@@ -294,6 +426,13 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if detail.Artifacts[0].StorageClass != "inline-data-uri" || detail.Artifacts[0].ByteSize == 0 || detail.Artifacts[0].SHA256 == "" || detail.Artifacts[0].RetentionUntil == nil {
 		t.Fatalf("artifact lifecycle metadata = %+v", detail.Artifacts[0])
+	}
+	report, err := store.ArtifactReport(ctx, ArtifactReportInput{Start: utcDay(time.Unix(100, 0)), End: time.Unix(100, 0).UTC()})
+	if err != nil {
+		t.Fatalf("ArtifactReport() error = %v", err)
+	}
+	if report.Retained < int64(len(detail.Artifacts)) || report.CreatedTotal < int64(len(detail.Artifacts)) || len(report.Buckets) != 1 || report.Buckets[0].Created < int64(len(detail.Artifacts)) {
+		t.Fatalf("artifact report = %+v", report)
 	}
 	if err := store.RecordCompatibilityUsage(ctx, "ocq", time.Unix(100, 0)); err != nil {
 		t.Fatalf("RecordCompatibilityUsage() error = %v", err)

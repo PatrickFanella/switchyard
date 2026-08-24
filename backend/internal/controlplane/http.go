@@ -15,23 +15,40 @@ import (
 )
 
 type API struct {
-	store         Store
-	runner        *Runner
-	adapterProbe  AdapterProbe
-	modelBroker   ModelBrokerStatusProvider
-	compatBroker  *llamaLineCompatTracker
-	openCode      OpenCodeExecutorStatusProvider
-	canceler      CancelDispatcher
-	scheduler     *Scheduler
-	workerPool    *WorkerPool
-	retention     *RetentionManager
-	asyncDispatch bool
+	store                 Store
+	runner                *Runner
+	adapterProbe          AdapterProbe
+	modelBroker           ModelBrokerStatusProvider
+	modelRuntime          ModelRuntimeControl
+	ownedModelService     *ModelService
+	compatBroker          *llamaLineCompatTracker
+	openCode              OpenCodeExecutorStatusProvider
+	canceler              CancelDispatcher
+	scheduler             *Scheduler
+	workerPool            *WorkerPool
+	retention             *RetentionManager
+	asyncDispatch         bool
+	compatibilityObserver *CompatibilityObserver
 }
 
 type controlPlaneActorContextKey struct{}
 
 func NewAPI(store Store, runner *Runner) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), compatBroker: newLlamaLineCompatTracker(store), openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
+	service := NewModelService(store, NewEnvModelBroker(), ModelServiceOptions{})
+	api := NewAPIWithModelService(store, runner, service)
+	api.ownedModelService = service
+	return api
+}
+
+func (a *API) Shutdown(ctx context.Context) error {
+	if a.ownedModelService == nil {
+		return nil
+	}
+	return a.ownedModelService.Close(ctx)
+}
+
+func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
@@ -54,11 +71,16 @@ func (a *API) SetAsyncDispatch(enabled bool) {
 	a.asyncDispatch = enabled
 }
 
-func (a *API) Shutdown(ctx context.Context) error {
-	if a.compatBroker == nil {
-		return nil
+func (a *API) SetCompatibilityObserver(observer *CompatibilityObserver) {
+	a.compatibilityObserver = observer
+}
+
+func (a *API) compatibilityObserverStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.compatibilityObserver == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
 	}
-	return a.compatBroker.close(ctx)
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "health": a.compatibilityObserver.Status()})
 }
 
 func (a *API) Handler() http.Handler {
@@ -147,6 +169,12 @@ func (a *API) readiness(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "storage unavailable")
 		return
 	}
+	if service, ok := a.modelRuntime.(*ModelService); ok {
+		if err := service.HealthError(ctx); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "model service unavailable: "+RedactForLog(err.Error()))
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ready": true})
 }
 
@@ -179,7 +207,7 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 	readToken := strings.TrimSpace(os.Getenv("SWITCHYARD_CONTROL_READ_TOKEN"))
 	trustProxy := strings.EqualFold(strings.TrimSpace(os.Getenv("SWITCHYARD_REVERSE_PROXY_AUTH")), "true")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && r.Method == http.MethodGet) {
+		if r.Method == http.MethodOptions || ((r.URL.Path == "/health" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && isReadOnlyControlRequest(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -217,7 +245,11 @@ func requestActor(r *http.Request) string {
 	if r == nil {
 		return "unknown"
 	}
-	if actor, ok := r.Context().Value(controlPlaneActorContextKey{}).(string); ok && actor != "" {
+	return contextActor(r.Context())
+}
+
+func contextActor(ctx context.Context) string {
+	if actor, ok := ctx.Value(controlPlaneActorContextKey{}).(string); ok && actor != "" {
 		return actor
 	}
 	return "internal"
@@ -291,7 +323,12 @@ func (a *API) adapters(w http.ResponseWriter, r *http.Request) {
 func (a *API) modelBrokerStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"model_broker": a.modelBroker.Status(ctx)})
+	queue, err := a.modelRuntime.QueueStatus(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"model_broker": a.modelBroker.Status(ctx), "queue": queue})
 }
 
 func (a *API) openCodeExecutorStatus(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +361,26 @@ func (a *API) retentionStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"retention": a.retention.Status()})
 }
 
+func (a *API) artifactReport(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > maxArtifactReportDays {
+			writeError(w, http.StatusBadRequest, "days must be between 1 and 90")
+			return
+		}
+		days = parsed
+	}
+	end := time.Now().UTC()
+	start := utcDay(end).AddDate(0, 0, -days+1)
+	report, err := a.store.ArtifactReport(r.Context(), ArtifactReportInput{Start: start, End: end})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "artifact report unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifact_report": report})
+}
+
 func (a *API) compatibilityRetirement(w http.ResponseWriter, r *http.Request) {
 	status, err := compatibilityRetirementStatus(a.store, time.Now().UTC())
 	if err != nil {
@@ -331,6 +388,38 @@ func (a *API) compatibilityRetirement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *API) compatibilityReport(w http.ResponseWriter, r *http.Request) {
+	start, err := time.Parse(time.DateOnly, strings.TrimSpace(r.URL.Query().Get("start")))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "start must be a UTC date in YYYY-MM-DD format")
+		return
+	}
+	end, err := time.Parse(time.DateOnly, strings.TrimSpace(r.URL.Query().Get("end")))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "end must be a UTC date in YYYY-MM-DD format")
+		return
+	}
+	observations, ok := a.store.(compatibilityObservationStore)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "compatibility report unavailable")
+		return
+	}
+	report, err := observations.CompatibilityReport(r.Context(), CompatibilityReportInput{Start: start, End: end, GeneratedAt: time.Now().UTC(), Identity: CompatibilityObservationIdentity{SourceRevision: strings.TrimSpace(os.Getenv("SWITCHYARD_SOURCE_REVISION")), DeploymentID: compatibilityDeploymentID()}})
+	if errors.Is(err, ErrInvalid) {
+		writeError(w, http.StatusBadRequest, "window must be complete, elapsed, and between 1 and 90 UTC days")
+		return
+	}
+	if errors.Is(err, ErrCompatibilityCoverageIncomplete) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "compatibility report unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"compatibility_report": report})
 }
 
 func pipelinesOrEmpty(items []Pipeline) []Pipeline {

@@ -159,10 +159,10 @@ Exit criteria:
 
 Current status:
 
-- `backend/internal/controlplane/model_executor.go` defines the native `ModelBroker` contract.
+- `backend/internal/controlplane/model_executor.go` defines the narrow native `ModelGeneration` contract, and `model_service.go` owns durable queue admission, recovery, cancellation, dropping, and execution.
 - `EnvModelBroker` handles compatibility ingress requests and marks responses with `model_broker=switchyard` correlation metadata.
 - Native routing sends provider-style models to OpenCode and Ollama/local models to `OLLAMA_BASE_URL` when configured; `ollama/<model>` forces Ollama routing.
-- `GET /api/model-broker/status` exposes a native Switchyard broker status surface; `/broker/status` mirrors that status on the compatibility ingress.
+- Authenticated `/api/model-broker/status`, `/queue`, and `/requests` routes expose separate upstream and queue health plus bounded lifecycle controls. These routes are unavailable on model ingress; `/broker/status` preserves the compatibility envelope.
 
 ## Phase 3 — OpenCode executor
 
@@ -384,8 +384,11 @@ Exit criteria:
    preserving the control/model listener split.
 3. Observe durable deprecated-selector usage for 90 days and require two
    qualifying zero-use releases before selector removal.
-4. Measure retained inline-artifact growth before funding an object-storage
-   backend.
+4. Continue measuring retained inline-artifact growth. Keep PostgreSQL until an
+   operator-supplied byte budget, observation window, and sustained threshold
+   are exceeded by measured workload. Current: bounded report, durable totals,
+   and low-cardinality metrics complete; no threshold values or object storage
+   selected.
 5. Keep `docs/openapi.yaml`, codemaps, current release evidence, and
    environment defaults aligned with implementation.
 6. Obtain live timer evidence for the bounded restore-drill scheduler under

@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -46,8 +45,8 @@ func TestAsyncDeprecatedRoutesRetainDecisionAndRequestEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tracker := newDirectAsyncDecisionTracker(store)
-			tracker.runClaimedAsync(claimed)
+			service := newDirectAsyncDecisionService(store)
+			service.run(claimed)
 
 			finished, err := store.ModelBrokerRequest(id)
 			if err != nil {
@@ -86,8 +85,8 @@ func TestAsyncPersistenceFailurePreventsUpstreamIOAndFailsRequest(t *testing.T) 
 		t.Fatal(err)
 	}
 	store := failingAsyncDecisionStore{Store: memory, err: errors.New("decision persistence failed")}
-	tracker := newDirectAsyncDecisionTracker(store)
-	tracker.runClaimedAsync(claimed)
+	service := newDirectAsyncDecisionService(store)
+	service.run(claimed)
 
 	finished, err := memory.ModelBrokerRequest(claimed.ID)
 	if err != nil {
@@ -116,12 +115,12 @@ func TestAsyncPersistedDecisionSurvivesRecoveryRetryAndTerminalMerge(t *testing.
 		t.Fatal(err)
 	}
 
-	newDirectAsyncDecisionTracker(store).recoverQueuedAsync() // simulated restart recovery
+	newDirectAsyncDecisionService(store).recover() // simulated restart recovery
 	claimed, err := store.ClaimNextModelBrokerRequest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	newDirectAsyncDecisionTracker(store).runClaimedAsync(claimed) // recovered request retry
+	newDirectAsyncDecisionService(store).run(claimed) // recovered request retry
 
 	finished, err := store.ModelBrokerRequest(id)
 	if err != nil {
@@ -138,10 +137,13 @@ func createAsyncDecisionTestRequest(t *testing.T, store *MemoryStore, id string)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.MergeModelBrokerRequestCorrelationIDs(id, map[string]string{"llama_line_request_id": id}); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func newDirectAsyncDecisionTracker(store Store) *llamaLineCompatTracker {
-	return &llamaLineCompatTracker{store: store, requests: map[string]*llamaLineCompatTrackedRequest{}, ctx: context.Background()}
+func newDirectAsyncDecisionService(store Store) *ModelService {
+	return NewModelService(store, NewEnvModelBroker(), ModelServiceOptions{DisableStart: true})
 }
 
 type failingAsyncDecisionStore struct {

@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -264,12 +263,13 @@ func TestAsyncTrackerRetainsDeprecatedDecisionEvidenceOnSuccessAndError(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
+			_, _ = store.MergeModelBrokerRequestCorrelationIDs(request.ID, map[string]string{"llama_line_request_id": request.ID})
 			claimed, err := store.ClaimNextModelBrokerRequest()
 			if err != nil {
 				t.Fatal(err)
 			}
-			tracker := &llamaLineCompatTracker{store: store, requests: map[string]*llamaLineCompatTrackedRequest{}, ctx: context.Background()}
-			tracker.runClaimedAsync(claimed)
+			service := NewModelService(store, NewEnvModelBroker(), ModelServiceOptions{DisableStart: true})
+			service.run(claimed)
 			finished, err := store.ModelBrokerRequest(request.ID)
 			if err != nil || finished.Status != tc.wantStatus {
 				t.Fatalf("request=%+v err=%v", finished, err)

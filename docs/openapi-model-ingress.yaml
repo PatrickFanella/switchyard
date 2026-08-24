@@ -1,0 +1,81 @@
+openapi: 3.1.0
+info:
+  title: Switchyard Model Ingress API
+  version: 0.1.0
+  description: Public operations on the model-compatible listener.
+servers:
+  - url: http://127.0.0.1:11434
+    description: Model-compatible ingress (LLAMA_LINE_PORT)
+paths:
+  /health:
+    get:
+      security: []
+      summary: Compatibility health check
+      responses: {"200": {description: API is healthy}}
+  /healthz:
+    get:
+      security: []
+      summary: Health check
+      responses: {"200": {description: API is healthy}}
+  /readyz:
+    get:
+      security: []
+      summary: Storage-backed readiness check
+      responses: {"200": {description: API and persistence are ready}, "503": {description: Persistence is unavailable}}
+  /metrics:
+    get:
+      security: []
+      summary: Prometheus runtime metrics
+      responses:
+        "200":
+          description: Prometheus text exposition
+  /broker/status:
+    get:
+      security: []
+      summary: Broker and queue status
+      responses: {"200": {description: Broker status}}
+  /v1/chat/completions:
+    post:
+      security: []
+      summary: OpenAI-compatible chat completion
+      responses: {"200": {description: Completion or SSE stream}, "202": {description: Async request accepted}}
+  /v1/completions:
+    post:
+      security: []
+      summary: OpenAI-compatible text completion
+      responses: {"200": {description: Completion}, "202": {description: Async request accepted}}
+  /v1/embeddings:
+    post:
+      security: []
+      summary: OpenAI-compatible embeddings
+      responses: {"200": {description: Embeddings}}
+  /v1/models:
+    get:
+      security: []
+      summary: OpenAI-compatible model list
+      responses: {"200": {description: Model list}}
+  /api/chat:
+    post:
+      security: []
+      summary: Ollama-compatible chat
+      responses: {"200": {description: Chat response}, "202": {description: Async request accepted}}
+  /api/generate:
+    post:
+      security: []
+      summary: Ollama-compatible generation
+      responses: {"200": {description: Generation response}, "202": {description: Async request accepted}}
+  /api/embed:
+    post:
+      security: []
+      summary: Ollama-compatible embeddings alias
+      responses: {"200": {description: Embeddings}}
+  /api/embeddings:
+    post:
+      security: []
+      summary: Ollama-compatible embeddings
+      responses: {"200": {description: Embeddings}}
+  /api/tags:
+    get:
+      security: []
+      summary: Ollama-compatible model tags
+      responses: {"200": {description: Model list}}

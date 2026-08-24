@@ -65,6 +65,32 @@
         "deployed_at": { "$ref": "#/$defs/utc_timestamp" },
         "host": { "$ref": "#/$defs/non_placeholder_text" }
       }
+    },
+    "retirement_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "prior_qualifying_releases"],
+      "properties": {
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["artifact", "raw_sha256", "canonical_sha256", "source_revision", "source_identity", "source_segment"],
+          "properties": {
+            "artifact": { "const": "compatibility-retirement-report.json" },
+            "raw_sha256": { "$ref": "#/$defs/sha256" },
+            "canonical_sha256": { "$ref": "#/$defs/sha256" },
+            "source_revision": { "$ref": "#/$defs/git_sha" },
+            "source_identity": { "$ref": "#/$defs/safe_identity" },
+            "source_segment": { "$ref": "#/$defs/safe_identity" }
+          }
+        },
+        "prior_qualifying_releases": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/qualifying_release" }
+        }
+      }
     }
   },
   "allOf": [
@@ -124,6 +150,10 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "safe_identity": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
     "non_placeholder_text": {
       "type": "string",
       "minLength": 1,
@@ -142,6 +172,20 @@
         "status": { "const": "passed" },
         "completed_at": { "$ref": "#/$defs/utc_timestamp" },
         "proof": { "$ref": "#/$defs/non_placeholder_text" }
+      }
+    },
+    "qualifying_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_tag", "release_sha", "qualification_artifact", "qualification_raw_sha256"],
+      "properties": {
+        "release_tag": {
+          "type": "string",
+          "pattern": "^v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "release_sha": { "$ref": "#/$defs/git_sha" },
+        "qualification_artifact": { "$ref": "#/$defs/non_placeholder_text" },
+        "qualification_raw_sha256": { "$ref": "#/$defs/sha256" }
       }
     }
   }

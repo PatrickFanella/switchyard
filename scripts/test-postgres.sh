@@ -48,4 +48,4 @@ docker exec "$name" pg_isready --username switchyard_test --dbname switchyard_te
 export SWITCHYARD_TEST_DATABASE_URL="host=$database_host port=$database_port user=switchyard_test password=$password dbname=switchyard_test sslmode=disable"
 export SWITCHYARD_TEST_POSTGRES_ISOLATED=1
 cd backend
-go test ./internal/controlplane -v -run 'TestPostgresStore.*Integration|TestStoreLifecycleContract/postgres' -count=1
+go test ./internal/controlplane -v -run 'TestPostgresStore.*Integration|TestArtifactAndCompatibilityMigrationsPreserveFloorsAndOldReadersIntegration|TestStoreLifecycleContract/postgres' -count=1

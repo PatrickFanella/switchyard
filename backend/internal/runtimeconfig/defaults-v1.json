@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "listeners": {
+    "control": {"runtime_env": "SWITCHYARD_LISTEN_ADDR", "bind_env": "SWITCHYARD_BIND_HOST", "port_env": "API_PORT", "published_default": 18080, "target": 8080},
+    "model": {"runtime_env": "LLAMA_LINE_LISTEN_ADDR", "bind_env": "SWITCHYARD_MODEL_BIND_HOST", "port_env": "LLAMA_LINE_PORT", "published_default": 11434, "target": 11434}
+  },
+  "defaults": {
+    "SWITCHYARD_LISTEN_ADDR": {"runtime": ":8080", "compose": ":8080", "example": ":8080"},
+    "LLAMA_LINE_LISTEN_ADDR": {"runtime": "", "compose": ":11434", "example": ":11434", "deployment_override": "Compose enables the isolated model listener; a bare API process does not."},
+    "SWITCHYARD_CONTROL_API_TOKEN": {"runtime": "", "compose": "", "example": "replace-with-a-long-random-secret", "secret": true},
+    "SWITCHYARD_WORKER_ENABLED": {"runtime": "true", "compose": "true", "example": "true"},
+    "SWITCHYARD_WORKER_COUNT": {"runtime": "1", "compose": "1", "example": "1"},
+    "SWITCHYARD_WORKER_LEASE": {"runtime": "5m", "compose": "5m", "example": "5m"},
+    "SWITCHYARD_WORKER_POLL_INTERVAL": {"runtime": "1s", "compose": "1s", "example": "1s"},
+    "SWITCHYARD_SCHEDULER_ENABLED": {"runtime": "true", "compose": "true", "example": "true"},
+    "SWITCHYARD_SCHEDULER_INTERVAL": {"runtime": "1m", "compose": "1m", "example": "1m"},
+    "SWITCHYARD_SCHEDULER_TIMEZONE": {"runtime": "UTC", "compose": "UTC", "example": "UTC"},
+    "SWITCHYARD_RETENTION": {"runtime": "720h", "compose": "720h", "example": "720h"},
+    "SWITCHYARD_RETENTION_INTERVAL": {"runtime": "24h", "compose": "24h", "example": "24h"},
+    "MODEL_BROKER_TIMEOUT": {"runtime": "10m", "compose": "10m", "example": "10m"},
+    "MODEL_BROKER_QUEUE_MAX_DEPTH": {"runtime": "100", "compose": "100", "example": "100"},
+    "MODEL_BROKER_QUEUE_WORKERS": {"runtime": "1", "compose": "1", "example": "1"},
+    "MODEL_BROKER_RETRY_ATTEMPTS": {"runtime": "1", "compose": "1", "example": "1"},
+    "MODEL_BROKER_RETRY_BACKOFF": {"runtime": "250ms", "compose": "250ms", "example": "250ms"},
+    "MODEL_BROKER_RECOVERY_STALE_AFTER": {"runtime": "15m", "compose": "15m", "example": "15m"},
+    "OPENCODE_EXECUTOR_TIMEOUT": {"runtime": "10m", "compose": "10m", "example": "10m"},
+    "OPENCODE_SESSION_CREATE_TIMEOUT": {"runtime": "5s", "compose": "5s", "example": "5s"},
+    "OPENCODE_MESSAGE_TIMEOUT": {"runtime": "10m", "compose": "10m", "example": "10m"},
+    "OPENCODE_ABORT_TIMEOUT": {"runtime": "1s", "compose": "1s", "example": "1s"},
+    "OPENCODE_SESSION_CREATE_TIMEOUT_MS": {"runtime": "5000", "compose": "5000", "example": "5000"},
+    "OPENCODE_MESSAGE_TIMEOUT_MS": {"runtime": "600000", "compose": "600000", "example": "600000"},
+    "OPENCODE_SECURITY_MODE": {"runtime": "strict", "compose": "strict", "example": "strict"},
+    "OPEN_PILOT_COMMAND_POLICY_MODE": {"runtime": "deny", "compose": "deny", "example": "deny"},
+    "OPEN_PILOT_ALLOWED_COMMANDS": {"runtime": "git,go,make,pnpm,npm,cargo", "compose": "git,go,make,pnpm,npm,cargo", "example": "git,go,make,pnpm,npm,cargo"},
+    "OPEN_PILOT_ALLOWED_GIT_VERBS": {"runtime": "status,diff,checkout,switch,branch,add,commit", "compose": "status,diff,checkout,switch,branch,add,commit", "example": "status,diff,checkout,switch,branch,add,commit"},
+    "OPEN_PILOT_DENIED_COMMANDS": {"runtime": "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish", "compose": "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish", "example": "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"},
+    "OPEN_PILOT_COMMAND_TIMEOUT": {"runtime": "120s", "compose": "120s", "example": "120s"},
+    "OPEN_PILOT_WORKTREE_TIMEOUT": {"runtime": "120s", "compose": "120s", "example": "120s"}
+  }
+}

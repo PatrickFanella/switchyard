@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
+
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -56,17 +58,17 @@ type ModelStreamer interface {
 	Stream(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error)
 }
 
-// ModelBroker is the Switchyard-native model generation contract.
+// ModelGeneration is the Switchyard-native model generation contract.
 //
 // It is intentionally small while llama-line remains the transitional
 // model-broker backend. OCQ remains the transitional OpenCode executor path.
-// Workflow code should depend on this interface instead of calling a
-// service-specific model client directly. Future broker features such as queue
-// state, routing policy, upstream health, and cancellation handles should grow
-// from this contract rather than from imported service boundaries.
-type ModelBroker interface {
+// Workflow code depends on this interface instead of lifecycle controls or a
+// service-specific model client.
+type ModelGeneration interface {
 	Generate(ctx context.Context, request ModelRequest) (ModelResponse, error)
 }
+
+type ModelBroker = ModelGeneration
 
 type ModelBrokerConfiguration interface {
 	Configured() bool
@@ -104,7 +106,7 @@ func modelBrokerTimeout() time.Duration {
 			return parsed
 		}
 	}
-	return 10 * time.Minute
+	return runtimeconfig.Duration("MODEL_BROKER_TIMEOUT")
 }
 
 type modelBrokerRetryPolicy struct {
@@ -122,13 +124,13 @@ func (e modelBrokerHTTPError) Error() string {
 }
 
 func modelBrokerRetryPolicyFromEnv() modelBrokerRetryPolicy {
-	attempts := 1
+	attempts := runtimeconfig.Int("MODEL_BROKER_RETRY_ATTEMPTS")
 	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RETRY_ATTEMPTS")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 5 {
 			attempts = parsed
 		}
 	}
-	backoff := 250 * time.Millisecond
+	backoff := runtimeconfig.Duration("MODEL_BROKER_RETRY_BACKOFF")
 	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RETRY_BACKOFF")); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 && parsed <= 10*time.Second {
 			backoff = parsed
@@ -278,6 +280,10 @@ func (e *EnvModelBroker) StreamingMode(model string) string {
 		return "native"
 	}
 	return "buffered"
+}
+
+func (e *EnvModelBroker) ExecutionDecision(model string) BackendDecision {
+	return resolveModelExecutionRoute(model, strings.TrimSpace(e.ollamaBaseURL) != "")
 }
 
 func (e *EnvModelBroker) streamBuffered(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (ModelResponse, error) {

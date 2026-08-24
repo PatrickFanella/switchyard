@@ -15,6 +15,7 @@ var (
 	ErrInvalid        = errors.New("invalid input")
 	ErrQueueFull      = errors.New("queue capacity exceeded")
 	ErrAlreadyClaimed = errors.New("open-pilot issue already claimed")
+	ErrConflict       = errors.New("state conflict")
 )
 
 type Store interface {
@@ -68,12 +69,17 @@ type Store interface {
 	RunDetail(string) (RunDetail, error)
 	RunDetailContext(context.Context, string) (RunDetail, error)
 	CreateModelBrokerRequest(CreateModelBrokerRequestInput) (ModelBrokerRequest, error)
+	BeginModelBrokerRequest(CreateModelBrokerRequestInput) (ModelBrokerRequest, bool, error)
+	AdmitModelBrokerRequest(CreateModelBrokerRequestInput, int) (ModelBrokerRequest, bool, error)
 	ClaimNextModelBrokerRequest() (ModelBrokerRequest, error)
+	TransitionModelBrokerRequest(string, TransitionModelBrokerRequestInput) (ModelBrokerRequest, error)
 	StartModelBrokerRequest(string) (ModelBrokerRequest, error)
 	FinishModelBrokerRequest(string, FinishModelBrokerRequestInput) (ModelBrokerRequest, error)
 	MergeModelBrokerRequestCorrelationIDs(string, map[string]string) (ModelBrokerRequest, error)
 	CancelModelBrokerRequest(string) (ModelBrokerRequest, error)
 	CancelAllModelBrokerRequests() (int, error)
+	RequestCancelModelBrokerRequests(map[string]string) ([]ModelBrokerRequest, error)
+	ModelBrokerQueueSnapshot(int) (ModelBrokerQueueSnapshot, error)
 	ListModelBrokerRequests(ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error)
 	ListModelBrokerRequestsContext(context.Context, ListModelBrokerRequestsFilter) ([]ModelBrokerRequest, error)
 	ModelBrokerRequest(string) (ModelBrokerRequest, error)
@@ -81,6 +87,7 @@ type Store interface {
 	AddModelBrokerFeedback(CreateModelBrokerFeedbackInput) (ModelBrokerFeedback, error)
 	ListModelBrokerFeedback(int) ([]ModelBrokerFeedback, error)
 	PruneRetention(time.Time) (RetentionResult, error)
+	ArtifactReport(context.Context, ArtifactReportInput) (ArtifactReport, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
 }
 
@@ -99,13 +106,19 @@ type MemoryStore struct {
 	modelBrokerRequests        map[string]ModelBrokerRequest
 	modelBrokerFeedback        []ModelBrokerFeedback
 	compatibilityUsage         map[string]CompatibilityUsageDaily
+	artifactDaily              map[string]ArtifactDailyBucket
+	artifactObservationStarted time.Time
+	artifactsCreated           int64
+	artifactBytesCreated       int64
+	artifactsPruned            int64
+	artifactBytesPruned        int64
 }
 
 func NewStore(now func() time.Time) *MemoryStore {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}}
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: now().UTC()}
 }
 
 func (s *MemoryStore) Ready(context.Context) error       { return nil }

@@ -46,7 +46,7 @@ func (a *API) modelBrokerObservability(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	errorRows, err := a.store.ListModelBrokerRequestsContext(r.Context(), ListModelBrokerRequestsFilter{SinceCreated: &since, Statuses: []string{ModelBrokerRequestFailed, ModelBrokerRequestCanceled}, Limit: 10})
+	errorRows, err := a.store.ListModelBrokerRequestsContext(r.Context(), ListModelBrokerRequestsFilter{SinceCreated: &since, Statuses: []string{ModelBrokerRequestFailed, ModelBrokerRequestCanceled, ModelBrokerRequestDropped}, Limit: 10})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

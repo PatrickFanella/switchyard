@@ -156,7 +156,7 @@ List runs with bounded cursor pagination using `GET /api/runs?limit=50&cursor=..
 
 Workflow-definition PUTs create immutable draft versions. Validate and publish the latest draft with `POST /api/workflow-definitions/{id}/activate`, inspect history at `GET .../{id}/versions`, and restore an earlier snapshot with `POST .../{id}/rollback` and `{"version": N}`; rollback creates a new active version rather than rewriting history. Generic HTTP steps are supported only when the definition opts in with `allow_http=true`, the target host matches `SWITCHYARD_HTTP_ALLOWED_HOSTS`, and HTTPS is used (`SWITCHYARD_HTTP_ALLOW_INSECURE=true` is intended only for controlled local testing). Redirects, methods, timeout, and response size are constrained. Compatibility feedback now requires `request_id`, a rating from `-1` to `1`, and an optional redacted comment, and is durably queryable from `/admin/feedback`.
 
-Every control-plane request except health checks requires authentication. Set `SWITCHYARD_CONTROL_API_TOKEN` to a long random bearer token; the CLI reads the same variable automatically. `SWITCHYARD_CONTROL_READ_TOKEN` optionally grants GET/HEAD-only access. Browser deployments may instead set `SWITCHYARD_REVERSE_PROXY_AUTH=true` after an authenticated proxy reliably supplies `X-Forwarded-User` or `Remote-User`; never enable that trust flag on an independently reachable listener. Cross-origin access is disabled by default and may be allowlisted with comma-separated `SWITCHYARD_CORS_ALLOWED_ORIGINS`. Set `SWITCHYARD_PUBLIC_URL` for operator metadata. `GET /api/operator-safety` reports the proxy assumption and warns when full Open Pilot autonomy is enabled without it.
+Every control-plane request except health checks requires authentication. Set `SWITCHYARD_CONTROL_API_TOKEN` to a long random bearer token; the CLI reads the same variable automatically. `SWITCHYARD_CONTROL_READ_TOKEN` optionally grants GET/HEAD-only access: on the control listener, every supported GET route also supports HEAD as its bodyless alias with the same authentication. Browser deployments may instead set `SWITCHYARD_REVERSE_PROXY_AUTH=true` after an authenticated proxy reliably supplies `X-Forwarded-User` or `Remote-User`; never enable that trust flag on an independently reachable listener. Cross-origin access is disabled by default and may be allowlisted with comma-separated `SWITCHYARD_CORS_ALLOWED_ORIGINS`. Set `SWITCHYARD_PUBLIC_URL` for operator metadata. `GET /api/operator-safety` reports the proxy assumption and warns when full Open Pilot autonomy is enabled without it.
 
 Phoenix / OTLP tracing is optional. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://10.0.0.200:6006`) plus optional `OTEL_EXPORTER_OTLP_HEADERS=x-project-name=switchyard` to export traces over OTLP/HTTP; leave the endpoint unset for no-op tracing.
 
@@ -203,6 +203,12 @@ The backend exposes a workflow/run API:
 - `GET /api/runs/{id}/steps`
 - `GET /api/adapters`
 - `GET /api/model-broker/status`
+- `GET /api/model-broker/queue`
+- `GET /api/model-broker/requests`
+- `GET /api/model-broker/requests/{id}`
+- `POST /api/model-broker/requests/{id}/cancel`
+- `POST /api/model-broker/requests/{id}/drop`
+- `DELETE /api/model-broker/requests`
 - `GET /api/opencode-executor/status`
 - `GET /api/operator-summary`
 - `GET /api/operator-safety`
@@ -220,9 +226,10 @@ The backend exposes a workflow/run API:
 
 Runs persist the pipeline ID, version hash, and an immutable pipeline snapshot when queued, so later workflow-definition edits cannot change in-flight execution. Run retry creates a new run with the same workflow inputs and pipeline snapshot. Step retry creates a new run with `retry_from_step*` metadata and starts that same versioned pipeline at the requested step, preserving prior step inputs under `resume.<step-name>.*` for operator/audit context. Open Pilot rehydrates its branch plan, issue summary, agent completion, and push plan from that resume metadata so retries from verify/push/PR steps do not recreate earlier work. The Open Pilot state resume endpoint now derives its cursor from persisted DB state and records failure diagnostics (`failing_gate`, `operator_summary`, `recommended_next_action`) on failed or paused runs.
 
-API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintained OpenAPI 3.1 snapshot of the stable local control-plane API; a contract test requires registered routes and documented operations to stay in sync.
+API docs live in [`docs/openapi.yaml`](docs/openapi.yaml). It is a hand-maintained OpenAPI 3.1 snapshot of the stable local control-plane API; a contract test requires registered routes and documented operations to stay in sync. Public model-listener operations whose security differs from the control listener are specified in [`docs/openapi-model-ingress.yaml`](docs/openapi-model-ingress.yaml).
 
 Client compatibility behavior for llama-line/Ollama/OpenAI callers is documented in [`docs/reference/client-compatibility.md`](docs/reference/client-compatibility.md).
+Model lifecycle routes are authenticated control-plane routes only. Queue health is reported separately from upstream-provider health. Request states are `queued`, `running`, `cancel_requested`, `completed`, `failed`, `canceled`, and `dropped`; terminal states are immutable.
 
 The public operator dashboard remains an HTTPS route protected by Caddy and Authelia. The approved private web hop is host-managed Tailscale, with nginx restricted to the proxy peer's exact Tailscale `/32`. The API/control listener remains loopback-bound. Repository validation does not prove that the tailnet ACL or deployed route works.
 
@@ -242,10 +249,10 @@ Model inventory and pulls:
 
 ```bash
 # List installed Ollama models plus OpenCode provider/model metadata.
-switchyard models list --api-url http://127.0.0.1:28080
+switchyard models list --api-url http://127.0.0.1:18080
 
 # Pull Ollama models through Switchyard's configured OLLAMA_BASE_URL.
-switchyard models pull --models qwen3.5:latest,nomic-embed-text:v1.5 --api-url http://127.0.0.1:28080
+switchyard models pull --models qwen3.5:latest,nomic-embed-text:v1.5 --api-url http://127.0.0.1:18080
 
 # Refresh OpenCode model metadata when the opencode CLI is available locally.
 switchyard models refresh-opencode

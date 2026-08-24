@@ -1,5 +1,5 @@
 const SESSION_CREATE_TIMEOUT_MS = Number(process.env.OPENCODE_SESSION_CREATE_TIMEOUT_MS ?? 5000);
-const SESSION_MESSAGE_TIMEOUT_MS = Number(process.env.OPENCODE_MESSAGE_TIMEOUT_MS ?? 300000);
+const SESSION_MESSAGE_TIMEOUT_MS = Number(process.env.OPENCODE_MESSAGE_TIMEOUT_MS ?? 600000);
 
 export default async function switchyardBlacktowerPlugin() {
   return {

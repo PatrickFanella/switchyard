@@ -433,11 +433,12 @@ func (s *PostgresStore) RecordRunStepBackendDecision(runID, stepID string, decis
 		return ErrNotFound
 	}
 	if decision.DeprecatedBackend != "" {
-		if _, err := tx.ExecContext(s.operationContext(), `insert into run_events(id, run_id, run_step_id, type, message, created_at) values($1,$2,$3,$4,$5,$6)`, newID("evt"), runID, stepID, DeprecatedBackendAttemptedEvent, decision.DeprecatedBackend, s.now().UTC()); err != nil {
+		attemptedAt, err := recordCompatibilityAttemptTx(s.operationContext(), tx, decision.DeprecatedBackend)
+		if err != nil {
 			_ = tx.Rollback()
 			return err
 		}
-		if _, err := tx.ExecContext(s.operationContext(), `insert into compatibility_usage_daily(usage_date, backend, attempts, first_attempt_at, last_attempt_at) values($1,$2,1,$3,$3) on conflict(usage_date, backend) do update set attempts=compatibility_usage_daily.attempts+1, first_attempt_at=least(compatibility_usage_daily.first_attempt_at, excluded.first_attempt_at), last_attempt_at=greatest(compatibility_usage_daily.last_attempt_at, excluded.last_attempt_at)`, s.now().UTC().Format("2006-01-02"), decision.DeprecatedBackend, s.now().UTC()); err != nil {
+		if _, err := tx.ExecContext(s.operationContext(), `insert into run_events(id, run_id, run_step_id, type, message, created_at) values($1,$2,$3,$4,$5,$6)`, newID("evt"), runID, stepID, DeprecatedBackendAttemptedEvent, decision.DeprecatedBackend, attemptedAt); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -528,6 +529,10 @@ func (s *PostgresStore) AddArtifact(input CreateArtifactInput) (Artifact, error)
 	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, StorageClass: metadata.StorageClass, ContentType: metadata.ContentType, ByteSize: metadata.ByteSize, SHA256: metadata.SHA256, RetentionUntil: metadata.RetentionUntil, CreatedAt: now}
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
+		return Artifact{}, err
+	}
+	if err := enableArtifactTriggerLifecycleAccounting(s.operationContext(), tx); err != nil {
+		_ = tx.Rollback()
 		return Artifact{}, err
 	}
 	if _, err := tx.ExecContext(s.operationContext(), `insert into artifacts(id, run_id, name, kind, uri, storage_class, content_type, byte_size, sha256, retention_until, created_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, artifact.ID, artifact.RunID, artifact.Name, artifact.Kind, artifact.URI, artifact.StorageClass, artifact.ContentType, artifact.ByteSize, artifact.SHA256, artifact.RetentionUntil, artifact.CreatedAt); err != nil {

@@ -28,6 +28,7 @@ CMD ["/app/verifier"]
 
 FROM runtime AS api
 COPY --from=build /out/api /app/api
+ENV SWITCHYARD_SOURCE_REVISION=${SWITCHYARD_SOURCE_REVISION}
 USER 1000:1000
 EXPOSE 8080
 CMD ["/app/api"]

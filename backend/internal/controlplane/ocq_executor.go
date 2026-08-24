@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
 )
 
 type OpenCodeRequest struct {
@@ -65,15 +67,15 @@ func openCodeExecutorTimeout() time.Duration {
 			return parsed
 		}
 	}
-	return 10 * time.Minute
+	return runtimeconfig.Duration("OPENCODE_EXECUTOR_TIMEOUT")
 }
 
 func openCodeSessionCreateTimeout() time.Duration {
-	return durationFromEnv("OPENCODE_SESSION_CREATE_TIMEOUT", 5*time.Second)
+	return durationFromEnv("OPENCODE_SESSION_CREATE_TIMEOUT", runtimeconfig.Duration("OPENCODE_SESSION_CREATE_TIMEOUT"))
 }
 
 func openCodeMessageTimeout() time.Duration {
-	return durationFromEnv("OPENCODE_MESSAGE_TIMEOUT", openCodeExecutorTimeout())
+	return durationFromEnv("OPENCODE_MESSAGE_TIMEOUT", runtimeconfig.Duration("OPENCODE_MESSAGE_TIMEOUT"))
 }
 
 func openCodeSessionStatusPollInterval() time.Duration {
@@ -81,7 +83,7 @@ func openCodeSessionStatusPollInterval() time.Duration {
 }
 
 func openCodeAbortTimeout() time.Duration {
-	return durationFromEnv("OPENCODE_ABORT_TIMEOUT", time.Second)
+	return durationFromEnv("OPENCODE_ABORT_TIMEOUT", runtimeconfig.Duration("OPENCODE_ABORT_TIMEOUT"))
 }
 
 func durationFromEnv(name string, fallback time.Duration) time.Duration {

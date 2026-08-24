@@ -9,7 +9,7 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 | Component | Owner | Expected endpoint | Notes |
 | --- | --- | --- | --- |
 | Switchyard compat ingress | Kvant / Switchyard Compose | `http://10.0.0.50:11434` | Replaces the old llama-line process; the production listener is bound to Kvant's LAN address. |
-| Switchyard API | NUC / Switchyard Compose | `http://127.0.0.1:28080` or internal `api:8080` | Native control plane. |
+| Switchyard API | NUC / Switchyard Compose | `http://127.0.0.1:18080` or internal `api:8080` | Native control plane. |
 | Switchyard frontend | Kvant / Switchyard Compose via Almaz Caddy | `https://switchyard.subcult.tv` | Authelia-protected; the approved private web hop uses the hosts' Tailscale addresses. |
 | Ollama upstream | NUC host | `http://127.0.0.1:11435` on the host, `http://host.docker.internal:11435` from Compose | Real model server; never point `OLLAMA_BASE_URL` at `11434`. |
 | Phoenix | Almaz | `http://10.0.0.200:6006` | OTLP/HTTP traces with `x-project-name=switchyard`. |

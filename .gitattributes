@@ -15,6 +15,7 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 Makefile text eol=lf
+/.git_archival.txt export-subst
 
 # Common binary assets
 *.png binary

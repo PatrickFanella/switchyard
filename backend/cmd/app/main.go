@@ -14,6 +14,7 @@ import (
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/app"
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
 	"git.subcult.tv/PatrickFanella/switchyard/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -53,7 +54,7 @@ func run() error {
 
 	addr := os.Getenv("SWITCHYARD_LISTEN_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		addr = runtimeconfig.String("SWITCHYARD_LISTEN_ADDR")
 	}
 
 	store := controlplane.Store(controlplane.NewStore(nil))
@@ -76,21 +77,59 @@ func run() error {
 	if err := controlplane.SeedDefaults(store); err != nil {
 		return fmt.Errorf("seed control plane: %w", err)
 	}
+	deploymentID := strings.TrimSpace(os.Getenv("SWITCHYARD_DEPLOYMENT_ID"))
+	const compatibilityHeartbeatInterval = time.Minute
+	sourceRevision := strings.TrimSpace(os.Getenv("SWITCHYARD_SOURCE_REVISION"))
+	var compatibilityObserver *controlplane.CompatibilityObserver
+	if !envEnabledByDefault("SWITCHYARD_COMPATIBILITY_OBSERVER_ENABLED") {
+		slog.Info("compatibility observation disabled by configuration")
+	} else if sourceRevision == "" || strings.EqualFold(sourceRevision, "unknown") {
+		slog.Warn("compatibility observation disabled", "reason", "SWITCHYARD_SOURCE_REVISION must identify the deployed revision")
+	} else if deploymentID == "" {
+		return fmt.Errorf("SWITCHYARD_DEPLOYMENT_ID is required when compatibility observation is enabled")
+	} else {
+		identity := controlplane.CompatibilityObservationIdentity{SourceRevision: sourceRevision, DeploymentID: deploymentID}
+		var observerLease *controlplane.CompatibilityObserverLease
+		if postgres, ok := store.(*controlplane.PostgresStore); ok {
+			observerLease, identity, err = postgres.AcquireCompatibilityObserverLease(ctx, identity)
+			if err != nil {
+				return fmt.Errorf("acquire compatibility observer lease: %w", err)
+			}
+			defer observerLease.Close()
+		}
+		compatibilityObserver, err = controlplane.NewCompatibilityObserver(store, identity, compatibilityHeartbeatInterval)
+		if err != nil {
+			return fmt.Errorf("configure compatibility observation: %w", err)
+		}
+		if err := compatibilityObserver.Tick(ctx, time.Now().UTC()); err != nil {
+			return fmt.Errorf("record compatibility observation startup heartbeat: %w", err)
+		}
+		go func() {
+			if err := compatibilityObserver.Run(ctx, compatibilityHeartbeatInterval); err != nil {
+				slog.Error("compatibility observation stopped", "error", controlplane.RedactForLog(err.Error()))
+			}
+		}()
+	}
 	for _, warning := range controlplane.NewEnvOperatorSafetyStatus().Warnings {
 		slog.Warn("operator safety", "warning", controlplane.RedactForLog(warning))
 	}
-	runner := controlplane.NewRunner(store)
-	api := controlplane.NewAPI(store, runner)
+	modelService := controlplane.NewModelService(store, controlplane.NewEnvModelBroker(), controlplane.ModelServiceOptions{})
+	if err := modelService.StartupError(); err != nil {
+		return fmt.Errorf("start model service: %w", err)
+	}
+	runner := controlplane.NewRunner(store, controlplane.NewEnvWorkflowExecutorsWithModel(modelService, store))
+	api := controlplane.NewAPIWithModelService(store, runner, modelService)
+	api.SetCompatibilityObserver(compatibilityObserver)
 	var workersPool *controlplane.WorkerPool
 	workerEnabled := envEnabledByDefault("SWITCHYARD_WORKER_ENABLED")
 	if workerEnabled {
-		workers := 1
+		workers := runtimeconfig.Int("SWITCHYARD_WORKER_COUNT")
 		if raw := os.Getenv("SWITCHYARD_WORKER_COUNT"); raw != "" {
 			if _, err := fmt.Sscanf(raw, "%d", &workers); err != nil {
 				return fmt.Errorf("parse SWITCHYARD_WORKER_COUNT: %w", err)
 			}
 		}
-		lease := 5 * time.Minute
+		lease := runtimeconfig.Duration("SWITCHYARD_WORKER_LEASE")
 		if raw := os.Getenv("SWITCHYARD_WORKER_LEASE"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
@@ -98,7 +137,7 @@ func run() error {
 			}
 			lease = parsed
 		}
-		poll := time.Second
+		poll := runtimeconfig.Duration("SWITCHYARD_WORKER_POLL_INTERVAL")
 		if raw := os.Getenv("SWITCHYARD_WORKER_POLL_INTERVAL"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
@@ -114,7 +153,7 @@ func run() error {
 	}
 	var scheduler *controlplane.Scheduler
 	if envEnabledByDefault("SWITCHYARD_SCHEDULER_ENABLED") {
-		interval := time.Minute
+		interval := runtimeconfig.Duration("SWITCHYARD_SCHEDULER_INTERVAL")
 		if raw := os.Getenv("SWITCHYARD_SCHEDULER_INTERVAL"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
@@ -126,7 +165,7 @@ func run() error {
 		scheduler.SetOpenPilotAssigner(controlplane.NewEnvOpenPilotAssigner(store, runner, controlplane.NewEnvGiteaClient()))
 		timezone := strings.TrimSpace(os.Getenv("SWITCHYARD_SCHEDULER_TIMEZONE"))
 		if timezone == "" {
-			timezone = "UTC"
+			timezone = runtimeconfig.String("SWITCHYARD_SCHEDULER_TIMEZONE")
 		}
 		location, err := time.LoadLocation(timezone)
 		if err != nil {
@@ -140,7 +179,7 @@ func run() error {
 		scheduler.Start(ctx)
 		slog.Info("scheduler enabled", "interval", interval.String(), "timezone", location.String())
 	}
-	retentionWindow := 30 * 24 * time.Hour
+	retentionWindow := runtimeconfig.Duration("SWITCHYARD_RETENTION")
 	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
@@ -151,7 +190,7 @@ func run() error {
 		}
 		retentionWindow = parsed
 	}
-	retentionInterval := 24 * time.Hour
+	retentionInterval := runtimeconfig.Duration("SWITCHYARD_RETENTION_INTERVAL")
 	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION_INTERVAL")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
@@ -204,6 +243,7 @@ func run() error {
 		drainCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
 		var runtimeErr error
+		modelService.Stop()
 		if scheduler != nil {
 			runtimeErr = errors.Join(runtimeErr, scheduler.Wait(drainCtx))
 		}
@@ -216,11 +256,16 @@ func run() error {
 				forceCancel()
 			}
 		}
-		runtimeErr = errors.Join(runtimeErr, api.Shutdown(drainCtx))
+		runtimeErr = errors.Join(runtimeErr, modelService.Wait(drainCtx))
 		return runtimeErr
 	}
 
 	select {
+	case err := <-modelService.Failure():
+		stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return errors.Join(err, shutdownServers(shutdownCtx), shutdownRuntime())
 	case err := <-errCh:
 		stop()
 		if err == nil || errors.Is(err, http.ErrServerClosed) {
@@ -244,7 +289,13 @@ func run() error {
 }
 
 func envEnabledByDefault(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		if fallback, ok := runtimeconfig.Lookup(name); ok {
+			raw = fallback
+		}
+	}
+	switch strings.ToLower(raw) {
 	case "0", "false", "no", "off":
 		return false
 	default:

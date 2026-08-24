@@ -11,12 +11,33 @@ on:
         description: Previous semver-like release tag or full lowercase Git SHA
         required: true
         type: string
+      retirement_proposal:
+        description: Request deprecated-selector retirement proposal qualification
+        required: true
+        default: false
+        type: boolean
+      retirement_report_run_id:
+        description: Gitea run ID containing the exact compatibility report artifact
+        required: false
+        type: string
+      retirement_report_artifact_id:
+        description: Gitea artifact ID for the exact compatibility report
+        required: false
+        type: string
+      retirement_prior_releases:
+        description: JSON array of exactly two prior Gitea Actions run_id/artifact_id records
+        required: false
+        type: string
   schedule:
     - cron: '0 5 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   verify-production:
@@ -74,17 +95,56 @@ jobs:
           make api-soak-extended
           test "$(node -p 'require("./release/manifest.json").source_revision')" = "$(git rev-parse HEAD)"
           git diff --exit-code -- ':(glob)backend/**/*.go'
+      - name: Download prior retirement qualifications
+        if: github.event_name == 'workflow_dispatch' && inputs.retirement_proposal
+        env:
+          GITEA_TOKEN: ${{ gitea.token }}
+          RETIREMENT_PRIOR_RELEASES_JSON: ${{ inputs.retirement_prior_releases }}
+        run: |
+          python3 scripts/download_retirement_qualifications.py \
+            --references "$RETIREMENT_PRIOR_RELEASES_JSON" \
+            --api-url "${{ gitea.api_url }}" \
+            --repository "${{ gitea.repository }}" \
+            --output release/prior-qualifying-releases
+      - name: Download candidate retirement report
+        if: github.event_name == 'workflow_dispatch' && inputs.retirement_proposal
+        env:
+          GITEA_TOKEN: ${{ gitea.token }}
+          RETIREMENT_REPORT_RUN_ID: ${{ inputs.retirement_report_run_id }}
+          RETIREMENT_REPORT_ARTIFACT_ID: ${{ inputs.retirement_report_artifact_id }}
+        run: |
+          python3 scripts/download_retirement_report.py \
+            --api-url "${{ gitea.api_url }}" \
+            --repository "${{ gitea.repository }}" \
+            --run-id "$RETIREMENT_REPORT_RUN_ID" \
+            --artifact-id "$RETIREMENT_REPORT_ARTIFACT_ID" \
+            --output release/compatibility-retirement-report.json
       - name: Generate candidate release evidence
         if: github.event_name == 'workflow_dispatch'
         env:
           RELEASE_PULL_REQUEST: ${{ inputs.pull_request }}
           ROLLBACK_TARGET: ${{ inputs.rollback_target }}
+          RETIREMENT_PROPOSAL: ${{ inputs.retirement_proposal }}
         run: |
           CANDIDATE_SHA="$(git rev-parse HEAD)" python3 - <<'PY'
+          import hashlib
           import json
           import os
           from datetime import datetime, timezone
           from pathlib import Path
+
+          def parse_json_bytes(payload, label):
+              def reject_duplicates(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      if key in result:
+                          raise SystemExit(f"{label} contains duplicate JSON key {key!r}")
+                      result[key] = value
+                  return result
+              try:
+                  return json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates)
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise SystemExit(f"cannot parse {label}: {error}")
 
           manifest = json.loads(Path("release/manifest.json").read_text())
           now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -109,9 +169,49 @@ jobs:
                   for image in manifest["images"]
               ],
           }
+          if os.environ.get("RETIREMENT_PROPOSAL", "false").lower() == "true":
+              try:
+                  report_payload = Path("release/compatibility-retirement-report.json").read_bytes()
+              except OSError as error:
+                  raise SystemExit(f"cannot read downloaded candidate retirement report: {error}")
+              report = parse_json_bytes(report_payload, "candidate retirement report")
+              prior_releases = []
+              prior_dir = Path("release/prior-qualifying-releases")
+              for index in range(2):
+                  qualification_path = prior_dir / str(index) / "retirement-release-qualification.json"
+                  try:
+                      qualification_payload = qualification_path.read_bytes()
+                  except OSError as error:
+                      raise SystemExit(f"cannot read prior release {index} qualification: {error}")
+                  qualification_hash = hashlib.sha256(qualification_payload).hexdigest()
+                  qualification = parse_json_bytes(qualification_payload, f"prior release {index} qualification")
+                  bindings = {
+                      "release_tag": qualification["release_tag"],
+                      "release_sha": qualification["release_sha"],
+                      "qualification_artifact": str(qualification_path.relative_to("release")),
+                      "qualification_raw_sha256": qualification_hash,
+                  }
+                  prior_releases.append(bindings)
+              canonical = json.dumps(report, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+              report_path = Path("release/compatibility-retirement-report.json")
+              evidence["retirement_proposal"] = {
+                  "report": {
+                      "artifact": "compatibility-retirement-report.json",
+                      "raw_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+                      "canonical_sha256": hashlib.sha256(canonical).hexdigest(),
+                      "source_revision": report.get("source_revision"),
+                      "source_identity": report.get("source_identity"),
+                      "source_segment": report.get("source_segment"),
+                  },
+                  "prior_qualifying_releases": prior_releases,
+              }
           Path("release/candidate-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
           PY
-          make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json
+          if [ "${RETIREMENT_PROPOSAL,,}" = "true" ]; then
+            make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json RETIREMENT_REPORT=release/compatibility-retirement-report.json ARTIFACT_ROOT=release
+          else
+            make release-evidence-verify CANDIDATE_SHA="$(git rev-parse HEAD)" EVIDENCE=release/candidate-evidence.json MANIFEST=release/manifest.json
+          fi
       - name: Upload candidate release evidence
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,8 +219,20 @@ jobs:
           name: candidate-release-evidence-${{ github.sha }}
           path: |
             release/candidate-evidence.json
+            release/compatibility-retirement-report.json
+            release/prior-qualifying-releases/**/*.json
             release/manifest.json
             release/SHA256SUMS
             release/*.oci.tar
           if-no-files-found: error
           retention-days: 30
+      - name: Upload durable candidate release record
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-release-record-${{ github.sha }}
+          path: |
+            release/candidate-evidence.json
+            release/manifest.json
+          if-no-files-found: error
+          retention-days: 400

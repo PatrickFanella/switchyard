@@ -15,6 +15,8 @@ Switchyard is one cohesive automation runtime for durable workflows, agent execu
 - `docker-compose.yml`: local/production-like service topology.
 - `Makefile`: canonical build and verification interface.
 - `.gitea/workflows/verify-production.yml`: scheduled/manual production qualification on contract-checked runners.
+- `.gitea/workflows/qualify-retirement-release.yml`: opt-in post-deployment producer for durable four-file retirement qualification artifacts.
+- `.gitea/workflows/prove-production-deployment.yml`: opt-in production-runner smoke proof for one annotated deployed release.
 - `docs/development-readiness-report-2026-07-19.md`: release-candidate readiness verdict, local gate evidence, and promotion prerequisites.
 
 ## Responsibility
@@ -24,15 +26,16 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 - **Native runtime core:** Go interfaces separate domain policy from stores and external executors.
 - **Durable execution:** pipeline snapshots, step/event/artifact records, workers with leases, retries, scheduling, and retention.
 - **Boundary safety:** authenticated operator routes and provider-compatible model routes are exposed through different handlers/listeners.
+- **Model lifecycle:** one native `ModelService` owns durable admission, queue workers, recovery, active cancellation, and terminal transition arbitration; compatibility handlers only adapt legacy envelopes.
 - **First-party workflows:** Open Pilot, Changemaker, and Devlog use generic runtime mechanics rather than owning schedulers.
 - **Managed agent runtime:** Blacktower is represented by OpenCode profiles, prompts, plugins, and model defaults—not a separate app.
-- **Operator visibility:** the web SPA consumes typed API contracts for runs, queues, observability, adapters, and configuration.
+- **Operator visibility:** the web SPA consumes typed API contracts for runs, queues, observability, adapters, configuration, and bounded inline-artifact measurements.
 
 ## Flow
 1. Compose starts PostgreSQL, managed OpenCode, the Go API, and web UI.
 2. The API migrates storage, seeds defaults, and starts scheduler/worker/retention loops.
 3. Operators, schedules, polls, or webhooks create queued runs with immutable pipeline snapshots.
-4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence.
+4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence. PostgreSQL triggers maintain retained artifact totals and daily creation/deletion aggregates; revision-bound heartbeats write separate coverage rows that prove complete deprecated-backend observation days without interpreting missing data as zero.
 5. Model-compatible clients enter the isolated native broker listener, which routes to OpenCode, Ollama, or transitional llama-line compatibility.
 6. The dashboard and CLI query/control the authenticated operator API.
 
@@ -40,7 +43,8 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 - External dependencies: PostgreSQL, OpenCode, optional Ollama/llama-line, Gitea, Git, Docker, and optional OTLP collectors.
 - Configuration is environment-driven through `.env.example` and `docker-compose.yml`; secrets/local state are ignored.
 - Canonical verification is `make verify`.
-- Gitea runs the baseline gate on pushes/pull requests and provides scheduled/manual `make verify-production` qualification with pinned actions, explicit Go/Node/pnpm/Docker/Buildx checks, and an SBOM/provenance preflight.
+- `make docs-check` validates capability evidence, release pointers, Markdown and codemap paths, and critical defaults without treating the deployed revision as the checkout HEAD.
+- Gitea runs the baseline gate on pushes/pull requests, provides scheduled/manual `make verify-production` qualification, and exposes a separate opt-in production-runner retirement qualification workflow after deployment and 90-day evidence exist.
 
 ## Directory Map
 

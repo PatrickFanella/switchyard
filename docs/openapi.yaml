@@ -21,19 +21,109 @@ info:
     `/api/requests/{id}/result`; queued jobs are recovered on API startup. On
     the control-plane listener every non-health request requires an admin or
     read-only bearer token, or an identity asserted by an explicitly trusted
-    authenticated reverse proxy. Mutating requests require the admin role.
+    authenticated reverse proxy. Mutating requests require the admin role. On
+    the control listener, HEAD is supported as the bodyless alias of every GET
+    operation available on that listener and uses the same read authentication.
 servers:
-  - url: http://127.0.0.1:28080
-    description: Local Docker Compose API
   - url: http://127.0.0.1:18080
-    description: Local smoke-test API
+    description: Local control API (default API_PORT)
+security:
+  - controlPlaneBearer: []
+x-switchyard-method-aliases:
+  - listener: control
+    source: GET
+    alias: HEAD
+    scope: all operations available on the control listener
 paths:
+  /api/model-broker/queue:
+    get:
+      summary: Get native model queue health
+      responses:
+        "200":
+          description: Exact queue counts with a bounded in-flight ID sample
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelQueueEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests:
+    get:
+      summary: List native model requests
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: before, in: query, schema: {type: string}}
+      responses:
+        "200":
+          description: Bounded request list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelRequestListEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Cancel all queued and running model requests
+      responses:
+        "200":
+          description: Cancellation result with authenticated actor evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelBulkMutationEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      summary: Get a native model request
+      responses:
+        "200":
+          description: Model request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelRequestEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests/{id}/cancel:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      summary: Cancel a native model request
+      responses:
+        "200":
+          description: Cancellation state with authenticated actor evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelMutationEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/model-broker/requests/{id}/drop:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      summary: Drop a native model request
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, maxLength: 256}
+      responses:
+        "200":
+          description: Dropped request with authenticated actor and reason evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelMutationEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /health:
     get:
+      security: []
       summary: Compatibility health check
       responses: { "200": { description: API is healthy } }
   /healthz:
     get:
+      security: []
       summary: Health check
       responses:
         "200":
@@ -47,12 +137,15 @@ paths:
                 required: [ok]
   /readyz:
     get:
+      security: []
       summary: Storage-backed readiness check
       responses:
         "200": { description: API and persistence are ready }
         "503": { description: Persistence is unavailable }
   /broker/status:
     get:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Llama-line-compatible broker status
       description: Cutover endpoint served on LLAMA_LINE_PORT; includes native queue/inflight state and upstream health.
       responses:
@@ -64,6 +157,8 @@ paths:
                 $ref: "#/components/schemas/CompatBrokerStatus"
   /v1/chat/completions:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible chat completion
       responses:
         "200":
@@ -77,8 +172,11 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/completions:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible text completion
       responses:
         "200":
@@ -92,16 +190,23 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/embeddings:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible embeddings
       responses: { "200": { description: Embeddings } }
   /v1/models:
     get:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: OpenAI-compatible model list
       responses: { "200": { description: Model list } }
   /api/chat:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible chat
       responses:
         "200":
@@ -115,8 +220,11 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /api/generate:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible generation
       responses:
         "200":
@@ -130,21 +238,32 @@ paths:
             X-Switchyard-Backend: { description: Deprecated external backend selected, schema: { type: string } }
             X-Switchyard-Compatibility-Warning: { description: Compatibility warning for a deprecated external backend, schema: { type: string } }
         "202": { description: Async request accepted }
+        "429": { $ref: "#/components/responses/Error" }
   /api/embed:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible embeddings alias
       responses: { "200": { description: Embeddings } }
   /api/embeddings:
     post:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible embeddings
       responses: { "200": { description: Embeddings } }
   /api/tags:
     get:
+      security: []
+      servers: [{url: "http://127.0.0.1:11434", description: Model-compatible ingress (LLAMA_LINE_PORT)}]
       summary: Ollama-compatible model tags
       responses: { "200": { description: Model list } }
   /metrics:
     get:
       summary: Prometheus runtime metrics
+      description: >-
+        Authenticated control-listener metrics. The public model-listener
+        operation is specified in docs/openapi-model-ingress.yaml.
+      servers: [{url: "http://127.0.0.1:18080", description: Authenticated control listener (default API_PORT)}]
       responses: { "200": { description: Prometheus text exposition } }
   /api/observability/model-broker:
     get:
@@ -551,6 +670,30 @@ paths:
       summary: Get retention manager status and last prune counts
       responses:
         "200": { description: Retention status }
+  /api/artifacts/report:
+    get:
+      summary: Get bounded inline artifact storage measurements
+      description: >-
+        Returns retained inline data URI volume, durable created and pruned totals,
+        and bounded UTC daily buckets. retention_until is declared metadata;
+        actual deletion follows terminal run retention.
+      parameters:
+        - name: days
+          in: query
+          description: Number of UTC daily buckets ending today.
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+      responses:
+        "200":
+          description: Bounded artifact report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact_report: { $ref: "#/components/schemas/ArtifactReport" }
+                required: [artifact_report]
+        "400": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/compatibility/retirement:
     get:
       summary: Get durable deprecated-backend retirement status
@@ -561,6 +704,46 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CompatibilityRetirementStatus" }
+  /api/compatibility/report:
+    get:
+      summary: Generate canonical deprecated-backend observation evidence
+      description: >-
+        Returns canonical JSON only when every requested elapsed UTC day has a
+        completed, revision-bound observation for both llama-line and OCQ.
+        Missing rows are never interpreted as zero attempts.
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: Inclusive UTC start date.
+          schema: { type: string, format: date }
+        - name: end
+          in: query
+          required: true
+          description: Inclusive elapsed UTC end date.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Complete canonical compatibility observation report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  compatibility_report: { $ref: "#/components/schemas/CompatibilityReport" }
+                required: [compatibility_report]
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/compatibility/observer:
+    get:
+      summary: Get compatibility observer health and detected gaps
+      responses:
+        "200":
+          description: Observer health, or disabled status
+          content:
+            application/json:
+              schema: { type: object }
   /api/operator-safety:
     get:
       summary: Get operator safety status
@@ -1017,7 +1200,8 @@ components:
             type: object
             properties:
               model_broker: { $ref: "#/components/schemas/ModelBrokerStatus" }
-            required: [model_broker]
+              queue: { $ref: "#/components/schemas/ModelQueue" }
+            required: [model_broker, queue]
     OpenCodeExecutorStatusResponse:
       description: Native OpenCodeExecutor status response
       content:
@@ -1074,6 +1258,75 @@ components:
               next_action: { type: string }
             required: [state, run, next_action]
   schemas:
+    ArtifactDailyBucket:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        created: { type: integer, format: int64 }
+        created_bytes: { type: integer, format: int64 }
+        pruned: { type: integer, format: int64 }
+        pruned_bytes: { type: integer, format: int64 }
+        pruned_bytes_unmeasured: { type: integer, format: int64, description: Number of legacy pruned artifacts without measured decoded bytes. }
+        net_change: { type: integer, format: int64 }
+        net_bytes: { type: integer, format: int64 }
+      required: [date, created, created_bytes, pruned, pruned_bytes, pruned_bytes_unmeasured, net_change, net_bytes]
+    ArtifactReport:
+      type: object
+      properties:
+        window_start: { type: string, format: date-time }
+        window_end: { type: string, format: date-time }
+        bucket: { type: string, const: day }
+        observation_started_at: { type: string, format: date-time }
+        observation_retained_floor: { type: integer, format: int64, minimum: 0, description: Retained artifact count captured before lifecycle mutation observation began. }
+        observation_retained_floor_bytes: { type: integer, format: int64, minimum: 0, description: Measured retained bytes captured before lifecycle mutation observation began. }
+        observation_retained_floor_bytes_unmeasured: { type: integer, format: int64, minimum: 0, description: Retained artifacts at the observation floor whose bytes were not measured. }
+        retained: { type: integer, format: int64 }
+        retained_bytes: { type: integer, format: int64 }
+        retained_bytes_unmeasured: { type: integer, format: int64, description: Number of retained legacy artifacts excluded from retained_bytes because decoded size is unknown. }
+        created_total: { type: integer, format: int64 }
+        created_bytes_total: { type: integer, format: int64 }
+        pruned_total: { type: integer, format: int64 }
+        pruned_bytes_total: { type: integer, format: int64 }
+        pruned_bytes_unmeasured_total: { type: integer, format: int64, description: Number of legacy artifacts excluded from pruned_bytes_total because decoded size is unknown. }
+        declared_retention_missing: { type: integer, format: int64, description: Retained legacy artifacts without retention_until metadata. }
+        declared_retention_expired: { type: integer, format: int64 }
+        declared_retention_expired_bytes: { type: integer, format: int64 }
+        declared_retention_expired_bytes_unmeasured: { type: integer, format: int64, description: Number of declared-expired legacy artifacts excluded from the byte sum. }
+        retention_semantics: { type: string }
+        buckets:
+          type: array
+          maxItems: 90
+          items: { $ref: "#/components/schemas/ArtifactDailyBucket" }
+      required: [window_start, window_end, bucket, observation_started_at, observation_retained_floor, observation_retained_floor_bytes, observation_retained_floor_bytes_unmeasured, retained, retained_bytes, retained_bytes_unmeasured, created_total, created_bytes_total, pruned_total, pruned_bytes_total, pruned_bytes_unmeasured_total, declared_retention_missing, declared_retention_expired, declared_retention_expired_bytes, declared_retention_expired_bytes_unmeasured, retention_semantics, buckets]
+    CompatibilityObservation:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        backend: { type: string, enum: [llama-line, ocq] }
+        attempts: { type: integer, format: int64, minimum: 0 }
+        source_revision: { type: string }
+        deployment_id: { type: string }
+        observation_started_at: { type: string, format: date-time }
+        observation_completed_at: { type: string, format: date-time }
+        observation_segment: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+      required: [date, backend, attempts, source_revision, deployment_id, observation_started_at, observation_completed_at, observation_segment]
+    CompatibilityReport:
+      type: object
+      properties:
+        version: { type: string, const: switchyard.compatibility-observation/v1 }
+        source_revision: { type: string, pattern: "^[0-9a-f]{40}$" }
+        source_identity: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+        source_segment: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+        window_start: { type: string, format: date }
+        window_end: { type: string, format: date }
+        generated_at: { type: string, format: date-time }
+        observations:
+          type: array
+          maxItems: 180
+          items: { $ref: "#/components/schemas/CompatibilityObservation" }
+        canonical_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        qualification_eligible: { type: boolean, description: False for non-durable diagnostic stores. }
+      required: [version, source_revision, source_identity, source_segment, window_start, window_end, generated_at, observations, canonical_sha256, qualification_eligible]
     StringMap:
       type: object
       additionalProperties: { type: string }
@@ -1133,6 +1386,72 @@ components:
         checked_at: { type: string, format: date-time }
         error: { type: string }
       required: [id, status, configured, backend, effective_selector, queue_depth, max_depth, active_request, connected_clients, in_flight_request_ids, upstreams, checked_at]
+    ModelRequest:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/ModelRequestStatus" }
+        model: { type: string }
+        path: { type: string }
+        client: { type: string }
+        client_priority: { type: integer }
+        request_body: { type: string }
+        response_body: { type: string }
+        error: { type: string }
+        correlation_ids:
+          type: object
+          additionalProperties: { type: string }
+          description: Includes bounded audit_action, audit_actor, and audit_reason evidence for operator mutations.
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        cancel_requested_at: { type: string, format: date-time }
+      required: [id, status, model, path, client, client_priority, created_at, updated_at]
+    ModelRequestStatus:
+      type: string
+      enum: [queued, running, cancel_requested, canceled, completed, failed, dropped]
+    ModelQueue:
+      type: object
+      properties:
+        queued: { type: integer, minimum: 0, description: Exact queued request count. }
+        running: { type: integer, minimum: 0, description: Exact running request count. }
+        cancel_requested: { type: integer, minimum: 0, description: Exact cancel-requested count. }
+        max_depth: { type: integer, minimum: 1 }
+        in_flight_request_ids:
+          type: array
+          maxItems: 100
+          items: { type: string }
+          description: Bounded sample of running and cancel-requested IDs.
+      required: [queued, running, cancel_requested, max_depth, in_flight_request_ids]
+    ModelQueueEnvelope:
+      type: object
+      properties:
+        queue: { $ref: "#/components/schemas/ModelQueue" }
+      required: [queue]
+    ModelRequestEnvelope:
+      type: object
+      properties:
+        request: { $ref: "#/components/schemas/ModelRequest" }
+      required: [request]
+    ModelRequestListEnvelope:
+      type: object
+      properties:
+        requests: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/ModelRequest" } }
+      required: [requests]
+    ModelMutationEnvelope:
+      type: object
+      properties:
+        actor: { type: string, maxLength: 256 }
+        request: { $ref: "#/components/schemas/ModelRequest" }
+      required: [actor, request]
+    ModelBulkMutationEnvelope:
+      type: object
+      properties:
+        actor: { type: string, maxLength: 256 }
+        canceled: { type: integer, minimum: 0 }
+        requests: { type: array, items: { $ref: "#/components/schemas/ModelRequest" } }
+      required: [actor, canceled, requests]
     CompatBrokerStatus:
       type: object
       properties:
