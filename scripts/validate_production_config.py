@@ -16,6 +16,9 @@ from urllib.parse import urlsplit
 
 
 TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
+PRIVATE_NETWORKS = tuple(
+    ipaddress.IPv4Network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
 DOTENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 NUMERIC_ID = re.compile(r"[0-9]+\Z")
 MAX_RUNTIME_ID = 2_147_483_647
@@ -414,26 +417,41 @@ def validate(env: Mapping[str, str]) -> list[str]:
         except ValueError:
             errors.append("SWITCHYARD_WEB_BIND_HOST must be an IPv4 address")
 
-        proxy_raw = _value(env, "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR")
-        proxy: ipaddress.IPv4Network | None = None
-        if not proxy_raw.endswith("/32"):
-            errors.append("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must be an explicit /32")
-        else:
-            try:
-                proxy = ipaddress.IPv4Network(proxy_raw, strict=True)
-                if not proxy.subnet_of(TAILSCALE_CGNAT):
-                    errors.append(
-                        "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must be within 100.64.0.0/10"
-                    )
-            except ValueError:
-                errors.append(
-                    "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must be a valid IPv4 /32"
-                )
+        proxy: ipaddress.IPv4Address | None = None
+        try:
+            proxy = ipaddress.IPv4Address(_value(env, "SWITCHYARD_TAILSCALE_PROXY_IPV4"))
+            if proxy not in TAILSCALE_CGNAT:
+                errors.append("SWITCHYARD_TAILSCALE_PROXY_IPV4 must be within 100.64.0.0/10")
+        except ValueError:
+            errors.append("SWITCHYARD_TAILSCALE_PROXY_IPV4 must be an IPv4 address")
 
-        if web_bind is not None and proxy is not None and web_bind == proxy.network_address:
+        if web_bind is not None and proxy is not None and web_bind == proxy:
             errors.append(
-                "SWITCHYARD_WEB_BIND_HOST and SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must identify distinct Tailscale peers"
+                "SWITCHYARD_WEB_BIND_HOST and SWITCHYARD_TAILSCALE_PROXY_IPV4 must identify distinct Tailscale peers"
             )
+
+        bridge: ipaddress.IPv4Network | None = None
+        try:
+            candidate = ipaddress.ip_network(_value(env, "SWITCHYARD_DOCKER_BRIDGE_SUBNET"), strict=True)
+            if not isinstance(candidate, ipaddress.IPv4Network) or candidate.prefixlen < 24 or not any(
+                candidate.subnet_of(private) for private in PRIVATE_NETWORKS
+            ):
+                raise ValueError
+            bridge = candidate
+        except ValueError:
+            errors.append("SWITCHYARD_DOCKER_BRIDGE_SUBNET must be a private IPv4 /24 or smaller subnet")
+
+        gateway: ipaddress.IPv4Address | None = None
+        try:
+            gateway = ipaddress.IPv4Address(_value(env, "SWITCHYARD_DOCKER_BRIDGE_GATEWAY"))
+            if bridge is None or gateway not in bridge or gateway in {bridge.network_address, bridge.broadcast_address}:
+                raise ValueError
+        except ValueError:
+            errors.append("SWITCHYARD_DOCKER_BRIDGE_GATEWAY must be a usable address in SWITCHYARD_DOCKER_BRIDGE_SUBNET")
+
+        trusted_proxy = _value(env, "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR")
+        if gateway is not None and trusted_proxy != f"{gateway}/32":
+            errors.append("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_DOCKER_BRIDGE_GATEWAY/32")
 
     dashboard_raw = _value(env, "SWITCHYARD_DASHBOARD_CIDR", "127.0.0.1/32")
     try:
@@ -465,8 +483,15 @@ def validate(env: Mapping[str, str]) -> list[str]:
     if not valid_public_url:
         errors.append("SWITCHYARD_PUBLIC_URL must be an absolute HTTPS URL")
 
-    if _value(env, "SWITCHYARD_REVERSE_PROXY_AUTH", "false").lower() != "true":
+    reverse_proxy_auth = _value(env, "SWITCHYARD_REVERSE_PROXY_AUTH", "false").lower() == "true"
+    if not reverse_proxy_auth:
         errors.append("SWITCHYARD_REVERSE_PROXY_AUTH must be true")
+    if reverse_proxy_auth:
+        proxy_token = _value(env, "SWITCHYARD_REVERSE_PROXY_TOKEN")
+        if len(proxy_token.encode("utf-8")) < 32 or proxy_token == "replace-with-at-least-32-random-bytes":
+            errors.append(
+                "SWITCHYARD_REVERSE_PROXY_TOKEN must be set to a non-default value of at least 32 bytes"
+            )
 
     control_bind = _value(env, "SWITCHYARD_BIND_HOST", "127.0.0.1")
     control_ip: ipaddress.IPv4Address | None = None

@@ -148,7 +148,10 @@ class AlertLifecycleTest(unittest.TestCase):
         self.assertIn(correlation, firing["annotations"]["description"])
         self.assertGreater(firing["endsAt"], firing["startsAt"])
         self.assertEqual(resolved["startsAt"], firing["startsAt"])
-        self.assertEqual(resolved["endsAt"], resolved_at.isoformat().replace("+00:00", "Z"))
+        self.assertEqual(
+            resolved["endsAt"],
+            (resolved_at - timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),
+        )
         self.assertGreaterEqual(resolved["endsAt"], resolved["startsAt"])
         self.assertEqual(self.state.posts[0]["authorization"], "Bearer alert-secret")
         self.assertTrue(

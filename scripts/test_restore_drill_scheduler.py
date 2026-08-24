@@ -280,6 +280,7 @@ class RestoreDrillSchedulerTest(unittest.TestCase):
         self.assertEqual(scheduler.run(self.values, os.getuid(), str(command), now=1000), 1)
         arguments = json.loads(captured.read_text())
         attempt_id = arguments[arguments.index("--attempt-id") + 1]
+        self.assertTrue(attempt_id.startswith("scheduled-"))
         own = self.evidence / f"restore-evidence-{attempt_id}.json"
         self.assertTrue(own.exists())
         self.assertEqual(json.loads(own.read_text())["attempt_id"], attempt_id)

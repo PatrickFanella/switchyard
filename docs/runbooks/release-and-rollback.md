@@ -76,10 +76,11 @@ set +a
 make production-config-check
 ```
 
-The check requires `SWITCHYARD_WEB_TRANSPORT=tailscale`, distinct web and proxy
-peer addresses in `100.64.0.0/10`, an exact trusted proxy `/32`, an HTTPS public
-URL, reverse-proxy authentication, a loopback control bind, and non-colliding
-control/model listeners. A pass does not prove the tailnet ACL or target route.
+The check requires `SWITCHYARD_WEB_TRANSPORT=tailscale`, distinct destination and
+proxy peers in `100.64.0.0/10`, a private `/24`-or-smaller Docker bridge with a
+usable gateway, nginx trust set to that gateway's exact `/32`, an HTTPS public
+URL, reverse-proxy authentication, and a hop token. A pass does not prove the
+tailnet ACL or target route.
 
 Create and verify a pre-deployment backup:
 
@@ -105,13 +106,25 @@ paths or credentials into evidence.
 
 Only after qualification and backup verification, switch the clean production
 checkout to the approved tag using the normal non-destructive Git workflow,
-then use the installed repository-owned unit:
+then install the nft gate and repository-owned unit from the same canonical env
+path. The override must be absolute, regular, and not a symlink:
 
 ```bash
+sudo SWITCHYARD_ENV_FILE=/absolute/path/to/switchyard.env ./deploy/install-web-gate.sh
+sudo SWITCHYARD_ENV_FILE=/absolute/path/to/switchyard.env ./deploy/install-systemd.sh
 sudo systemctl reload switchyard
 ```
 
-Inspect the installed unit before relying on the repository template.
+The gate installer checks Compose and rendered nft syntax before mutation and
+installs its root-owned mode-0755 renderer at
+`/usr/lib/switchyard/render_tailscale_web_gate.py`. If gate content changes, it
+stops Compose `web` before replacing files or live rules. Failure restores the
+prior renderer, rules/table, drop-in, unit, enablement, and active state, but
+web stays stopped; correct the failure and rerun both installers. The systemd
+installer refuses mutation until the installed gate is active. On main-unit
+failure, it restores the previous unit and state, then restores the prior
+workload only after rechecking the gate. Inspect both installed units and
+confirm every main/gate/Compose `--env-file` argument names the same path.
 
 ## Verification
 
@@ -128,7 +141,9 @@ that:
 - model ingress cannot access control-plane routes;
 - the public route reaches Authelia;
 - the web hop uses the approved host-managed Tailscale peers;
-- direct dashboard access is denied except from the approved Tailscale proxy `/32`;
+- nft counters show the original approved Tailscale peer before DNAT;
+- nginx admits only the pinned Docker gateway `/32`;
+- the API accepts only the hop token plus authenticated user identity;
 - Ollama is reached on its real upstream port.
 
 Do not close Gitea issues #18 or #19 from static validation. Record human and

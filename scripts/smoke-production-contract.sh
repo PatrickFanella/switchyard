@@ -6,6 +6,7 @@ model_url=${SWITCHYARD_PRODUCTION_MODEL_URL:-http://${SWITCHYARD_MODEL_BIND_HOST
 public_url=${SWITCHYARD_PUBLIC_URL:-}
 token=${SWITCHYARD_CONTROL_API_TOKEN:-}
 probe_user=${SWITCHYARD_CONTROL_PROBE_USER:-}
+proxy_token=${SWITCHYARD_REVERSE_PROXY_TOKEN:-}
 model=${SWITCHYARD_SMOKE_MODEL:-}
 
 if [[ -z "$public_url" ]]; then
@@ -21,11 +22,15 @@ if [[ -z "$token" && -z "$probe_user" ]]; then
   echo "Set SWITCHYARD_CONTROL_API_TOKEN or SWITCHYARD_CONTROL_PROBE_USER" >&2
   exit 2
 fi
+if [[ -z "$token" && -z "$proxy_token" ]]; then
+  echo "Set SWITCHYARD_REVERSE_PROXY_TOKEN when using SWITCHYARD_CONTROL_PROBE_USER" >&2
+  exit 2
+fi
 auth_args=()
 if [[ -n "$token" ]]; then
   auth_args=(-H "Authorization: Bearer $token")
 else
-  auth_args=(-H "Remote-User: $probe_user")
+  auth_args=(-H "Remote-User: $probe_user" -H "X-Switchyard-Proxy-Token: $proxy_token")
 fi
 
 curl_json() {
@@ -70,6 +75,24 @@ trap 'rm -f "$headers"' EXIT
 curl --silent --show-error --head --max-time 20 --output /dev/null --dump-header "$headers" "$public_url"
 awk 'NR == 1 { exit !($2 == 302 || $2 == 303 || $2 == 307) }' "$headers"
 grep -qi '^location: .*auth\.' "$headers"
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet switchyard-web-gate.service
+fi
+if command -v nft >/dev/null 2>&1; then
+  nft_output=""
+  if nft_output=$(nft list table inet switchyard_web_gate 2>/dev/null); then
+    :
+  elif command -v sudo >/dev/null 2>&1 && sudo -n test -s /etc/switchyard/web-gate.nft 2>/dev/null; then
+    nft_output=$(sudo -n nft list table inet switchyard_web_gate)
+  fi
+  if [[ -n "$nft_output" ]]; then
+    grep -q 'counter packets' <<<"$nft_output"
+    grep -q 'allow Tailscale proxy to web' <<<"$nft_output"
+    grep -q 'drop other ingress to web' <<<"$nft_output"
+    grep -q 'drop local access to web' <<<"$nft_output"
+  fi
+fi
 
 if [[ -n "${SWITCHYARD_REMOTE_SMOKE_COMMAND:-}" ]]; then
   bash -lc "$SWITCHYARD_REMOTE_SMOKE_COMMAND"
