@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
 )
 
 type llamaLineCompatTracker struct {
@@ -33,14 +35,14 @@ func modelBrokerQueueDepth() int {
 	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MODEL_BROKER_QUEUE_MAX_DEPTH"))); err == nil && value > 0 && value <= 200 {
 		return value
 	}
-	return 100
+	return runtimeconfig.Int("MODEL_BROKER_QUEUE_MAX_DEPTH")
 }
 
 func modelBrokerQueueWorkers() int {
 	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MODEL_BROKER_QUEUE_WORKERS"))); err == nil && value > 0 && value <= 64 {
 		return value
 	}
-	return 1
+	return runtimeconfig.Int("MODEL_BROKER_QUEUE_WORKERS")
 }
 
 func (t *llamaLineCompatTracker) begin(r *http.Request, model string, requestBody string) (ModelBrokerRequest, context.Context, func(string, string, string, map[string]string), error) {
@@ -74,7 +76,7 @@ func modelBrokerRecoveryStaleAfter() time.Duration {
 			return parsed
 		}
 	}
-	return 15 * time.Minute
+	return runtimeconfig.Duration("MODEL_BROKER_RECOVERY_STALE_AFTER")
 }
 
 func decodeModelBrokerRequestPayload(req ModelBrokerRequest) (string, []ModelMessage, bool) {

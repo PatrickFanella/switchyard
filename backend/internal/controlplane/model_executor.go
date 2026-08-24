@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
+
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -104,7 +106,7 @@ func modelBrokerTimeout() time.Duration {
 			return parsed
 		}
 	}
-	return 10 * time.Minute
+	return runtimeconfig.Duration("MODEL_BROKER_TIMEOUT")
 }
 
 type modelBrokerRetryPolicy struct {
@@ -122,13 +124,13 @@ func (e modelBrokerHTTPError) Error() string {
 }
 
 func modelBrokerRetryPolicyFromEnv() modelBrokerRetryPolicy {
-	attempts := 1
+	attempts := runtimeconfig.Int("MODEL_BROKER_RETRY_ATTEMPTS")
 	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RETRY_ATTEMPTS")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 5 {
 			attempts = parsed
 		}
 	}
-	backoff := 250 * time.Millisecond
+	backoff := runtimeconfig.Duration("MODEL_BROKER_RETRY_BACKOFF")
 	if raw := strings.TrimSpace(os.Getenv("MODEL_BROKER_RETRY_BACKOFF")); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 && parsed <= 10*time.Second {
 			backoff = parsed

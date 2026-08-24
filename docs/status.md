@@ -23,13 +23,16 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Durable linear workflow runtime | test-verified | Workers, scheduler, leases, retries, cancellation, pipeline snapshots, memory/PostgreSQL contracts |
 | Native model broker and compatible ingress | test-verified | OpenAI/Ollama routes, durable ledger, bounded queue, status and metrics |
 | Native OpenCode execution | test-verified | Session correlation, authenticated abort-on-cancel, strict source-checkout-free and shell-denied sidecar with read-only Git-common and managed-worktree access, non-root API/verifier, static Compose isolation contract, pinned runtime, and no default MCP/global permission surface |
-| Open Pilot policy pipeline | implemented, gated | Issue-to-PR/CI/merge/close path exists; mutation remains deny-by-default |
+| Open Pilot policy pipeline | implemented | Issue-to-PR/CI/merge/close path exists; mutation remains deny-by-default |
 | Devlog and Changemaker policy | implemented | Native model-backed linear pipelines |
 | Agent profiles | test-verified | Registry/API, executor/model validation, default resolution, prompt contracts, and run-step audit correlation |
-| Operator UI | test-verified selected scope | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
+| Operator UI | test-verified | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
-| Release qualification | qualified with exceptions | `v0.1.2` is deployed with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md` |
-| Production recovery | contract and scheduler implemented; historical drill verified | Versioned policy, completed-bundle, PostgreSQL object, provider-neutral restore evidence, opt-in timer, deadline metrics, and external alerts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
+| Release qualification | qualified-with-exceptions | `v0.1.2` is deployed with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md` |
+| Production recovery | test-verified | Versioned policy, completed-bundle, PostgreSQL object, provider-neutral restore evidence, opt-in timer, deadline metrics, and external alerts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
+
+`docs/capabilities-v1.json` is the machine-readable capability contract. Its
+implementation and test paths bind each status claim to repository evidence.
 
 ## Active release blockers
 

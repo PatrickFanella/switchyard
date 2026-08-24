@@ -14,6 +14,7 @@ import (
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/app"
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
 	"git.subcult.tv/PatrickFanella/switchyard/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -53,7 +54,7 @@ func run() error {
 
 	addr := os.Getenv("SWITCHYARD_LISTEN_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		addr = runtimeconfig.String("SWITCHYARD_LISTEN_ADDR")
 	}
 
 	store := controlplane.Store(controlplane.NewStore(nil))
@@ -119,13 +120,13 @@ func run() error {
 	var workersPool *controlplane.WorkerPool
 	workerEnabled := envEnabledByDefault("SWITCHYARD_WORKER_ENABLED")
 	if workerEnabled {
-		workers := 1
+		workers := runtimeconfig.Int("SWITCHYARD_WORKER_COUNT")
 		if raw := os.Getenv("SWITCHYARD_WORKER_COUNT"); raw != "" {
 			if _, err := fmt.Sscanf(raw, "%d", &workers); err != nil {
 				return fmt.Errorf("parse SWITCHYARD_WORKER_COUNT: %w", err)
 			}
 		}
-		lease := 5 * time.Minute
+		lease := runtimeconfig.Duration("SWITCHYARD_WORKER_LEASE")
 		if raw := os.Getenv("SWITCHYARD_WORKER_LEASE"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
@@ -133,7 +134,7 @@ func run() error {
 			}
 			lease = parsed
 		}
-		poll := time.Second
+		poll := runtimeconfig.Duration("SWITCHYARD_WORKER_POLL_INTERVAL")
 		if raw := os.Getenv("SWITCHYARD_WORKER_POLL_INTERVAL"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
@@ -149,7 +150,7 @@ func run() error {
 	}
 	var scheduler *controlplane.Scheduler
 	if envEnabledByDefault("SWITCHYARD_SCHEDULER_ENABLED") {
-		interval := time.Minute
+		interval := runtimeconfig.Duration("SWITCHYARD_SCHEDULER_INTERVAL")
 		if raw := os.Getenv("SWITCHYARD_SCHEDULER_INTERVAL"); raw != "" {
 			parsed, err := time.ParseDuration(raw)
 			if err != nil {
@@ -161,7 +162,7 @@ func run() error {
 		scheduler.SetOpenPilotAssigner(controlplane.NewEnvOpenPilotAssigner(store, runner, controlplane.NewEnvGiteaClient()))
 		timezone := strings.TrimSpace(os.Getenv("SWITCHYARD_SCHEDULER_TIMEZONE"))
 		if timezone == "" {
-			timezone = "UTC"
+			timezone = runtimeconfig.String("SWITCHYARD_SCHEDULER_TIMEZONE")
 		}
 		location, err := time.LoadLocation(timezone)
 		if err != nil {
@@ -175,7 +176,7 @@ func run() error {
 		scheduler.Start(ctx)
 		slog.Info("scheduler enabled", "interval", interval.String(), "timezone", location.String())
 	}
-	retentionWindow := 30 * 24 * time.Hour
+	retentionWindow := runtimeconfig.Duration("SWITCHYARD_RETENTION")
 	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
@@ -186,7 +187,7 @@ func run() error {
 		}
 		retentionWindow = parsed
 	}
-	retentionInterval := 24 * time.Hour
+	retentionInterval := runtimeconfig.Duration("SWITCHYARD_RETENTION_INTERVAL")
 	if raw := strings.TrimSpace(os.Getenv("SWITCHYARD_RETENTION_INTERVAL")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
@@ -280,7 +281,13 @@ func run() error {
 }
 
 func envEnabledByDefault(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		if fallback, ok := runtimeconfig.Lookup(name); ok {
+			raw = fallback
+		}
+	}
+	switch strings.ToLower(raw) {
 	case "0", "false", "no", "off":
 		return false
 	default:

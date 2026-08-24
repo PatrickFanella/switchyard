@@ -5,6 +5,7 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 
 ## Design
 - Two binaries share `internal/controlplane`: `cmd/app` is the server and `cmd/switchyard` is the operator CLI.
+- `internal/runtimeconfig/defaults-v1.json` is the versioned source for critical runtime defaults consumed by Go and checked against rendered Compose and `.env.example`.
 - `ModelService` is the single model-runtime lifecycle owner. Workflows receive the narrow `ModelGeneration` capability; authenticated control and compatibility handlers receive lifecycle operations through `ModelRuntimeControl` or a thin facade.
 - Interfaces (`Store`, `WorkflowExecutor`, `ModelGeneration`, `ModelRuntimeControl`, `OpenCodeExecutor`) isolate persistence and compatibility backends; memory and PostgreSQL implementations are split by workflow, run, Open Pilot, broker, and artifact measurement domains.
 - The API and model-compatible ingress use separate handlers and are intended for separate listeners.
@@ -21,3 +22,4 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 - Calls the managed service in `services/opencode/`, optional Ollama/llama-line endpoints, Gitea, and OTLP collectors.
 - Serves authenticated bounded artifact and canonical compatibility-observation reports on the control listener and fixed-name artifact metrics on both canonical metrics routes.
 - Built and configured by the root `Makefile` and `docker-compose.yml`.
+- Listener/OpenAPI tests classify every documented method on the control and model handlers, including native lifecycle, artifact, and compatibility evidence routes.

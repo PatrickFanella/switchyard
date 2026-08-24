@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/gitworktree"
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
 )
 
 type CommandPolicyMode string
@@ -57,17 +58,17 @@ type PolicyCommandRunner struct {
 }
 
 func NewEnvCommandRunner() *PolicyCommandRunner {
-	mode := CommandPolicyMode(firstNonEmpty(os.Getenv("OPEN_PILOT_COMMAND_POLICY_MODE"), string(CommandPolicyDeny)))
-	allowedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), "git,go,make,pnpm,npm,cargo"))
-	allowedGitVerbs := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), "status,diff,checkout,switch,branch,add,commit"))
-	deniedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"))
+	mode := CommandPolicyMode(firstNonEmpty(os.Getenv("OPEN_PILOT_COMMAND_POLICY_MODE"), runtimeconfig.String("OPEN_PILOT_COMMAND_POLICY_MODE")))
+	allowedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), runtimeconfig.String("OPEN_PILOT_ALLOWED_COMMANDS")))
+	allowedGitVerbs := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), runtimeconfig.String("OPEN_PILOT_ALLOWED_GIT_VERBS")))
+	deniedCommands := setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), runtimeconfig.String("OPEN_PILOT_DENIED_COMMANDS")))
 	if openPilotAutonomyFullEnabled() {
 		mode = CommandPolicyMode(firstNonEmpty(os.Getenv("OPEN_PILOT_COMMAND_POLICY_MODE"), string(CommandPolicyAllow)))
-		allowedCommands = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), "git,go,make,pnpm,npm,cargo"))
-		allowedGitVerbs = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), "status,diff,checkout,switch,branch,add,commit"))
-		deniedCommands = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"))
+		allowedCommands = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_COMMANDS"), runtimeconfig.String("OPEN_PILOT_ALLOWED_COMMANDS")))
+		allowedGitVerbs = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_GIT_VERBS"), runtimeconfig.String("OPEN_PILOT_ALLOWED_GIT_VERBS")))
+		deniedCommands = setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_DENIED_COMMANDS"), runtimeconfig.String("OPEN_PILOT_DENIED_COMMANDS")))
 	}
-	timeout := 120 * time.Second
+	timeout := runtimeconfig.Duration("OPEN_PILOT_COMMAND_TIMEOUT")
 	if raw := os.Getenv("OPEN_PILOT_COMMAND_TIMEOUT"); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil {
 			timeout = parsed

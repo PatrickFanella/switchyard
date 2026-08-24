@@ -180,6 +180,154 @@ func TestOpenAPIDocumentsModelRuntimeSecurityAndSchemas(t *testing.T) {
 	}
 }
 
+func TestListenerContractsMatchDocumentedRouteMethods(t *testing.T) {
+	control := openAPIOperations(t, "../../../docs/openapi.yaml")
+	model := openAPIOperations(t, "../../../docs/openapi-model-ingress.yaml")
+	shared := map[string]bool{
+		"GET /health": true, "GET /healthz": true, "GET /readyz": true, "GET /metrics": true,
+	}
+
+	for operation := range control {
+		method, path, _ := strings.Cut(operation, " ")
+		request := httptest.NewRequest(method, contractRequestPath(path), nil)
+		wantModel := model[operation]
+		if got := modelIngressRouteAllowed(request); got != wantModel {
+			t.Errorf("model listener classification for %s = %t, want %t", operation, got, wantModel)
+		}
+		wantControl := !wantModel || shared[operation]
+		if got := controlPlaneRouteAllowed(request); got != wantControl {
+			t.Errorf("control listener classification for %s = %t, want %t", operation, got, wantControl)
+		}
+	}
+	for operation := range model {
+		if !control[operation] {
+			t.Errorf("model listener operation %s is absent from the complete API contract", operation)
+		}
+	}
+
+	for _, operation := range []string{
+		"GET /api/model-broker/status",
+		"GET /api/model-broker/queue",
+		"GET /api/model-broker/requests",
+		"DELETE /api/model-broker/requests",
+		"GET /api/model-broker/requests/{id}",
+		"POST /api/model-broker/requests/{id}/cancel",
+		"POST /api/model-broker/requests/{id}/drop",
+		"GET /api/artifacts/report",
+		"GET /api/compatibility/retirement",
+		"GET /api/compatibility/report",
+		"GET /api/compatibility/observer",
+	} {
+		method, path, _ := strings.Cut(operation, " ")
+		operation = routeContractKey(method, path)
+		if !control[operation] {
+			t.Errorf("control contract omits issue #27-29 operation %s", operation)
+		}
+		if model[operation] {
+			t.Errorf("model contract exposes control-only operation %s", operation)
+		}
+	}
+
+	for operation := range model {
+		_, path, _ := strings.Cut(operation, " ")
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions} {
+			candidate := routeContractKey(method, path)
+			request := httptest.NewRequest(method, contractRequestPath(path), nil)
+			if got, want := modelIngressRouteAllowed(request), model[candidate]; got != want {
+				t.Errorf("model listener classification for %s = %t, want %t", candidate, got, want)
+			}
+		}
+	}
+
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "listener-contract-token")
+	api := NewAPI(NewStore(nil), NewRunner(NewStore(nil)))
+	for _, path := range []string{
+		"/api/model-broker/status",
+		"/api/model-broker/queue",
+		"/api/model-broker/requests",
+		"/api/model-broker/requests/contract-id",
+		"/api/model-broker/requests/contract-id/cancel",
+		"/api/model-broker/requests/contract-id/drop",
+		"/api/artifacts/report",
+		"/api/compatibility/retirement",
+		"/api/compatibility/report",
+		"/api/compatibility/observer",
+	} {
+		request := httptest.NewRequest(http.MethodPut, path, nil)
+		request.Header.Set("Authorization", "Bearer listener-contract-token")
+		response := httptest.NewRecorder()
+		api.ControlPlaneHandler().ServeHTTP(response, request)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Errorf("control listener undocumented method PUT %s status = %d, want %d", path, response.Code, http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func TestControlListenerHeadUsesReadAuthenticationAndExcludesModelRoutes(t *testing.T) {
+	t.Setenv("SWITCHYARD_CONTROL_API_TOKEN", "admin-token")
+	t.Setenv("SWITCHYARD_CONTROL_READ_TOKEN", "read-token")
+	store := NewStore(nil)
+	handler := NewAPI(store, NewRunner(store)).ControlPlaneHandler()
+
+	tests := []struct {
+		name  string
+		path  string
+		token string
+		want  int
+	}{
+		{name: "authenticated control HEAD", path: "/api/workflows", token: "admin-token", want: http.StatusOK},
+		{name: "read token control HEAD", path: "/api/workflows", token: "read-token", want: http.StatusOK},
+		{name: "unauthenticated control HEAD", path: "/api/workflows", want: http.StatusUnauthorized},
+		{name: "model-only HEAD excluded", path: "/v1/models", token: "admin-token", want: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodHead, test.path, nil)
+			if test.token != "" {
+				request.Header.Set("Authorization", "Bearer "+test.token)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Errorf("status = %d, want %d", response.Code, test.want)
+			}
+		})
+	}
+
+	response := httptest.NewRecorder()
+	NewAPI(store, NewRunner(store)).ModelIngressHandler().ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodHead, "/api/workflows", nil),
+	)
+	if response.Code != http.StatusNotFound {
+		t.Errorf("model listener control-only HEAD status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func openAPIOperations(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	documentBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Paths map[string]map[string]any `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(documentBytes, &document); err != nil {
+		t.Fatalf("%s is invalid: %v", path, err)
+	}
+	operations := map[string]bool{}
+	for route, methods := range document.Paths {
+		for method := range methods {
+			switch strings.ToUpper(method) {
+			case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+				operations[routeContractKey(strings.ToUpper(method), route)] = true
+			}
+		}
+	}
+	return operations
+}
+
 func TestRunAndTriggerActionRoutesRejectUnsupportedPaths(t *testing.T) {
 	store := NewStore(nil)
 	mux := NewAPI(store, NewRunner(store)).routes()

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEnvWorktreeManagerPrefersRepoPath(t *testing.T) {
@@ -16,6 +17,14 @@ func TestEnvWorktreeManagerPrefersRepoPath(t *testing.T) {
 	manager := NewEnvOpenPilotWorktreeManager()
 	if manager.repoPath != "/preferred" {
 		t.Fatalf("repoPath = %q", manager.repoPath)
+	}
+}
+
+func TestEnvWorktreeManagerUsesAuthoritativeTimeoutDefault(t *testing.T) {
+	t.Setenv("OPEN_PILOT_WORKTREE_TIMEOUT", "")
+	manager := NewEnvOpenPilotWorktreeManager()
+	if manager.timeout != 120*time.Second {
+		t.Fatalf("timeout = %s, want 120s", manager.timeout)
 	}
 }
 

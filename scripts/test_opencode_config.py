@@ -8,9 +8,22 @@ import unittest
 
 CONFIG = Path(__file__).resolve().parent.parent / "services/opencode/default-config/opencode.defaults.json"
 INSTALL = CONFIG.parent.parent / "install.sh"
+RUNTIME_DEFAULTS = Path(__file__).resolve().parent.parent / "backend/internal/runtimeconfig/defaults-v1.json"
 
 
 class OpenCodeConfigContractTest(unittest.TestCase):
+    def test_plugin_timeout_fallbacks_match_runtime_contract(self) -> None:
+        defaults = json.loads(RUNTIME_DEFAULTS.read_text(encoding="utf-8"))["defaults"]
+        plugin = (CONFIG.parent / "plugins/switchyard-blacktower.ts").read_text(encoding="utf-8")
+        self.assertIn(
+            f"OPENCODE_SESSION_CREATE_TIMEOUT_MS ?? {defaults['OPENCODE_SESSION_CREATE_TIMEOUT_MS']['runtime']}",
+            plugin,
+        )
+        self.assertIn(
+            f"OPENCODE_MESSAGE_TIMEOUT_MS ?? {defaults['OPENCODE_MESSAGE_TIMEOUT_MS']['runtime']}",
+            plugin,
+        )
+
     def test_strict_defaults_deny_all_shell_execution(self) -> None:
         config = json.loads(CONFIG.read_text(encoding="utf-8"), object_pairs_hook=dict)
         self.assertEqual(config["permission"]["bash"], "deny")

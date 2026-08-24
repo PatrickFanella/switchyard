@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check open-pilot-check release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test workspace-init-test ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -163,6 +163,9 @@ opencode-config-test: ## Test strict managed OpenCode command permissions
 
 docs-check: ## Verify current-status documents and stable API references agree
 	./scripts/check-docs-consistency.sh
+
+docs-contract-test: ## Test semantic documentation contracts
+	python3 -m unittest discover -s scripts -p 'test_check_docs_consistency.py'
 
 open-pilot-check: ## Verify Open Pilot templates are present
 	@test -f .gitea/ISSUE_TEMPLATE/open-pilot-task.yaml

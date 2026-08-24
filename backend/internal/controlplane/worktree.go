@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
+
 	"git.subcult.tv/PatrickFanella/switchyard/internal/gitworktree"
 	"golang.org/x/sys/unix"
 )
@@ -125,7 +127,7 @@ type GitOpenPilotWorktreeManager struct {
 func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
 	repoPath := firstNonEmpty(os.Getenv("OPEN_PILOT_REPO_PATH"), os.Getenv("OPEN_PILOT_WORKDIR"))
 	root := os.Getenv("OPEN_PILOT_WORKTREE_ROOT")
-	timeout := 120 * time.Second
+	timeout := runtimeconfig.Duration("OPEN_PILOT_WORKTREE_TIMEOUT")
 	if raw := os.Getenv("OPEN_PILOT_WORKTREE_TIMEOUT"); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil {
 			timeout = parsed

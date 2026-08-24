@@ -41,6 +41,7 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 - External dependencies: PostgreSQL, OpenCode, optional Ollama/llama-line, Gitea, Git, Docker, and optional OTLP collectors.
 - Configuration is environment-driven through `.env.example` and `docker-compose.yml`; secrets/local state are ignored.
 - Canonical verification is `make verify`.
+- `make docs-check` validates capability evidence, release pointers, Markdown and codemap paths, and critical defaults without treating the deployed revision as the checkout HEAD.
 - Gitea runs the baseline gate on pushes/pull requests and provides scheduled/manual `make verify-production` qualification with pinned actions, explicit Go/Node/pnpm/Docker/Buildx checks, and an SBOM/provenance preflight.
 
 ## Directory Map
