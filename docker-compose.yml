@@ -176,8 +176,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - default
-      - verification
+      default:
+        ipv4_address: ${SWITCHYARD_API_CONTAINER_IPV4:-172.31.250.4}
+      verification:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 10s

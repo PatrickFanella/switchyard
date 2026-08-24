@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Manage the exact UFW post-DNAT route for the production web listener."""
+"""Manage the exact UFW rules required by production web and model traffic."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+import ipaddress
 import os
 import re
 import subprocess
@@ -13,7 +15,17 @@ from pathlib import Path
 import render_tailscale_web_gate as gate
 
 
-COMMENT = "switchyard-web-gate"
+WEB_COMMENT = "switchyard-web-gate"
+MODEL_COMMENT = "switchyard-model-gate"
+MODEL_PORT = "11435"
+
+
+@dataclass(frozen=True)
+class RuleCommands:
+    name: str
+    check: list[str]
+    add: list[str]
+    delete: list[str]
 
 
 def verify_nft(config: gate.GateConfig) -> None:
@@ -59,8 +71,8 @@ def verify_nft(config: gate.GateConfig) -> None:
             raise gate.GateError("live nft web gate does not match")
 
 
-def commands(config: gate.GateConfig) -> tuple[list[str], list[str], list[str]]:
-    rule = [
+def commands(config: gate.GateConfig, api_container: ipaddress.IPv4Address) -> tuple[RuleCommands, RuleCommands]:
+    web_rule = [
         "-i", "tailscale0",
         "-o", config.bridge_name,
         "-p", "tcp",
@@ -77,9 +89,53 @@ def commands(config: gate.GateConfig) -> tuple[list[str], list[str], list[str]]:
         "from", str(config.proxy),
         "to", str(config.web_container),
         "port", "80",
-        "comment", COMMENT,
+        "comment", WEB_COMMENT,
     ]
-    return ["iptables", "-C", "ufw-user-forward", *rule], ["ufw", *ufw_rule], ["ufw", "--force", "route", "delete", "allow", *ufw_rule[2:]]
+    model_rule = [
+        "-i", config.bridge_name,
+        "-p", "tcp",
+        "-s", f"{api_container}/32",
+        "-d", f"{config.gateway}/32",
+        "--dport", MODEL_PORT,
+        "-j", "ACCEPT",
+    ]
+    model_ufw_rule = [
+        "allow", "in", "on", config.bridge_name,
+        "proto", "tcp",
+        "from", str(api_container),
+        "to", str(config.gateway),
+        "port", MODEL_PORT,
+        "comment", MODEL_COMMENT,
+    ]
+    return (
+        RuleCommands(
+            "web",
+            ["iptables", "-C", "ufw-user-forward", *web_rule],
+            ["ufw", *ufw_rule],
+            ["ufw", "--force", "route", "delete", "allow", *ufw_rule[2:]],
+        ),
+        RuleCommands(
+            "model",
+            ["iptables", "-C", "ufw-user-input", *model_rule],
+            ["ufw", *model_ufw_rule],
+            ["ufw", "--force", "delete", *model_ufw_rule],
+        ),
+    )
+
+
+def api_container_from_values(values: dict[str, str], config: gate.GateConfig) -> ipaddress.IPv4Address:
+    try:
+        api_container = ipaddress.IPv4Address(values["SWITCHYARD_API_CONTAINER_IPV4"])
+    except (KeyError, ValueError) as exc:
+        raise gate.GateError("invalid SWITCHYARD_API_CONTAINER_IPV4") from exc
+    if api_container not in config.subnet or api_container in {
+        config.subnet.network_address,
+        config.subnet.broadcast_address,
+        config.gateway,
+        config.web_container,
+    }:
+        raise gate.GateError("invalid SWITCHYARD_API_CONTAINER_IPV4")
+    return api_container
 
 
 def run(command: list[str], *, quiet: bool = False) -> subprocess.CompletedProcess[str]:
@@ -105,7 +161,7 @@ def require_ufw_active() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-config", "verify", "verify-gate", "ensure", "delete"))
+    parser.add_argument("action", choices=("check-config", "verify", "verify-gate", "ensure", "delete", "delete-web", "delete-model"))
     parser.add_argument("--env-file", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
@@ -115,32 +171,38 @@ def main(argv: list[str] | None = None) -> int:
             bridge_name=None, web_container=None,
         )
         config = gate.config_from_inputs(config_args, values)
-        check, add, delete = commands(config)
+        rules = commands(config, api_container_from_values(values, config))
         if args.action == "check-config":
             return 0
         require_ufw_active()
-        present = run(check, quiet=True).returncode == 0
+        present = {rule.name: run(rule.check, quiet=True).returncode == 0 for rule in rules}
         if args.action in {"verify", "verify-gate"}:
-            if not present:
-                raise gate.GateError("exact UFW web forward rule is missing")
+            missing = [rule.name for rule in rules if not present[rule.name]]
+            if missing:
+                raise gate.GateError(f"exact UFW {' and '.join(missing)} rule is missing")
             if args.action == "verify-gate":
                 verify_nft(config)
             return 0
-        if args.action == "delete":
-            if present and run(delete).returncode != 0:
-                raise gate.GateError("could not delete exact UFW web forward rule")
-            if run(check, quiet=True).returncode == 0:
-                raise gate.GateError("exact UFW web forward rule remains")
+        if args.action.startswith("delete"):
+            selected = rules if args.action == "delete" else tuple(rule for rule in rules if rule.name == args.action.removeprefix("delete-"))
+            for rule in selected:
+                if present[rule.name] and run(rule.delete).returncode != 0:
+                    raise gate.GateError(f"could not delete exact UFW {rule.name} rule")
+                if run(rule.check, quiet=True).returncode == 0:
+                    raise gate.GateError(f"exact UFW {rule.name} rule remains")
             return 0
-        if present:
-            print("existing")
-            return 0
-        if run(add).returncode != 0:
-            raise gate.GateError("could not add exact UFW web forward rule")
-        if run(check, quiet=True).returncode != 0:
-            run(delete, quiet=True)
-            raise gate.GateError("exact UFW web forward rule is ineffective")
-        print("created")
+        created: list[RuleCommands] = []
+        for rule in rules:
+            if present[rule.name]:
+                continue
+            if run(rule.add, quiet=True).returncode != 0 or run(rule.check, quiet=True).returncode != 0:
+                for created_rule in reversed(created):
+                    run(created_rule.delete, quiet=True)
+                run(rule.delete, quiet=True)
+                raise gate.GateError(f"could not ensure exact UFW {rule.name} rule")
+            created.append(rule)
+        for rule in rules:
+            print(f"{rule.name}={'created' if rule in created else 'existing'}")
         return 0
     except (gate.GateError, OSError) as exc:
         message = str(exc) if isinstance(exc, gate.GateError) else "required firewall command is unavailable"

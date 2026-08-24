@@ -74,7 +74,9 @@ class ProductionConfigTest(unittest.TestCase):
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
             "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+            "SWITCHYARD_API_CONTAINER_IPV4": "172.31.250.4",
             "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
+            "OLLAMA_BASE_URL": "http://172.31.250.1:11435",
             "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
             "SWITCHYARD_DASHBOARD_CIDR": "127.0.0.1/32",
             "SWITCHYARD_PUBLIC_URL": "https://switchyard.example.test",
@@ -411,6 +413,10 @@ class ProductionConfigTest(unittest.TestCase):
             ("SWITCHYARD_DOCKER_BRIDGE_NAME", "interface-name-too-long", "SWITCHYARD_DOCKER_BRIDGE_NAME must be a safe Linux interface name of at most 15 characters"),
             ("SWITCHYARD_WEB_CONTAINER_IPV4", "172.31.250.1", "SWITCHYARD_WEB_CONTAINER_IPV4 must be a usable non-gateway address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
             ("SWITCHYARD_WEB_CONTAINER_IPV4", "172.31.251.10", "SWITCHYARD_WEB_CONTAINER_IPV4 must be a usable non-gateway address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_API_CONTAINER_IPV4", "172.31.250.0", "SWITCHYARD_API_CONTAINER_IPV4 must be a usable address distinct from the gateway and web address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_API_CONTAINER_IPV4", "172.31.250.1", "SWITCHYARD_API_CONTAINER_IPV4 must be a usable address distinct from the gateway and web address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_API_CONTAINER_IPV4", "172.31.250.10", "SWITCHYARD_API_CONTAINER_IPV4 must be a usable address distinct from the gateway and web address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
+            ("SWITCHYARD_API_CONTAINER_IPV4", "172.31.251.4", "SWITCHYARD_API_CONTAINER_IPV4 must be a usable address distinct from the gateway and web address in SWITCHYARD_DOCKER_BRIDGE_SUBNET"),
             ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "172.31.250.1/32", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_TAILSCALE_PROXY_IPV4/32"),
             ("SWITCHYARD_WEB_TRUSTED_PROXY_CIDR", "100.77.128.0/24", "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR must equal SWITCHYARD_TAILSCALE_PROXY_IPV4/32"),
         )
@@ -421,9 +427,20 @@ class ProductionConfigTest(unittest.TestCase):
                     "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
                     "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
                     "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+                    "SWITCHYARD_API_CONTAINER_IPV4": "172.31.250.4",
                     "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
                     "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
                 }[name]
+
+    def test_rejects_wrong_production_ollama_url(self) -> None:
+        for value in ("", "http://host.docker.internal:11435", "http://10.0.0.50:11435", "http://0.0.0.0:11435", "http://172.31.250.1:11434", "http://172.31.250.1:11435/"):
+            with self.subTest(value=value):
+                self.assert_rejected(
+                    "OLLAMA_BASE_URL",
+                    value,
+                    "OLLAMA_BASE_URL must equal http://SWITCHYARD_DOCKER_BRIDGE_GATEWAY:11435 in Tailscale production",
+                )
+        self.env["OLLAMA_BASE_URL"] = "http://172.31.250.1:11435"
 
     def test_rejects_broad_dashboard_cidr(self) -> None:
         self.assert_rejected(
@@ -615,7 +632,9 @@ class ProductionConfigCLITest(unittest.TestCase):
                 "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
                 "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
                 "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+                "SWITCHYARD_API_CONTAINER_IPV4": "172.31.250.4",
                 "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
+                "OLLAMA_BASE_URL": "http://172.31.250.1:11435",
                 "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR": "100.77.128.80/32",
                 "SWITCHYARD_DASHBOARD_CIDR": "127.0.0.1/32",
                 "SWITCHYARD_PUBLIC_URL": "https://switchyard.example.test",

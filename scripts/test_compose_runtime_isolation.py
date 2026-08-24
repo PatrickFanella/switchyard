@@ -215,6 +215,8 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
         network = self.config["networks"]["default"]
         self.assertEqual(network["driver_opts"], {"com.docker.network.bridge.name": "switchyard0"})
         self.assertEqual(network["ipam"]["config"], [{"subnet": "172.31.250.0/24", "gateway": "172.31.250.1"}])
+        self.assertEqual(self.service("api")["networks"]["default"]["ipv4_address"], "172.31.250.4")
+        self.assertIn("verification", self.service("api")["networks"])
         self.assertEqual(self.service("web")["networks"]["default"]["ipv4_address"], "172.31.250.10")
         self.assertEqual(self.service("web")["environment"]["SWITCHYARD_WEB_TRUSTED_PROXY_CIDR"], "100.77.128.80/32")
 

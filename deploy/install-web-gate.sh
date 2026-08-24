@@ -100,6 +100,7 @@ table_existed=0
 was_enabled=0
 was_active=0
 forward_rule_created=0
+model_rule_created=0
 
 atomic_install() {
   local source=$1 destination=$2 mode=$3 temporary="${2}.switchyard-install.$$"
@@ -171,8 +172,11 @@ cleanup() {
   status=$?
   if [[ $status -ne 0 && $mutation_started -eq 1 ]]; then
     systemctl disable --now switchyard-web-gate.service >/dev/null 2>&1 || true
+    if [[ $model_rule_created -eq 1 ]]; then
+      python3 "$ufw_helper_dst" delete-model --env-file "$env_file" >/dev/null 2>&1 || true
+    fi
     if [[ $forward_rule_created -eq 1 ]]; then
-      python3 "$ufw_helper_dst" delete --env-file "$env_file" >/dev/null 2>&1 || true
+      python3 "$ufw_helper_dst" delete-web --env-file "$env_file" >/dev/null 2>&1 || true
     fi
     restore_file "$renderer_snapshot" "$renderer_dst" "$renderer_existed" || true
     restore_file "$ufw_helper_snapshot" "$ufw_helper_dst" "$ufw_helper_existed" || true
@@ -271,14 +275,23 @@ if [[ $changed -eq 1 ]]; then
   atomic_install "$tmp_dropin" "$docker_dropin_dst" 0644
   systemctl daemon-reload
 fi
-forward_result="$(python3 "$ufw_helper_dst" ensure --env-file "$env_file")"
-if [[ "$forward_result" == "created" ]]; then
-  mutation_started=1
-  forward_rule_created=1
-elif [[ "$forward_result" != "existing" ]]; then
+if ! ufw_output="$(python3 "$ufw_helper_dst" ensure --env-file "$env_file")"; then
+  echo "could not ensure exact UFW rules" >&2
+  exit 1
+fi
+mapfile -t ufw_results <<<"$ufw_output"
+if [[ ${#ufw_results[@]} -ne 2 || ! " ${ufw_results[*]} " =~ " web=" || ! " ${ufw_results[*]} " =~ " model=" ]]; then
   echo "UFW helper returned an invalid result" >&2
   exit 1
 fi
+for result in "${ufw_results[@]}"; do
+  case "$result" in
+    web=created) mutation_started=1; forward_rule_created=1 ;;
+    model=created) mutation_started=1; model_rule_created=1 ;;
+    web=existing|model=existing) ;;
+    *) echo "UFW helper returned an invalid result" >&2; exit 1 ;;
+  esac
+done
 for property in Requires After; do
   if ! systemctl show docker.service --property="$property" --value | tr ' ' '\n' | grep -Fxq switchyard-web-gate.service; then
     echo "docker.service does not load the Switchyard web gate dependency" >&2

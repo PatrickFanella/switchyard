@@ -27,6 +27,7 @@ class WebGateInstallerTest(unittest.TestCase):
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET=172.31.250.0/24\n"
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY=172.31.250.1\n"
             "SWITCHYARD_DOCKER_BRIDGE_NAME=switchyard0\n"
+            "SWITCHYARD_API_CONTAINER_IPV4=172.31.250.4\n"
             "SWITCHYARD_WEB_CONTAINER_IPV4=172.31.250.10\n"
         )
         tools = {
@@ -89,14 +90,20 @@ if [ "$*" = status ]; then
   printf 'Status: inactive\n'; exit
 fi
 case "$*" in
-  'route allow '*) [ "${FAIL_UFW_ADD:-0}" = 0 ] || exit 1; : >"$UFW_RULE_STATE";;
-  '--force route delete allow '*) rm -f "$UFW_RULE_STATE";;
+  'route allow '*) [ "${FAIL_UFW_ADD:-0}" = 0 ] || exit 1; : >"$UFW_WEB_RULE_STATE";;
+  'allow in '*) [ "${FAIL_UFW_ADD:-0}" = 0 ] || exit 1; : >"$UFW_MODEL_RULE_STATE";;
+  '--force route delete allow '*) rm -f "$UFW_WEB_RULE_STATE";;
+  '--force delete allow in '*) rm -f "$UFW_MODEL_RULE_STATE";;
   *) exit 2;;
 esac
 """,
             "iptables": """#!/bin/sh
 printf 'iptables %s\n' "$*" >>"$MUTATION_LOG"
-[ -e "$UFW_RULE_STATE" ]
+case "$*" in
+  '-C ufw-user-forward '*) [ -e "$UFW_WEB_RULE_STATE" ];;
+  '-C ufw-user-input '*) [ -e "$UFW_MODEL_RULE_STATE" ];;
+  *) exit 2;;
+esac
 """,
             "systemctl": """#!/bin/sh
 case "$*" in
@@ -134,7 +141,8 @@ exit 0
                 "MUTATION_LOG": str(self.log),
                 "STATE": str(self.root / "active"),
                 "TABLE_STATE": str(self.root / "table-active"),
-                "UFW_RULE_STATE": str(self.root / "ufw-rule"),
+                "UFW_WEB_RULE_STATE": str(self.root / "ufw-web-rule"),
+                "UFW_MODEL_RULE_STATE": str(self.root / "ufw-model-rule"),
                 "SWITCHYARD_ENV_FILE": str(self.env_file),
                 "SWITCHYARD_SYSTEMD_UNIT_DIR": str(self.units),
                 "SWITCHYARD_NFT_CONFIG_DIR": str(self.nft_dir),
@@ -176,6 +184,8 @@ exit 0
                         mutations.index("systemctl restart switchyard-web-gate.service"))
         exact = "iptables -C ufw-user-forward -i tailscale0 -o switchyard0 -p tcp -s 100.77.128.80/32 -d 172.31.250.10/32 --dport 80 -j ACCEPT"
         self.assertIn(exact, mutations)
+        model = "iptables -C ufw-user-input -i switchyard0 -p tcp -s 172.31.250.4/32 -d 172.31.250.1/32 --dport 11435 -j ACCEPT"
+        self.assertIn(model, mutations)
         self.assertNotIn("100.64.0.0/10", "\n".join(mutations))
         self.assertNotIn("172.31.250.0/24", "\n".join(line for line in mutations if line.startswith(("ufw ", "iptables "))))
 
@@ -255,7 +265,8 @@ exit 0
         first = self.run_installer()
         self.assertEqual(first.returncode, 0, first.stderr)
         self.log.unlink()
-        (self.root / "ufw-rule").touch(exist_ok=True)
+        (self.root / "ufw-web-rule").touch(exist_ok=True)
+        (self.root / "ufw-model-rule").touch(exist_ok=True)
         result = self.run_installer({"WEB_RUNNING": "1", "PRIOR_ACTIVE": "1", "PRIOR_ENABLED": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         mutations = self.log.read_text().splitlines() if self.log.exists() else []
@@ -263,16 +274,29 @@ exit 0
         self.assertNotIn("systemctl restart switchyard-web-gate.service", mutations)
 
     def test_rollback_keeps_preexisting_exact_ufw_rule(self):
-        (self.root / "ufw-rule").touch()
+        (self.root / "ufw-web-rule").touch()
+        (self.root / "ufw-model-rule").touch()
         result = self.run_installer({"FAIL_START": "1"})
         self.assertNotEqual(result.returncode, 0)
-        self.assertTrue((self.root / "ufw-rule").exists())
-        self.assertNotIn("ufw --force route delete allow", self.log.read_text())
+        self.assertTrue((self.root / "ufw-web-rule").exists())
+        self.assertTrue((self.root / "ufw-model-rule").exists())
+        self.assertNotIn("ufw --force", self.log.read_text())
+
+    def test_rollback_deletes_only_rule_created_by_invocation(self):
+        (self.root / "ufw-web-rule").touch()
+        result = self.run_installer({"FAIL_START": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "ufw-web-rule").exists())
+        self.assertFalse((self.root / "ufw-model-rule").exists())
+        mutations = self.log.read_text()
+        self.assertIn("ufw --force delete allow in on switchyard0", mutations)
+        self.assertNotIn("ufw --force route delete allow", mutations)
 
     def test_refuses_inactive_ufw_before_mutation(self):
         result = self.run_installer({"UFW_ACTIVE": "0"})
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.root / "ufw-rule").exists())
+        self.assertFalse((self.root / "ufw-web-rule").exists())
+        self.assertFalse((self.root / "ufw-model-rule").exists())
         self.assertFalse(any(line.startswith("install ") for line in self.log.read_text().splitlines()))
 
     def test_reinstalls_unchanged_rules_and_renderer_with_safe_metadata(self):

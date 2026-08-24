@@ -5,7 +5,7 @@ Installs the Docker Compose stack as a host-managed systemd service and defines 
 
 ## Design
 - `switchyard.service` is a template with repository/user/group placeholders.
-- `install-web-gate.sh` preflights UFW, renderer, Compose, and nft syntax; atomically installs root-owned renderer and exact-UFW helper scripts at `/usr/lib/switchyard`; stops a running web container before a changed gate; and restores prior files, nft state, and unit state on failure. It removes the exact UFW rule only when that run created it.
+- `install-web-gate.sh` preflights UFW, renderer, Compose, and nft syntax; installs the root-owned exact-UFW helper; ensures separate web-forward and API-to-host-model rules before Docker; and removes only rules created by that invocation during rollback.
 - `install-systemd.sh` requires the installed web gate active before mutation, resolves one absolute non-symlink env file, and restores all five managed unit files, their enablement/activation, and the Compose workload after a failed install.
 - `runner/Dockerfile` composes the digest-pinned Gitea runner image with the exact Go toolchain required by CI; `runner/README.md` documents publishing and label configuration.
 - The installer removes a legacy standalone llama-line service during native cutover.

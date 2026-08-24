@@ -11,7 +11,7 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 | Switchyard compat ingress | Kvant / Switchyard Compose | `http://10.0.0.50:11434` | Replaces the old llama-line process; the production listener is bound to Kvant's LAN address. |
 | Switchyard API | NUC / Switchyard Compose | `http://127.0.0.1:18080` or internal `api:8080` | Native control plane. |
 | Switchyard frontend | Kvant / Switchyard Compose via Almaz Caddy | `https://switchyard.subcult.tv` | Authelia-protected; the approved private web hop uses the hosts' Tailscale addresses. |
-| Ollama upstream | NUC host | `http://127.0.0.1:11435` on the host, `http://host.docker.internal:11435` from Compose | Real model server; never point `OLLAMA_BASE_URL` at `11434`. |
+| Ollama upstream | NUC host | `http://127.0.0.1:11435` on the host, `http://172.31.250.1:11435` from production Compose | Production must use the exact bridge gateway URL. |
 | Phoenix | Almaz | `http://10.0.0.200:6006` | OTLP/HTTP traces with `x-project-name=switchyard`. |
 | Subcorp clients | `10.0.0.56` containers | `http://10.0.0.50:11434` | `/api/chat` returns plain Ollama JSON; `/v1/chat/completions` supports OpenAI JSON/SSE. |
 
@@ -21,10 +21,17 @@ Operate Switchyard as the llama-line-compatible model ingress on `11434`.
 - `docker inspect switchyard-api-1 switchyard-web-1 switchyard-postgres-1 switchyard-opencode-1 --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}}'` reports `unless-stopped` so the stack comes back after Docker starts.
 - `ss -ltnp 'sport = :11434'` shows Docker publishing `11434`.
 - `systemctl show ollama -p Environment` includes `OLLAMA_HOST=0.0.0.0:11435` when Docker must reach host Ollama.
-- UFW allows Docker bridge traffic to host Ollama on `11435`.
-- `.env` sets `LLAMA_LINE_PORT=11434`, sets `SWITCHYARD_MODEL_BIND_HOST` to the NUC LAN address when remote clients need ingress, and points `OLLAMA_BASE_URL` at the real Ollama upstream, not Switchyard itself.
+- `.env` pins `SWITCHYARD_API_CONTAINER_IPV4=172.31.250.4`, `SWITCHYARD_WEB_CONTAINER_IPV4=172.31.250.10`, and `OLLAMA_BASE_URL=http://172.31.250.1:11435`.
+- The root-owned helper manages only Almaz `/32` to web `.10/32` TCP/80 in `ufw-user-forward` and API `.4/32` to gateway `.1/32` TCP/11435 in `ufw-user-input`. Never add a bridge-subnet allow.
 - Keep `SWITCHYARD_BIND_HOST=127.0.0.1` so API/control and Postgres remain loopback-bound. Production sets `SWITCHYARD_WEB_BIND_HOST=100.65.164.66` and `SWITCHYARD_TAILSCALE_PROXY_IPV4=100.77.128.80`. The host nft gate sees Almaz before Docker DNAT. UFW allows only Almaz through `tailscale0` and the pinned bridge to `172.31.250.10:80`. nginx sees the original Almaz address, so set `SWITCHYARD_WEB_TRUSTED_PROXY_CIDR=100.77.128.80/32`. The API still requires the hop token and authenticated user. Keep Tailscale credentials outside Compose and do not fall back to plaintext LAN HTTP.
 - Export the deployed environment and run `make production-config-check`. This does not prove the pending central policy or target route required by Gitea issues #18 and #19.
+
+Install or refresh the gate, then reload the main service:
+
+```bash
+sudo SWITCHYARD_ENV_FILE=/absolute/path/to/switchyard.env ./deploy/install-web-gate.sh
+sudo systemctl reload switchyard.service
+```
 
 ## Smoke tests
 

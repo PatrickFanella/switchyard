@@ -32,7 +32,7 @@ Provide a Go automation control plane, React operator UI, durable PostgreSQL sta
 - **Operator visibility:** the web SPA consumes typed API contracts for runs, queues, observability, adapters, configuration, and bounded inline-artifact measurements.
 
 ## Flow
-1. Compose starts PostgreSQL, managed OpenCode, the Go API, and web UI.
+1. The host gate ensures exact web-forward and API-to-host-model UFW rules; Compose then starts PostgreSQL, managed OpenCode, the Go API, and web UI on a pinned bridge.
 2. The API migrates storage, seeds defaults, and starts scheduler/worker/retention loops.
 3. Operators, schedules, polls, or webhooks create queued runs with immutable pipeline snapshots.
 4. Workers claim runs, execute ordered steps through internal/model/OpenCode/command/Git/Gitea adapters, and persist evidence. PostgreSQL triggers maintain retained artifact totals and daily creation/deletion aggregates; revision-bound heartbeats write separate coverage rows that prove complete deprecated-backend observation days without interpreting missing data as zero.

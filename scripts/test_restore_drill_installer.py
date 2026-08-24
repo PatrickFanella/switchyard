@@ -35,7 +35,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "docker": "#!/bin/sh\ncase \"$*\" in\n  *'config --services') [ \"${FAIL_COMPOSE_CONFIG:-0}\" = 0 ] || exit 1; printf 'api\\nweb\\n';;\n  *'ps --status running --services') [ \"${PRIOR_WEB_RUNNING:-0}\" = 1 ] && printf 'web\\n';;\n  *' up -d '*|*' stop '*) printf 'docker %s\\n' \"$*\" >>\"$MUTATION_LOG\";;\nesac\nexit 0\n",
             "nft": "#!/bin/sh\ncase \"$*\" in '--check --file '*|'list table inet switchyard_web_gate') exit 0;; esac\nexit 1\n",
             "ufw": "#!/bin/sh\n[ \"$*\" = status ] && { printf 'Status: active\\n'; exit; }\nexit 1\n",
-            "iptables": "#!/bin/sh\ncase \"$*\" in '-C ufw-user-forward '*) exit 0;; esac\nexit 1\n",
+            "iptables": "#!/bin/sh\ncase \"$*\" in '-C ufw-user-forward '*|'-C ufw-user-input '*) exit 0;; esac\nexit 1\n",
             "stat": "#!/bin/sh\ncase \"$3\" in *manage_tailscale_web_forward.py) [ \"${UNSAFE_GATE_HELPER:-0}\" = 0 ] || { printf '1000 1000 777\\n'; exit; };; esac\nprintf '0 0 %s\\n' \"$(case \"$3\" in *web-gate.nft|*switchyard-web-gate.service) printf 644;; *) printf 755;; esac)\"\n",
             "systemd-analyze": "#!/bin/sh\nexit 0\n",
             "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'is-active --quiet switchyard-web-gate.service') [ \"${GATE_ACTIVE:-1}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard.service') [ \"${PRIOR_MAIN_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard.service') { [ -e \"$MAIN_STATE\" ] || [ \"${PRIOR_MAIN_ACTIVE:-0}\" = 1 ]; }; exit;;\n  'show docker.service --property=Requires --value'|'show docker.service --property=After --value') printf 'switchyard-web-gate.service\\n'; exit;;\n  'is-enabled --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ACTIVE:-0}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ACTIVE:-0}\" = 1 ]; exit;;\n  list-unit-files*) exit 1;;\nesac\nprintf 'systemctl %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nif [ \"$*\" = 'restart switchyard.service' ]; then [ \"${FAIL_MAIN_RESTART:-0}\" = 0 ] || exit 1; : >\"$MAIN_STATE\"; fi\nif [ \"${FAIL_RESTORE_ENABLE:-0}\" = 1 ] && [ \"$*\" = 'enable --now switchyard-restore-drill.timer' ]; then exit 1; fi\nexit 0\n",
@@ -98,7 +98,9 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "SWITCHYARD_DOCKER_BRIDGE_SUBNET": "172.31.250.0/24",
             "SWITCHYARD_DOCKER_BRIDGE_GATEWAY": "172.31.250.1",
             "SWITCHYARD_DOCKER_BRIDGE_NAME": "switchyard0",
+            "SWITCHYARD_API_CONTAINER_IPV4": "172.31.250.4",
             "SWITCHYARD_WEB_CONTAINER_IPV4": "172.31.250.10",
+            "OLLAMA_BASE_URL": "http://172.31.250.1:11435",
         }
         if not complete:
             values.pop("SWITCHYARD_RESTORE_POLICY")

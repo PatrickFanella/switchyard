@@ -108,7 +108,7 @@ Only after qualification and backup verification, switch the clean production
 checkout to the approved tag using the normal non-destructive Git workflow,
 then install the nft gate and repository-owned unit from the same canonical env
 path. The override must be absolute, regular, and not a symlink. Recreate the
-default network when deploying the pinned bridge name and web address for the
+default network when deploying the pinned bridge name, API address, and web address for the
 first time:
 
 ```bash
@@ -120,7 +120,8 @@ sudo SWITCHYARD_ENV_FILE=/absolute/path/to/switchyard.env ./deploy/install-syste
 
 The gate installer checks Compose and rendered nft syntax before mutation and
 installs root-owned mode-0755 renderer and UFW helper scripts under
-`/usr/lib/switchyard`. If gate content changes, it
+`/usr/lib/switchyard`. It ensures the exact web-forward and API-to-host-model
+UFW rules before Docker; rollback deletes only rules created by that invocation. If gate content changes, it
 stops Compose `web` before replacing files or live rules. Failure restores the
 prior renderer, rules/table, drop-in, unit, enablement, and active state, but
 web stays stopped; correct the failure and rerun both installers. The systemd

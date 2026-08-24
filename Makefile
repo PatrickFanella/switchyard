@@ -131,7 +131,7 @@ production-config-test: ## Test the production configuration contract
 	python3 -m unittest discover -s scripts -p 'test_validate_production_config.py'
 
 web-gate-test: ## Test host nft gate rendering and rollback-safe installation
-	python3 -m unittest scripts/test_render_tailscale_web_gate.py scripts/test_web_gate_installer.py
+	python3 -m unittest scripts/test_render_tailscale_web_gate.py scripts/test_manage_tailscale_web_forward.py scripts/test_web_gate_installer.py
 
 workspace-init: ## Prepare the dedicated local OpenCode workspace without changing ownership
 	python3 scripts/prepare_opencode_workspace.py

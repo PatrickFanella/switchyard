@@ -454,6 +454,7 @@ def validate(env: Mapping[str, str]) -> list[str]:
         if bridge_name in {"", ".", ".."} or LINUX_INTERFACE_NAME.fullmatch(bridge_name) is None:
             errors.append("SWITCHYARD_DOCKER_BRIDGE_NAME must be a safe Linux interface name of at most 15 characters")
 
+        web_container: ipaddress.IPv4Address | None = None
         try:
             web_container = ipaddress.IPv4Address(_value(env, "SWITCHYARD_WEB_CONTAINER_IPV4"))
             if (
@@ -464,6 +465,21 @@ def validate(env: Mapping[str, str]) -> list[str]:
                 raise ValueError
         except ValueError:
             errors.append("SWITCHYARD_WEB_CONTAINER_IPV4 must be a usable non-gateway address in SWITCHYARD_DOCKER_BRIDGE_SUBNET")
+
+        try:
+            api_container = ipaddress.IPv4Address(_value(env, "SWITCHYARD_API_CONTAINER_IPV4"))
+            if (
+                bridge is None
+                or api_container not in bridge
+                or api_container in {bridge.network_address, bridge.broadcast_address, gateway, web_container}
+            ):
+                raise ValueError
+        except ValueError:
+            errors.append("SWITCHYARD_API_CONTAINER_IPV4 must be a usable address distinct from the gateway and web address in SWITCHYARD_DOCKER_BRIDGE_SUBNET")
+
+        expected_ollama = f"http://{gateway}:11435" if gateway is not None else None
+        if expected_ollama is not None and _value(env, "OLLAMA_BASE_URL") != expected_ollama:
+            errors.append("OLLAMA_BASE_URL must equal http://SWITCHYARD_DOCKER_BRIDGE_GATEWAY:11435 in Tailscale production")
 
         trusted_proxy = _value(env, "SWITCHYARD_WEB_TRUSTED_PROXY_CIDR")
         if proxy is not None and trusted_proxy != f"{proxy}/32":
