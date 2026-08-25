@@ -36,7 +36,7 @@
 
 ### Task 2: Gitea verification workflows
 
-- [x] Upgrade existing `.gitea/workflows/template-check.yml` for pushes and pull requests; pin checkout by commit, validate Go 1.26.5/Node 24/Corepack pnpm 10.33.0/Make/Docker/Compose, set a CI-only Compose password, and run `make verify` without adding a duplicate baseline gate.
+- [x] Upgrade existing `.gitea/workflows/template-check.yml` for pushes and pull requests; pin checkout by commit, validate Go 1.26.6/Node 24/Corepack pnpm 10.33.0/Make/Docker/Compose, set a CI-only Compose password, and run `make verify` without adding a duplicate baseline gate.
 - [x] Add `.gitea/workflows/verify-production.yml` for manual and weekly execution; validate the baseline contract plus Buildx, prove the exact pinned SBOM/provenance OCI build path, install pinned `govulncheck`, then run `make verify-production`.
 - [x] Add concurrency and timeouts so stale runs cancel and production qualification cannot hang indefinitely.
 - [x] Document local and CI gates in `README.md` and `docs/production-remediation-plan.md`.

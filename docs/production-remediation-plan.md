@@ -4,7 +4,7 @@ This plan tracks the release-readiness audit remediation. Phases 0–5 have focu
 
 ## CI verification gates
 
-- `switchyard-check` runs `make verify` for every push and pull request. Its runner contract is Go `1.26.5`, Node.js major `24`, Corepack-provided pnpm `10.33.0`, Make, Docker Engine, and the Docker Compose plugin.
+- `switchyard-check` runs `make verify` for every push and pull request. Its runner contract is Go `1.26.6`, Node.js major `24`, Corepack-provided pnpm `10.33.0`, Make, Docker Engine, and the Docker Compose plugin.
 - `switchyard-production-verify` runs `make verify-production` manually or weekly for release qualification. It requires the baseline contract plus Docker Buildx and a bootstrappable BuildKit builder.
 - Both workflows target the dedicated `switchyard-production` label. `deploy/runner/Dockerfile` pins its base job image and Go toolchain by digest; the runner configuration must reference the published image by immutable digest.
 

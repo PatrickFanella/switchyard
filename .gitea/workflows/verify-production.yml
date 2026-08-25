@@ -55,8 +55,8 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "Runner contract failure: $*" >&2; exit 1; }
-          command -v go >/dev/null || fail "Go 1.26.5 is required"
-          [ "$(go version | awk '{print $3}')" = "go1.26.5" ] || fail "expected Go 1.26.5; found $(go version)"
+          command -v go >/dev/null || fail "Go 1.26.6 is required"
+          [ "$(go version | awk '{print $3}')" = "go1.26.6" ] || fail "expected Go 1.26.6; found $(go version)"
           command -v node >/dev/null || fail "Node.js 24 is required"
           [ "$(node -p 'process.versions.node.split(".")[0]')" = "24" ] || fail "expected Node.js major 24; found $(node --version)"
           command -v corepack >/dev/null || fail "Corepack is required to provide pnpm 10.33.0"
