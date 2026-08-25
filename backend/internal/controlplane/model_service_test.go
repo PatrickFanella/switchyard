@@ -930,17 +930,21 @@ func TestPostgresStoreModelServiceLockLossFencesOldOwnerAfterTakeoverIntegration
 	if err := db.QueryRowContext(ctx, `select pg_terminate_backend($1)`, oldPID).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate old singleton session: terminated=%v err=%v", terminated, err)
 	}
-	for old.poisonedError() == nil {
+	var replacement *ModelService
+	for {
+		replacement = NewModelService(store, nil, ModelServiceOptions{DisableStart: true})
+		err := replacement.StartupError()
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrModelServiceAlreadyRunning) {
+			t.Fatalf("replacement did not acquire singleton after old session ended: %v", err)
+		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("old singleton owner was not fenced: %v", ctx.Err())
+			t.Fatalf("replacement did not acquire singleton after old session ended: %v", ctx.Err())
 		case <-time.After(10 * time.Millisecond):
 		}
-	}
-
-	replacement := NewModelService(store, nil, ModelServiceOptions{DisableStart: true})
-	if err := replacement.StartupError(); err != nil {
-		t.Fatalf("replacement did not acquire singleton after old session ended: %v", err)
 	}
 	t.Cleanup(func() { _ = replacement.Close(context.Background()) })
 	poison := old.poisonedError()
