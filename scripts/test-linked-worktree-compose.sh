@@ -2,6 +2,26 @@
 set -euo pipefail
 
 project="switchyard-linked-worktree-$$"
+network_octet=$((($$ % 50) + 200))
+network_probe="${project}-network-probe"
+network_reserved=false
+for _ in $(seq 1 50); do
+  test_subnet="10.${network_octet}.0.0/24"
+  if docker network create --subnet "$test_subnet" "$network_probe" >/dev/null 2>&1; then
+    docker network rm "$network_probe" >/dev/null
+    network_reserved=true
+    break
+  fi
+  network_octet=$((network_octet + 1))
+  if [ "$network_octet" -gt 249 ]; then network_octet=200; fi
+done
+if docker network inspect "$network_probe" >/dev/null 2>&1; then
+  docker network rm "$network_probe" >/dev/null
+fi
+if [ "$network_reserved" != true ]; then
+  printf 'Unable to reserve a non-overlapping linked-worktree test subnet\n' >&2
+  exit 1
+fi
 uid="$(id -u)"
 gid="$(id -g)"
 if [ "$uid" -eq 0 ] || [ "$gid" -eq 0 ]; then
@@ -51,6 +71,11 @@ export OPENCODE_RUNTIME_UID="$uid"
 export OPENCODE_RUNTIME_GID="$gid"
 export OPENCODE_SECURITY_MODE=strict
 export OPENCODE_SERVER_PASSWORD=linked-smoke-password
+export SWITCHYARD_DOCKER_BRIDGE_SUBNET="$test_subnet"
+export SWITCHYARD_DOCKER_BRIDGE_GATEWAY="10.${network_octet}.0.1"
+export SWITCHYARD_API_CONTAINER_IPV4="10.${network_octet}.0.4"
+export SWITCHYARD_WEB_CONTAINER_IPV4="10.${network_octet}.0.10"
+export SWITCHYARD_DOCKER_BRIDGE_NAME="sywt${network_octet}"
 
 docker compose run --rm --no-deps --user "$uid:$gid" --entrypoint sh api -eu -c '
   git init --initial-branch=main /workspace >/dev/null
