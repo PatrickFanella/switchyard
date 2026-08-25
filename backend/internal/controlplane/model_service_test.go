@@ -329,7 +329,12 @@ func TestModelServiceMutationBeforeDispatchNeverInvokesGenerator(t *testing.T) {
 			memory := NewStore(nil)
 			store := &blockingMutationStore{Store: memory, status: test.status, entered: make(chan struct{}), release: make(chan struct{})}
 			called := make(chan struct{}, 1)
-			service := NewModelService(store, testModelBrokerFunc(func(context.Context, ModelRequest) (ModelResponse, error) {
+			preAttemptEntered := make(chan struct{})
+			service := NewModelService(store, testModelBrokerFunc(func(_ context.Context, request ModelRequest) (ModelResponse, error) {
+				close(preAttemptEntered)
+				if err := request.PreAttempt(BackendDecision{Backend: "test"}); err != nil {
+					return ModelResponse{}, err
+				}
 				called <- struct{}{}
 				return ModelResponse{}, nil
 			}), ModelServiceOptions{DisableStart: true})
@@ -348,6 +353,7 @@ func TestModelServiceMutationBeforeDispatchNeverInvokesGenerator(t *testing.T) {
 				_, err := service.Generate(requestCtx, ModelRequest{Model: "test", RequestID: request.ID, PreAttempt: func(BackendDecision) error { return nil }})
 				dispatched <- err
 			}()
+			<-preAttemptEntered
 			close(store.release)
 			if err := <-mutated; err != nil {
 				t.Fatal(err)
