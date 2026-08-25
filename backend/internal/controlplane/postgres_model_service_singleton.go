@@ -22,6 +22,8 @@ type modelServiceSingleton interface {
 }
 
 func (l *postgresModelServiceSingleton) Invalidate() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	var closeErr error
 	l.once.Do(func() {
 		if err := l.conn.Raw(func(any) error { return driver.ErrBadConn }); !closedPostgresSessionError(err) {
@@ -38,6 +40,7 @@ type postgresModelServiceSingleton struct {
 	conn *sql.Conn
 	pid  int
 	once sync.Once
+	mu   sync.Mutex
 }
 
 func (s *PostgresStore) acquireModelServiceSingleton(ctx context.Context) (*postgresModelServiceSingleton, error) {
@@ -63,6 +66,8 @@ func (s *PostgresStore) acquireModelServiceSingleton(ctx context.Context) (*post
 }
 
 func (l *postgresModelServiceSingleton) Close(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	var closeErr error
 	l.once.Do(func() {
 		var unlocked bool
@@ -84,6 +89,8 @@ func closedPostgresSessionError(err error) bool {
 }
 
 func (l *postgresModelServiceSingleton) HealthError(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	var held bool
 	err := l.conn.QueryRowContext(ctx, `select exists(
 		select 1 from pg_locks

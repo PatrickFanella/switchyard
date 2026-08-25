@@ -930,6 +930,13 @@ func TestPostgresStoreModelServiceLockLossFencesOldOwnerAfterTakeoverIntegration
 	if err := db.QueryRowContext(ctx, `select pg_terminate_backend($1)`, oldPID).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate old singleton session: terminated=%v err=%v", terminated, err)
 	}
+	for old.poisonedError() == nil {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("old singleton owner was not fenced: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 
 	replacement := NewModelService(store, nil, ModelServiceOptions{DisableStart: true})
 	if err := replacement.StartupError(); err != nil {
