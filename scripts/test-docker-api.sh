@@ -54,6 +54,7 @@ docker run "${api_args[@]}" \
   --env "DATABASE_URL=host=$postgres port=5432 user=switchyard_test password=$password dbname=switchyard_test sslmode=disable" \
   --env "SWITCHYARD_CONTROL_API_TOKEN=$token" --env LLAMA_LINE_LISTEN_ADDR=:11434 \
   --env SWITCHYARD_SCHEDULER_ENABLED=false --env SWITCHYARD_WORKER_ENABLED=true \
+  --env SWITCHYARD_COMPATIBILITY_OBSERVER_ENABLED=false \
   switchyard-api:latest >/dev/null
 
 if [[ -z "${SWITCHYARD_TEST_DOCKER_NETWORK:-}" ]]; then
