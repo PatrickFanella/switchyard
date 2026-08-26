@@ -32,7 +32,8 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.group = grp.getgrgid(os.getgid()).gr_name
         tools = {
             "id": "#!/bin/sh\nif [ \"$1\" = -u ] && [ $# -eq 1 ]; then echo 0; elif [ \"$1\" = -u ]; then echo \"$RUNTIME_UID\"; else exec /usr/bin/id \"$@\"; fi\n",
-            "docker": "#!/bin/sh\ncase \"$*\" in\n  *'config --services') [ \"${FAIL_COMPOSE_CONFIG:-0}\" = 0 ] || exit 1; printf 'api\\nweb\\n';;\n  *'ps --status running --services') [ \"${PRIOR_WEB_RUNNING:-0}\" = 1 ] && printf 'web\\n';;\n  *' up -d '*|*' stop '*) printf 'docker %s\\n' \"$*\" >>\"$MUTATION_LOG\";;\nesac\nexit 0\n",
+            "docker": "#!/bin/sh\ncase \"$*\" in\n  info) [ \"${FAIL_DOCKER_INFO:-0}\" = 0 ] || exit 1;;\n  'compose version') [ \"${FAIL_COMPOSE_VERSION:-0}\" = 0 ] || exit 1;;\n  *'config --services') [ \"${FAIL_COMPOSE_CONFIG:-0}\" = 0 ] || exit 1; printf 'api\\nweb\\n';;\n  *'ps --status running --services') [ \"${PRIOR_WEB_RUNNING:-0}\" = 1 ] && printf 'web\\n';;\n  *' up -d '*|*' stop '*) printf 'docker %s\\n' \"$*\" >>\"$MUTATION_LOG\";;\nesac\nexit 0\n",
+            "getent": "#!/bin/sh\n[ \"$1\" = group ] && [ -n \"$2\" ] && [ \"$2\" != \"${MISSING_GROUP:-}\" ]\n",
             "nft": "#!/bin/sh\ncase \"$*\" in '--check --file '*|'list table inet switchyard_web_gate') exit 0;; esac\nexit 1\n",
             "ufw": "#!/bin/sh\n[ \"$*\" = status ] && { printf 'Status: active\\n'; exit; }\nexit 1\n",
             "iptables": "#!/bin/sh\ncase \"$*\" in '-C ufw-user-forward '*|'-C ufw-user-input '*) exit 0;; esac\nexit 1\n",
@@ -40,7 +41,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "systemd-analyze": "#!/bin/sh\nexit 0\n",
             "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'is-active --quiet switchyard-web-gate.service') [ \"${GATE_ACTIVE:-1}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard.service') [ \"${PRIOR_MAIN_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard.service') { [ -e \"$MAIN_STATE\" ] || [ \"${PRIOR_MAIN_ACTIVE:-0}\" = 1 ]; }; exit;;\n  'show docker.service --property=Requires --value'|'show docker.service --property=After --value') printf 'switchyard-web-gate.service\\n'; exit;;\n  'is-enabled --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ACTIVE:-0}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ACTIVE:-0}\" = 1 ]; exit;;\n  list-unit-files*) exit 1;;\nesac\nprintf 'systemctl %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nif [ \"$*\" = 'restart switchyard.service' ]; then [ \"${FAIL_MAIN_RESTART:-0}\" = 0 ] || exit 1; : >\"$MAIN_STATE\"; fi\nif [ \"${FAIL_RESTORE_ENABLE:-0}\" = 1 ] && [ \"$*\" = 'enable --now switchyard-restore-drill.timer' ]; then exit 1; fi\nexit 0\n",
             "install": "#!/bin/sh\n/usr/bin/install \"$@\" || exit\nprintf 'install %s\\n' \"$*\" >>\"$MUTATION_LOG\"\n",
-            "runuser": "#!/bin/sh\nshift 3\npython3 - \"$RUNTIME_UID\" \"$@\" <<'PY'\nimport os, sys\nos.setuid(int(sys.argv[1]))\nos.execvp(sys.argv[2], sys.argv[2:])\nPY\nstatus=$?\n[ $status -eq 0 ] || exit $status\ncase \"$*\" in *initialize-deadline*) printf 'initialize-deadline\\n' >>\"$MUTATION_LOG\";; esac\n",
+            "runuser": "#!/bin/sh\noriginal=\"$*\"\nprintf '%s\\n' \"$original\" >>\"$RUNUSER_LOG\"\nuser= primary= supplementary=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -u) user=$2; shift 2;;\n    -g) primary=$2; shift 2;;\n    -G) supplementary=$2; shift 2;;\n    --) shift; break;;\n    *) exit 2;;\n  esac\ndone\npython3 - \"$RUNTIME_UID\" \"$@\" <<'PY'\nimport os, sys\nos.setuid(int(sys.argv[1]))\nos.execvp(sys.argv[2], sys.argv[2:])\nPY\nstatus=$?\n[ $status -eq 0 ] || exit $status\ncase \"$*\" in *initialize-deadline*) printf 'initialize-deadline\\n' >>\"$MUTATION_LOG\";; esac\n",
         }
         backup_state_probes = (
             "  'is-enabled --quiet switchyard-backup.service') [ \"${PRIOR_BACKUP_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n"
@@ -58,6 +59,17 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             path.chmod(0o700)
             if uid == 0:
                 os.chown(path, self.runtime_uid, -1)
+        installer = (ROOT / "deploy/install-systemd.sh").read_text()
+        installer = installer.replace(
+            'repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+            f'repo_root="{ROOT}"',
+        ).replace(
+            'docker_local="$repo_root/deploy/docker-local"',
+            f'docker_local="{self.bin / "docker"}"',
+        )
+        self.installer = self.root / "install-systemd.sh"
+        self.installer.write_text(installer)
+        self.installer.chmod(0o700)
         self.backup = self.private("backup")
         self.evidence = self.private("evidence")
         self.metrics = self.private("metrics")
@@ -136,9 +148,13 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "SWITCHYARD_RUN_GROUP": self.group,
             "RUNTIME_UID": str(self.runtime_uid),
             "MAIN_STATE": str(self.root / "main-active"),
+            "RUNUSER_LOG": str(self.root / "runuser.log"),
+            "EXPECTED_RUN_USER": self.user,
+            "EXPECTED_RUN_GROUP": self.group,
         })
         env.update(extra_env or {})
-        return subprocess.run([str(ROOT / "deploy/install-systemd.sh")], env=env, text=True, capture_output=True)
+        env["EXPECTED_DOCKER_GROUP"] = env.get("SWITCHYARD_DOCKER_GROUP", "docker")
+        return subprocess.run([str(self.installer)], env=env, text=True, capture_output=True)
 
     def test_missing_restore_setting_causes_no_install_or_systemctl_mutation(self):
         self.write_env(complete=False)
@@ -167,12 +183,17 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         service = (self.units / "switchyard-restore-drill.service").read_text()
+        backup_service = (self.units / "switchyard-backup.service").read_text()
         timer = (self.units / "switchyard-restore-drill.timer").read_text()
         self.assertIn(f"User={self.user}", service)
         self.assertIn("TimeoutStartSec=210s", service)
         self.assertNotIn("infinity", service)
         self.assertIn(f"EnvironmentFile={self.env_file}", service)
+        self.assertIn(f"EnvironmentFile=-{self.env_file}", backup_service)
+        self.assertIn(f"Environment=SWITCHYARD_ENV_FILE={self.env_file}", backup_service)
         main = (self.units / "switchyard.service").read_text()
+        for name in ("switchyard.service", "switchyard-backup.service", "switchyard-restore-drill.service"):
+            self.assertIn("SupplementaryGroups=docker", (self.units / name).read_text())
         self.assertEqual(main.count(f"--env-file {self.env_file}"), 11)
         self.assertNotIn(f"--env-file {ROOT / '.env'}", main)
         self.assertIn("OnCalendar=Sun *-*-01..07 03:00:00 UTC", timer)
@@ -184,6 +205,78 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertLess(mutations.index("systemctl daemon-reload"), mutations.index("initialize-deadline"))
         self.assertEqual(mutations[mutations.index("initialize-deadline") + 1],
                          "systemctl enable --now switchyard-restore-drill.timer")
+
+    def test_distinct_docker_group_override_changes_every_docker_unit(self):
+        self.write_env()
+        docker_group = "switchyarddocker"
+        self.assertNotEqual(docker_group, self.group)
+        result = self.run_installer({"SWITCHYARD_DOCKER_GROUP": docker_group})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("switchyard.service", "switchyard-backup.service", "switchyard-restore-drill.service"):
+            unit = (self.units / name).read_text()
+            self.assertIn(f"Group={self.group}\n", unit)
+            self.assertIn(f"SupplementaryGroups={docker_group}\n", unit)
+
+    def test_docker_probe_uses_exact_identity_binary_and_clean_environment(self):
+        self.write_env()
+        docker_group = "switchyarddocker"
+        result = self.run_installer({
+            "SWITCHYARD_DOCKER_GROUP": docker_group,
+            "DOCKER_HOST": "tcp://hostile.invalid:2375",
+            "DOCKER_CONTEXT": "hostile",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (self.root / "runuser.log").read_text().splitlines()[0],
+            f"-u {self.user} -g {self.group} -G {docker_group} -- {self.bin / 'docker'} info",
+        )
+        self.assertEqual(
+            (self.root / "runuser.log").read_text().splitlines()[1],
+            f"-u {self.user} -g {self.group} -G {docker_group} -- {self.bin / 'docker'} compose version",
+        )
+
+    def test_missing_system_compose_plugin_causes_no_mutation(self):
+        self.write_env()
+        result = self.run_installer({"FAIL_COMPOSE_VERSION": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("system-wide Docker Compose plugin", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_hostile_docker_environment_and_path_cannot_mask_probe_failure(self):
+        self.write_env()
+        result = self.run_installer({
+            "FAIL_DOCKER_INFO": "1",
+            "DOCKER_HOST": "tcp://hostile.invalid:2375",
+            "DOCKER_CONTEXT": "hostile",
+        })
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runtime identity cannot reach Docker", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_unreachable_docker_runtime_identity_causes_no_mutation(self):
+        self.write_env()
+        result = self.run_installer({"FAIL_DOCKER_INFO": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runtime identity cannot reach Docker", result.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertEqual([path for path in self.units.iterdir() if path.name != "switchyard-web-gate.service"], [])
+
+    def test_unsafe_docker_group_is_rejected_before_mutation(self):
+        self.write_env()
+        result = self.run_installer({"SWITCHYARD_DOCKER_GROUP": "docker\nSupplementaryGroups=root"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be a safe group name", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_nonexistent_docker_group_is_rejected_before_mutation(self):
+        self.write_env()
+        result = self.run_installer({
+            "SWITCHYARD_DOCKER_GROUP": "missingdocker",
+            "MISSING_GROUP": "missingdocker",
+        })
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Docker group 'missingdocker' does not exist", result.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_calendar_injection_is_rejected_before_mutation(self):
         value = json.loads(self.policy.read_text())

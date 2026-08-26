@@ -43,6 +43,7 @@ printf 'install %s\n' "$original" >>"$MUTATION_LOG"
 """,
             "docker": """#!/bin/sh
 case "$*" in
+  'compose version') [ "${FAIL_COMPOSE_VERSION:-0}" = 0 ];;
   *'config --services') printf 'api\nweb\n';;
   *'ps --status running --services') [ "${WEB_RUNNING:-0}" = 1 ] && printf 'web\n';;
   *'stop web') printf 'docker %s\n' "$*" >>"$MUTATION_LOG"; [ "${FAIL_WEB_STOP:-0}" = 0 ];;
@@ -129,6 +130,17 @@ exit 0
             path = self.bin / name
             path.write_text(content)
             path.chmod(0o700)
+        installer = (ROOT / "deploy/install-web-gate.sh").read_text()
+        installer = installer.replace(
+            'repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+            f'repo_root="{ROOT}"',
+        ).replace(
+            'docker_local="$repo_root/deploy/docker-local"',
+            f'docker_local="{self.bin / "docker"}"',
+        )
+        self.installer = self.root / "install-web-gate.sh"
+        self.installer.write_text(installer)
+        self.installer.chmod(0o700)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -151,7 +163,7 @@ exit 0
         )
         env.update(extra or {})
         return subprocess.run(
-            [str(ROOT / "deploy/install-web-gate.sh")], env=env, text=True, capture_output=True
+            [str(self.installer)], env=env, text=True, capture_output=True
         )
 
     def test_installs_rules_and_starts_gate_after_preflight(self):
@@ -195,6 +207,14 @@ exit 0
         self.assertFalse(self.log.exists())
         self.assertEqual(list(self.units.iterdir()), [])
         self.assertEqual(list(self.nft_dir.iterdir()), [])
+
+    def test_missing_system_compose_plugin_makes_no_mutation(self):
+        result = self.run_installer({"FAIL_COMPOSE_VERSION": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(self.units.iterdir()), [])
+        self.assertEqual(list(self.nft_dir.iterdir()), [])
+        if self.log.exists():
+            self.assertFalse(any(line.startswith(("install ", "systemctl ", "docker ")) for line in self.log.read_text().splitlines()))
 
     def test_creates_missing_nft_directory(self):
         self.nft_dir.rmdir()

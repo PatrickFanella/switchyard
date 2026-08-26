@@ -14,6 +14,7 @@ if [[ $# -ne 6 ]]; then
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+docker() { "$root/deploy/docker-local" "$@"; }
 image='postgres:17@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b'
 archive=$1
 metadata=$2

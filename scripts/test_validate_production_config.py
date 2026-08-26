@@ -720,10 +720,11 @@ class ProductionConfigCLITest(unittest.TestCase):
         unit = (REPO_ROOT / "deploy/switchyard.service").read_text(encoding="utf-8")
         validator = "scripts/validate_production_config.py --env-file __ENV_FILE__"
         self.assertIn(f"ExecStartPre=/usr/bin/python3 __REPO_ROOT__/{validator}", unit)
-        self.assertLess(unit.index("ExecStartPre="), unit.index("ExecStart=/usr/bin/docker"))
-        self.assertLess(unit.index("ExecReload=/usr/bin/python3"), unit.index("ExecReload=/usr/bin/docker"))
+        docker = "__REPO_ROOT__/deploy/docker-local compose"
+        self.assertLess(unit.index("ExecStartPre="), unit.index(f"ExecStart={docker}"))
+        self.assertLess(unit.index("ExecReload=/usr/bin/python3"), unit.index(f"ExecReload={docker}"))
         self.assertEqual(unit.count(validator), 2)
-        self.assertEqual(unit.count("/usr/bin/docker compose --env-file __ENV_FILE__"), 5)
+        self.assertEqual(unit.count(f"{docker} --env-file __ENV_FILE__ -f __REPO_ROOT__/docker-compose.yml"), 5)
         self.assertEqual(unit.count("verify-gate --env-file __ENV_FILE__"), 2)
         self.assertEqual(unit.count("docker-compose.yml stop web"), 2)
         self.assertNotIn("--env-file __REPO_ROOT__/.env", unit)

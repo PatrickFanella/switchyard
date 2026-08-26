@@ -7,9 +7,12 @@ After=docker.service switchyard.service
 Type=oneshot
 User=__RUN_USER__
 Group=__RUN_GROUP__
+SupplementaryGroups=__DOCKER_GROUP__
 WorkingDirectory=__REPO_ROOT__
-EnvironmentFile=-__REPO_ROOT__/.env
-ExecStart=__REPO_ROOT__/scripts/backup-postgres.sh
+EnvironmentFile=-__ENV_FILE__
+Environment=SWITCHYARD_ENV_FILE=__ENV_FILE__
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/bash __REPO_ROOT__/scripts/backup-postgres.sh
 
 [Install]
 WantedBy=multi-user.target

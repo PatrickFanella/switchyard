@@ -2,6 +2,8 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+docker() { "$root/deploy/docker-local" "$@"; }
+env_file=${SWITCHYARD_ENV_FILE:-$root/.env}
 backup_dir=${SWITCHYARD_BACKUP_DIR:-}
 policy=${SWITCHYARD_BACKUP_POLICY:-}
 compose_service=${SWITCHYARD_POSTGRES_SERVICE:-postgres}
@@ -35,18 +37,18 @@ cleanup() {
 trap cleanup EXIT
 umask 077
 
-docker compose -f "$root/docker-compose.yml" exec -T "$compose_service" \
+docker compose --env-file "$env_file" -f "$root/docker-compose.yml" exec -T "$compose_service" \
   sh -eu -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align --command "select version from schema_migrations order by version"' \
   >"$ledger_tmp" 2>/dev/null
 
-docker compose -f "$root/docker-compose.yml" exec -T "$compose_service" \
+docker compose --env-file "$env_file" -f "$root/docker-compose.yml" exec -T "$compose_service" \
   sh -eu -c 'exec pg_dump --format=custom --no-owner --no-privileges --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"' \
   >"$archive_tmp" 2>/dev/null
 test -s "$archive_tmp"
-docker compose -f "$root/docker-compose.yml" exec -T "$compose_service" \
+docker compose --env-file "$env_file" -f "$root/docker-compose.yml" exec -T "$compose_service" \
   pg_restore --list <"$archive_tmp" >/dev/null 2>&1
 
-docker compose -f "$root/docker-compose.yml" exec -T "$compose_service" \
+docker compose --env-file "$env_file" -f "$root/docker-compose.yml" exec -T "$compose_service" \
   sh -eu -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align --command "select version from schema_migrations order by version"' \
   >"$ledger_after_tmp" 2>/dev/null
 if ! cmp -s "$ledger_tmp" "$ledger_after_tmp"; then
@@ -54,7 +56,7 @@ if ! cmp -s "$ledger_tmp" "$ledger_after_tmp"; then
   exit 1
 fi
 
-database_version=$(docker compose -f "$root/docker-compose.yml" exec -T "$compose_service" \
+database_version=$(docker compose --env-file "$env_file" -f "$root/docker-compose.yml" exec -T "$compose_service" \
   sh -eu -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align --command "show server_version_num"' 2>/dev/null |
   tr -d '[:space:]' 2>/dev/null)
 

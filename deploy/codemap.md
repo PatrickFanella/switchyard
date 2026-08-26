@@ -4,9 +4,10 @@
 Installs the Docker Compose stack as a host-managed systemd service and defines the pinned Gitea Actions job image used by Switchyard verification.
 
 ## Design
-- `switchyard.service` is a template with repository/user/group placeholders.
-- `install-web-gate.sh` preflights UFW, renderer, Compose, and nft syntax; installs the root-owned exact-UFW helper; ensures separate web-forward and API-to-host-model rules before Docker; and removes only rules created by that invocation during rollback.
-- `install-systemd.sh` requires the installed web gate active before mutation, resolves one absolute non-symlink env file, and restores all five managed unit files, their enablement/activation, and the Compose workload after a failed install.
+- All three Docker-consuming service templates use repository/user/primary-group and Docker supplementary-group placeholders. The Docker group defaults to `docker` and can be set with `SWITCHYARD_DOCKER_GROUP` without changing account memberships.
+- `deploy/docker-local` is the only production Docker CLI boundary. It runs `/usr/bin/docker` against `unix:///var/run/docker.sock` with a fresh empty CLI config and a clean environment. Production uses public images or local builds and requires a system-wide Compose plugin; it never loads user registry auth or CLI plugins.
+- `install-web-gate.sh` uses the canonical Docker boundary while preflighting Compose, then installs the root-owned exact-UFW helper, ensures separate web-forward and API-to-host-model rules before Docker, and removes only rules created by that invocation during rollback.
+- `install-systemd.sh` requires the installed web gate active before mutation, resolves one absolute non-symlink env file, and probes the canonical Docker boundary with the rendered runtime identity. It restores all five managed unit files, their enablement/activation, and the Compose workload through that same boundary after a failed install.
 - `runner/Dockerfile` composes the digest-pinned Gitea runner image with the exact Go toolchain required by CI; `runner/README.md` documents publishing and label configuration.
 - The installer removes a legacy standalone llama-line service during native cutover.
 - Backup service/timer templates are installed alongside the runtime unit and enabled only through an explicit opt-in with a configured backup destination.
@@ -24,4 +25,4 @@ Installs the Docker Compose stack as a host-managed systemd service and defines 
 6. Reload systemd, enable/start Switchyard, and print status.
 
 ## Integration
-The unit runs the root `docker-compose.yml`; deployment therefore inherits Compose environment and port safety defaults.
+Every production Compose call pins the root `docker-compose.yml` and the installed external env file.

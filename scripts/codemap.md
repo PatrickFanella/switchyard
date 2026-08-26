@@ -4,7 +4,7 @@
 Provides integration, soak, PostgreSQL, Docker, model-broker, and release-evidence verification scripts.
 
 ## Design
-Scripts use strict shell mode, isolated temporary/container resources, explicit health checks, and assertions against API contracts.
+Scripts use strict shell mode, isolated temporary/container resources, explicit health checks, and assertions against API contracts. Production backup and restore adapters route Docker through `deploy/docker-local`; inherited CLI environment, context, config, and `PATH` cannot select another binary or daemon.
 
 ## Flow
 - `test-api-soak.sh` exercises concurrent authenticated traffic and graceful shutdown.
@@ -32,7 +32,7 @@ Scripts use strict shell mode, isolated temporary/container resources, explicit 
 - `prepare_opencode_workspace.py` initializes only the empty default relative Git workspace, validates existing Git/config/data paths and ownership with sanitized scoped-safe Git commands, and creates the private managed worktree marker without changing ownership.
 - `test_opencode_config.py` locks the strict last-match Git command policy to read-only allow patterns and final mutation/network denies.
 - `alert_lifecycle.py` is an opt-in, standard-library-only manual check of Alertmanager firing and resolved delivery through ntfy; its fake-server unit tests run in the baseline gate without contacting live services.
-- `test_restore_evidence.py`, `test_restore_shell_safety.py`, `test_restore_drill_scheduler.py`, and `test_restore_drill_installer.py` cover policy, bundle, qualification, scheduled selection/metrics, canonical-env rendering, main-unit/workload rollback, installer mutation ordering, sanitized failure evidence, provider payload semantics, and destructive shell guardrails without Docker.
+- `test_canonical_docker.py`, `test_restore_evidence.py`, `test_restore_shell_safety.py`, `test_restore_drill_scheduler.py`, and `test_restore_drill_installer.py` cover the fixed local Docker boundary, policy, bundle, qualification, scheduled selection/metrics, canonical-env rendering, main-unit/workload rollback, installer mutation ordering, sanitized failure evidence, provider payload semantics, and destructive shell guardrails without Docker.
 - `test_web_gate_installer.py` uses root-command fixtures to verify the renderer's root/0755 destination contract, fail-closed web transition, unchanged-gate behavior, and full gate rollback without Docker or nft mutation.
 - `test-restore-postgres-integration.sh` creates a real migrated fixture, publishes a completed bundle, and runs the pinned PostgreSQL adapter in the production gate.
 

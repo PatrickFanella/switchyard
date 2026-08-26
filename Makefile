@@ -44,7 +44,7 @@ postgres-backup: ## Create a completed policy-bound backup bundle
 	./scripts/backup-postgres.sh
 
 restore-contract-test: ## Test backup policy, bundle, restore evidence, and shell safety contracts
-	python3 -m unittest scripts/test_restore_evidence.py scripts/test_restore_shell_safety.py
+	python3 -m unittest scripts/test_canonical_docker.py scripts/test_restore_evidence.py scripts/test_restore_shell_safety.py
 
 restore-scheduler-test: ## Test scheduled restore selection, metrics, and installer contracts
 	python3 -m unittest scripts/test_restore_drill_scheduler.py scripts/test_restore_drill_installer.py

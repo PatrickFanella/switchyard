@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+config_dir=$(/usr/bin/mktemp -d /tmp/switchyard-docker.XXXXXX)
+cleanup() {
+  /usr/bin/rm -rf -- "$config_dir"
+}
+trap cleanup EXIT
+
+/usr/bin/env -i \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  HOME=/nonexistent \
+  /usr/bin/docker --config "$config_dir" --host unix:///var/run/docker.sock "$@"

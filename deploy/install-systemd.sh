@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 run_user="${SWITCHYARD_RUN_USER:-${SUDO_USER:-$(id -un)}}"
 run_group="${SWITCHYARD_RUN_GROUP:-$(id -gn "$run_user")}"
+docker_group="${SWITCHYARD_DOCKER_GROUP:-docker}"
+docker_local="$repo_root/deploy/docker-local"
 env_file="${SWITCHYARD_ENV_FILE:-$repo_root/.env}"
 unit_src="$repo_root/deploy/switchyard.service"
 backup_unit_src="$repo_root/deploy/switchyard-backup.service"
@@ -25,6 +27,10 @@ restore_timer_dst="$unit_dir/switchyard-restore-drill.timer"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "install-systemd.sh must be run with sudo/root" >&2
+  exit 1
+fi
+if [[ ! "$docker_group" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+  echo "SWITCHYARD_DOCKER_GROUP must be a safe group name" >&2
   exit 1
 fi
 if [[ ! "$env_file" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
@@ -51,22 +57,29 @@ PY
   exit 1
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "docker is required" >&2
-  exit 1
-fi
-
-if [[ ! -f "$repo_root/docker-compose.yml" ]]; then
+if [[ ! -f "$repo_root/docker-compose.yml" || ! -x "$docker_local" ]]; then
   echo "missing docker-compose.yml under $repo_root" >&2
   exit 1
 fi
 
-for command in python3 nft ufw iptables systemctl cmp stat; do
+for command in python3 nft ufw iptables systemctl cmp stat getent runuser; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required" >&2
     exit 1
   fi
 done
+if ! getent group "$docker_group" >/dev/null; then
+  echo "Docker group '$docker_group' does not exist" >&2
+  exit 1
+fi
+if ! runuser -u "$run_user" -g "$run_group" -G "$docker_group" -- "$docker_local" info >/dev/null 2>&1; then
+  echo "Switchyard runtime identity cannot reach Docker with group '$docker_group'" >&2
+  exit 1
+fi
+if ! runuser -u "$run_user" -g "$run_group" -G "$docker_group" -- "$docker_local" compose version >/dev/null 2>&1; then
+  echo "Switchyard requires a system-wide Docker Compose plugin" >&2
+  exit 1
+fi
 if [[ ! -f "$gate_rules" || -L "$gate_rules" || ! -f "$gate_unit" || -L "$gate_unit" || ! -f "$gate_renderer" || -L "$gate_renderer" || ! -f "$ufw_helper" || -L "$ufw_helper" ]]; then
   echo "switchyard web gate must be installed from the current environment" >&2
   exit 1
@@ -138,14 +151,6 @@ if [[ "${SWITCHYARD_INSTALL_RESTORE_DRILL_TIMER:-0}" == "1" ]]; then
     exit 1
   fi
   run_uid="$(id -u "$run_user")"
-  if ! command -v runuser >/dev/null 2>&1; then
-    echo "runuser is required for restore drill metric initialization" >&2
-    exit 1
-  fi
-  if ! runuser -u "$run_user" -- docker info >/dev/null 2>&1; then
-    echo "restore drill timer requires a reachable Docker daemon" >&2
-    exit 1
-  fi
   preflight_output="$(runuser -u "$run_user" -- python3 "$repo_root/scripts/restore_drill_scheduler.py" preflight --env-file "$env_file" --owner-uid "$run_uid")"
   mapfile -t preflight_lines <<<"$preflight_output"
   if [[ "${#preflight_lines[@]}" -ne 3 || ${#preflight_lines[0]} -gt 256 ||
@@ -282,9 +287,9 @@ PY
           for running in "${running_services[@]}"; do [[ "$service" != "$running" ]] || found=1; done
           [[ $found -eq 1 ]] || stopped_services+=("$service")
         done
-        [[ ${#stopped_services[@]} -eq 0 ]] || docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" stop "${stopped_services[@]}" >/dev/null 2>&1 || true
+        [[ ${#stopped_services[@]} -eq 0 ]] || "$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" stop "${stopped_services[@]}" >/dev/null 2>&1 || true
       elif [[ ${#running_services[@]} -gt 0 ]]; then
-        docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" up -d --no-deps "${running_services[@]}" >/dev/null 2>&1 || true
+        "$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" up -d --no-deps "${running_services[@]}" >/dev/null 2>&1 || true
       fi
     fi
     [[ $backup_service_active -eq 0 ]] || systemctl start switchyard-backup.service >/dev/null 2>&1 || true
@@ -298,29 +303,36 @@ PY
 }
 trap cleanup EXIT
 
-python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$env_file" "$gate_renderer" "$gate_rules" "$ufw_helper" <<'PY'
+python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$docker_group" "$env_file" "$gate_renderer" "$gate_rules" "$ufw_helper" <<'PY'
 import pathlib, sys
-source, target, root, user, group, env_file, renderer, rules, ufw_helper = sys.argv[1:]
+source, target, root, user, group, docker_group, env_file, renderer, rules, ufw_helper = sys.argv[1:]
 value = pathlib.Path(source).read_text(encoding="utf-8")
-for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__ENV_FILE__", env_file), ("__RENDERER__", renderer), ("__NFT_RULES__", rules), ("__UFW_HELPER__", ufw_helper)):
+for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__DOCKER_GROUP__", docker_group), ("__ENV_FILE__", env_file), ("__RENDERER__", renderer), ("__NFT_RULES__", rules), ("__UFW_HELPER__", ufw_helper)):
     value = value.replace(placeholder, replacement)
-if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__ENV_FILE__", "__RENDERER__", "__NFT_RULES__", "__UFW_HELPER__")):
+if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__DOCKER_GROUP__", "__ENV_FILE__", "__RENDERER__", "__NFT_RULES__", "__UFW_HELPER__")):
     raise SystemExit("unresolved switchyard unit placeholder")
 pathlib.Path(target).write_text(value, encoding="utf-8")
 PY
 
-python3 - "$backup_unit_src" "$tmp_backup_unit" "$repo_root" "$run_user" "$run_group" <<'PY'
+python3 - "$backup_unit_src" "$tmp_backup_unit" "$repo_root" "$run_user" "$run_group" "$docker_group" "$env_file" <<'PY'
 import pathlib, sys
-source, target, root, user, group = sys.argv[1:]
-value = pathlib.Path(source).read_text(encoding="utf-8").replace("__REPO_ROOT__", root).replace("__RUN_USER__", user).replace("__RUN_GROUP__", group)
+source, target, root, user, group, docker_group, env_file = sys.argv[1:]
+value = pathlib.Path(source).read_text(encoding="utf-8")
+for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__DOCKER_GROUP__", docker_group), ("__ENV_FILE__", env_file)):
+    value = value.replace(placeholder, replacement)
+if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__DOCKER_GROUP__", "__ENV_FILE__")):
+    raise SystemExit("unresolved backup unit placeholder")
 pathlib.Path(target).write_text(value, encoding="utf-8")
 PY
 
-python3 - "$restore_unit_src" "$tmp_restore_unit" "$repo_root" "$run_user" "$run_group" "$env_file" <<'PY'
+python3 - "$restore_unit_src" "$tmp_restore_unit" "$repo_root" "$run_user" "$run_group" "$docker_group" "$env_file" <<'PY'
 import pathlib, sys
-source, target, root, user, group, env_file = sys.argv[1:]
+source, target, root, user, group, docker_group, env_file = sys.argv[1:]
 value = pathlib.Path(source).read_text(encoding="utf-8")
-value = value.replace("__REPO_ROOT__", root).replace("__RUN_USER__", user).replace("__RUN_GROUP__", group).replace("__ENV_FILE__", env_file)
+for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__DOCKER_GROUP__", docker_group), ("__ENV_FILE__", env_file)):
+    value = value.replace(placeholder, replacement)
+if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__DOCKER_GROUP__", "__ENV_FILE__")):
+    raise SystemExit("unresolved restore unit placeholder")
 pathlib.Path(target).write_text(value, encoding="utf-8")
 PY
 sed -i "s/__TIMEOUT_START_SECONDS__/${drill_timeout:-86430}/g" "$tmp_restore_unit"
@@ -334,8 +346,8 @@ fi
 
 # Last preflight: validate Compose and capture the exact workload state before
 # the first filesystem or systemd mutation.
-compose_services_output="$(docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" config --services)"
-running_services_output="$(docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" ps --status running --services)"
+compose_services_output="$("$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" config --services)"
+running_services_output="$("$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" ps --status running --services)"
 mapfile -t compose_services <<<"$compose_services_output"
 mapfile -t running_services <<<"$running_services_output"
 [[ -n "$compose_services_output" ]] || { echo "Docker Compose returned no services" >&2; exit 1; }

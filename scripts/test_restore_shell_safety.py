@@ -134,6 +134,17 @@ else:
             files.append(path)
         return files
 
+    def adapter(self, root, docker):
+        path = root / "restore-postgres-drill.sh"
+        text = (ROOT / "scripts/restore-postgres-drill.sh").read_text(encoding="utf-8")
+        text = text.replace(
+            'docker() { "$root/deploy/docker-local" "$@"; }',
+            f'docker() {{ "{docker}" "$@"; }}',
+        )
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o700)
+        return str(path)
+
     def test_fresh_running_lock_blocks_without_cross_delete(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -144,7 +155,7 @@ else:
             env = os.environ.copy()
             env.update(PATH=f"{fake_bin}:{env['PATH']}", FAKE_DOCKER_STATE=str(state),
                        SWITCHYARD_RESTORE_ADAPTER_INNER="1", FAKE_DOCKER_PS_SLEEP="3")
-            adapter = str(ROOT / "scripts/restore-postgres-drill.sh")
+            adapter = self.adapter(root, fake_bin / "docker")
             first = subprocess.Popen([adapter, *(str(path) for path in files), str(first_payload), "first", "100"], env=env)
             for _ in range(100):
                 if (state / "lock/details.json").exists():
@@ -166,7 +177,7 @@ else:
                 files = self.adapter_inputs(root)
                 env = os.environ.copy()
                 env.update(PATH=f"{fake_bin}:{env['PATH']}", FAKE_DOCKER_STATE=str(state), FAKE_DOCKER_PS_SLEEP="30")
-                adapter = str(ROOT / "scripts/restore-postgres-drill.sh")
+                adapter = self.adapter(root, fake_bin / "docker")
                 first_payload = root / "first.json"
                 if mode == "sigkill":
                     inner_env = dict(env, SWITCHYARD_RESTORE_ADAPTER_INNER="1")
@@ -196,7 +207,7 @@ else:
             env = os.environ.copy()
             env.update(PATH=f"{fake_bin}:{env['PATH']}", FAKE_DOCKER_STATE=str(state),
                        SWITCHYARD_RESTORE_ADAPTER_INNER="1", FAKE_DOCKER_INCLUDE_FOREIGN="1")
-            result = subprocess.run([str(ROOT / "scripts/restore-postgres-drill.sh"), *(str(path) for path in files),
+            result = subprocess.run([self.adapter(root, fake_bin / "docker"), *(str(path) for path in files),
                                      str(payload), "owner", "100"], env=env, check=False)
             self.assertNotEqual(result.returncode, 0)
             removals = (state / "removals").read_text().splitlines()

@@ -15,12 +15,13 @@ docker_dropin_dst="$docker_dropin_dir/50-switchyard-web-gate.conf"
 unit_src="$repo_root/deploy/switchyard-web-gate.service"
 renderer_src="$repo_root/scripts/render_tailscale_web_gate.py"
 ufw_helper_src="$repo_root/scripts/manage_tailscale_web_forward.py"
+docker_local="$repo_root/deploy/docker-local"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "install-web-gate.sh must be run with sudo/root" >&2
   exit 1
 fi
-for command in python3 nft ufw iptables systemctl install docker cmp mv stat; do
+for command in python3 nft ufw iptables systemctl install cmp mv stat; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required" >&2
     exit 1
@@ -51,7 +52,7 @@ if [[ ! "$env_file" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
   echo "SWITCHYARD_ENV_FILE contains characters unsafe for systemd" >&2
   exit 1
 fi
-if [[ ! -f "$unit_src" || -L "$unit_src" || ! -f "$renderer_src" || -L "$renderer_src" || ! -f "$ufw_helper_src" || -L "$ufw_helper_src" || ! -d "$unit_dir" || -L "$unit_dir" ]]; then
+if [[ ! -f "$unit_src" || -L "$unit_src" || ! -f "$renderer_src" || -L "$renderer_src" || ! -f "$ufw_helper_src" || -L "$ufw_helper_src" || ! -x "$docker_local" || ! -d "$unit_dir" || -L "$unit_dir" ]]; then
   echo "web gate install inputs are missing or unsafe" >&2
   exit 1
 fi
@@ -228,7 +229,9 @@ cat >"$tmp_dropin" <<'EOF'
 Requires=switchyard-web-gate.service
 After=switchyard-web-gate.service
 EOF
-docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" config --services >/dev/null
+"$docker_local" info >/dev/null
+"$docker_local" compose version >/dev/null
+"$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" config --services >/dev/null
 
 if [[ -e "$rules_dst" ]]; then rules_existed=1; cp -p -- "$rules_dst" "$rules_snapshot"; fi
 if [[ -e "$unit_dst" ]]; then unit_existed=1; cp -p -- "$unit_dst" "$unit_snapshot"; fi
@@ -253,14 +256,14 @@ enforcement_active=0
 if [[ -x "$ufw_helper_dst" ]] && verify_live_gate; then enforcement_active=1; fi
 
 web_running=0
-if docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" ps --status running --services | grep -Fxq web; then
+if "$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" ps --status running --services | grep -Fxq web; then
   web_running=1
 fi
 if [[ ( $changed -eq 1 || $enforcement_active -eq 0 ) && $web_running -eq 1 ]]; then
   mutation_started=1
   # Fail closed: never leave the old published endpoint up while gate files or
   # live rules transition. Any later failure deliberately leaves web stopped.
-  docker compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" stop web
+  "$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" stop web
 fi
 
 if [[ $changed -eq 1 ]]; then
