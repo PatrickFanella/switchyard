@@ -241,7 +241,7 @@ jobs:
           fi
       - name: Upload candidate release evidence
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: https://gitea.com/actions/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7 # Gitea artifact v4
         with:
           name: candidate-release-evidence-${{ github.sha }}
           path: |
@@ -252,14 +252,14 @@ jobs:
             release/SHA256SUMS
             release/*.oci.tar
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 31
       - name: Upload durable candidate release record
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: https://gitea.com/actions/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7 # Gitea artifact v4
         with:
           name: candidate-release-record-${{ github.sha }}
           path: |
             release/candidate-evidence.json
             release/manifest.json
           if-no-files-found: error
-          retention-days: 400
+          retention-days: 401

@@ -109,7 +109,7 @@ jobs:
             --output retirement-qualification
           test "$(find retirement-qualification -maxdepth 1 -type f | wc -l)" -eq 4
       - name: Upload durable retirement qualification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: https://gitea.com/actions/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7 # Gitea artifact v4
         with:
           name: retirement-release-qualification-${{ inputs.release_tag }}
           path: |
@@ -118,11 +118,11 @@ jobs:
             retirement-qualification/manifest.json
             retirement-qualification/compatibility-retirement-report.json
           if-no-files-found: error
-          retention-days: 400
+          retention-days: 401
       - name: Upload exact compatibility report reference artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: https://gitea.com/actions/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7 # Gitea artifact v4
         with:
           name: compatibility-retirement-report
           path: retirement-qualification/compatibility-retirement-report.json
           if-no-files-found: error
-          retention-days: 400
+          retention-days: 401

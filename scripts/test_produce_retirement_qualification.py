@@ -309,13 +309,13 @@ class ProduceRetirementQualificationTest(unittest.TestCase):
         with self.assertRaisesRegex(producer.QualificationError, "qualify the current production policy"):
             self.produce()
 
-    def test_workflow_is_opt_in_and_uploads_only_downloader_contract_for_400_days(self) -> None:
+    def test_workflow_is_opt_in_and_requests_effective_400_day_retention(self) -> None:
         workflow = (producer.ROOT / ".gitea/workflows/qualify-retirement-release.yml").read_text()
         deployment_workflow = (producer.ROOT / ".gitea/workflows/prove-production-deployment.yml").read_text()
         self.assertIn("workflow_dispatch:", workflow)
         self.assertNotIn("schedule:", workflow)
         self.assertIn("make production-smoke", workflow)
-        self.assertIn("retention-days: 400", workflow)
+        self.assertIn("retention-days: 401", workflow)
         for name in (producer.QUALIFICATION_NAME, producer.EVIDENCE_NAME, producer.MANIFEST_NAME, producer.REPORT_NAME):
             self.assertIn(f"retirement-qualification/{name}", workflow)
         self.assertIn("name: compatibility-retirement-report", workflow)

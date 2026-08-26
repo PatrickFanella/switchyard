@@ -1,0 +1,26 @@
+name: switchyard-artifact-smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+
+jobs:
+  upload:
+    runs-on: switchyard-production
+    timeout-minutes: 5
+    steps:
+      - name: Create bounded marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact-smoke
+          printf '%s\n' "$GITHUB_RUN_ID" > artifact-smoke/run-id.txt
+      - name: Upload marker
+        uses: https://gitea.com/actions/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7
+        with:
+          name: artifact-smoke-${{ github.run_id }}
+          path: artifact-smoke/run-id.txt
+          if-no-files-found: error
+          retention-days: 2
