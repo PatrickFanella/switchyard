@@ -4,7 +4,11 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 release_dir="$root/release"
 revision=$(git -C "$root" rev-parse HEAD)
-tag=$(git -C "$root" describe --tags --exact-match 2>/dev/null || true)
+tag=${RELEASE_TAG:-$(git -C "$root" describe --tags --exact-match 2>/dev/null || true)}
+if [[ -n "${RELEASE_TAG:-}" ]]; then
+  test "$(git -C "$root" cat-file -t "refs/tags/$tag")" = tag
+  test "$(git -C "$root" rev-parse "refs/tags/$tag^{}")" = "$revision"
+fi
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ci_url=${CI_RUN_URL:-}
 migrations=("$root"/backend/internal/controlplane/migrations/*.sql)
