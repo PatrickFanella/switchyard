@@ -237,7 +237,7 @@ class ComposeRuntimeIsolationTest(unittest.TestCase):
         self.assertIn("FROM runtime AS api", dockerfile)
         self.assertLess(dockerfile.index("FROM runtime AS verifier"), dockerfile.index("FROM runtime AS api"))
         verifier_section, api_section = dockerfile.split("FROM runtime AS verifier", 1)[1].split("FROM runtime AS api", 1)
-        for value in ("bash=5.2.37-r0", "make=4.4.1-r3", "cargo=1.87.0-r1", "pnpm@10.33.0", "/usr/local/go"):
+        for value in ("bash=5.2.37-r0", "python3=3.12.14-r0", "make=4.4.1-r3", "cargo=1.87.0-r1", "pnpm@10.33.0", "/usr/local/go"):
             self.assertIn(value, verifier_section)
             self.assertNotIn(value, api_section)
 
