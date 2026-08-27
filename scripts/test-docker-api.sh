@@ -38,10 +38,10 @@ docker run --detach --rm --name "$postgres" --network "$network" \
   --env POSTGRES_DB=switchyard_test --env POSTGRES_USER=switchyard_test --env POSTGRES_PASSWORD="$password" \
   postgres:17@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b >/dev/null
 for _ in $(seq 1 120); do
-  if docker logs "$postgres" 2>&1 | grep -q 'PostgreSQL init process complete'; then break; fi
+  if docker logs "$postgres" 2>&1 | grep -F 'PostgreSQL init process complete' >/dev/null; then break; fi
   sleep 0.25
 done
-docker logs "$postgres" 2>&1 | grep -q 'PostgreSQL init process complete'
+docker logs "$postgres" 2>&1 | grep -F 'PostgreSQL init process complete' >/dev/null
 
 api_args=(--detach --name "$api" --network "$network" --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,exec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=16m)
 if [[ -n "${SWITCHYARD_TEST_DOCKER_NETWORK:-}" ]]; then

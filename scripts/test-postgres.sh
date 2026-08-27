@@ -37,12 +37,12 @@ else
   database_port="$(docker port "$name" 5432/tcp | sed 's/.*://')"
 fi
 for _ in $(seq 1 120); do
-	if docker logs "$name" 2>&1 | grep -q 'PostgreSQL init process complete'; then
+	if docker logs "$name" 2>&1 | grep -F 'PostgreSQL init process complete' >/dev/null; then
 		break
 	fi
 	sleep 0.25
 done
-docker logs "$name" 2>&1 | grep -q 'PostgreSQL init process complete'
+docker logs "$name" 2>&1 | grep -F 'PostgreSQL init process complete' >/dev/null
 docker exec "$name" pg_isready --username switchyard_test --dbname switchyard_test >/dev/null
 
 export SWITCHYARD_TEST_DATABASE_URL="host=$database_host port=$database_port user=switchyard_test password=$password dbname=switchyard_test sslmode=disable"
