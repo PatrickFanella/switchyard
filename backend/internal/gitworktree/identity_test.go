@@ -87,6 +87,69 @@ func TestAuthenticatedIdentityRejectsRedirectAndCredentialConfigWithoutValues(t 
 	}
 }
 
+func TestAuthenticatedIdentityRejectsUnsafeWorktreeConfig(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "TLS certificate", key: "http.sslCert", value: "credential-marker"},
+		{name: "TLS key", key: "http.sslKey", value: "credential-marker"},
+		{name: "SSH command", key: "core.sshCommand", value: "credential-marker"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo, worktree := testLinkedWorktree(t)
+			testGit(t, repo, "remote", "add", "origin", "https://git.example.test/owner/repo.git")
+			testGit(t, repo, "config", "--local", "extensions.worktreeConfig", "true")
+			testGit(t, worktree, "config", "--worktree", test.key, test.value)
+
+			identity, err := ValidatePath(t.Context(), Expected{
+				WorktreePath: worktree, CommonDir: filepath.Join(repo, ".git"), Branch: "topic",
+				Repo: "owner/repo", RequireOrigin: true, OriginBaseURL: "https://git.example.test",
+			})
+			if identity.Worktree != nil {
+				_ = identity.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), "redirect or credential") {
+				t.Fatalf("error = %v", err)
+			}
+			if strings.Contains(err.Error(), test.value) {
+				t.Fatalf("error exposed config value: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuthenticatedIdentityRejectsSymlinkedWorktreeConfig(t *testing.T) {
+	repo, worktree := testLinkedWorktree(t)
+	testGit(t, repo, "config", "--local", "extensions.worktreeConfig", "true")
+	gitFile, err := os.ReadFile(filepath.Join(worktree, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitdir, err := parseGitdir(string(gitFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "config.worktree")
+	if err := os.WriteFile(config, []byte("[http]\n\tsslCert = credential-marker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(config, filepath.Join(gitdir, "config.worktree")); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := ValidatePath(t.Context(), Expected{
+		WorktreePath: worktree, CommonDir: filepath.Join(repo, ".git"), Branch: "topic",
+	})
+	if identity.Worktree != nil {
+		_ = identity.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "unable to inspect") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestValidatedIdentityRejectsSiblingMetadataBacklink(t *testing.T) {
 	repo, worktree := testLinkedWorktree(t)
 	gitFile, err := os.ReadFile(filepath.Join(worktree, ".git"))
@@ -109,7 +172,7 @@ func TestValidatedIdentityRejectsSiblingMetadataBacklink(t *testing.T) {
 	}
 }
 
-func TestSafeGitCommandDisablesExecutionAndTLSOverrides(t *testing.T) {
+func TestSafeGitCommandDisablesExecutionAndRequiresTLSVerification(t *testing.T) {
 	args := strings.Join(SafeCommandArgs(false), " ")
 	for _, required := range []string{
 		"core.hooksPath=/dev/null",
@@ -117,14 +180,17 @@ func TestSafeGitCommandDisablesExecutionAndTLSOverrides(t *testing.T) {
 		"tag.gpgSign=false",
 		"push.gpgSign=false",
 		"http.sslVerify=true",
-		"http.sslCert=",
-		"http.sslKey=",
 		"protocol.allow=never",
 		"protocol.ext.allow=never",
 		"core.gitProxy=",
 	} {
 		if !strings.Contains(args, required) {
 			t.Fatalf("safe args missing %q: %s", required, args)
+		}
+	}
+	for _, forbidden := range []string{"http.sslCert=", "http.sslKey="} {
+		if strings.Contains(args, forbidden) {
+			t.Fatalf("safe args contain broken TLS override %q: %s", forbidden, args)
 		}
 	}
 	if !strings.Contains(strings.Join(SanitizedEnvironment(nil), "\n"), "GIT_TERMINAL_PROMPT=0") {

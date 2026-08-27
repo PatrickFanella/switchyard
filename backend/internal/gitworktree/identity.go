@@ -86,8 +86,6 @@ func SafeCommandArgs(allowLocalRemote bool) []string {
 		"-c", "http.extraHeader=",
 		"-c", "http.proxy=",
 		"-c", "http.sslVerify=true",
-		"-c", "http.sslCert=",
-		"-c", "http.sslKey=",
 		"-c", "protocol.allow=never",
 		"-c", "protocol.https.allow=always",
 		"-c", "protocol.file.allow=" + protocolFile,
@@ -177,6 +175,9 @@ func ValidateOpened(ctx context.Context, directory *os.File, expected Expected) 
 		return Identity{}, err
 	}
 	if err := RejectUnsafeLocalConfig(ctx, common); err != nil {
+		return Identity{}, err
+	}
+	if err := rejectUnsafeConfigFile(ctx, gitdir, "config.worktree", true); err != nil {
 		return Identity{}, err
 	}
 
@@ -354,7 +355,31 @@ func openDirectoryWithoutSymlinks(path string) (int, error) {
 }
 
 func RejectUnsafeLocalConfig(ctx context.Context, common string) error {
-	command := exec.CommandContext(ctx, "git", "--git-dir="+common, "config", "--local", "--name-only", "--get-regexp", ".*")
+	return rejectUnsafeConfigFile(ctx, common, "config", false)
+}
+
+func rejectUnsafeConfigFile(ctx context.Context, directory, name string, optional bool) error {
+	directoryFD, err := openDirectoryWithoutSymlinks(directory)
+	if err != nil {
+		return errors.New("unable to inspect local Git configuration safely")
+	}
+	defer unix.Close(directoryFD)
+	configFD, err := unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if optional && errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return errors.New("unable to inspect local Git configuration safely")
+	}
+	config := os.NewFile(uintptr(configFD), name)
+	defer config.Close()
+	info, err := config.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("unable to inspect local Git configuration safely")
+	}
+
+	command := exec.CommandContext(ctx, "git", "config", "--file=/proc/self/fd/3", "--name-only", "--get-regexp", ".*")
+	command.ExtraFiles = []*os.File{config}
 	command.Env = sanitizedGitEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
