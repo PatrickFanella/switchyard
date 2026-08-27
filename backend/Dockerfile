@@ -16,7 +16,7 @@ USER 1000:1000
 
 FROM runtime AS verifier
 USER root
-RUN apk add --no-cache make=4.4.1-r3 cargo=1.87.0-r1 \
+RUN apk add --no-cache bash=5.2.37-r0 make=4.4.1-r3 cargo=1.87.0-r1 \
     && npm install --global --ignore-scripts pnpm@10.33.0 \
     && npm cache clean --force
 COPY --from=build /usr/local/go /usr/local/go
