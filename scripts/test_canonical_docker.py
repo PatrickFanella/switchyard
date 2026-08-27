@@ -65,7 +65,8 @@ class CanonicalDockerTest(unittest.TestCase):
             )
             self.assertEqual(invocation["argv"][0], "--config")
             self.assertNotEqual(invocation["argv"][1], str(hostile_config))
-            self.assertEqual(invocation["env"]["HOME"], "/nonexistent")
+            self.assertEqual(invocation["env"]["HOME"], invocation["argv"][1])
+            self.assertNotEqual(invocation["env"]["HOME"], str(hostile_config))
             self.assertEqual(
                 invocation["env"]["PATH"],
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
