@@ -138,6 +138,13 @@ Set the control token without printing it, then run:
 make production-smoke
 ```
 
+Run this command on the production host. It proves the configured deployment,
+systemd and nft state, listener ownership, and revision-bound local paths. Then
+dispatch `.gitea/workflows/prove-production-deployment.yml` on the exact annotated
+tag. That job proves the remote web health, authenticated control summary, model
+ingress, public authentication redirect, and live source/deployment identity. It
+does not replace the on-host gate.
+
 Also verify the canonical model route from the affected remote client. Confirm
 that:
 

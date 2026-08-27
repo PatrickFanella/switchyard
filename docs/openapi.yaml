@@ -1790,6 +1790,7 @@ components:
       properties:
         schema_version: { type: string, const: "1.0" }
         service: { $ref: "#/components/schemas/OperatorSummaryService" }
+        deployment: { $ref: "#/components/schemas/OperatorSummaryDeployment" }
         status: { $ref: "#/components/schemas/OperatorSummaryStatus" }
         generated_at: { type: string, format: date-time }
         observed_at: { type: string, format: date-time }
@@ -1800,7 +1801,7 @@ components:
           items: { $ref: "#/components/schemas/OperatorSummaryAlert" }
         capabilities: { $ref: "#/components/schemas/OperatorSummaryCapabilities" }
         data: { $ref: "#/components/schemas/OperatorSummaryData" }
-      required: [schema_version, service, status, generated_at, observed_at, partial, alerts, capabilities, data]
+      required: [schema_version, service, deployment, status, generated_at, observed_at, partial, alerts, capabilities, data]
     OperatorSummaryService:
       type: object
       additionalProperties: false
@@ -1808,6 +1809,13 @@ components:
         id: { type: string, const: switchyard }
         name: { type: string }
       required: [id, name]
+    OperatorSummaryDeployment:
+      type: object
+      additionalProperties: false
+      properties:
+        source_revision: { type: string, pattern: "^([0-9a-f]{40})?$" }
+        deployment_id: { type: string, pattern: "^([A-Za-z0-9][A-Za-z0-9._-]{0,127})?$" }
+      required: [source_revision, deployment_id]
     OperatorSummaryStatus:
       type: object
       additionalProperties: false

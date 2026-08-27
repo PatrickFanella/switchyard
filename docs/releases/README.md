@@ -74,10 +74,17 @@ report window. Missing production secrets, evidence paths, or proof fail the
 run.
 The historical smoke URL must name a successful run of
 `.gitea/workflows/prove-production-deployment.yml` for the deployed SHA. Dispatch
-that proof workflow immediately after the external deployment. The run must
+that proof workflow immediately after the external deployment. It uses explicit
+remote web, control, model, public, and authentication origins plus only the
+control read token. It compares the authenticated live source revision and
+deployment identity with the tagged checkout and configured deployment. The run must
 contain exactly one successful `production-smoke` job carrying the
 `switchyard-production` runner label; its authenticated start and completion
 timestamps bind the deployment evidence chronology.
+
+This remote job proves the remote data, control, model, and public paths. It does
+not inspect host config, systemd, nft, listener ownership, or the local deployment
+contract. Record a separate on-host `make production-smoke` result for those facts.
 
 The resulting artifact is retained for 400 days and contains only
 `retirement-release-qualification.json`, `deployed-evidence.json`,

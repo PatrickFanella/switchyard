@@ -180,6 +180,13 @@ func TestOpenAPIDocumentsModelRuntimeSecurityAndSchemas(t *testing.T) {
 			t.Errorf("ArtifactReport omits %s", field)
 		}
 	}
+	operatorSummary := fmt.Sprint(schemas["OperatorSummary"])
+	operatorDeployment := fmt.Sprint(schemas["OperatorSummaryDeployment"])
+	for _, field := range []string{"deployment", "source_revision", "deployment_id", "[0-9a-f]{40}", "{0,127}"} {
+		if !strings.Contains(operatorSummary+operatorDeployment, field) {
+			t.Errorf("OperatorSummary deployment identity omits %s", field)
+		}
+	}
 	responses := components["responses"].(map[string]any)
 	if !strings.Contains(fmt.Sprint(responses["ModelBrokerStatusResponse"]), "queue") {
 		t.Error("ModelBrokerStatusResponse omits queue")

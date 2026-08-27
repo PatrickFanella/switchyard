@@ -325,7 +325,27 @@ class ProduceRetirementQualificationTest(unittest.TestCase):
         self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn("runs-on: switchyard-production", deployment_workflow)
         self.assertIn("name: production-smoke", deployment_workflow)
-        self.assertIn("make production-smoke", deployment_workflow)
+        self.assertIn("./scripts/smoke-remote-production.sh", deployment_workflow)
+        for secret in (
+            "SWITCHYARD_PRODUCTION_WEB_URL",
+            "SWITCHYARD_PRODUCTION_CONTROL_URL",
+            "SWITCHYARD_PRODUCTION_MODEL_URL",
+            "SWITCHYARD_PUBLIC_URL",
+            "SWITCHYARD_AUTH_ORIGIN",
+            "SWITCHYARD_EXPECTED_DEPLOYMENT_ID",
+            "SWITCHYARD_CONTROL_READ_TOKEN",
+            "SWITCHYARD_SMOKE_MODEL",
+        ):
+            self.assertIn(f"${{{{ secrets.{secret} }}}}", deployment_workflow)
+        self.assertNotIn("make production-smoke", deployment_workflow)
+        self.assertNotIn("SWITCHYARD_PRODUCTION_ENV_FILE", deployment_workflow)
+        self.assertNotIn("SWITCHYARD_CONTROL_API_TOKEN", deployment_workflow)
+        self.assertIn('test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"', deployment_workflow)
+        self.assertIn('test "$GITHUB_SHA" = "$TAG_SHA"', deployment_workflow)
+        self.assertIn('test "$HEAD_SHA" = "$TAG_SHA"', deployment_workflow)
+        self.assertIn("steps.deployed-checkout.outputs.source_revision", deployment_workflow)
+        self.assertNotIn("GITHUB_ENV", deployment_workflow)
+        self.assertNotIn("SWITCHYARD_CONTROL_READ_TOKEN=", deployment_workflow)
 
     def test_verify_workflow_uses_only_small_report_reference_inputs(self) -> None:
         workflow = (producer.ROOT / ".gitea/workflows/verify-production.yml").read_text()

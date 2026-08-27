@@ -342,6 +342,7 @@ export type OperatorSummaryRecentRun = {
 export type OperatorSummary = {
   schema_version: string;
   service: { id: string; name: string };
+  deployment: { source_revision: string; deployment_id: string };
   status: { level: string; summary: string };
   generated_at: string;
   observed_at: string;

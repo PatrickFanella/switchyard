@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke production-config-check production-config-test web-gate-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify retirement-qualification-test alert-lifecycle alert-lifecycle-test reproducible-build-check
+.PHONY: help verify verify-production deps fmt lint test build clean compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check api-run api-build cli-build api-test api-race api-soak api-soak-extended postgres-test postgres-backup restore-contract-test restore-scheduler-test restore-docker-test restore-drill restore-drill-scheduled postgres-restore-drill security-audit docker-build docker-smoke linked-worktree-smoke api-smoke production-smoke remote-production-smoke-test production-config-check production-config-test web-gate-test workspace-init workspace-init-test compatibility-report web-dev web-build web-test web-format switchyard-smoke docker-up docker-down docker-reset release-artifacts release-verify release-evidence-test release-evidence-verify retirement-qualification-test alert-lifecycle alert-lifecycle-test reproducible-build-check
 
 API_ADDR ?= :8080
 SMOKE_ADDR ?= :18080
@@ -13,7 +13,7 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test web-gate-test workspace-init-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test remote-production-smoke-test web-gate-test workspace-init-test ## Run all checks
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w
@@ -123,6 +123,9 @@ switchyard-smoke: api-smoke ## Run Switchyard control-plane smoke checks
 
 production-smoke: production-config-check ## Verify the real production control, model, isolation, and public-web contracts
 	./scripts/smoke-production-contract.sh
+
+remote-production-smoke-test: ## Test the bounded remote production smoke contract
+	PYTHONOPTIMIZE=1 python3 -m unittest discover -s scripts -p 'test_smoke_remote_production.py'
 
 production-config-check: ## Validate the production transport contract from the environment
 	python3 scripts/validate_production_config.py

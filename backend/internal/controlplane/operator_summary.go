@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ const operatorSummarySchemaVersion = "1.0"
 type OperatorSummary struct {
 	SchemaVersion string                      `json:"schema_version"`
 	Service       OperatorSummaryService      `json:"service"`
+	Deployment    OperatorSummaryDeployment   `json:"deployment"`
 	Status        OperatorSummaryStatus       `json:"status"`
 	GeneratedAt   time.Time                   `json:"generated_at"`
 	ObservedAt    time.Time                   `json:"observed_at"`
@@ -21,6 +23,11 @@ type OperatorSummary struct {
 	Alerts        []OperatorSummaryAlert      `json:"alerts"`
 	Capabilities  OperatorSummaryCapabilities `json:"capabilities"`
 	Data          OperatorSummaryData         `json:"data"`
+}
+
+type OperatorSummaryDeployment struct {
+	SourceRevision string `json:"source_revision"`
+	DeploymentID   string `json:"deployment_id"`
 }
 
 type OperatorSummaryService struct {
@@ -126,6 +133,7 @@ func (a *API) buildOperatorSummary(ctx context.Context, now time.Time) OperatorS
 	summary := OperatorSummary{
 		SchemaVersion: operatorSummarySchemaVersion,
 		Service:       OperatorSummaryService{ID: "switchyard", Name: "Switchyard"},
+		Deployment:    operatorSummaryDeployment(),
 		Status:        OperatorSummaryStatus{Level: "healthy", Summary: "Runtime operating normally"},
 		GeneratedAt:   now,
 		ObservedAt:    latestSummaryObservation(now, broker.CheckedAt, executor.CheckedAt),
@@ -204,6 +212,18 @@ func (a *API) buildOperatorSummary(ctx context.Context, now time.Time) OperatorS
 
 	summary.Status = deriveOperatorSummaryStatus(summary)
 	return summary
+}
+
+func operatorSummaryDeployment() OperatorSummaryDeployment {
+	revision := strings.TrimSpace(os.Getenv("SWITCHYARD_SOURCE_REVISION"))
+	if !validSourceRevision(revision) {
+		revision = ""
+	}
+	deploymentID := strings.TrimSpace(os.Getenv("SWITCHYARD_DEPLOYMENT_ID"))
+	if !validCompatibilityIdentity(deploymentID) {
+		deploymentID = ""
+	}
+	return OperatorSummaryDeployment{SourceRevision: revision, DeploymentID: deploymentID}
 }
 
 func operatorSummaryScheduler(status SchedulerStatus) OperatorSummaryScheduler {

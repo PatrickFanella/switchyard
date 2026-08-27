@@ -27,6 +27,8 @@ func (p staticOpenCodeStatusProvider) Status(context.Context) OpenCodeExecutorSt
 }
 
 func TestOperatorSummaryReportsRunsAndComponents(t *testing.T) {
+	t.Setenv("SWITCHYARD_SOURCE_REVISION", " 0123456789abcdef0123456789abcdef01234567 ")
+	t.Setenv("SWITCHYARD_DEPLOYMENT_ID", " production-a ")
 	now := time.Now().UTC()
 	store := NewStore(func() time.Time { return now })
 	if err := store.UpsertWorkflow(Workflow{ID: "open-pilot", Kind: WorkflowOpenPilot, Name: "Open Pilot"}); err != nil {
@@ -68,6 +70,9 @@ func TestOperatorSummaryReportsRunsAndComponents(t *testing.T) {
 	if summary.SchemaVersion != "1.0" || summary.Service.ID != "switchyard" {
 		t.Fatalf("identity = %+v schema=%q", summary.Service, summary.SchemaVersion)
 	}
+	if summary.Deployment.SourceRevision != "0123456789abcdef0123456789abcdef01234567" || summary.Deployment.DeploymentID != "production-a" {
+		t.Fatalf("deployment = %+v", summary.Deployment)
+	}
 	if summary.Status.Level != "degraded" {
 		t.Fatalf("status = %+v", summary.Status)
 	}
@@ -85,6 +90,16 @@ func TestOperatorSummaryReportsRunsAndComponents(t *testing.T) {
 	}
 	if summary.Capabilities.Actions == nil || len(summary.Capabilities.Actions) != 0 {
 		t.Fatalf("actions = %#v", summary.Capabilities.Actions)
+	}
+}
+
+func TestOperatorSummarySuppressesInvalidDeploymentIdentity(t *testing.T) {
+	t.Setenv("SWITCHYARD_SOURCE_REVISION", "not-a-revision")
+	t.Setenv("SWITCHYARD_DEPLOYMENT_ID", "unsafe identity")
+
+	summary := NewAPI(NewStore(nil), NewRunner(NewStore(nil))).buildOperatorSummary(context.Background(), time.Now())
+	if summary.Deployment != (OperatorSummaryDeployment{}) {
+		t.Fatalf("deployment = %+v", summary.Deployment)
 	}
 }
 

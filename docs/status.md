@@ -12,7 +12,11 @@ qualification record.
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
 - Required production configuration gate: `make production-config-check` with the deployed environment exported
-- Required deployment proof: `make production-smoke` on the resolved target
+- Required on-host production contract gate: `make production-smoke` proves the deployed config, systemd and nft state, listener ownership, and revision-bound deployment from the host
+- Required remote deployment proof: dispatch `.gitea/workflows/prove-production-deployment.yml` for the exact annotated deployed tag to prove the live web, authenticated control, model, and public authentication paths plus source revision and deployment identity
+
+The remote proof does not inspect or qualify host config, systemd, nft, or local
+listener ownership. Keep both production gates.
 
 Record the exact candidate and deployed SHA in `docs/releases/`.
 

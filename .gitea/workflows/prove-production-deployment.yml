@@ -22,25 +22,35 @@ jobs:
     timeout-minutes: 15
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
-      SWITCHYARD_PRODUCTION_ENV_FILE: ${{ secrets.SWITCHYARD_PRODUCTION_ENV_FILE }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.release_tag }}
           fetch-depth: 0
       - name: Prove annotated deployed checkout
+        id: deployed-checkout
         shell: bash
         run: |
           set -euo pipefail
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
-          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$(git rev-parse HEAD)"
-          test -n "$SWITCHYARD_PRODUCTION_ENV_FILE"
-          test -r "$SWITCHYARD_PRODUCTION_ENV_FILE"
+          TAG_SHA="$(git rev-parse "refs/tags/$RELEASE_TAG^{}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test "$GITHUB_SHA" = "$TAG_SHA"
+          test "$HEAD_SHA" = "$TAG_SHA"
+          printf 'source_revision=%s\n' "$HEAD_SHA" >> "$GITHUB_OUTPUT"
       - name: Smoke deployed production
         shell: bash
+        env:
+          SWITCHYARD_PRODUCTION_WEB_URL: ${{ secrets.SWITCHYARD_PRODUCTION_WEB_URL }}
+          SWITCHYARD_PRODUCTION_CONTROL_URL: ${{ secrets.SWITCHYARD_PRODUCTION_CONTROL_URL }}
+          SWITCHYARD_PRODUCTION_MODEL_URL: ${{ secrets.SWITCHYARD_PRODUCTION_MODEL_URL }}
+          SWITCHYARD_PUBLIC_URL: ${{ secrets.SWITCHYARD_PUBLIC_URL }}
+          SWITCHYARD_AUTH_ORIGIN: ${{ secrets.SWITCHYARD_AUTH_ORIGIN }}
+          SWITCHYARD_EXPECTED_SOURCE_REVISION: ${{ steps.deployed-checkout.outputs.source_revision }}
+          SWITCHYARD_EXPECTED_DEPLOYMENT_ID: ${{ secrets.SWITCHYARD_EXPECTED_DEPLOYMENT_ID }}
+          SWITCHYARD_CONTROL_READ_TOKEN: ${{ secrets.SWITCHYARD_CONTROL_READ_TOKEN }}
+          SWITCHYARD_SMOKE_MODEL: ${{ secrets.SWITCHYARD_SMOKE_MODEL }}
         run: |
           set -euo pipefail
-          set -a
-          . "$SWITCHYARD_PRODUCTION_ENV_FILE"
-          set +a
-          make production-smoke
+          ./scripts/smoke-remote-production.sh
