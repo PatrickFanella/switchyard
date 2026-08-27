@@ -221,17 +221,21 @@ func TestEnvGiteaClientMergePullRequest(t *testing.T) {
 
 func TestEnvGiteaClientMergePullRequestEmptyBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
+		switch {
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7/merge" && r.Method == http.MethodPost:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if body["Do"] != "merge" {
+				t.Fatalf("body = %+v", body)
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"state":"closed","merge_commit_sha":"deadbeef"}`))
+		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.String())
 		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body["Do"] != "merge" {
-			t.Fatalf("body = %+v", body)
-		}
-		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("GITEA_BASE_URL", server.URL)
@@ -241,7 +245,30 @@ func TestEnvGiteaClientMergePullRequestEmptyBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
-	if !result.Merged {
+	if !result.Merged || result.SHA != "deadbeef" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestEnvGiteaClientMergePullRequestEmptyBodyPreservesSuccessWhenSHAUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7/merge" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7" && r.Method == http.MethodGet:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	if err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
+	if !result.Merged || result.SHA != "" || result.Message == "" || len(result.Message) > 100 {
 		t.Fatalf("result = %+v", result)
 	}
 }

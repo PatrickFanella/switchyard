@@ -49,14 +49,15 @@ type GiteaPullRequestRef struct {
 
 // GiteaPullRequest models the pull request payload used by the control plane.
 type GiteaPullRequest struct {
-	ID      int                 `json:"id"`
-	Number  int                 `json:"number"`
-	Title   string              `json:"title"`
-	State   string              `json:"state"`
-	URL     string              `json:"url"`
-	HTMLURL string              `json:"html_url"`
-	Head    GiteaPullRequestRef `json:"head,omitempty"`
-	Base    GiteaPullRequestRef `json:"base,omitempty"`
+	ID             int                 `json:"id"`
+	Number         int                 `json:"number"`
+	Title          string              `json:"title"`
+	State          string              `json:"state"`
+	URL            string              `json:"url"`
+	HTMLURL        string              `json:"html_url"`
+	MergeCommitSHA string              `json:"merge_commit_sha,omitempty"`
+	Head           GiteaPullRequestRef `json:"head,omitempty"`
+	Base           GiteaPullRequestRef `json:"base,omitempty"`
 }
 
 // GiteaPullRequestInput describes a pull request create request.
@@ -441,9 +442,20 @@ func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, numb
 	if err != nil {
 		return GiteaMergeResult{}, err
 	}
+	resp.Body.Close()
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
-		return GiteaMergeResult{Merged: true, Message: "merged"}, nil
+		result := GiteaMergeResult{Merged: true, Message: "merged; merge commit SHA unavailable"}
+		var pr GiteaPullRequest
+		prResp, getErr := c.doJSON(ctx, http.MethodGet, strings.TrimSuffix(endpoint, "/merge"), nil, &pr)
+		if prResp != nil {
+			prResp.Body.Close()
+		}
+		if getErr == nil && prResp != nil && prResp.StatusCode >= 200 && prResp.StatusCode <= 299 && pr.MergeCommitSHA != "" {
+			result.SHA = pr.MergeCommitSHA
+			result.Message = "merged"
+		}
+		return result, nil
 	}
 	var raw GiteaMergeResult
 	if err := json.Unmarshal(data, &raw); err != nil {

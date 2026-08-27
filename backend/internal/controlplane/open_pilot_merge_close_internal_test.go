@@ -141,6 +141,28 @@ func TestOpenPilotMergeAndCloseHappyPath(t *testing.T) {
 	}
 }
 
+func TestOpenPilotIssueClosedPersistsMergeCommitSHA(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", GateStatus: OpenPilotGateStatus{"merge": "merged"}}, OpenPilotPhaseMerged)
+	executor := openPilotExecutor{env: newOpenPilotAIReviewTestEnv(store)}
+	state := map[string]any{
+		"open-pilot.merge-result":       GiteaMergeResult{Merged: true, SHA: "deadbeef"},
+		"open-pilot.issue-close-result": GiteaIssue{State: "closed"},
+		"open-pilot.gate-status":        map[string]string{"merge": "merged", "issue_close": "closed"},
+	}
+	if err := executor.persistOpenPilotIssueState(Run{ID: "run-1", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}}, OpenPilotPhaseIssueClosed, "open-pilot.close-issue", "", state); err != nil {
+		t.Fatalf("persistOpenPilotIssueState() error = %v", err)
+	}
+
+	saved, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil {
+		t.Fatalf("OpenPilotIssueState() error = %v", err)
+	}
+	if saved.Phase != OpenPilotPhaseIssueClosed || !saved.IssueClosed || saved.MergeCommitSHA != "deadbeef" {
+		t.Fatalf("saved = %+v", saved)
+	}
+}
+
 func TestOpenPilotMergeBlockedWhenPrerequisitesMissing(t *testing.T) {
 	store := NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := SeedDefaults(store); err != nil {
