@@ -290,6 +290,8 @@ for offset in range(1, len(sys.argv), 3):
         continue
     temporary = target.parent / f".{target.name}.rollback-{os.getpid()}"
     shutil.copy2(source, temporary, follow_symlinks=False)
+    info = source.stat()
+    os.chown(temporary, info.st_uid, info.st_gid)
     os.replace(temporary, target)
     directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -403,13 +405,13 @@ for index in "${!topology_labels[@]}"; do
 done
 [[ $operator_registry_existed -eq 1 ]] || { echo "Open Pilot operator registry must already exist" >&2; exit 1; }
 topology_mutation_started=1
-python3 "$repo_root/scripts/prepare_open_pilot_registry.py" --registry "$operator_registry" \
+runuser -u "$run_user" -g "$run_group" -- python3 "$repo_root/scripts/prepare_open_pilot_registry.py" --registry "$operator_registry" \
   --runtime-uid "$opencode_runtime_uid" --runtime-gid "$opencode_runtime_gid" --gitea-base-url "$gitea_base_url"
-python3 "$repo_root/scripts/render_open_pilot_topology.py" --registry "$operator_registry" \
+runuser -u "$run_user" -g "$run_group" -- python3 "$repo_root/scripts/render_open_pilot_topology.py" --registry "$operator_registry" \
   --runtime-manifest "$runtime_manifest" --compose-override "$compose_override" \
   --compose-file-set "$compose_file_set" --runtime-uid "$opencode_runtime_uid" \
   --runtime-gid "$opencode_runtime_gid" --gitea-base-url "$gitea_base_url"
-python3 "$repo_root/scripts/resolve_open_pilot_compose_file_set.py" \
+runuser -u "$run_user" -g "$run_group" -- python3 "$repo_root/scripts/resolve_open_pilot_compose_file_set.py" \
   --file-set "$compose_file_set" --expected-base "$repo_root/docker-compose.yml" >/dev/null
 
 python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$docker_group" "$env_file" "$gate_renderer" "$gate_rules" "$ufw_helper" "$compose_file_set" <<'PY'

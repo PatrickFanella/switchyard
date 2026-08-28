@@ -277,6 +277,16 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             f"-u {self.user} -g {self.group} -G {docker_group} -- {self.bin / 'docker'} compose version",
         )
 
+    def test_topology_rendering_uses_runtime_identity(self):
+        self.write_env()
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root / "runuser.log").read_text().splitlines()
+        prefix = f"-u {self.user} -g {self.group} -- python3 "
+        self.assertTrue(any(call.startswith(prefix) and "prepare_open_pilot_registry.py" in call for call in calls))
+        self.assertTrue(any(call.startswith(prefix) and "render_open_pilot_topology.py" in call for call in calls))
+        self.assertTrue(any(call.startswith(prefix) and "resolve_open_pilot_compose_file_set.py" in call for call in calls))
+
     def test_missing_system_compose_plugin_causes_no_mutation(self):
         self.write_env()
         result = self.run_installer({"FAIL_COMPOSE_VERSION": "1"})
