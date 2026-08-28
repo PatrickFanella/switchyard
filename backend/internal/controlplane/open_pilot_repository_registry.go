@@ -339,7 +339,6 @@ func validateOpenPilotRepositoryIdentities(entries []openPilotRepositoryIdentity
 		return fmt.Errorf("repository count must be between 1 and %d", maxOpenPilotRepositories)
 	}
 	ids := make(map[string]struct{}, len(entries))
-	generations := make(map[string]struct{}, len(entries))
 	names := make(map[string]struct{}, len(entries)*(maxOpenPilotAliases+1))
 	for _, entry := range entries {
 		if !openPilotRepositoryIDPattern.MatchString(entry.id) || !validOpenPilotRepositorySlug(entry.slug) || !validOpenPilotGeneration(entry.generation) {
@@ -352,10 +351,6 @@ func validateOpenPilotRepositoryIdentities(entries []openPilotRepositoryIdentity
 			return errors.New("repository IDs must be unique")
 		}
 		ids[entry.id] = struct{}{}
-		if _, exists := generations[entry.generation]; exists {
-			return errors.New("executor generations must be unique")
-		}
-		generations[entry.generation] = struct{}{}
 		for _, name := range append([]string{entry.slug}, entry.aliases...) {
 			if !validOpenPilotRepositorySlug(name) {
 				return errors.New("repository alias is malformed")

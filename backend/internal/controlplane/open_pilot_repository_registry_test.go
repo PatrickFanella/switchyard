@@ -103,7 +103,6 @@ func TestValidateOpenPilotRuntimeManifestRejectsInvalidIdentity(t *testing.T) {
 		{name: "alias shadows canonical", mutate: addDuplicateOpenPilotRepository(func(first, second *OpenPilotRuntimeRepository) {
 			second.Aliases = []string{strings.ToUpper(first.Slug)}
 		})},
-		{name: "duplicate generation", mutate: addDuplicateOpenPilotRepository(func(first, second *OpenPilotRuntimeRepository) { second.ExecutorGeneration = first.ExecutorGeneration })},
 	}
 
 	for _, test := range tests {
@@ -228,6 +227,16 @@ func TestSynthesizeLegacyOpenPilotRuntimeManifest(t *testing.T) {
 	second, err := SynthesizeLegacyOpenPilotRuntimeManifest(binding)
 	if err != nil || second.RegistryFingerprint != manifest.RegistryFingerprint {
 		t.Fatalf("non-deterministic synthesis: %q != %q, err=%v", second.RegistryFingerprint, manifest.RegistryFingerprint, err)
+	}
+}
+
+func TestValidateOpenPilotRuntimeManifestAllowsSharedRolloutGeneration(t *testing.T) {
+	manifest := validOpenPilotRuntimeManifest()
+	addDuplicateOpenPilotRepository(func(first, second *OpenPilotRuntimeRepository) {
+		second.ExecutorGeneration = first.ExecutorGeneration
+	})(&manifest)
+	if err := ValidateOpenPilotRuntimeManifest(manifest); err != nil {
+		t.Fatalf("shared rollout generation should be keyed by repository ID: %v", err)
 	}
 }
 
