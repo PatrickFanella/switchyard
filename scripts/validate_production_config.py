@@ -415,8 +415,14 @@ def validate(env: Mapping[str, str]) -> list[str]:
         errors.append(
             "OPEN_PILOT_WORKTREE_ROOT must be /workspace/.open-pilot-worktrees"
         )
-    if _value(env, "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST"):
-        errors.append("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST must be absent in the Phase 1 production release")
+    runtime_manifest = _value(env, "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST")
+    activation_mode = _value(env, "SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE", "legacy-singleton")
+    if activation_mode not in {"legacy-singleton", "disabled"}:
+        errors.append("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE must be legacy-singleton or disabled in production")
+    if runtime_manifest and activation_mode != "disabled":
+        errors.append("multi-repository runtime manifest requires disabled production activation")
+    if not runtime_manifest and activation_mode != "legacy-singleton":
+        errors.append("legacy singleton production requires legacy-singleton activation")
     executor_generation = _value(env, "OPEN_PILOT_EXECUTOR_GENERATION", "legacy")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", executor_generation):
         errors.append("OPEN_PILOT_EXECUTOR_GENERATION must be a stable lowercase ASCII ID")

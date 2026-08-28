@@ -47,6 +47,7 @@
     "OPEN_PILOT_WORKTREE_TIMEOUT": {"runtime": "120s", "compose": "120s", "example": "120s"},
     "OPEN_PILOT_CI_AUTO_REPAIR_MODE": {"runtime": "disabled", "compose": "disabled", "example": "disabled"},
     "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST": {"runtime": "", "compose": "", "example": ""},
+    "SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE": {"runtime": "legacy-singleton", "compose": "legacy-singleton", "example": "legacy-singleton"},
     "OPEN_PILOT_EXECUTOR_GENERATION": {"runtime": "legacy", "compose": "legacy", "example": "legacy"},
     "OPEN_PILOT_SINGLETON_REPOSITORY": {"runtime": "", "compose": "", "example": ""}
   }

@@ -488,12 +488,20 @@ class ProductionConfigTest(unittest.TestCase):
             "OPEN_PILOT_WORKTREE_ROOT must be /workspace/.open-pilot-worktrees",
         )
 
-    def test_rejects_phase_one_runtime_manifest_and_invalid_generation(self) -> None:
+    def test_requires_disabled_activation_for_runtime_manifest(self) -> None:
         self.assert_rejected(
             "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST",
             "/run/switchyard/open-pilot-runtime.json",
-            "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST must be absent in the Phase 1 production release",
+            "multi-repository runtime manifest requires disabled production activation",
         )
+        env = dict(self.env)
+        env["SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST"] = "/run/switchyard/open-pilot-runtime.json"
+        env["SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE"] = "disabled"
+        self.assertNotIn("multi-repository runtime manifest requires disabled production activation", validate(env))
+        env["SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE"] = "isolated-test"
+        self.assertIn("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE must be legacy-singleton or disabled in production", validate(env))
+
+    def test_rejects_invalid_generation(self) -> None:
         self.assert_rejected(
             "OPEN_PILOT_EXECUTOR_GENERATION",
             "Bad_generation",

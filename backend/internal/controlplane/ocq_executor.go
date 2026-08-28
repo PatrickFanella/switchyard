@@ -44,11 +44,12 @@ type OCQResponse = OpenCodeResponse
 type OCQExecutor = OpenCodeExecutor
 
 type EnvOpenCodeExecutor struct {
-	baseURL    string
-	gatewayKey string
-	username   string
-	password   string
-	client     *http.Client
+	baseURL       string
+	gatewayKey    string
+	username      string
+	password      string
+	client        *http.Client
+	forceOpenCode bool
 }
 
 type EnvOCQExecutor = EnvOpenCodeExecutor
@@ -103,7 +104,7 @@ func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRe
 	decision := resolveOpenCodeExecutorBackend()
 	var response OpenCodeResponse
 	var err error
-	if decision.Backend == "ocq" {
+	if decision.Backend == "ocq" && !e.forceOpenCode {
 		response, err = e.sendPromptViaOCQ(ctx, request)
 	} else {
 		response, err = e.sendPromptViaOpenCode(ctx, request)

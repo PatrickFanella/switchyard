@@ -336,7 +336,11 @@ def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fi
             {"type": "bind", "source": repository["password_file"], "target": f"/run/secrets/open-pilot-{identifier}-password", "read_only": True, "bind": {"create_host_path": False}},
         ])
     services["api"] = {
-        "environment": {"SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST": "/etc/switchyard/open-pilot-runtime-manifest.json", "SWITCHYARD_OPEN_PILOT_REGISTRY_FINGERPRINT": fingerprint},
+        "environment": {
+            "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST": "/etc/switchyard/open-pilot-runtime-manifest.json",
+            "SWITCHYARD_OPEN_PILOT_REGISTRY_FINGERPRINT": fingerprint,
+            "SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE": "${SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE:-disabled}",
+        },
         "depends_on": depends, "volumes": api_volumes, "networks": api_networks,
     }
     return {"name": "switchyard", "services": services, "networks": networks, "volumes": volumes}

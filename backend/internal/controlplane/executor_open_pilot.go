@@ -100,6 +100,10 @@ func (o openPilotExecutor) Execute(ctx context.Context, run Run) (WorkflowExecut
 }
 
 func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) (WorkflowExecution, error) {
+	execution, err := o.env.openPilotExecutionForRun(run)
+	if err != nil {
+		return WorkflowExecution{}, fmt.Errorf("select Open Pilot repository execution bundle: %w", err)
+	}
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
 	validate, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 1, Name: "open-pilot.validate-issue", Executor: "internal", Inputs: run.Inputs})
@@ -136,7 +140,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	}
 	branchName := o.env.openPilotBranchName(repo, issue, fetchedIssue)
 	baseBranch := firstNonEmpty(run.Inputs["base_branch"], o.env.openPilotBaseBranch)
-	branchPlan, prepareWorktreeErr := o.env.worktreeManager.Prepare(ctx, run, repo, baseBranch, branchName)
+	branchPlan, prepareWorktreeErr := execution.worktreeManager.Prepare(ctx, run, repo, baseBranch, branchName)
 	branch, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 2, Name: "open-pilot.branch-plan", Executor: "internal", Inputs: branchPlan.StepInputs()})
 	if err != nil {
 		return WorkflowExecution{}, err
@@ -198,7 +202,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return fallbackExecution, nil
 	}
 	agentCtx := withRunStepPreAttempt(ctx, store, run.ID, agent.ID)
-	response, err := o.env.openCodeExecutor.SendPrompt(agentCtx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath, PreAttempt: preAttemptFromContext(agentCtx), OnCorrelation: runStepCorrelationFromContext(agentCtx)})
+	response, err := execution.openCodeExecutor.SendPrompt(agentCtx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath, PreAttempt: preAttemptFromContext(agentCtx), OnCorrelation: runStepCorrelationFromContext(agentCtx)})
 	if err != nil {
 		fallbackExecution := WorkflowExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, fallbackExecution.Summary, "", nil)
@@ -230,7 +234,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		if branchPlan.Executed {
 			workdir = branchPlan.WorktreePath
 		}
-		result, err := o.env.commandRunner.Run(ctx, command, workdir)
+		result, err := execution.commandRunner.Run(ctx, command, workdir)
 		correlation := map[string]string{"policy_reason": result.Decision.Reason}
 		if workdir != "" {
 			correlation["worktree_path"] = branchPlan.WorktreePath
@@ -1142,6 +1146,10 @@ func openPilotCommittedHeadSHA(state map[string]any, inputs map[string]string) s
 }
 
 func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
+	execution, err := o.env.openPilotExecutionForRun(run)
+	if err != nil {
+		return PipelineStepExecution{}, fmt.Errorf("select Open Pilot repository execution bundle: %w", err)
+	}
 	if o.env != nil && o.env.store != nil {
 		state[openPilotAttemptStoreStateKey] = openPilotStoreFromContext(ctx, o.env.store)
 	}
@@ -1206,7 +1214,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		fetchedIssue, _ := state["open-pilot.fetched-issue"].(*GiteaIssue)
 		branchName := o.env.openPilotBranchName(repo, issue, fetchedIssue)
 		baseBranch := firstNonEmpty(run.Inputs["base_branch"], o.env.openPilotBaseBranch)
-		branchPlan, prepareWorktreeErr := o.env.worktreeManager.Prepare(ctx, run, repo, baseBranch, branchName)
+		branchPlan, prepareWorktreeErr := execution.worktreeManager.Prepare(ctx, run, repo, baseBranch, branchName)
 		branchBytes, _ := json.MarshalIndent(branchPlan, "", "  ")
 		state["open-pilot.branch-name"] = branchName
 		state["open-pilot.branch-plan"] = branchPlan
@@ -1275,7 +1283,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
 		request.PreAttempt = preAttemptFromContext(ctx)
 		request.OnCorrelation = runStepCorrelationFromContext(ctx)
-		response, err := o.env.openCodeExecutor.SendPrompt(ctx, request)
+		response, err := execution.openCodeExecutor.SendPrompt(ctx, request)
 		if err != nil {
 			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, "open-pilot.agent-correlation": response.CorrelationIDs, openPilotAttemptStoreStateKey: openPilotAttemptStore(state, o.env.store)}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
@@ -1314,7 +1322,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 			_ = identity.Close()
 		}
-		result, err := o.env.commandRunner.Run(ctx, command, workdir)
+		result, err := execution.commandRunner.Run(ctx, command, workdir)
 		correlation := map[string]string{"policy_reason": result.Decision.Reason}
 		if workdir != "" {
 			correlation["worktree_path"] = branchPlan.WorktreePath
@@ -1329,7 +1337,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 			return PipelineStepExecution{Summary: result.Output, Inputs: map[string]string{"command": command}, CorrelationIDs: correlation}, err
 		}
-		diffResult, err := o.env.commandRunner.Run(ctx, "git diff --check", workdir)
+		diffResult, err := execution.commandRunner.Run(ctx, "git diff --check", workdir)
 		if err != nil {
 			state["open-pilot.verify-command.command"] = command
 			state["open-pilot.verify-command.diff-check"] = "git diff --check"
@@ -1603,7 +1611,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			out.Summary = "PR creation disabled; plan artifact attached"
 		}
 		if branchPlan.Executed {
-			cleanupPlan, err := o.env.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || pushPlan.RemoteHeadExists || prKnown)
+			cleanupPlan, err := execution.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || pushPlan.RemoteHeadExists || prKnown)
 			cleanupBytes, _ := json.MarshalIndent(cleanupPlan, "", "  ")
 			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-worktree-cleanup.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(cleanupBytes))})
 			if err != nil {

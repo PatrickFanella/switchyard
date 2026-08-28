@@ -9,11 +9,11 @@ import (
 	"strings"
 )
 
-// OpenPilotAdmissionGate is the single Phase 1 repository and executor-affinity gate.
-// It resolves names, but permits execution only through the bound singleton executor.
+// OpenPilotAdmissionGate resolves immutable affinity and enforces the activation mode.
 type OpenPilotAdmissionGate struct {
 	registry *OpenPilotRepositoryRegistry
 	bound    OpenPilotRuntimeRepository
+	mode     string
 }
 
 const (
@@ -24,6 +24,23 @@ const (
 
 func NewEnvOpenPilotAdmissionGate() (*OpenPilotAdmissionGate, error) {
 	manifestPath := strings.TrimSpace(os.Getenv("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST"))
+	activationMode := firstNonEmpty(strings.TrimSpace(os.Getenv("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE")), "legacy-singleton")
+	if activationMode != "legacy-singleton" && activationMode != "disabled" && activationMode != "isolated-test" {
+		return nil, errors.New("invalid Open Pilot activation mode")
+	}
+	if manifestPath != "" && activationMode != "legacy-singleton" {
+		manifest, err := LoadOpenPilotRuntimeManifest(manifestPath)
+		if err != nil {
+			return nil, err
+		}
+		for _, repository := range manifest.Repositories {
+			if repository.SourcePath == "" || repository.WorktreeRoot == "" || repository.OpenCodeEndpoint == "" || repository.VerifierEndpoint == "" || repository.PasswordFile == "" {
+				return nil, errors.New("multi-repository runtime manifest entry is incomplete")
+			}
+		}
+		registry, err := NewOpenPilotRepositoryRegistry(manifest)
+		return &OpenPilotAdmissionGate{registry: registry, mode: activationMode}, err
+	}
 	boundSlug := strings.TrimSpace(os.Getenv("OPEN_PILOT_SINGLETON_REPOSITORY"))
 	sourcePath, originSlug, err := openPilotMountedOrigin()
 	if err != nil {
@@ -44,7 +61,7 @@ func NewEnvOpenPilotAdmissionGate() (*OpenPilotAdmissionGate, error) {
 			return nil, err
 		}
 		registry, err := NewOpenPilotRepositoryRegistry(manifest)
-		return &OpenPilotAdmissionGate{registry: registry, bound: manifest.Repositories[0]}, err
+		return &OpenPilotAdmissionGate{registry: registry, bound: manifest.Repositories[0], mode: "legacy-singleton"}, err
 	}
 	manifest, err := LoadOpenPilotRuntimeManifest(manifestPath)
 	if err != nil {
@@ -71,7 +88,7 @@ func NewEnvOpenPilotAdmissionGate() (*OpenPilotAdmissionGate, error) {
 		(bound.VerifierEndpoint != "" && strings.TrimRight(bound.VerifierEndpoint, "/") != strings.TrimRight(os.Getenv("OPEN_PILOT_VERIFIER_URL"), "/")) {
 		return nil, errors.New("runtime manifest does not exactly match the execution-bound singleton")
 	}
-	return &OpenPilotAdmissionGate{registry: registry, bound: bound}, nil
+	return &OpenPilotAdmissionGate{registry: registry, bound: bound, mode: "legacy-singleton"}, nil
 }
 
 func openPilotMountedOrigin() (string, string, error) {
@@ -115,7 +132,10 @@ func (g *OpenPilotAdmissionGate) Resolve(repo, issue string) (OpenPilotTarget, e
 		return OpenPilotTarget{}, ErrInvalid
 	}
 	target, err := g.registry.ResolveTarget(repo, issue)
-	if err != nil || target.RepositoryID != g.bound.ID || target.ExecutorGeneration != g.bound.ExecutorGeneration {
+	if err != nil || g.mode == "disabled" {
+		return OpenPilotTarget{}, ErrInvalid
+	}
+	if (g.mode == "" || g.mode == "legacy-singleton") && (target.RepositoryID != g.bound.ID || target.ExecutorGeneration != g.bound.ExecutorGeneration) {
 		return OpenPilotTarget{}, ErrInvalid
 	}
 	return target, nil

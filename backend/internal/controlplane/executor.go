@@ -91,6 +91,7 @@ type EnvWorkflowExecutors struct {
 	client                       *http.Client
 	openPilotGate                *OpenPilotAdmissionGate
 	openPilotGateError           error
+	openPilotBundles             map[string]openPilotExecutionBundle
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -185,6 +186,9 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		client:                       &http.Client{Timeout: 10 * time.Second},
 		openPilotGate:                openPilotGate,
 		openPilotGateError:           openPilotGateError,
+	}
+	if openPilotGateError == nil {
+		env.openPilotBundles, env.openPilotGateError = newOpenPilotExecutionBundles(openPilotGate)
 	}
 	if env.modelExecutor == nil {
 		env.modelExecutor = NewEnvModelBroker()
