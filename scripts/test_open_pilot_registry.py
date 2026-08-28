@@ -83,8 +83,7 @@ class OpenPilotRegistryTest(unittest.TestCase):
         self.assertFalse(first_sources & second_sources)
         self.assertNotIn("OPENCODE_SERVER_PASSWORD", first["environment"])
         self.assertIn("OPENCODE_SERVER_PASSWORD_FILE", first["environment"])
-        self.assertEqual(first["environment"]["OPENAI_BASE_URL"], "${OPEN_PILOT_OPENAI_BASE_URL:-http://api:11434/v1}")
-        self.assertEqual(first["environment"]["OPENAI_API_KEY"], "${OPEN_PILOT_MODEL_API_KEY:-switchyard-internal}")
+        self.assertEqual(first["environment"]["SWITCHYARD_OPENCODE_MODEL_BASE_URL"], "http://api:11434/v1")
         api_mounts = {volume["target"]: volume["source"] for volume in services["api"]["volumes"]}
         for repository in registry["repositories"]:
             root = f"/open-pilot/repositories/{repository['id']}"

@@ -3,9 +3,28 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const [targetPath, defaultsPath] = process.argv.slice(2);
 const defaults = JSON.parse(readFileSync(defaultsPath, 'utf8'));
 const securityMode = process.env.OPENCODE_SECURITY_MODE ?? 'strict';
+const managedModelBaseURL = (process.env.SWITCHYARD_OPENCODE_MODEL_BASE_URL ?? '').trim();
 
 if (!['strict', 'development'].includes(securityMode)) {
   throw new Error('OPENCODE_SECURITY_MODE must be strict or development');
+}
+
+if (managedModelBaseURL && managedModelBaseURL !== 'http://api:11434/v1') {
+  throw new Error('SWITCHYARD_OPENCODE_MODEL_BASE_URL must use the internal Switchyard model listener');
+}
+
+if (managedModelBaseURL) {
+  defaults.provider = {
+    ...(defaults.provider ?? {}),
+    switchyard: {
+      npm: '@ai-sdk/openai-compatible',
+      name: 'Switchyard model broker',
+      options: { baseURL: managedModelBaseURL, apiKey: 'switchyard-internal' },
+      models: Object.fromEntries([
+        'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+      ].map((id) => [id, { name: id, reasoning: true, tool_call: true }])),
+    },
+  };
 }
 
 const preserveUserExtensions = securityMode === 'development';
