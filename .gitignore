@@ -12,6 +12,7 @@ id_ed25519
 
 # Open Pilot / agent state
 .open-pilot/
+.open-pilot-worktrees/
 .opencode/
 opencode-data/
 .blacktower/deepwork/
