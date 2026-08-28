@@ -52,39 +52,42 @@ func (r MapExecutorRegistry) ExecutorFor(workflowID string) WorkflowExecutor {
 }
 
 type EnvWorkflowExecutors struct {
-	store                     Store
-	openPilotCommand          string
-	ocqBaseURL                string
-	ocqGatewayKey             string
-	llamaLineBaseURL          string
-	llamaLineAPIKey           string
-	devlogModel               string
-	openPilotModel            string
-	devlogAllowedModels       map[string]bool
-	openPilotAllowedModels    map[string]bool
-	openPilotLabels           []string
-	openPilotCICheckMode      string
-	openPilotMergeMode        string
-	openPilotCloseIssueMode   string
-	openPilotCIRequiredChecks []string
-	openPilotCICheckTimeout   time.Duration
-	openPilotCICheckInterval  time.Duration
-	requireIssueSpec          bool
-	openPilotWriteMode        string
-	openPilotGitPushMode      string
-	openPilotAutoCommitMode   string
-	openPilotBaseBranch       string
-	openPilotBranchPrefix     string
-	openPilotPRDraft          bool
-	modelExecutor             ModelBroker
-	openCodeExecutor          OpenCodeExecutor
-	issueFetcher              IssueFetcher
-	giteaReader               GiteaPullRequestReader
-	giteaMerger               GiteaPullRequestMerger
-	giteaWriter               GiteaWriter
-	commandRunner             CommandRunner
-	worktreeManager           OpenPilotWorktreeManager
-	client                    *http.Client
+	store                        Store
+	openPilotCommand             string
+	ocqBaseURL                   string
+	ocqGatewayKey                string
+	llamaLineBaseURL             string
+	llamaLineAPIKey              string
+	devlogModel                  string
+	openPilotModel               string
+	devlogAllowedModels          map[string]bool
+	openPilotAllowedModels       map[string]bool
+	openPilotLabels              []string
+	openPilotCICheckMode         string
+	openPilotCIAutoRepairMode    string
+	openPilotMergeMode           string
+	openPilotCloseIssueMode      string
+	openPilotCIRequiredChecks    []string
+	openPilotCICheckTimeout      time.Duration
+	openPilotCICheckInterval     time.Duration
+	requireIssueSpec             bool
+	openPilotWriteMode           string
+	openPilotGitPushMode         string
+	openPilotAutoCommitMode      string
+	openPilotBaseBranch          string
+	openPilotBranchPrefix        string
+	openPilotPRDraft             bool
+	openPilotWorktreeMode        string
+	openPilotWorktreeCleanupMode string
+	modelExecutor                ModelBroker
+	openCodeExecutor             OpenCodeExecutor
+	issueFetcher                 IssueFetcher
+	giteaReader                  GiteaPullRequestReader
+	giteaMerger                  GiteaPullRequestMerger
+	giteaWriter                  GiteaWriter
+	commandRunner                CommandRunner
+	worktreeManager              OpenPilotWorktreeManager
+	client                       *http.Client
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -108,6 +111,13 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 	ciCheckMode := firstNonEmpty(os.Getenv("OPEN_PILOT_CI_CHECK_MODE"), "disabled")
 	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_CI_CHECK_MODE")) == "" {
 		ciCheckMode = "require-pass"
+	}
+	ciAutoRepairMode := firstNonEmpty(os.Getenv("OPEN_PILOT_CI_AUTO_REPAIR_MODE"), "disabled")
+	worktreeMode := firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeDisabled))
+	worktreeCleanup := firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_CLEANUP"), string(OpenPilotWorktreeCleanupDisabled))
+	if autonomyFull {
+		worktreeMode = firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_MODE"), string(OpenPilotWorktreeAllow))
+		worktreeCleanup = firstNonEmpty(os.Getenv("OPEN_PILOT_WORKTREE_CLEANUP"), string(OpenPilotWorktreeCleanupOnSuccess))
 	}
 	mergeMode := firstNonEmpty(os.Getenv("OPEN_PILOT_MERGE_MODE"), "disabled")
 	if autonomyFull && strings.TrimSpace(os.Getenv("OPEN_PILOT_MERGE_MODE")) == "" {
@@ -136,35 +146,38 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 	}
 	giteaClient := NewEnvGiteaClient()
 	env := &EnvWorkflowExecutors{
-		store:                     configuredStore,
-		openPilotCommand:          strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
-		devlogModel:               firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"),
-		openPilotModel:            firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"),
-		devlogAllowedModels:       setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"))),
-		openPilotAllowedModels:    setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"))),
-		openPilotLabels:           splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
-		openPilotCICheckMode:      ciCheckMode,
-		openPilotMergeMode:        mergeMode,
-		openPilotCloseIssueMode:   closeIssueMode,
-		openPilotCIRequiredChecks: requiredChecks,
-		openPilotCICheckTimeout:   ciCheckTimeout,
-		openPilotCICheckInterval:  ciCheckInterval,
-		requireIssueSpec:          strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
-		openPilotWriteMode:        openPilotWriteMode,
-		openPilotGitPushMode:      openPilotGitPushMode,
-		openPilotAutoCommitMode:   openPilotAutoCommitMode,
-		openPilotBaseBranch:       firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
-		openPilotBranchPrefix:     firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
-		openPilotPRDraft:          !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
-		modelExecutor:             model,
-		openCodeExecutor:          NewEnvOpenCodeExecutor(),
-		issueFetcher:              giteaClient,
-		giteaReader:               giteaClient,
-		giteaMerger:               giteaClient,
-		giteaWriter:               giteaClient,
-		commandRunner:             NewEnvCommandRunner(),
-		worktreeManager:           NewEnvOpenPilotWorktreeManager(),
-		client:                    &http.Client{Timeout: 10 * time.Second},
+		store:                        configuredStore,
+		openPilotCommand:             strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
+		devlogModel:                  firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"),
+		openPilotModel:               firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"),
+		devlogAllowedModels:          setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"))),
+		openPilotAllowedModels:       setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"))),
+		openPilotLabels:              splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
+		openPilotCICheckMode:         ciCheckMode,
+		openPilotCIAutoRepairMode:    ciAutoRepairMode,
+		openPilotMergeMode:           mergeMode,
+		openPilotCloseIssueMode:      closeIssueMode,
+		openPilotCIRequiredChecks:    requiredChecks,
+		openPilotCICheckTimeout:      ciCheckTimeout,
+		openPilotCICheckInterval:     ciCheckInterval,
+		requireIssueSpec:             strings.EqualFold(os.Getenv("OPEN_PILOT_REQUIRE_ISSUE_SPEC"), "true"),
+		openPilotWriteMode:           openPilotWriteMode,
+		openPilotGitPushMode:         openPilotGitPushMode,
+		openPilotAutoCommitMode:      openPilotAutoCommitMode,
+		openPilotBaseBranch:          firstNonEmpty(os.Getenv("OPEN_PILOT_BASE_BRANCH"), "main"),
+		openPilotBranchPrefix:        firstNonEmpty(os.Getenv("OPEN_PILOT_BRANCH_PREFIX"), "open-pilot/"),
+		openPilotPRDraft:             !strings.EqualFold(os.Getenv("OPEN_PILOT_PR_DRAFT"), "false"),
+		openPilotWorktreeMode:        worktreeMode,
+		openPilotWorktreeCleanupMode: worktreeCleanup,
+		modelExecutor:                model,
+		openCodeExecutor:             NewEnvOpenCodeExecutor(),
+		issueFetcher:                 giteaClient,
+		giteaReader:                  giteaClient,
+		giteaMerger:                  giteaClient,
+		giteaWriter:                  giteaClient,
+		commandRunner:                NewEnvCommandRunner(),
+		worktreeManager:              NewEnvOpenPilotWorktreeManager(),
+		client:                       &http.Client{Timeout: 10 * time.Second},
 	}
 	if env.modelExecutor == nil {
 		env.modelExecutor = NewEnvModelBroker()

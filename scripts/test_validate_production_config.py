@@ -68,6 +68,15 @@ class ProductionConfigTest(unittest.TestCase):
             "OPENCODE_DATA_DIR": str(workspace.parent / "opencode-data"),
             "OPEN_PILOT_REPO_PATH": "/workspace",
             "OPEN_PILOT_WORKTREE_ROOT": "/workspace/.open-pilot-worktrees",
+            "OPEN_PILOT_CI_AUTO_REPAIR_MODE": "allow",
+            "OPEN_PILOT_CI_CHECK_MODE": "require-pass",
+            "OPEN_PILOT_AUTO_COMMIT_MODE": "allow",
+            "OPEN_PILOT_GIT_PUSH_MODE": "allow",
+            "OPEN_PILOT_GITEA_WRITE_MODE": "allow",
+            "OPEN_PILOT_WORKTREE_MODE": "allow",
+            "OPEN_PILOT_WORKTREE_CLEANUP": "disabled",
+            "GITEA_BASE_URL": "https://git.example.test",
+            "GITEA_TOKEN": "test-token",
             "SWITCHYARD_WEB_TRANSPORT": "tailscale",
             "SWITCHYARD_WEB_BIND_HOST": "100.65.164.66",
             "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",
@@ -316,13 +325,64 @@ class ProductionConfigTest(unittest.TestCase):
         )
 
     def test_push_allow_requires_gitea_url_and_token(self) -> None:
-        self.env["OPEN_PILOT_GIT_PUSH_MODE"] = "allow"
+        self.env.pop("GITEA_BASE_URL")
+        self.env.pop("GITEA_TOKEN")
         errors = validate(self.env)
         self.assertIn("GITEA_BASE_URL is required when Open Pilot Git push is allowed", errors)
         self.assertIn("GITEA_TOKEN is required when Open Pilot Git push is allowed", errors)
         self.env["GITEA_BASE_URL"] = "https://git.example.test"
         self.env["GITEA_TOKEN"] = "test-token"
         self.assertEqual(validate(self.env), [])
+
+    def test_rejects_invalid_ci_auto_repair_mode(self) -> None:
+        self.assert_rejected(
+            "OPEN_PILOT_CI_AUTO_REPAIR_MODE",
+            "dry-run",
+            "OPEN_PILOT_CI_AUTO_REPAIR_MODE must be disabled or allow",
+        )
+
+    def test_ci_auto_repair_allow_requires_safe_execution_modes(self) -> None:
+        cases = {
+            "OPEN_PILOT_CI_CHECK_MODE": "poll",
+            "OPEN_PILOT_AUTO_COMMIT_MODE": "disabled",
+            "OPEN_PILOT_GIT_PUSH_MODE": "disabled",
+            "OPEN_PILOT_GITEA_WRITE_MODE": "dry-run",
+            "OPEN_PILOT_WORKTREE_MODE": "dry-run",
+            "OPEN_PILOT_WORKTREE_CLEANUP": "on-success",
+        }
+        for name, value in cases.items():
+            with self.subTest(name=name):
+                env = dict(self.env)
+                env[name] = value
+                required = "require-pass" if name == "OPEN_PILOT_CI_CHECK_MODE" else (
+                    "disabled" if name == "OPEN_PILOT_WORKTREE_CLEANUP" else "allow"
+                )
+                self.assertIn(
+                    f"{name} must be {required} when OPEN_PILOT_CI_AUTO_REPAIR_MODE=allow",
+                    validate(env),
+                )
+
+    def test_ci_auto_repair_rejects_omitted_modes_under_full_autonomy(self) -> None:
+        self.env["OPEN_PILOT_AUTONOMY_MODE"] = "full"
+        for name in (
+            "OPEN_PILOT_CI_CHECK_MODE",
+            "OPEN_PILOT_AUTO_COMMIT_MODE",
+            "OPEN_PILOT_GIT_PUSH_MODE",
+            "OPEN_PILOT_GITEA_WRITE_MODE",
+            "OPEN_PILOT_WORKTREE_MODE",
+            "OPEN_PILOT_WORKTREE_CLEANUP",
+        ):
+            self.env.pop(name)
+        errors = validate(self.env)
+        for name in (
+            "OPEN_PILOT_CI_CHECK_MODE",
+            "OPEN_PILOT_AUTO_COMMIT_MODE",
+            "OPEN_PILOT_GIT_PUSH_MODE",
+            "OPEN_PILOT_GITEA_WRITE_MODE",
+            "OPEN_PILOT_WORKTREE_MODE",
+            "OPEN_PILOT_WORKTREE_CLEANUP",
+        ):
+            self.assertTrue(any(error.startswith(f"{name} must be ") for error in errors))
 
     def test_push_allow_rejects_unsafe_gitea_url(self) -> None:
         self.env.update(

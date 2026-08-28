@@ -18,6 +18,7 @@ type PipelineStepExecution struct {
 	Inputs         map[string]string
 	CorrelationIDs map[string]string
 	Halt           bool
+	Handoff        bool
 }
 
 type PipelineStepExecutor interface {
@@ -56,6 +57,7 @@ type Runner struct {
 
 type preAttemptContextKey struct{}
 type runStepCorrelationContextKey struct{}
+type claimedWorkerContextKey struct{}
 
 func withRunStepPreAttempt(ctx context.Context, store Store, runID, stepID string) context.Context {
 	ctx = context.WithValue(ctx, preAttemptContextKey{}, PreAttemptCallback(func(decision BackendDecision) error {
@@ -75,6 +77,11 @@ func preAttemptFromContext(ctx context.Context) PreAttemptCallback {
 func runStepCorrelationFromContext(ctx context.Context) func(map[string]string) error {
 	callback, _ := ctx.Value(runStepCorrelationContextKey{}).(func(map[string]string) error)
 	return callback
+}
+
+func claimedWorkerFromContext(ctx context.Context) string {
+	workerID, _ := ctx.Value(claimedWorkerContextKey{}).(string)
+	return workerID
 }
 
 func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
@@ -187,6 +194,9 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 		r.activeMu.Unlock()
 	}()
 	ctx = executionCtx
+	if workerID != "" {
+		ctx = context.WithValue(ctx, claimedWorkerContextKey{}, workerID)
+	}
 	select {
 	case <-ctx.Done():
 		return r.finishRun(run.ID, workerID, RunCanceled, ctx.Err().Error())
@@ -341,6 +351,11 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			defer release()
 			stepResult, err = stepExecutor.ExecutePipelineStep(withRunStepPreAttempt(ctx, r.store, run.ID, step.ID), run, resolvedStep, state)
 		}()
+		if stepResult.Handoff {
+			execution.Status = RunFailed
+			execution.Summary = stepResult.Summary
+			return execution, nil
+		}
 		if stepResult.Inputs != nil {
 			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
 				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
@@ -633,6 +648,9 @@ func validateCreateRunInput(input CreateRunInput) error {
 	}
 	for key := range input.Inputs {
 		if sensitiveJSONKey(key) {
+			return ErrInvalid
+		}
+		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") {
 			return ErrInvalid
 		}
 	}

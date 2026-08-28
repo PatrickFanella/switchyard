@@ -2,22 +2,33 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
 
 type scriptedGiteaMerger struct {
-	mergeCalls  int
-	closeCalls  int
-	mergeResult GiteaMergeResult
-	closeIssue  GiteaIssue
-	mergeErr    error
-	closeErr    error
+	mergeCalls       int
+	closeCalls       int
+	mergeResult      GiteaMergeResult
+	closeIssue       GiteaIssue
+	mergeErr         error
+	mergeErrs        []error
+	closeErr         error
+	expectedIdentity GiteaPullRequest
 }
 
-func (s *scriptedGiteaMerger) MergePullRequest(_ context.Context, _ string, _ int) (GiteaMergeResult, error) {
+func (s *scriptedGiteaMerger) MergePullRequest(_ context.Context, _ string, expected GiteaPullRequest) (GiteaMergeResult, error) {
 	s.mergeCalls++
+	s.expectedIdentity = expected
+	if len(s.mergeErrs) > 0 {
+		err := s.mergeErrs[0]
+		s.mergeErrs = s.mergeErrs[1:]
+		if err != nil {
+			return GiteaMergeResult{}, err
+		}
+	}
 	if s.mergeErr != nil {
 		return GiteaMergeResult{}, s.mergeErr
 	}
@@ -60,9 +71,10 @@ func TestOpenPilotMergeAndCloseHappyPath(t *testing.T) {
 	if err := SeedDefaults(store); err != nil {
 		t.Fatalf("SeedDefaults() error = %v", err)
 	}
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", Base: "main"}, OpenPilotPhasePRCreated)
 	model := &captureModelExecutor{response: ModelResponse{Content: "APPROVED: looks good"}}
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    testedPullRequestIdentity(),
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "success",
@@ -116,8 +128,14 @@ func TestOpenPilotMergeAndCloseHappyPath(t *testing.T) {
 	if state.Phase != OpenPilotPhaseIssueClosed || !state.IssueClosed || state.MergeCommitSHA != "deadbeef" || state.GateStatus["merge"] != "merged" || state.GateStatus["issue_close"] != "closed" {
 		t.Fatalf("state = %+v", state)
 	}
+	if restored, ok := openPilotCIPassedPullRequestFromResume(state.ResumeInputs); !ok || !sameGiteaPullRequestMergeIdentity(restored, testedPullRequestIdentity()) {
+		t.Fatalf("persisted CI-tested identity = %+v, ok=%t", restored, ok)
+	}
 	if merger.mergeCalls != 1 || merger.closeCalls != 1 {
 		t.Fatalf("merger calls = merge:%d close:%d", merger.mergeCalls, merger.closeCalls)
+	}
+	if !sameGiteaPullRequestMergeIdentity(merger.expectedIdentity, testedPullRequestIdentity()) {
+		t.Fatalf("merge identity = %+v", merger.expectedIdentity)
 	}
 	detail, err := store.RunDetail(run.ID)
 	if err != nil {
@@ -250,8 +268,11 @@ func TestOpenPilotMergeRejectsUnconfirmedMergeResult(t *testing.T) {
 	env.giteaMerger = merger
 	env.openPilotMergeMode = "allow"
 	executor := openPilotExecutor{env: env}
-	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", GateStatus: OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "passed"}, PullRequestURL: "https://git/OWNER/REPO/pulls/7", PullRequestID: 99, PullRequestNum: 7}, OpenPilotPhaseCIPassed)
-	state := map[string]any{"open-pilot.pull-request": GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7"}, "open-pilot.gate-status": map[string]string{"ai_review": "approved", "ci_checks": "passed"}}
+	checkedPR := testedPullRequestIdentity()
+	resume := map[string]string{}
+	persistOpenPilotCIPassedPullRequest(resume, checkedPR)
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", RunID: "run-1", Base: "main", GateStatus: OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "passed"}, PullRequestURL: "https://git/OWNER/REPO/pulls/7", PullRequestID: 99, PullRequestNum: 7, ResumeInputs: resume}, OpenPilotPhaseCIPassed)
+	state := map[string]any{"open-pilot.pull-request": checkedPR, "open-pilot.ci-passed-pull-request": checkedPR, "open-pilot.gate-status": map[string]string{"ai_review": "approved", "ci_checks": "passed"}}
 	_, err := executor.executeOpenPilotMerge(t.Context(), Run{ID: "run-1", WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}}, state)
 	if err == nil || !strings.Contains(err.Error(), "did not confirm merged") {
 		t.Fatalf("expected unconfirmed merge error, got %v", err)
@@ -262,6 +283,154 @@ func TestOpenPilotMergeRejectsUnconfirmedMergeResult(t *testing.T) {
 	}
 	if saved.Phase != OpenPilotPhaseFailed || saved.GateStatus["merge"] != "failed" || saved.MergeCommitSHA != "" || saved.FailingGate != "merge" || saved.RecommendedNextAction == "" || saved.OperatorSummary == "" {
 		t.Fatalf("saved = %+v", saved)
+	}
+}
+
+func TestOpenPilotMergeRequiresCIPassedHeadAndDurableBase(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*GiteaPullRequest)
+	}{
+		{name: "head", mutate: func(pr *GiteaPullRequest) { pr.Head.SHA = "" }},
+		{name: "base", mutate: func(pr *GiteaPullRequest) { pr.Base.SHA = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewStore(func() time.Time { return time.Unix(100, 0) })
+			if err := SeedDefaults(store); err != nil {
+				t.Fatal(err)
+			}
+			pr := testedPullRequestIdentity()
+			test.mutate(&pr)
+			resume := map[string]string{}
+			persistOpenPilotCIPassedPullRequest(resume, pr)
+			seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", RunID: "run-1", Base: "main", GateStatus: OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "passed"}, PullRequestID: pr.ID, PullRequestNum: pr.Number, ResumeInputs: resume}, OpenPilotPhaseCIPassed)
+			merger := &scriptedGiteaMerger{mergeResult: GiteaMergeResult{Merged: true}}
+			env := newOpenPilotAIReviewTestEnv(store)
+			env.giteaMerger = merger
+			env.openPilotMergeMode = "allow"
+			state := map[string]any{"open-pilot.pull-request": pr, "open-pilot.ci-passed-pull-request": pr, "open-pilot.gate-status": map[string]string{"ai_review": "approved", "ci_checks": "passed"}}
+			_, err := (openPilotExecutor{env: env}).executeOpenPilotMerge(t.Context(), Run{ID: "run-1", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}}, state)
+			if err == nil || merger.mergeCalls != 0 {
+				t.Fatalf("error/calls = %v/%d", err, merger.mergeCalls)
+			}
+		})
+	}
+}
+
+func testedPullRequestIdentity() GiteaPullRequest {
+	return GiteaPullRequest{
+		ID: 99, Number: 7, State: "open", HTMLURL: "https://git/OWNER/REPO/pulls/7",
+		Head: GiteaPullRequestRef{Repo: pullRequestRepoIdentity("OWNER/REPO"), Ref: "open-pilot/issue-123", SHA: "abc123"},
+		Base: GiteaPullRequestRef{Repo: pullRequestRepoIdentity("OWNER/REPO"), Ref: "main", SHA: "base123"},
+	}
+}
+
+func TestOpenPilotMergeRecoversDurableCITestedIdentity(t *testing.T) {
+	for _, phase := range []OpenPilotPhase{OpenPilotPhaseCIPassed, OpenPilotPhaseMergeReady} {
+		t.Run(string(phase), func(t *testing.T) {
+			store := NewStore(func() time.Time { return time.Unix(100, 0) })
+			if err := SeedDefaults(store); err != nil {
+				t.Fatal(err)
+			}
+			run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := testedPullRequestIdentity()
+			resume := map[string]string{}
+			persistOpenPilotCIPassedPullRequest(resume, pr)
+			seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{
+				Repo: "OWNER/REPO", Issue: "123", RunID: run.ID, Base: "main", Branch: pr.Head.Ref,
+				PullRequestURL: pr.HTMLURL, PullRequestID: pr.ID, PullRequestNum: pr.Number,
+				GateStatus: OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "passed"}, ResumeInputs: resume,
+			}, phase)
+			merger := &scriptedGiteaMerger{mergeResult: GiteaMergeResult{Merged: true, SHA: "deadbeef"}}
+			env := newOpenPilotAIReviewTestEnv(store)
+			env.giteaMerger = merger
+			env.openPilotMergeMode = "allow"
+			hydrated := map[string]any{}
+			(openPilotExecutor{env: env}).HydratePipelineResumeState(run, Pipeline{}, hydrated)
+			if !openPilotMergeStepReady(run, hydrated) {
+				t.Fatalf("merge state not restored: %+v", hydrated)
+			}
+			execution, err := (openPilotExecutor{env: env}).executeOpenPilotMerge(t.Context(), run, hydrated)
+			if err != nil || execution.Summary != "Merged pull request" {
+				t.Fatalf("execution = %+v, error = %v", execution, err)
+			}
+			if merger.mergeCalls != 1 || !sameGiteaPullRequestMergeIdentity(merger.expectedIdentity, pr) {
+				t.Fatalf("merge calls/identity = %d/%+v", merger.mergeCalls, merger.expectedIdentity)
+			}
+			saved, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+			if err != nil || saved.Phase != OpenPilotPhaseMerged || saved.GateStatus["merge"] != "merged" {
+				t.Fatalf("saved = %+v, error = %v", saved, err)
+			}
+		})
+	}
+}
+
+func TestOpenPilotMergeGenericRetryPreservesMergeReadyIdentity(t *testing.T) {
+	t.Setenv("SWITCHYARD_RUN_RETRY_BACKOFF", "1s")
+	now := time.Unix(100, 0).UTC()
+	store := NewStore(func() time.Time { return now })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	pr := testedPullRequestIdentity()
+	pipeline := Pipeline{ID: "merge-retry", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "merge-pr", Position: 11, Name: "open-pilot.merge-pr", Executor: "gitea"}}}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume := map[string]string{}
+	persistOpenPilotCIPassedPullRequest(resume, pr)
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{
+		Repo: "OWNER/REPO", Issue: "123", RunID: run.ID, Base: "main", Branch: pr.Head.Ref,
+		PullRequestURL: pr.HTMLURL, PullRequestID: pr.ID, PullRequestNum: pr.Number,
+		GateStatus: OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "passed"}, ResumeInputs: resume,
+	}, OpenPilotPhaseCIPassed)
+	merger := &scriptedGiteaMerger{mergeErrs: []error{errors.New(strings.Repeat("temporary gitea error ", 300)), nil}, mergeResult: GiteaMergeResult{Merged: true, SHA: "deadbeef"}}
+	env := newOpenPilotAIReviewTestEnv(store)
+	env.giteaMerger = merger
+	env.openPilotMergeMode = "allow"
+	runner := NewRunner(store, MapExecutorRegistry{string(WorkflowOpenPilot): openPilotExecutor{env: env}})
+	pool := NewWorkerPool(store, runner, 1, time.Minute, time.Hour, func() time.Time { return now })
+
+	claimed, err := store.ClaimNextRun("worker-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.execute(t.Context(), "worker-1", claimed)
+	saved, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil || saved.Phase != OpenPilotPhaseMergeReady || saved.GateStatus["merge"] != "merge_ready" || saved.FailingGate != "merge" || saved.LastError == "" || len(saved.LastError) > openPilotCIRepairMaxFeedbackBytes {
+		t.Fatalf("retry state = %+v, %v", saved, err)
+	}
+	restored, ok := openPilotCIPassedPullRequestFromResume(saved.ResumeInputs)
+	if !ok || !sameGiteaPullRequestMergeIdentity(restored, pr) {
+		t.Fatalf("retry identity = %+v, ok=%t", restored, ok)
+	}
+
+	now = now.Add(time.Second)
+	claimed, err = store.ClaimNextRun("worker-2", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.execute(t.Context(), "worker-2", claimed)
+	saved, err = store.OpenPilotIssueState("OWNER/REPO", "123")
+	if err != nil || saved.Phase != OpenPilotPhaseMerged || saved.GateStatus["merge"] != "merged" || merger.mergeCalls != 2 {
+		t.Fatalf("merged state/calls = %+v/%d, %v", saved, merger.mergeCalls, err)
+	}
+}
+
+func TestHydratePipelineResumeStateRejectsDifferentRun(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	pr := testedPullRequestIdentity()
+	resume := map[string]string{}
+	persistOpenPilotCIPassedPullRequest(resume, pr)
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "123", RunID: "other-run", PullRequestID: pr.ID, PullRequestNum: pr.Number, GateStatus: OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "passed"}, ResumeInputs: resume}, OpenPilotPhaseCIPassed)
+	state := map[string]any{}
+	(openPilotExecutor{env: newOpenPilotAIReviewTestEnv(store)}).HydratePipelineResumeState(Run{ID: "current-run", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}}, Pipeline{}, state)
+	if _, ok := state["open-pilot.ci-passed-pull-request"]; ok || len(openPilotGateStatusFromState(state)) != 0 {
+		t.Fatalf("hydrated foreign durable state: %+v", state)
 	}
 }
 

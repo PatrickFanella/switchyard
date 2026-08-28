@@ -56,6 +56,7 @@ type GiteaPullRequest struct {
 	URL            string              `json:"url"`
 	HTMLURL        string              `json:"html_url"`
 	MergeCommitSHA string              `json:"merge_commit_sha,omitempty"`
+	Merged         bool                `json:"merged,omitempty"`
 	Head           GiteaPullRequestRef `json:"head,omitempty"`
 	Base           GiteaPullRequestRef `json:"base,omitempty"`
 }
@@ -111,7 +112,7 @@ type GiteaPullRequestReader interface {
 
 // GiteaPullRequestMerger merges pull requests and closes issues in Gitea.
 type GiteaPullRequestMerger interface {
-	MergePullRequest(ctx context.Context, repo string, number int) (GiteaMergeResult, error)
+	MergePullRequest(ctx context.Context, repo string, expected GiteaPullRequest) (GiteaMergeResult, error)
 	CloseIssue(ctx context.Context, repo string, issue string) (GiteaIssue, error)
 }
 
@@ -405,7 +406,7 @@ func (c *EnvGiteaClient) PullRequestChecks(ctx context.Context, repo string, pr 
 }
 
 // MergePullRequest merges the specified pull request.
-func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, number int) (GiteaMergeResult, error) {
+func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, expected GiteaPullRequest) (GiteaMergeResult, error) {
 	if c.baseURL == "" {
 		return GiteaMergeResult{}, fmt.Errorf("GITEA_BASE_URL is not configured")
 	}
@@ -413,14 +414,36 @@ func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, numb
 	if err != nil {
 		return GiteaMergeResult{}, err
 	}
-	if number < 1 {
-		return GiteaMergeResult{}, fmt.Errorf("pull request number must be positive")
+	if err := validateGiteaPullRequestMergeIdentity(repo, expected); err != nil {
+		return GiteaMergeResult{}, err
 	}
-	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "pulls", strconv.Itoa(number), "merge")
+	pullEndpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "pulls", strconv.Itoa(expected.Number))
 	if err != nil {
 		return GiteaMergeResult{}, err
 	}
-	body, err := json.Marshal(map[string]string{"Do": "merge"})
+	var current GiteaPullRequest
+	preflight, err := c.doJSON(ctx, http.MethodGet, pullEndpoint, nil, &current)
+	if err != nil {
+		return GiteaMergeResult{}, err
+	}
+	defer preflight.Body.Close()
+	if preflight.StatusCode < 200 || preflight.StatusCode > 299 {
+		return GiteaMergeResult{}, fmt.Errorf("gitea pull request preflight failed: %s", preflight.Status)
+	}
+	if !strings.EqualFold(strings.TrimSpace(current.State), "open") || current.Merged || !sameGiteaPullRequestMergeIdentity(current, expected) {
+		return GiteaMergeResult{}, fmt.Errorf("gitea pull request changed before merge")
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "pulls", strconv.Itoa(expected.Number), "merge")
+	if err != nil {
+		return GiteaMergeResult{}, err
+	}
+	body, err := json.Marshal(struct {
+		Do                     string `json:"do"`
+		HeadCommitID           string `json:"head_commit_id"`
+		ForceMerge             bool   `json:"force_merge"`
+		MergeWhenChecksSucceed bool   `json:"merge_when_checks_succeed"`
+		DeleteBranchAfterMerge bool   `json:"delete_branch_after_merge"`
+	}{Do: "merge", HeadCommitID: expected.Head.SHA})
 	if err != nil {
 		return GiteaMergeResult{}, err
 	}
@@ -447,7 +470,7 @@ func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, numb
 	if len(data) == 0 {
 		result := GiteaMergeResult{Merged: true, Message: "merged; merge commit SHA unavailable"}
 		var pr GiteaPullRequest
-		prResp, getErr := c.doJSON(ctx, http.MethodGet, strings.TrimSuffix(endpoint, "/merge"), nil, &pr)
+		prResp, getErr := c.doJSON(ctx, http.MethodGet, pullEndpoint, nil, &pr)
 		if prResp != nil {
 			prResp.Body.Close()
 		}
@@ -465,6 +488,27 @@ func (c *EnvGiteaClient) MergePullRequest(ctx context.Context, repo string, numb
 		raw.Message = "merged"
 	}
 	return raw, nil
+}
+
+func validateGiteaPullRequestMergeIdentity(repo string, pr GiteaPullRequest) error {
+	if pr.ID < 1 || pr.Number < 1 || pr.Head.Repo == nil || strings.TrimSpace(pr.Head.Repo.FullName) == "" || strings.TrimSpace(pr.Head.Ref) == "" || strings.TrimSpace(pr.Head.SHA) == "" || pr.Base.Repo == nil || strings.TrimSpace(pr.Base.Repo.FullName) == "" || strings.TrimSpace(pr.Base.Ref) == "" || strings.TrimSpace(pr.Base.SHA) == "" {
+		return fmt.Errorf("complete expected pull request identity is required")
+	}
+	if strings.TrimSpace(pr.Base.Repo.FullName) != strings.TrimSpace(repo) {
+		return fmt.Errorf("expected pull request base repository does not match merge repository")
+	}
+	return nil
+}
+
+func sameGiteaPullRequestMergeIdentity(left, right GiteaPullRequest) bool {
+	return left.ID == right.ID &&
+		left.Number == right.Number &&
+		left.Head.Repo != nil && right.Head.Repo != nil && left.Head.Repo.FullName == right.Head.Repo.FullName &&
+		left.Head.Ref == right.Head.Ref &&
+		left.Head.SHA == right.Head.SHA &&
+		left.Base.Repo != nil && right.Base.Repo != nil && left.Base.Repo.FullName == right.Base.Repo.FullName &&
+		left.Base.Ref == right.Base.Ref &&
+		left.Base.SHA == right.Base.SHA
 }
 
 // CloseIssue closes a Gitea issue and returns the updated issue.

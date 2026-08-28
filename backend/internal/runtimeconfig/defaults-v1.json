@@ -44,6 +44,7 @@
     "OPEN_PILOT_ALLOWED_GIT_VERBS": {"runtime": "status,diff,checkout,switch,branch,add,commit", "compose": "status,diff,checkout,switch,branch,add,commit", "example": "status,diff,checkout,switch,branch,add,commit"},
     "OPEN_PILOT_DENIED_COMMANDS": {"runtime": "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish", "compose": "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish", "example": "rm,sudo,curl,wget,ssh,scp,docker,chmod,chown,dd,mkfs,bash,sh,zsh,fish"},
     "OPEN_PILOT_COMMAND_TIMEOUT": {"runtime": "120s", "compose": "120s", "example": "120s"},
-    "OPEN_PILOT_WORKTREE_TIMEOUT": {"runtime": "120s", "compose": "120s", "example": "120s"}
+    "OPEN_PILOT_WORKTREE_TIMEOUT": {"runtime": "120s", "compose": "120s", "example": "120s"},
+    "OPEN_PILOT_CI_AUTO_REPAIR_MODE": {"runtime": "disabled", "compose": "disabled", "example": "disabled"}
   }
 }

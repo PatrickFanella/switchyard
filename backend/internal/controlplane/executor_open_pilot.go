@@ -389,11 +389,15 @@ func (o openPilotExecutor) HydratePipelineResumeState(run Run, _ Pipeline, state
 		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
 		return
 	}
-	if strings.TrimSpace(run.Inputs["retry_from_step"]) != "" {
+	if saved.RunID == run.ID {
 		o.hydrateOpenPilotPipelineStateFromIssueState(run, saved, state)
 		return
 	}
-	if saved.Phase != OpenPilotPhaseFailed && saved.Phase != OpenPilotPhasePaused && saved.Phase != OpenPilotPhaseMerged && saved.Phase != OpenPilotPhaseIssueClosed {
+	if saved.RunID != "" {
+		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
+		return
+	}
+	if strings.TrimSpace(run.Inputs["retry_from_step"]) == "" && saved.Phase != OpenPilotPhaseFailed && saved.Phase != OpenPilotPhasePaused && saved.Phase != OpenPilotPhaseMerged && saved.Phase != OpenPilotPhaseIssueClosed {
 		o.hydrateOpenPilotPipelineStateFromResumeInputs(run, state)
 		return
 	}
@@ -471,6 +475,11 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 	}
 	if issueState.PullRequestURL != "" || issueState.PullRequestID != 0 || issueState.PullRequestNum != 0 {
 		state["open-pilot.pull-request"] = GiteaPullRequest{ID: issueState.PullRequestID, Number: issueState.PullRequestNum, HTMLURL: issueState.PullRequestURL}
+	}
+	if pr, ok := openPilotCIPassedPullRequestFromResume(issueState.ResumeInputs); ok && (issueState.Phase == OpenPilotPhaseCIPassed || issueState.Phase == OpenPilotPhaseMergeReady) {
+		pr.HTMLURL = issueState.PullRequestURL
+		state["open-pilot.pull-request"] = pr
+		state["open-pilot.ci-passed-pull-request"] = pr
 	}
 	if issueState.MergeCommitSHA != "" {
 		state["open-pilot.merge-commit-sha"] = issueState.MergeCommitSHA
@@ -572,6 +581,56 @@ func setOpenPilotResumeBool(inputs map[string]string, key string, value bool) {
 		return
 	}
 	inputs[key] = "true"
+}
+
+func persistOpenPilotCIPassedPullRequest(inputs map[string]string, pr GiteaPullRequest) {
+	setOpenPilotResumeInput(inputs, openPilotCIPassedPRIDKey, strconv.Itoa(pr.ID))
+	setOpenPilotResumeInput(inputs, openPilotCIPassedPRNumberKey, strconv.Itoa(pr.Number))
+	if pr.Head.Repo != nil {
+		setOpenPilotResumeInput(inputs, openPilotCIPassedHeadRepoKey, pr.Head.Repo.FullName)
+	}
+	setOpenPilotResumeInput(inputs, openPilotCIPassedHeadRefKey, pr.Head.Ref)
+	setOpenPilotResumeInput(inputs, openPilotCIPassedHeadSHAKey, pr.Head.SHA)
+	if pr.Base.Repo != nil {
+		setOpenPilotResumeInput(inputs, openPilotCIPassedBaseRepoKey, pr.Base.Repo.FullName)
+	}
+	setOpenPilotResumeInput(inputs, openPilotCIPassedBaseRefKey, pr.Base.Ref)
+	setOpenPilotResumeInput(inputs, openPilotCIPassedBaseSHAKey, pr.Base.SHA)
+}
+
+func openPilotCIPassedPullRequestFromResume(inputs map[string]string) (GiteaPullRequest, bool) {
+	id, idErr := strconv.Atoi(strings.TrimSpace(inputs[openPilotCIPassedPRIDKey]))
+	number, numberErr := strconv.Atoi(strings.TrimSpace(inputs[openPilotCIPassedPRNumberKey]))
+	headRepo := strings.TrimSpace(inputs[openPilotCIPassedHeadRepoKey])
+	baseRepo := strings.TrimSpace(inputs[openPilotCIPassedBaseRepoKey])
+	pr := GiteaPullRequest{
+		ID:     id,
+		Number: number,
+		Head: GiteaPullRequestRef{
+			Repo: pullRequestRepoIdentity(headRepo),
+			Ref:  strings.TrimSpace(inputs[openPilotCIPassedHeadRefKey]),
+			SHA:  strings.TrimSpace(inputs[openPilotCIPassedHeadSHAKey]),
+		},
+		Base: GiteaPullRequestRef{
+			Repo: pullRequestRepoIdentity(baseRepo),
+			Ref:  strings.TrimSpace(inputs[openPilotCIPassedBaseRefKey]),
+			SHA:  strings.TrimSpace(inputs[openPilotCIPassedBaseSHAKey]),
+		},
+	}
+	if idErr != nil || numberErr != nil || headRepo == "" || baseRepo == "" || validateGiteaPullRequestMergeIdentity(baseRepo, pr) != nil {
+		return pr, false
+	}
+	return pr, true
+}
+
+func pullRequestRepoIdentity(fullName string) *struct {
+	Name     string `json:"name,omitempty"`
+	FullName string `json:"full_name,omitempty"`
+} {
+	return &struct {
+		Name     string `json:"name,omitempty"`
+		FullName string `json:"full_name,omitempty"`
+	}{FullName: fullName}
 }
 
 func openPilotPullRequestKnown(pr GiteaPullRequest) bool {
@@ -747,6 +806,9 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_id", fmt.Sprintf("%d", pr.ID))
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.pr-plan.pull_request_number", fmt.Sprintf("%d", pr.Number))
 	}
+	if pr, ok := state["open-pilot.ci-passed-pull-request"].(GiteaPullRequest); ok {
+		persistOpenPilotCIPassedPullRequest(saved.ResumeInputs, pr)
+	}
 	if mergeResult, ok := state["open-pilot.merge-result"].(GiteaMergeResult); ok && mergeResult.Merged {
 		saved.MergeCommitSHA = mergeResult.SHA
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.merge-pr.merge_commit_sha", mergeResult.SHA)
@@ -813,6 +875,12 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 		if state != nil {
 			state["open-pilot.failure-diagnostics.persisted"] = true
 		}
+	} else if phase == OpenPilotPhaseMergeReady && lastErr != "" {
+		lastErr = boundedOpenPilotCIRepairText(lastErr, openPilotCIRepairMaxFeedbackBytes)
+		saved.LastError = lastErr
+		saved.FailingGate = "merge"
+		saved.OperatorSummary = boundedOpenPilotCIRepairText(summarizeOpenPilotFailure("Merge retry pending", lastErr), openPilotCIRepairMaxFeedbackBytes)
+		saved.RecommendedNextAction = "retry"
 	}
 	if saved.MaxRepairAttempts == 0 {
 		saved.MaxRepairAttempts = openPilotDefaultMaxRepairAttempts
@@ -1034,6 +1102,16 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
 			}
 			return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
+		}
+		if run.Inputs[openPilotCIRepairParentRunIDKey] != "" {
+			if err := o.validateOpenPilotCIRepairAgentTarget(ctx, run, branchPlan); err != nil {
+				message := fmt.Sprintf("Open Pilot CI repair paused: %v", err)
+				fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), fallbackState); persistErr != nil {
+					return PipelineStepExecution{Summary: message, Halt: true}, errors.Join(err, persistErr)
+				}
+				return PipelineStepExecution{Summary: message, Halt: true}, nil
+			}
 		}
 		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
 		request.PreAttempt = preAttemptFromContext(ctx)
@@ -1407,6 +1485,26 @@ type openPilotCICheckResult struct {
 	summary string
 }
 
+type openPilotCIFailedCheck struct {
+	Name string
+	URL  string
+}
+
+const (
+	openPilotCIFeedbackMaxChecks = 8
+	openPilotCIFeedbackMaxName   = 128
+	openPilotCIFeedbackMaxURL    = 512
+	openPilotCIFeedbackMaxTotal  = 4096
+	openPilotCIPassedPRIDKey     = "resume.open-pilot.ci-checks.pull_request_id"
+	openPilotCIPassedPRNumberKey = "resume.open-pilot.ci-checks.pull_request_number"
+	openPilotCIPassedHeadRepoKey = "resume.open-pilot.ci-checks.head_repo_full_name"
+	openPilotCIPassedHeadRefKey  = "resume.open-pilot.ci-checks.head_ref"
+	openPilotCIPassedHeadSHAKey  = "resume.open-pilot.ci-checks.head_sha"
+	openPilotCIPassedBaseRepoKey = "resume.open-pilot.ci-checks.base_repo_full_name"
+	openPilotCIPassedBaseRefKey  = "resume.open-pilot.ci-checks.base_ref"
+	openPilotCIPassedBaseSHAKey  = "resume.open-pilot.ci-checks.base_sha"
+)
+
 func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run, state map[string]any) (PipelineStepExecution, error) {
 	if o.env == nil {
 		return PipelineStepExecution{}, errors.New("open-pilot CI checks not configured")
@@ -1417,6 +1515,13 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 	}
 	if mode != "disabled" && mode != "poll" && mode != "require-pass" {
 		return PipelineStepExecution{}, fmt.Errorf("unsupported OPEN_PILOT_CI_CHECK_MODE %q", mode)
+	}
+	autoRepairMode := strings.TrimSpace(o.env.openPilotCIAutoRepairMode)
+	if autoRepairMode == "" {
+		autoRepairMode = "disabled"
+	}
+	if autoRepairMode != "disabled" && autoRepairMode != "allow" {
+		return PipelineStepExecution{}, fmt.Errorf("unsupported OPEN_PILOT_CI_AUTO_REPAIR_MODE %q", autoRepairMode)
 	}
 	gateStatus := map[string]string{}
 	if existing := openPilotGateStatusFromState(state); len(existing) > 0 {
@@ -1433,7 +1538,7 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 		}
 		return PipelineStepExecution{Summary: "CI checks skipped"}, nil
 	}
-	pr, prFound, err := o.resolveOpenPilotCIPullRequest(ctx, run, state, false)
+	pr, prFound, err := o.refreshOpenPilotCIPullRequest(ctx, run, state)
 	if err != nil {
 		gateStatus["ci_checks"] = "failed"
 		state["open-pilot.gate-status"] = gateStatus
@@ -1471,8 +1576,36 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 		outcome, done := evaluateOpenPilotCIChecks(requiredChecks, snapshot)
 		if done {
 			if outcome.status == "failed" {
+				currentPR, currentFound, refreshErr := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+				if refreshErr == nil && currentFound {
+					if feedback, concrete := buildOpenPilotCIRepairFeedback(requiredChecks, snapshot, currentPR.Head.SHA); concrete {
+						if handoff, handoffErr := o.tryOpenPilotCIRepair(ctx, run, state, currentPR, snapshot.SHA, feedback); handoffErr != nil {
+							state["open-pilot.failure-diagnostics.persisted"] = true
+							return PipelineStepExecution{Summary: "CI repair handoff failed", CorrelationIDs: prCorrelationIDs(currentPR)}, handoffErr
+						} else if handoff.Handoff {
+							return handoff, nil
+						}
+					}
+					pr = currentPR
+					state["open-pilot.pull-request"] = currentPR
+				}
 				return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "failed", pr, &snapshot, errors.New(outcome.summary))
 			}
+			checkedPR := pr
+			state["open-pilot.pull-request"] = checkedPR
+			freshPR, found, refreshErr := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+			if refreshErr != nil || !found || strings.TrimSpace(snapshot.SHA) == "" || freshPR.Head.SHA != strings.TrimSpace(snapshot.SHA) {
+				if refreshErr == nil {
+					refreshErr = errors.New("open-pilot pull request head changed after CI checks passed")
+				}
+				return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "failed", checkedPR, &snapshot, refreshErr)
+			}
+			pr = freshPR
+			if identityErr := validateGiteaPullRequestMergeIdentity(run.Inputs["repo"], pr); identityErr != nil {
+				return o.persistOpenPilotCICheckFailure(run, state, gateStatus, "failed", checkedPR, &snapshot, identityErr)
+			}
+			state["open-pilot.pull-request"] = freshPR
+			state["open-pilot.ci-passed-pull-request"] = freshPR
 			gateStatus["ci_checks"] = outcome.status
 			state["open-pilot.gate-status"] = gateStatus
 			artifactBody, artifact := buildOpenPilotCICheckArtifact(run.Inputs["repo"], pr, mode, requiredChecks, snapshot, outcome.status, outcome.summary)
@@ -1500,6 +1633,153 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 		case <-timer.C:
 		}
 	}
+}
+
+func (o openPilotExecutor) refreshOpenPilotCIPullRequest(ctx context.Context, run Run, state map[string]any) (GiteaPullRequest, bool, error) {
+	if o.env == nil || o.env.giteaReader == nil {
+		return GiteaPullRequest{}, false, errors.New("gitea pull request reader not configured")
+	}
+	head := openPilotPullRequestHeadCandidate(state, run.Inputs)
+	if head == "" {
+		return GiteaPullRequest{}, false, errors.New("open-pilot pull request head is required")
+	}
+	persisted, _ := state["open-pilot.pull-request"].(GiteaPullRequest)
+	pr, found, err := o.env.giteaReader.FindPullRequestByHead(ctx, run.Inputs["repo"], head)
+	if err != nil || !found {
+		if err != nil {
+			return GiteaPullRequest{}, false, err
+		}
+		return GiteaPullRequest{}, false, errors.New("open-pilot pull request not found by head")
+	}
+	if err := validateOpenPilotCIPullRequestIdentity(run.Inputs["repo"], head, persisted, pr); err != nil {
+		return GiteaPullRequest{}, false, err
+	}
+	return pr, true, nil
+}
+
+func validateOpenPilotCIPullRequestIdentity(repo, head string, persisted, fresh GiteaPullRequest) error {
+	if !strings.EqualFold(strings.TrimSpace(fresh.State), "open") {
+		return errors.New("open-pilot pull request is not open")
+	}
+	if fresh.ID < 1 || fresh.Number < 1 || (persisted.ID > 0 && persisted.ID != fresh.ID) || (persisted.Number > 0 && persisted.Number != fresh.Number) {
+		return errors.New("open-pilot pull request identity changed")
+	}
+	if persisted.HTMLURL != "" && persisted.HTMLURL != fresh.HTMLURL {
+		return errors.New("open-pilot pull request URL changed")
+	}
+	if strings.TrimSpace(fresh.Head.Ref) != strings.TrimSpace(head) {
+		return errors.New("open-pilot pull request head branch changed")
+	}
+	if fresh.Head.Repo != nil && strings.TrimSpace(fresh.Head.Repo.FullName) != "" && strings.TrimSpace(fresh.Head.Repo.FullName) != strings.TrimSpace(repo) {
+		return errors.New("open-pilot pull request repository changed")
+	}
+	if strings.TrimSpace(fresh.Head.SHA) == "" {
+		return errors.New("open-pilot pull request head sha is required")
+	}
+	return nil
+}
+
+func (o openPilotExecutor) validateOpenPilotCIRepairAgentTarget(ctx context.Context, run Run, plan OpenPilotWorktreePlan) error {
+	repo := strings.TrimSpace(run.Inputs[openPilotCIRepairRepoKey])
+	head := strings.TrimSpace(run.Inputs[openPilotCIRepairHeadBranchKey])
+	failedSHA := strings.TrimSpace(run.Inputs[openPilotCIRepairFailedHeadSHAKey])
+	prID, idErr := strconv.Atoi(strings.TrimSpace(run.Inputs[openPilotCIRepairPRIDKey]))
+	prNumber, numberErr := strconv.Atoi(strings.TrimSpace(run.Inputs[openPilotCIRepairPRNumberKey]))
+	if repo == "" || repo != strings.TrimSpace(run.Inputs["repo"]) || head == "" || failedSHA == "" || idErr != nil || numberErr != nil || prID < 1 || prNumber < 1 {
+		return errors.New("protected CI repair pull request identity is invalid")
+	}
+	if o.env == nil || o.env.giteaReader == nil {
+		return errors.New("gitea pull request reader not configured")
+	}
+	pr, found, err := o.env.giteaReader.FindPullRequestByHead(ctx, repo, head)
+	if err != nil {
+		return fmt.Errorf("re-fetch CI repair pull request: %w", err)
+	}
+	if !found || pr.ID != prID || pr.Number != prNumber || !strings.EqualFold(strings.TrimSpace(pr.State), "open") || strings.TrimSpace(pr.Head.Ref) != head || pr.Head.Repo == nil || strings.TrimSpace(pr.Head.Repo.FullName) != repo {
+		return errors.New("CI repair pull request identity changed")
+	}
+	if strings.TrimSpace(pr.Head.SHA) != failedSHA {
+		return errors.New("CI repair pull request head changed")
+	}
+	if plan.Repo != repo || plan.Branch != head {
+		return errors.New("CI repair worktree identity changed")
+	}
+	identity, err := validateOpenPilotWorktreeIdentity(ctx, repo, plan.RepoPath, plan.WorktreePath, plan.Branch, false)
+	if err != nil {
+		return fmt.Errorf("revalidate managed CI repair worktree before OpenCode: %w", err)
+	}
+	defer identity.Close()
+	localSHA, err := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("read managed CI repair worktree HEAD: %w", err)
+	}
+	if strings.TrimSpace(localSHA) != failedSHA {
+		return errors.New("CI repair worktree HEAD changed")
+	}
+	status, err := identityGitOutput(ctx, identity, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("read managed CI repair worktree status: %w", err)
+	}
+	if status != "" {
+		return errors.New("CI repair worktree is not clean")
+	}
+	return nil
+}
+
+func (o openPilotExecutor) tryOpenPilotCIRepair(ctx context.Context, run Run, state map[string]any, pr GiteaPullRequest, snapshotSHA, feedback string) (PipelineStepExecution, error) {
+	if o.env.openPilotCIAutoRepairMode != "allow" || o.env.openPilotCICheckMode != "require-pass" || o.env.openPilotAutoCommitMode != "allow" || o.env.openPilotGitPushMode != "allow" || o.env.openPilotWriteMode != "allow" || o.env.openPilotWorktreeMode != "allow" || o.env.openPilotWorktreeCleanupMode != "disabled" {
+		return PipelineStepExecution{}, nil
+	}
+	workerID := claimedWorkerFromContext(ctx)
+	if workerID == "" || o.env.store == nil {
+		return PipelineStepExecution{}, nil
+	}
+	saved, err := o.env.store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+	if err != nil || saved.RunID != run.ID || saved.Branch == "" || saved.WorktreePath == "" || saved.PullRequestID < 1 || saved.PullRequestNum < 1 {
+		return PipelineStepExecution{}, nil
+	}
+	if saved.Branch != pr.Head.Ref || saved.PullRequestID != pr.ID || saved.PullRequestNum != pr.Number || saved.PullRequestURL != pr.HTMLURL {
+		return PipelineStepExecution{}, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(pr.State), "open") || pr.Head.Repo == nil || strings.TrimSpace(pr.Head.Repo.FullName) != saved.Repo {
+		return PipelineStepExecution{}, nil
+	}
+	if openPilotAgentSessionID(saved.ResumeInputs, state) == "" {
+		return PipelineStepExecution{}, nil
+	}
+	plan := openPilotWorktreePlanFromResume(saved.ResumeInputs)
+	if !openPilotHasExecutedWorktree(plan) || plan.Branch != saved.Branch || plan.WorktreePath != saved.WorktreePath {
+		return PipelineStepExecution{}, nil
+	}
+	identity, err := validateOpenPilotWorktreeIdentity(ctx, saved.Repo, plan.RepoPath, saved.WorktreePath, saved.Branch, false)
+	if err != nil {
+		return PipelineStepExecution{}, nil
+	}
+	_ = identity.Close()
+	state["open-pilot.pull-request"] = pr
+	freshPR, found, err := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+	if err != nil || !found || strings.TrimSpace(snapshotSHA) == "" || freshPR.Head.SHA != strings.TrimSpace(snapshotSHA) {
+		return PipelineStepExecution{}, nil
+	}
+	prompt := buildOpenPilotCIRepairPrompt(feedback)
+	request := OpenPilotCIRepairRequest{
+		Repo: saved.Repo, Issue: saved.Issue, ParentRunID: run.ID, ExpectedWorkerID: workerID, ExpectedAttemptCount: run.AttemptCount,
+		PullRequestID: freshPR.ID, PullRequestNumber: freshPR.Number, HeadBranch: freshPR.Head.Ref, FailedHeadSHA: freshPR.Head.SHA,
+		Feedback: feedback, ChildRun: CreateRunInput{Inputs: map[string]string{"resume.open-pilot.prompt": prompt}},
+	}
+	result, err := o.env.store.HandleOpenPilotCIFailure(request)
+	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrNotFound) {
+		result, err = o.env.store.HandleOpenPilotCIFailure(request)
+	}
+	if err != nil {
+		return PipelineStepExecution{}, err
+	}
+	summary := result.ParentRun.Summary
+	return PipelineStepExecution{Summary: summary, Handoff: true}, nil
+}
+
+func buildOpenPilotCIRepairPrompt(feedback string) string {
+	return boundedOpenPilotCIRepairText("Repair only the concrete required CI failures on the existing pull request. Reuse the current branch, worktree, OpenCode session, and pull request. Inspect the linked checks, make the smallest code or test change, run the configured local verification, commit, and push the existing branch. Do not create another branch or pull request.\n\n"+feedback, openPilotCIRepairMaxPromptBytes)
 }
 
 func openPilotPullRequestNumberFromState(state map[string]any, inputs map[string]string) int {
@@ -1588,19 +1868,37 @@ func (o openPilotExecutor) executeOpenPilotMerge(ctx context.Context, run Run, s
 		}
 		return PipelineStepExecution{Summary: "Merge dry-run"}, nil
 	case "allow":
-		if o.env == nil || o.env.giteaMerger == nil {
+		if o.env == nil || o.env.giteaMerger == nil || o.env.store == nil {
 			return PipelineStepExecution{}, errors.New("gitea pull request merger not configured")
+		}
+		ciPassedPR, _ := state["open-pilot.ci-passed-pull-request"].(GiteaPullRequest)
+		durableState, stateErr := o.env.store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+		if stateErr == nil && (durableState.RunID != run.ID || (durableState.Phase != OpenPilotPhaseCIPassed && durableState.Phase != OpenPilotPhaseMergeReady)) {
+			stateErr = errors.New("durable open-pilot state is not CI-passed for this run")
+		}
+		expectedPR, identityOK := openPilotCIPassedPullRequestFromResume(durableState.ResumeInputs)
+		if stateErr == nil && (!identityOK || !sameGiteaPullRequestMergeIdentity(expectedPR, ciPassedPR) || expectedPR.ID != pr.ID || expectedPR.Number != pr.Number) {
+			stateErr = errors.New("complete durable CI-tested pull request identity is required")
+		}
+		if stateErr != nil {
+			gateStatus["merge"] = "failed"
+			state["open-pilot.gate-status"] = gateStatus
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.merge-pr", stateErr.Error(), state); persistErr != nil {
+				return PipelineStepExecution{}, errors.Join(stateErr, persistErr)
+			}
+			return PipelineStepExecution{}, stateErr
 		}
 		gateStatus["merge"] = "merge_ready"
 		state["open-pilot.gate-status"] = gateStatus
 		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseMergeReady, "open-pilot.merge-pr", "", state); err != nil {
 			return PipelineStepExecution{}, err
 		}
-		result, err := o.env.giteaMerger.MergePullRequest(ctx, run.Inputs["repo"], pr.Number)
+		result, err := o.env.giteaMerger.MergePullRequest(ctx, run.Inputs["repo"], expectedPR)
 		if err != nil {
-			gateStatus["merge"] = "failed"
+			gateStatus["merge"] = "merge_ready"
 			state["open-pilot.gate-status"] = gateStatus
-			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, "open-pilot.merge-pr", err.Error(), state); persistErr != nil {
+			state["open-pilot.failure-diagnostics.persisted"] = true
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseMergeReady, "open-pilot.merge-pr", err.Error(), state); persistErr != nil {
 				return PipelineStepExecution{}, errors.Join(err, persistErr)
 			}
 			return PipelineStepExecution{}, err
@@ -1814,6 +2112,73 @@ func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSumma
 		return openPilotCICheckResult{}, false
 	}
 	return openPilotCICheckResult{status: "passed", summary: "CI checks passed: " + strings.Join(requiredChecks, ", ")}, true
+}
+
+func buildOpenPilotCIRepairFeedback(requiredChecks []string, snapshot GiteaCheckSummary, currentHeadSHA string) (string, bool) {
+	if strings.TrimSpace(snapshot.SHA) == "" || snapshot.SHA != strings.TrimSpace(currentHeadSHA) {
+		return "", false
+	}
+	failed := make([]openPilotCIFailedCheck, 0, len(requiredChecks))
+	seen := map[string]bool{}
+	add := func(name, rawURL string) {
+		name = strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, boundedOpenPilotCIRepairText(name, openPilotCIFeedbackMaxName))
+		if name == "" || seen[name] || len(failed) >= openPilotCIFeedbackMaxChecks {
+			return
+		}
+		seen[name] = true
+		failed = append(failed, openPilotCIFailedCheck{Name: name, URL: sanitizeOpenPilotCITargetURL(rawURL)})
+	}
+	for _, required := range requiredChecks {
+		for _, status := range snapshot.Statuses {
+			if status.Context == required && openPilotCIFailureState(status.Status) {
+				add(required, firstNonEmpty(status.TargetURL, status.URL))
+			}
+		}
+		for _, check := range snapshot.Checks {
+			if check.Name == required && openPilotCIFailureState(check.Conclusion) {
+				add(required, check.URL)
+			}
+		}
+	}
+	if len(failed) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString("Required checks failed at head ")
+	b.WriteString(boundedOpenPilotCIRepairText(snapshot.SHA, 128))
+	b.WriteString(":")
+	for _, check := range failed {
+		b.WriteString("\n- ")
+		b.WriteString(check.Name)
+		if check.URL != "" {
+			b.WriteString(": ")
+			b.WriteString(check.URL)
+		}
+	}
+	return boundedOpenPilotCIRepairText(b.String(), openPilotCIFeedbackMaxTotal), true
+}
+
+func openPilotCIFailureState(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "failure", "error", "cancelled", "timed_out", "action_required":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeOpenPilotCITargetURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return ""
+	}
+	parsed.User, parsed.RawQuery, parsed.Fragment = nil, "", ""
+	return boundedOpenPilotCIRepairText(parsed.String(), openPilotCIFeedbackMaxURL)
 }
 
 func openPilotRequiredChecksPresent(requiredChecks []string, snapshot GiteaCheckSummary) bool {

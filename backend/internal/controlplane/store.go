@@ -35,6 +35,11 @@ type Store interface {
 	ClaimOpenPilotIssueStateForResume(string, string, map[string]string) (OpenPilotIssueState, error)
 	ClaimAndCreateOpenPilotResumeRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
 	ClaimAndCreateOpenPilotInitialRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
+	HandleOpenPilotCIFailure(OpenPilotCIRepairRequest) (OpenPilotCIRepairResult, error)
+	ReconcileOpenPilotCIRepairTerminal(string) (bool, error)
+	ReconcileOpenPilotCIRepairTerminals(int) (int, error)
+	ReconcileOpenPilotMergeTerminal(string) (bool, error)
+	ReconcileOpenPilotMergeTerminals(int) (int, error)
 	ListOpenPilotIssueStates() []OpenPilotIssueState
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger
@@ -93,6 +98,33 @@ type Store interface {
 	PruneRetention(time.Time) (RetentionResult, error)
 	ArtifactReport(context.Context, ArtifactReportInput) (ArtifactReport, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
+}
+
+// OpenPilotCIRepairRequest contains the optimistic claim identity and the only
+// caller-prepared values accepted by the atomic CI repair handoff. The store
+// derives the child identity, cursor, and pipeline from locked durable state.
+type OpenPilotCIRepairRequest struct {
+	Repo                 string
+	Issue                string
+	ParentRunID          string
+	ExpectedWorkerID     string
+	ExpectedAttemptCount int
+	PullRequestID        int
+	PullRequestNumber    int
+	HeadBranch           string
+	FailedHeadSHA        string
+	Feedback             string
+	ChildRun             CreateRunInput
+}
+
+type OpenPilotCIRepairResult struct {
+	State     OpenPilotIssueState
+	ParentRun Run
+	ChildRun  *Run
+	Attempt   int
+	Queued    bool
+	Exhausted bool
+	Replayed  bool
 }
 
 type MemoryStore struct {

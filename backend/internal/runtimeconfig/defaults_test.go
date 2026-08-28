@@ -18,6 +18,7 @@ func TestCriticalRuntimeDefaults(t *testing.T) {
 		"OPEN_PILOT_COMMAND_POLICY_MODE":  "deny",
 		"OPEN_PILOT_COMMAND_TIMEOUT":      "120s",
 		"OPEN_PILOT_WORKTREE_TIMEOUT":     "120s",
+		"OPEN_PILOT_CI_AUTO_REPAIR_MODE":  "disabled",
 	} {
 		if got := String(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)

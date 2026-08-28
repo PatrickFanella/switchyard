@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
@@ -191,17 +192,22 @@ func TestEnvGiteaClientPullRequestChecks(t *testing.T) {
 
 func TestEnvGiteaClientMergePullRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
-			t.Fatalf("request = %s %s", r.Method, r.URL.String())
-		}
 		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
 			t.Fatalf("Authorization = %q", got)
+		}
+		if r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(expectedMergePullRequest())
+			return
+		}
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
 		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body["Do"] != "merge" {
+		want := map[string]any{"do": "merge", "head_commit_id": "abc123", "force_merge": false, "merge_when_checks_succeed": false, "delete_branch_after_merge": false}
+		if !reflect.DeepEqual(body, want) {
 			t.Fatalf("body = %+v", body)
 		}
 		_, _ = w.Write([]byte(`{"merged":true,"sha":"deadbeef","message":"Merged PR #7"}`))
@@ -210,7 +216,7 @@ func TestEnvGiteaClientMergePullRequest(t *testing.T) {
 	t.Setenv("GITEA_BASE_URL", server.URL)
 	t.Setenv("GITEA_TOKEN", "gitea-token")
 
-	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", expectedMergePullRequest())
 	if err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
@@ -222,17 +228,10 @@ func TestEnvGiteaClientMergePullRequest(t *testing.T) {
 func TestEnvGiteaClientMergePullRequestEmptyBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7/merge" && r.Method == http.MethodPost:
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode body: %v", err)
-			}
-			if body["Do"] != "merge" {
-				t.Fatalf("body = %+v", body)
-			}
-			w.WriteHeader(http.StatusOK)
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7" && r.Method == http.MethodGet:
-			_, _ = w.Write([]byte(`{"id":99,"number":7,"state":"closed","merge_commit_sha":"deadbeef"}`))
+			_ = json.NewEncoder(w).Encode(expectedMergePullRequest())
+		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7/merge" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
 		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.String())
 		}
@@ -241,40 +240,21 @@ func TestEnvGiteaClientMergePullRequestEmptyBody(t *testing.T) {
 	t.Setenv("GITEA_BASE_URL", server.URL)
 	t.Setenv("GITEA_TOKEN", "gitea-token")
 
-	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", expectedMergePullRequest())
 	if err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
-	if !result.Merged || result.SHA != "deadbeef" {
-		t.Fatalf("result = %+v", result)
-	}
-}
-
-func TestEnvGiteaClientMergePullRequestEmptyBodyPreservesSuccessWhenSHAUnavailable(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7/merge" && r.Method == http.MethodPost:
-			w.WriteHeader(http.StatusCreated)
-		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7" && r.Method == http.MethodGet:
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-		default:
-			t.Fatalf("request = %s %s", r.Method, r.URL.String())
-		}
-	}))
-	t.Cleanup(server.Close)
-	t.Setenv("GITEA_BASE_URL", server.URL)
-
-	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
-	if err != nil {
-		t.Fatalf("MergePullRequest() error = %v", err)
-	}
-	if !result.Merged || result.SHA != "" || result.Message == "" || len(result.Message) > 100 {
+	if !result.Merged {
 		t.Fatalf("result = %+v", result)
 	}
 }
 
 func TestEnvGiteaClientMergePullRequestPreservesFalseResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls/7" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(expectedMergePullRequest())
+			return
+		}
 		if r.URL.Path != "/api/v1/repos/OWNER/REPO/pulls/7/merge" || r.Method != http.MethodPost {
 			t.Fatalf("request = %s %s", r.Method, r.URL.String())
 		}
@@ -283,13 +263,108 @@ func TestEnvGiteaClientMergePullRequestPreservesFalseResult(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Setenv("GITEA_BASE_URL", server.URL)
 
-	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", 7)
+	result, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", expectedMergePullRequest())
 	if err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
 	if result.Merged || result.Message != "not merged" {
 		t.Fatalf("result = %+v", result)
 	}
+}
+
+func TestEnvGiteaClientMergePullRequestRejectsRetarget(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*controlplane.GiteaPullRequest)
+	}{
+		{name: "id", mutate: func(pr *controlplane.GiteaPullRequest) { pr.ID++ }},
+		{name: "number", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Number++ }},
+		{name: "head repo", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Head.Repo.FullName = "OTHER/REPO" }},
+		{name: "head ref", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Head.Ref = "changed" }},
+		{name: "head sha", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Head.SHA = "changed" }},
+		{name: "base repo", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Base.Repo.FullName = "OTHER/REPO" }},
+		{name: "base ref", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Base.Ref = "release" }},
+		{name: "base sha", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Base.SHA = "changed" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			posts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					posts++
+				}
+				current := expectedMergePullRequest()
+				test.mutate(&current)
+				_ = json.NewEncoder(w).Encode(current)
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("GITEA_BASE_URL", server.URL)
+			if _, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", expectedMergePullRequest()); err == nil {
+				t.Fatal("expected retarget rejection")
+			}
+			if posts != 0 {
+				t.Fatalf("POST requests = %d", posts)
+			}
+		})
+	}
+}
+
+func TestEnvGiteaClientMergePullRequestRequiresCompleteIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*controlplane.GiteaPullRequest)
+	}{
+		{name: "id", mutate: func(pr *controlplane.GiteaPullRequest) { pr.ID = 0 }},
+		{name: "number", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Number = 0 }},
+		{name: "head repo", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Head.Repo.FullName = "" }},
+		{name: "head ref", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Head.Ref = "" }},
+		{name: "head sha", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Head.SHA = "" }},
+		{name: "base repo", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Base.Repo.FullName = "" }},
+		{name: "base ref", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Base.Ref = "" }},
+		{name: "base sha", mutate: func(pr *controlplane.GiteaPullRequest) { pr.Base.SHA = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+			t.Cleanup(server.Close)
+			t.Setenv("GITEA_BASE_URL", server.URL)
+			expected := expectedMergePullRequest()
+			test.mutate(&expected)
+			if _, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", expected); err == nil {
+				t.Fatal("expected incomplete identity rejection")
+			}
+			if requests != 0 {
+				t.Fatalf("requests = %d", requests)
+			}
+		})
+	}
+}
+
+func TestEnvGiteaClientMergePullRequestDoesNotRetryConflict(t *testing.T) {
+	posts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(expectedMergePullRequest())
+			return
+		}
+		posts++
+		http.Error(w, "conflict", http.StatusConflict)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	if _, err := controlplane.NewEnvGiteaClient().MergePullRequest(t.Context(), "OWNER/REPO", expectedMergePullRequest()); err == nil {
+		t.Fatal("expected merge conflict")
+	}
+	if posts != 1 {
+		t.Fatalf("POST requests = %d", posts)
+	}
+}
+
+func expectedMergePullRequest() controlplane.GiteaPullRequest {
+	var pr controlplane.GiteaPullRequest
+	if err := json.Unmarshal([]byte(`{"id":99,"number":7,"state":"open","head":{"repo":{"full_name":"OWNER/REPO"},"ref":"open-pilot/issue-123","sha":"abc123"},"base":{"repo":{"full_name":"OWNER/REPO"},"ref":"main","sha":"base123"}}`), &pr); err != nil {
+		panic(err)
+	}
+	return pr
 }
 
 func TestEnvGiteaClientClosesIssue(t *testing.T) {

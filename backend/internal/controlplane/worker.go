@@ -179,6 +179,7 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 			} else if finishErr != nil {
 				p.recordError(finishErr)
 			}
+			p.reconcileTerminalOpenPilotState(run.ID)
 			p.mu.Lock()
 			p.failedRuns++
 			p.active--
@@ -197,6 +198,9 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 		} else {
 			p.recordError(retryErr)
 		}
+	}
+	if err == nil && (finished.Status == RunFailed || finished.Status == RunTimedOut || finished.Status == RunCanceled) {
+		p.reconcileTerminalOpenPilotState(finished.ID)
 	}
 	p.mu.Lock()
 	if err != nil || finished.Status == RunFailed || finished.Status == RunCanceled || finished.Status == RunTimedOut {
@@ -274,6 +278,14 @@ func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID 
 
 func (p *WorkerPool) recoverLeases() {
 	requeued, failed, err := p.store.RecoverLeasedRuns(p.now())
+	if err == nil {
+		if _, reconcileErr := p.store.ReconcileOpenPilotCIRepairTerminals(100); reconcileErr != nil {
+			p.recordError(reconcileErr)
+		}
+		if _, reconcileErr := p.store.ReconcileOpenPilotMergeTerminals(100); reconcileErr != nil {
+			p.recordError(reconcileErr)
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lastRecoverAt = p.now().UTC()
@@ -282,6 +294,15 @@ func (p *WorkerPool) recoverLeases() {
 	if err != nil {
 		p.lastErr = err.Error()
 		slog.Error("worker recovery failed", "error", RedactForLog(err.Error()))
+	}
+}
+
+func (p *WorkerPool) reconcileTerminalOpenPilotState(runID string) {
+	if _, err := p.store.ReconcileOpenPilotCIRepairTerminal(runID); err != nil && err != ErrNotFound {
+		p.recordError(err)
+	}
+	if _, err := p.store.ReconcileOpenPilotMergeTerminal(runID); err != nil && err != ErrNotFound {
+		p.recordError(err)
 	}
 }
 

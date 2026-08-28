@@ -373,6 +373,25 @@ def validate(env: Mapping[str, str]) -> list[str]:
 
     if _value(env, "OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE").lower() == "true":
         errors.append("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE must not be enabled in production")
+
+    ci_auto_repair_mode = _value(env, "OPEN_PILOT_CI_AUTO_REPAIR_MODE", "disabled")
+    if ci_auto_repair_mode not in {"disabled", "allow"}:
+        errors.append("OPEN_PILOT_CI_AUTO_REPAIR_MODE must be disabled or allow")
+    elif ci_auto_repair_mode == "allow":
+        required_auto_repair_modes = {
+            "OPEN_PILOT_CI_CHECK_MODE": "require-pass",
+            "OPEN_PILOT_AUTO_COMMIT_MODE": "allow",
+            "OPEN_PILOT_GIT_PUSH_MODE": "allow",
+            "OPEN_PILOT_GITEA_WRITE_MODE": "allow",
+            "OPEN_PILOT_WORKTREE_MODE": "allow",
+            "OPEN_PILOT_WORKTREE_CLEANUP": "disabled",
+        }
+        for name, required in required_auto_repair_modes.items():
+            if name not in env or _value(env, name) != required:
+                errors.append(
+                    f"{name} must be {required} when OPEN_PILOT_CI_AUTO_REPAIR_MODE=allow"
+                )
+
     push_allowed = _value(env, "OPEN_PILOT_GIT_PUSH_MODE").lower() == "allow" or (
         _value(env, "OPEN_PILOT_AUTONOMY_MODE").lower() == "full"
         and not _value(env, "OPEN_PILOT_GIT_PUSH_MODE")
