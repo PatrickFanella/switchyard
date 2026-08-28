@@ -4,9 +4,191 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type blockedAdoptionStore struct {
+	Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockedAdoptionStore) WithContext(ctx context.Context) Store {
+	return &blockedAdoptionStore{Store: s.Store.WithContext(ctx), entered: s.entered, release: s.release}
+}
+
+func (s *blockedAdoptionStore) AdoptOpenPilotRunAffinity(runID, workerID string, attempt int, gate *OpenPilotAdmissionGate) (Run, OpenPilotIssueState, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.release
+	return s.Store.AdoptOpenPilotRunAffinity(runID, workerID, attempt, gate)
+}
+
+type countingOpenPilotExecutor struct{ calls atomic.Int32 }
+
+func (e *countingOpenPilotExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {
+	e.calls.Add(1)
+	return WorkflowExecution{Status: RunSucceeded}, nil
+}
+
+func (e *countingOpenPilotExecutor) ExecutePipelineStep(context.Context, Run, PipelineStep, map[string]any) (PipelineStepExecution, error) {
+	e.calls.Add(1)
+	return PipelineStepExecution{Summary: "executed"}, nil
+}
+
+func TestBlockedAffinityAdoptionCannotExecuteAfterLeaseReclaim(t *testing.T) {
+	now := time.Unix(1_000, 0).UTC()
+	base := NewStore(func() time.Time { return now })
+	target := *trustedOpenPilotInput("OWNER/REPO", "1", CreateRunInput{}).OpenPilotTarget
+	pipeline := Pipeline{ID: "adoption-race", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "execute", Name: "execute", Position: 1, Executor: "test"}}}
+	_, run, err := base.ClaimAndCreateOpenPilotInitialRun("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), OpenPilotTarget: &target, PipelineSnapshot: &pipeline, MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := base.ClaimNextRun("stale-worker", 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := &blockedAdoptionStore{Store: base, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	executor := &countingOpenPilotExecutor{}
+	runner := NewRunner(blocked, MapExecutorRegistry{string(WorkflowOpenPilot): executor})
+	runner.SetOpenPilotAdmissionGate(openPilotAdmissionGateForTarget(t, target))
+	pool := NewWorkerPool(blocked, runner, 1, 20*time.Millisecond, time.Hour, func() time.Time { return now })
+	done := make(chan struct{})
+	go func() {
+		pool.execute(t.Context(), "stale-worker", claimed)
+		close(done)
+	}()
+	<-blocked.entered
+	now = now.Add(21 * time.Millisecond)
+	if requeued, _, err := base.RecoverLeasedRuns(now, runner.openPilotGate); err != nil || requeued != 1 {
+		t.Fatalf("recovery = %d, %v", requeued, err)
+	}
+	fresh, err := base.ClaimNextRun("fresh-worker", time.Minute)
+	if err != nil || fresh.ID != run.ID || fresh.AttemptCount != 2 {
+		t.Fatalf("fresh claim = %+v, %v", fresh, err)
+	}
+	close(blocked.release)
+	<-done
+	if executor.calls.Load() != 0 {
+		t.Fatalf("stale worker executed %d side effects", executor.calls.Load())
+	}
+	NewWorkerPool(base, runner, 1, time.Minute, time.Hour, func() time.Time { return now }).execute(t.Context(), "fresh-worker", fresh)
+	if executor.calls.Load() != 1 {
+		t.Fatalf("fresh executions = %d", executor.calls.Load())
+	}
+}
+
+func TestRecoveredOpenPilotAgentRevalidatesDurableWorktreeBeforeSideEffect(t *testing.T) {
+	for _, recovery := range []string{"automatic retry", "lease recovery"} {
+		t.Run(recovery, func(t *testing.T) {
+			now := time.Unix(100, 0).UTC()
+			store := NewStore(func() time.Time { return now })
+			if err := SeedDefaults(store); err != nil {
+				t.Fatal(err)
+			}
+			target := OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "1", ExecutorGeneration: "legacy"}
+			state, run, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "1", trustedOpenPilotInput("owner/repo", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := OpenPilotWorktreePlan{Repo: "owner/repo", RepoPath: "/repo", BaseBranch: "main", Branch: "branch", WorktreePath: "/worktree", Executed: true}
+			state.Branch, state.Base, state.WorktreePath = plan.Branch, plan.BaseBranch, plan.WorktreePath
+			state.ResumeInputs = map[string]string{"resume.open-pilot.branch-plan.repo": plan.Repo, "resume.open-pilot.branch-plan.repo_path": plan.RepoPath, "resume.open-pilot.branch-plan.base_branch": plan.BaseBranch, "resume.open-pilot.branch-plan.branch": plan.Branch, "resume.open-pilot.branch-plan.worktree_path": plan.WorktreePath, "resume.open-pilot.branch-plan.executed": "true"}
+			if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := store.ClaimNextRun("worker", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch recovery {
+			case "automatic retry":
+				if _, err := store.FinishClaimedRun(run.ID, "worker", claimed.AttemptCount, RunFailed, "retry"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.RequeueFailedRun(run.ID, now, "retry"); err != nil {
+					t.Fatal(err)
+				}
+			case "lease recovery":
+				now = claimed.LeaseExpiresAt.Add(time.Second)
+				if _, _, err := store.RecoverLeasedRuns(now, openPilotAdmissionGateForTarget(t, target)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			claimed, err = store.ClaimNextRun("worker", time.Minute)
+			if err != nil || claimed.AttemptCount != 2 {
+				t.Fatalf("reclaimed = %+v, %v", claimed, err)
+			}
+			store.mu.Lock()
+			durable := store.openPilotIssueStates[openPilotIssueStateKey("owner/repo", "1")]
+			durable.WorktreePath = "/other-worktree"
+			store.openPilotIssueStates[openPilotIssueStateKey("owner/repo", "1")] = durable
+			store.mu.Unlock()
+			openCode := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "must not run"}}
+			env := newOpenPilotAIReviewTestEnv(store)
+			env.openCodeExecutor = openCode
+			env.openPilotGate = openPilotAdmissionGateForTarget(t, target)
+			result, err := (openPilotExecutor{env: env}).ExecutePipelineStep(t.Context(), claimed, PipelineStep{ID: "agent-work", Name: "open-pilot.agent-work"}, map[string]any{"open-pilot.branch-plan": plan, "open-pilot.prompt": "prompt"})
+			if err != nil || !result.Halt || len(openCode.requests) != 0 {
+				t.Fatalf("result=%+v requests=%d err=%v", result, len(openCode.requests), err)
+			}
+		})
+	}
+}
+
+func TestMemoryRecoveryQuarantinesEveryDuplicateRunStateAndContinues(t *testing.T) {
+	now := time.Unix(1_000, 0).UTC()
+	store := NewStore(func() time.Time { return now })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	openRun, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRun, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowDevlog), MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	openClaim, err := store.ClaimNextRun("worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherClaim, err := store.ClaimNextRun("worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	for _, state := range []OpenPilotIssueState{{ID: "state-a", Repo: "OWNER/REPO", Issue: "1", RunID: openRun.ID}, {ID: "state-b", Repo: "OWNER/REPO", Issue: "2", RunID: openRun.ID}} {
+		state.Phase = OpenPilotPhaseRequested
+		store.openPilotIssueStates[openPilotIssueStateKey(state.Repo, state.Issue)] = state
+	}
+	store.mu.Unlock()
+	now = openClaim.LeaseExpiresAt.Add(time.Second)
+	requeued, failed, err := store.RecoverLeasedRuns(now, testOpenPilotAdmissionGate(t))
+	if err != nil || requeued != 1 || failed != 0 {
+		t.Fatalf("recovery = %d/%d, %v; other=%s", requeued, failed, err, otherClaim.ID)
+	}
+	openDetail, _ := store.RunDetail(openRun.ID)
+	otherDetail, _ := store.RunDetail(otherRun.ID)
+	if openDetail.Run.Status != RunPaused || otherDetail.Run.Status != RunQueued {
+		t.Fatalf("runs: open=%+v other=%+v", openDetail.Run, otherDetail.Run)
+	}
+	for _, issue := range []string{"1", "2"} {
+		state, _ := store.OpenPilotIssueState("OWNER/REPO", issue)
+		if state.Phase != OpenPilotPhasePaused || state.FailingGate != "repository_affinity" || state.RecommendedNextAction != "manual_review" {
+			t.Fatalf("state %s = %+v", issue, state)
+		}
+	}
+	if again, _, err := store.RecoverLeasedRuns(now, testOpenPilotAdmissionGate(t)); err != nil || again != 0 {
+		t.Fatalf("second recovery = %d, %v", again, err)
+	}
+}
 
 type panicWorkflowExecutor struct{}
 
@@ -131,7 +313,7 @@ func TestWorkerExhaustedMergeRetryReconcilesOnlyCurrentMergeReadyState(t *testin
 	}
 
 	store, run := newTerminalRun(t, OpenPilotPhaseMergeReady, "")
-	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	state, err := store.OpenPilotIssueState("owner/repo", "123")
 	if err != nil || state.RunID != run.ID || state.Phase != OpenPilotPhaseFailed || state.RecommendedNextAction != "manual_review" || state.FailingGate != "merge" || state.GateStatus["merge"] != "failed" {
 		t.Fatalf("reconciled state = %+v, %v", state, err)
 	}
@@ -141,18 +323,18 @@ func TestWorkerExhaustedMergeRetryReconcilesOnlyCurrentMergeReadyState(t *testin
 		if err := SeedDefaults(store); err != nil {
 			t.Fatal(err)
 		}
-		run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 1, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "lease"}})
+		run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 1, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "124"}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "lease", RunID: run.ID, GateStatus: OpenPilotGateStatus{"merge": "merge_ready"}, LastError: "preflight timed out"}, OpenPilotPhaseMergeReady)
+		seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "OWNER/REPO", Issue: "124", RunID: run.ID, GateStatus: OpenPilotGateStatus{"merge": "merge_ready"}, LastError: "preflight timed out"}, OpenPilotPhaseMergeReady)
 		claimed, err := store.ClaimNextRun("worker-lease", time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
 		now = claimed.LeaseExpiresAt.Add(time.Second)
 		NewWorkerPool(store, NewRunner(store, nil), 1, time.Minute, time.Hour, func() time.Time { return now }).recoverLeases()
-		state, err := store.OpenPilotIssueState("OWNER/REPO", "lease")
+		state, err := store.OpenPilotIssueState("owner/repo", "124")
 		if err != nil || state.Phase != OpenPilotPhaseFailed || state.RecommendedNextAction != "manual_review" {
 			t.Fatalf("lease-reconciled state = %+v, %v", state, err)
 		}
@@ -170,8 +352,16 @@ func TestWorkerExhaustedMergeRetryReconcilesOnlyCurrentMergeReadyState(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, _ := newTerminalRun(t, test.phase, test.runID)
-			state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
-			if err != nil || state.Phase != test.phase || (test.runID != "" && state.RunID != test.runID) {
+			repo := "owner/repo"
+			if test.runID != "" {
+				repo = "OWNER/REPO"
+			}
+			state, err := store.OpenPilotIssueState(repo, "123")
+			wantPhase := test.phase
+			if test.runID != "" {
+				wantPhase = OpenPilotPhasePaused
+			}
+			if err != nil || state.Phase != wantPhase || (test.runID != "" && (state.RunID != test.runID || state.RecommendedNextAction != "manual_review")) {
 				t.Fatalf("preserved state = %+v, %v", state, err)
 			}
 		})
@@ -208,7 +398,7 @@ func TestWorkerTerminalPathsReconcileOpenPilotCIRepairState(t *testing.T) {
 			} else {
 				pool.execute(t.Context(), "repair-worker", claimed)
 			}
-			state, err := store.OpenPilotIssueState("OWNER/REPO", "1")
+			state, err := store.OpenPilotIssueState("owner/repo", "1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -251,7 +441,7 @@ func TestOpenPilotCIRepairTerminalReconciliationPreservesOperatorOrNewerState(t 
 			store.mu.Lock()
 			store.openPilotIssueStates[openPilotIssueStateKey("OWNER/REPO", "1")] = state
 			store.mu.Unlock()
-			changed, err := store.ReconcileOpenPilotCIRepairTerminal(child.ID)
+			changed, err := store.ReconcileOpenPilotCIRepairTerminal(child.ID, configuredOpenPilotAdmissionGate(t))
 			if err != nil || changed {
 				t.Fatalf("changed/error = %t/%v", changed, err)
 			}
@@ -282,7 +472,7 @@ func TestOpenPilotCIRepairTerminalReconciliationHandlesEveryPreMergePhase(t *tes
 			store.openPilotIssueStates[openPilotIssueStateKey("OWNER/REPO", "1")] = state
 			store.mu.Unlock()
 
-			changed, err := store.ReconcileOpenPilotCIRepairTerminal(child.ID)
+			changed, err := store.ReconcileOpenPilotCIRepairTerminal(child.ID, configuredOpenPilotAdmissionGate(t))
 			if err != nil || !changed {
 				t.Fatalf("changed/error = %t/%v", changed, err)
 			}
@@ -304,7 +494,7 @@ func TestOpenPilotCIRepairTerminalReconciliationIgnoresSuccessfulChild(t *testin
 	if _, err := store.FinishRun(child.ID, RunSucceeded, "repair complete"); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := store.ReconcileOpenPilotCIRepairTerminal(child.ID)
+	changed, err := store.ReconcileOpenPilotCIRepairTerminal(child.ID, configuredOpenPilotAdmissionGate(t))
 	if err != nil || changed {
 		t.Fatalf("changed/error = %t/%v", changed, err)
 	}
@@ -331,7 +521,7 @@ func TestOpenPilotCIRepairBatchReconciliationBoundsTerminalMatches(t *testing.T)
 		store.openPilotIssueStates[fmt.Sprintf("repo\x00%d", i)] = OpenPilotIssueState{Repo: "repo", Issue: fmt.Sprint(i), RunID: runID, Phase: OpenPilotPhaseBranchPrepared}
 	}
 	store.mu.Unlock()
-	reconciled, err := store.ReconcileOpenPilotCIRepairTerminals(1)
+	reconciled, err := store.ReconcileOpenPilotCIRepairTerminals(1, configuredOpenPilotAdmissionGate(t))
 	if err != nil || reconciled != 1 {
 		t.Fatalf("reconciled = %d, %v", reconciled, err)
 	}
@@ -341,7 +531,7 @@ func TestOpenPilotCIRepairBatchReconciliationBoundsTerminalMatches(t *testing.T)
 	}
 }
 
-func TestWorkerRecoveryDrainsBoundedOpenPilotCIRepairReconciliation(t *testing.T) {
+func TestWorkerRecoveryDoesNotReconcileUntrustedOpenPilotState(t *testing.T) {
 	now := time.Unix(1_000, 0).UTC()
 	store := NewStore(func() time.Time { return now })
 	store.mu.Lock()
@@ -355,8 +545,8 @@ func TestWorkerRecoveryDrainsBoundedOpenPilotCIRepairReconciliation(t *testing.T
 	pool.recoverLeases()
 	pool.recoverLeases()
 	for _, state := range store.ListOpenPilotIssueStates() {
-		if state.Phase != OpenPilotPhaseFailed {
-			t.Fatalf("state not drained = %+v", state)
+		if state.Phase != OpenPilotPhaseBranchPrepared {
+			t.Fatalf("untrusted state mutated = %+v", state)
 		}
 	}
 }

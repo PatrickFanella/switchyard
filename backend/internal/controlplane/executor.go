@@ -83,11 +83,14 @@ type EnvWorkflowExecutors struct {
 	openCodeExecutor             OpenCodeExecutor
 	issueFetcher                 IssueFetcher
 	giteaReader                  GiteaPullRequestReader
+	giteaPullRequestGetter       GiteaPullRequestGetter
 	giteaMerger                  GiteaPullRequestMerger
 	giteaWriter                  GiteaWriter
 	commandRunner                CommandRunner
 	worktreeManager              OpenPilotWorktreeManager
 	client                       *http.Client
+	openPilotGate                *OpenPilotAdmissionGate
+	openPilotGateError           error
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -145,6 +148,7 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		}
 	}
 	giteaClient := NewEnvGiteaClient()
+	openPilotGate, openPilotGateError := NewEnvOpenPilotAdmissionGate()
 	env := &EnvWorkflowExecutors{
 		store:                        configuredStore,
 		openPilotCommand:             strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
@@ -173,11 +177,14 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		openCodeExecutor:             NewEnvOpenCodeExecutor(),
 		issueFetcher:                 giteaClient,
 		giteaReader:                  giteaClient,
+		giteaPullRequestGetter:       giteaClient,
 		giteaMerger:                  giteaClient,
 		giteaWriter:                  giteaClient,
 		commandRunner:                NewEnvCommandRunner(),
 		worktreeManager:              NewEnvOpenPilotWorktreeManager(),
 		client:                       &http.Client{Timeout: 10 * time.Second},
+		openPilotGate:                openPilotGate,
+		openPilotGateError:           openPilotGateError,
 	}
 	if env.modelExecutor == nil {
 		env.modelExecutor = NewEnvModelBroker()

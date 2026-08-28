@@ -67,3 +67,17 @@ func TestOpenPilotAssignerRejectsMissingRequiredLabel(t *testing.T) {
 		t.Fatalf("assigned=%d runs=%d", assigned, len(store.ListRuns()))
 	}
 }
+
+func TestOpenPilotAssignerResolvesGateBeforeGitea(t *testing.T) {
+	store := NewStore(nil)
+	runner := NewRunner(store)
+	runner.SetOpenPilotAdmissionGate(testOpenPilotAdmissionGate(t))
+	reader := &fakeOpenPilotIssueReader{}
+	assigner := &OpenPilotAssigner{store: store, runner: runner, issues: reader, repos: []string{"other/repo"}, labels: []string{"ready-for-agent"}, now: time.Now}
+	if assigned, err := assigner.Poll(t.Context()); err == nil || assigned != 0 {
+		t.Fatalf("assigned=%d error=%v", assigned, err)
+	}
+	if reader.lists != 0 || reader.fetches != 0 {
+		t.Fatalf("Gitea calls lists=%d fetches=%d", reader.lists, reader.fetches)
+	}
+}

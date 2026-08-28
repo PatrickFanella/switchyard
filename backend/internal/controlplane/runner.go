@@ -46,18 +46,27 @@ type PipelineResumeHydrator interface {
 }
 
 type Runner struct {
-	store     Store
-	executors ExecutorRegistry
-	pipelines PipelineRegistry
-	profiles  AgentProfileRegistry
-	limiter   ExecutorLimiter
-	activeMu  sync.Mutex
-	active    map[string]context.CancelFunc
+	store              Store
+	executors          ExecutorRegistry
+	pipelines          PipelineRegistry
+	profiles           AgentProfileRegistry
+	limiter            ExecutorLimiter
+	activeMu           sync.Mutex
+	active             map[string]activeRun
+	openPilotGate      *OpenPilotAdmissionGate
+	openPilotGateError error
+}
+
+type activeRun struct {
+	cancel context.CancelFunc
+	token  *struct{}
 }
 
 type preAttemptContextKey struct{}
 type runStepCorrelationContextKey struct{}
 type claimedWorkerContextKey struct{}
+type recoveredRunStepContextKey struct{}
+type runAttemptStoreContextKey struct{}
 
 func withRunStepPreAttempt(ctx context.Context, store Store, runID, stepID string) context.Context {
 	ctx = context.WithValue(ctx, preAttemptContextKey{}, PreAttemptCallback(func(decision BackendDecision) error {
@@ -89,7 +98,18 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if len(executors) > 0 && executors[0] != nil {
 		registry = executors[0]
 	}
-	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter(), active: map[string]context.CancelFunc{}}
+	gate, gateErr := NewEnvOpenPilotAdmissionGate()
+	if env, ok := registry.(*EnvWorkflowExecutors); ok {
+		env.openPilotGate, env.openPilotGateError = gate, gateErr
+	}
+	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter(), active: map[string]activeRun{}, openPilotGate: gate, openPilotGateError: gateErr}
+}
+
+func (r *Runner) SetOpenPilotAdmissionGate(gate *OpenPilotAdmissionGate) {
+	r.openPilotGate, r.openPilotGateError = gate, nil
+	if env, ok := r.executors.(*EnvWorkflowExecutors); ok {
+		env.openPilotGate, env.openPilotGateError = gate, nil
+	}
 }
 
 func (r *Runner) SetExecutorLimiter(limiter ExecutorLimiter) {
@@ -121,10 +141,11 @@ func (r *Runner) SetAgentProfileRegistry(profiles AgentProfileRegistry) {
 }
 
 func (r *Runner) RunOnce(ctx context.Context, input CreateRunInput) (Run, error) {
-	if err := validateCreateRunInput(input); err != nil {
+	prepared, err := r.prepareRunInput(input)
+	if err != nil {
 		return Run{}, err
 	}
-	run, err := r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
+	run, err := r.createPreparedRun(ctx, prepared)
 	if err != nil {
 		return Run{}, err
 	}
@@ -140,16 +161,84 @@ func (r *Runner) Enqueue(input CreateRunInput) (Run, error) {
 }
 
 func (r *Runner) EnqueueContext(ctx context.Context, input CreateRunInput) (Run, error) {
-	if err := validateCreateRunInput(input); err != nil {
+	prepared, err := r.prepareRunInput(input)
+	if err != nil {
 		return Run{}, err
 	}
-	return r.store.CreateRunContext(ctx, r.withPipelineSnapshot(input))
+	return r.createPreparedRun(ctx, prepared)
+}
+
+func (r *Runner) createPreparedRun(ctx context.Context, input CreateRunInput) (Run, error) {
+	if input.WorkflowID != string(WorkflowOpenPilot) {
+		return r.store.CreateRunContext(ctx, input)
+	}
+	if input.Inputs["retry_from_step"] != "" || input.Inputs["retry_from_run"] != "" {
+		state, err := r.store.OpenPilotIssueState(input.Inputs["repo"], input.Inputs["issue"])
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return Run{}, err
+		}
+		if err == nil {
+			if _, err := r.openPilotGate.ValidateState(state); err != nil {
+				return Run{}, err
+			}
+			return Run{}, ErrConflict
+		}
+	}
+	store := r.store.WithContext(ctx)
+	state, run, err := store.ClaimAndCreateOpenPilotInitialRun(input.Inputs["repo"], input.Inputs["issue"], input)
+	if err == nil && input.Inputs["retry_from_step"] != "" {
+		target := openPilotResumeClaimPhase(OpenPilotPhaseRequested, input.Inputs)
+		for _, phase := range openPilotPhaseChain[1:] {
+			if state.Phase == target {
+				break
+			}
+			state, err = store.TransitionOpenPilotIssueState(state.Repo, state.Issue, phase)
+			if err != nil || phase == target {
+				break
+			}
+		}
+	}
+	return run, err
 }
 
 func (r *Runner) prepareRunInput(input CreateRunInput) (CreateRunInput, error) {
 	if err := validateCreateRunInput(input); err != nil {
 		return CreateRunInput{}, err
 	}
+	if input.WorkflowID == string(WorkflowOpenPilot) {
+		if r.openPilotGateError != nil {
+			return CreateRunInput{}, r.openPilotGateError
+		}
+		target, err := r.openPilotGate.Resolve(input.Inputs["repo"], input.Inputs["issue"])
+		if err != nil {
+			return CreateRunInput{}, err
+		}
+		input.Inputs = cloneMap(input.Inputs)
+		input.Inputs["repo"], input.Inputs["issue"] = target.RepositorySlug, target.Issue
+		setOpenPilotAffinityInputs(input.Inputs, target)
+		input.OpenPilotTarget = &target
+	}
+	return r.withPipelineSnapshot(input), nil
+}
+
+func (r *Runner) prepareOpenPilotStateRunInput(state OpenPilotIssueState, input CreateRunInput) (CreateRunInput, error) {
+	input.Inputs = cloneMap(input.Inputs)
+	delete(input.Inputs, openPilotRepositoryIDInputKey)
+	delete(input.Inputs, openPilotExecutorGenerationInputKey)
+	delete(input.Inputs, openPilotLifecycleResumeInputKey)
+	if err := validateCreateRunInput(input); err != nil {
+		return CreateRunInput{}, err
+	}
+	if r.openPilotGateError != nil {
+		return CreateRunInput{}, r.openPilotGateError
+	}
+	target, err := r.openPilotGate.ValidateState(state)
+	if err != nil {
+		return CreateRunInput{}, err
+	}
+	input.Inputs["repo"], input.Inputs["issue"] = target.RepositorySlug, target.Issue
+	setOpenPilotAffinityInputs(input.Inputs, target)
+	input.OpenPilotTarget = &target
 	return r.withPipelineSnapshot(input), nil
 }
 
@@ -179,18 +268,46 @@ func (r *Runner) ExecuteRun(ctx context.Context, run Run) (Run, error) {
 }
 
 func (r *Runner) ExecuteClaimedRun(ctx context.Context, run Run, workerID string) (Run, error) {
+	ctx = withRunAttemptFence(ctx, RunAttemptFence{RunID: run.ID, WorkerID: workerID, Attempt: run.AttemptCount})
 	return r.executeRun(ctx, run, workerID)
 }
 
 func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run, error) {
+	store := r.store.WithContext(ctx)
+	ctx = context.WithValue(ctx, runAttemptStoreContextKey{}, store)
+	if run.WorkflowID == string(WorkflowOpenPilot) {
+		for key := range run.Inputs {
+			if reservedOpenPilotAffinityInput(key) && key != openPilotRepositoryIDInputKey && key != openPilotExecutorGenerationInputKey && key != openPilotLifecycleResumeInputKey {
+				if workerID != "" {
+					_, _ = store.FinishClaimedRun(run.ID, workerID, run.AttemptCount, RunPaused, "Open Pilot reserved affinity input rejected")
+				} else {
+					_, _ = store.FinishRun(run.ID, RunPaused, "Open Pilot reserved affinity input rejected")
+				}
+				return Run{}, ErrInvalid
+			}
+		}
+		state, err := store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+		if err != nil {
+			r.pauseOpenPilotRun(store, run, workerID, "Open Pilot durable state missing or unreadable")
+			return Run{}, ErrConflict
+		}
+		_, err = r.openPilotGate.ValidateRunState(run, state)
+		if err != nil {
+			r.pauseOpenPilotRun(store, run, workerID, "Open Pilot repository affinity rejected")
+			return Run{}, err
+		}
+	}
 	executionCtx, cancel := context.WithCancel(ctx)
+	activeToken := &struct{}{}
 	r.activeMu.Lock()
-	r.active[run.ID] = cancel
+	r.active[run.ID] = activeRun{cancel: cancel, token: activeToken}
 	r.activeMu.Unlock()
 	defer func() {
 		cancel()
 		r.activeMu.Lock()
-		delete(r.active, run.ID)
+		if active := r.active[run.ID]; active.token == activeToken {
+			delete(r.active, run.ID)
+		}
 		r.activeMu.Unlock()
 	}()
 	ctx = executionCtx
@@ -199,53 +316,61 @@ func (r *Runner) executeRun(ctx context.Context, run Run, workerID string) (Run,
 	}
 	select {
 	case <-ctx.Done():
-		return r.finishRun(run.ID, workerID, RunCanceled, ctx.Err().Error())
+		return r.finishRun(store, run, workerID, RunCanceled, ctx.Err().Error())
 	default:
 	}
 	executor := r.executors.ExecutorFor(run.WorkflowID)
 	if executor == nil {
-		return r.finishRun(run.ID, workerID, RunFailed, "workflow execution adapter is not registered")
+		return r.finishRun(store, run, workerID, RunFailed, "workflow execution adapter is not registered")
 	}
 	if r.pipelines != nil || run.PipelineSnapshot != nil {
 		pipeline, ok := r.pipelineForRun(run)
 		if ok {
 			if stepExecutor, ok := executor.(PipelineStepExecutor); ok {
-				execution, err := r.executePipeline(ctx, run, pipeline, stepExecutor, executor)
-				return r.finishExecution(run, workerID, execution, err)
+				execution, err := r.executePipelineWithStore(ctx, store, run, pipeline, stepExecutor, executor)
+				return r.finishExecutionWithStore(store, run, workerID, execution, err)
 			}
 		}
 	}
 	if stepwise, ok := executor.(StepwiseWorkflowExecutor); ok {
-		execution, err := stepwise.ExecuteSteps(ctx, run, r.store)
-		return r.finishExecution(run, workerID, execution, err)
+		execution, err := stepwise.ExecuteSteps(ctx, run, store)
+		return r.finishExecutionWithStore(store, run, workerID, execution, err)
 	}
-	step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
+	step, skip, err := r.prepareRunStep(store, CreateRunStepInput{RunID: run.ID, Position: 1, Name: run.WorkflowID + ".execute", Executor: "workflow", Inputs: run.Inputs})
 	if err != nil {
-		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
-		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
+		_, _ = store.AddEvent(run.ID, "workflow.failed", err.Error())
+		return r.finishRun(store, run, workerID, RunFailed, err.Error())
 	}
 	if skip {
-		return r.finishRun(run.ID, workerID, RunSucceeded, firstNonEmpty(step.OutputSummary, "Workflow already completed"))
+		return r.finishRun(store, run, workerID, RunSucceeded, firstNonEmpty(step.OutputSummary, "Workflow already completed"))
 	}
-	step, err = r.store.StartRunStep(step.ID)
+	step, err = store.StartRunStep(step.ID)
 	if err != nil {
-		_, _ = r.store.AddEvent(run.ID, "workflow.failed", err.Error())
-		return r.finishRun(run.ID, workerID, RunFailed, err.Error())
+		_, _ = store.AddEvent(run.ID, "workflow.failed", err.Error())
+		return r.finishRun(store, run, workerID, RunFailed, err.Error())
 	}
 	execution, err := executor.Execute(ctx, run)
-	return r.finishSingleStepExecution(run, workerID, step, execution, err)
+	return r.finishSingleStepExecution(store, run, workerID, step, execution, err)
+}
+
+func (r *Runner) pauseOpenPilotRun(store Store, run Run, workerID, summary string) {
+	if workerID != "" {
+		_, _ = store.FinishClaimedRun(run.ID, workerID, run.AttemptCount, RunPaused, summary)
+	} else {
+		_, _ = store.FinishRun(run.ID, RunPaused, summary)
+	}
 }
 
 // CancelRun interrupts an execution hosted by this process. Durable status is
 // updated separately by the store so cancellation remains visible after restart.
 func (r *Runner) CancelRun(id string) bool {
 	r.activeMu.Lock()
-	cancel := r.active[id]
+	active := r.active[id]
 	r.activeMu.Unlock()
-	if cancel == nil {
+	if active.cancel == nil {
 		return false
 	}
-	cancel()
+	active.cancel()
 	return true
 }
 
@@ -260,6 +385,10 @@ func (r *Runner) pipelineForRun(run Run) (Pipeline, bool) {
 }
 
 func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline, stepExecutor PipelineStepExecutor, executor WorkflowExecutor) (WorkflowExecution, error) {
+	return r.executePipelineWithStore(ctx, r.store.WithContext(ctx), run, pipeline, stepExecutor, executor)
+}
+
+func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run Run, pipeline Pipeline, stepExecutor PipelineStepExecutor, executor WorkflowExecutor) (WorkflowExecution, error) {
 	steps := append([]PipelineStep(nil), pipeline.Steps...)
 	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
 	state := map[string]any{}
@@ -289,11 +418,11 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		}
 		model, err := r.resolvePipelineStepModel(run, pipelineStep, executor, profile, hasProfile)
 		if err != nil {
-			step, _, createErr := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
+			step, _, createErr := r.prepareRunStep(store, CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
 			if createErr != nil {
 				return execution, createErr
 			}
-			step, startErr := r.store.StartRunStep(step.ID)
+			step, startErr := store.StartRunStep(step.ID)
 			if startErr != nil {
 				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 					reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, startErr)
@@ -303,7 +432,7 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
 			}
-			_, _ = r.store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
+			_, _ = store.FinishRunStep(step.ID, StepFailed, "", err.Error(), nil)
 			return execution, err
 		}
 		correlationIDs := map[string]string(nil)
@@ -312,9 +441,9 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		}
 		if hasProfile {
 			correlationIDs = mergeStringMaps(correlationIDs, profileAuditCorrelation(profile, model))
-			_, _ = r.store.AddEvent(run.ID, "agent-profile.resolved", profile.ID+" for "+pipelineStep.Name)
+			_, _ = store.AddEvent(run.ID, "agent-profile.resolved", profile.ID+" for "+pipelineStep.Name)
 		}
-		step, skip, err := r.prepareRunStep(CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
+		step, skip, err := r.prepareRunStep(store, CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
 		if err != nil {
 			return execution, err
 		}
@@ -330,10 +459,10 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 				reporter.HandlePipelineStepFailure(ctx, run, pipelineStep, state, err)
 			}
-			_, _ = r.store.FinishRunStep(step.ID, status, "", err.Error(), nil)
+			_, _ = store.FinishRunStep(step.ID, status, "", err.Error(), nil)
 			return execution, err
 		}
-		step, err = r.store.StartRunStep(step.ID)
+		step, err = store.StartRunStep(step.ID)
 		if err != nil {
 			release()
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
@@ -349,7 +478,15 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 		var stepResult PipelineStepExecution
 		func() {
 			defer release()
-			stepResult, err = stepExecutor.ExecutePipelineStep(withRunStepPreAttempt(ctx, r.store, run.ID, step.ID), run, resolvedStep, state)
+			stepCtx := withRunStepPreAttempt(ctx, store, run.ID, step.ID)
+			if run.AttemptCount > 1 || step.AttemptCount > 1 {
+				stepCtx = context.WithValue(stepCtx, recoveredRunStepContextKey{}, true)
+			}
+			if validateErr := validateAttemptStore(store); validateErr != nil {
+				err = validateErr
+				return
+			}
+			stepResult, err = stepExecutor.ExecutePipelineStep(stepCtx, run, resolvedStep, state)
 		}()
 		if stepResult.Handoff {
 			execution.Status = RunFailed
@@ -357,24 +494,24 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			return execution, nil
 		}
 		if stepResult.Inputs != nil {
-			if _, inputErr := r.store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
+			if _, inputErr := store.UpdateRunStep(step.ID, UpdateRunStepInput{Inputs: stepResult.Inputs}); inputErr != nil {
 				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 					reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, inputErr)
 				}
-				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, inputErr.Error(), stepResult.CorrelationIDs)
+				_, _ = store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, inputErr.Error(), stepResult.CorrelationIDs)
 				return execution, inputErr
 			}
 		}
 		for _, event := range stepResult.Events {
-			_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
+			_, _ = store.AddEvent(run.ID, event.Type, event.Message)
 		}
 		for _, artifact := range stepResult.Artifacts {
 			artifact.RunID = run.ID
-			if _, artifactErr := r.store.AddArtifact(artifact); artifactErr != nil {
+			if _, artifactErr := store.AddArtifact(artifact); artifactErr != nil {
 				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 					reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, artifactErr)
 				}
-				_, _ = r.store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, artifactErr.Error(), stepResult.CorrelationIDs)
+				_, _ = store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, artifactErr.Error(), stepResult.CorrelationIDs)
 				return execution, artifactErr
 			}
 		}
@@ -383,7 +520,7 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
 				reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, err)
 			}
-			_, _ = r.store.FinishRunStep(step.ID, status, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
+			_, _ = store.FinishRunStep(step.ID, status, stepResult.Summary, err.Error(), stepResult.CorrelationIDs)
 			return execution, err
 		}
 		stepStatus := StepSucceeded
@@ -391,7 +528,7 @@ func (r *Runner) executePipeline(ctx context.Context, run Run, pipeline Pipeline
 			stepStatus = StepPaused
 			execution.Status = RunPaused
 		}
-		if _, err := r.store.FinishRunStep(step.ID, stepStatus, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
+		if _, err := store.FinishRunStep(step.ID, stepStatus, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
 			return execution, err
 		}
 		if stepResult.Halt {
@@ -459,8 +596,8 @@ func profileAuditCorrelation(profile AgentProfile, model string) map[string]stri
 	return correlation
 }
 
-func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error) {
-	for _, existing := range r.store.ListRunSteps(input.RunID) {
+func (r *Runner) prepareRunStep(store Store, input CreateRunStepInput) (RunStep, bool, error) {
+	for _, existing := range store.ListRunSteps(input.RunID) {
 		if existing.Position != input.Position {
 			continue
 		}
@@ -471,15 +608,15 @@ func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error)
 		case StepSucceeded:
 			return existing, true, nil
 		case StepFailed, StepCanceled, StepTimedOut, StepPaused:
-			retried, err := r.store.RetryRunStep(existing.ID)
+			retried, err := store.RetryRunStep(existing.ID)
 			if err == nil && len(input.CorrelationIDs) > 0 {
-				retried, err = r.store.MergeRunStepCorrelationIDs(retried.ID, input.CorrelationIDs)
+				retried, err = store.MergeRunStepCorrelationIDs(retried.ID, input.CorrelationIDs)
 			}
 			return retried, false, err
 		case StepRunning:
-			recovered, err := r.store.RecoverRunStep(existing.ID)
+			recovered, err := store.RecoverRunStep(existing.ID)
 			if err == nil && len(input.CorrelationIDs) > 0 {
-				recovered, err = r.store.MergeRunStepCorrelationIDs(recovered.ID, input.CorrelationIDs)
+				recovered, err = store.MergeRunStepCorrelationIDs(recovered.ID, input.CorrelationIDs)
 			}
 			return recovered, false, err
 		case StepQueued:
@@ -488,7 +625,7 @@ func (r *Runner) prepareRunStep(input CreateRunStepInput) (RunStep, bool, error)
 			return RunStep{}, false, ErrInvalid
 		}
 	}
-	created, err := r.store.CreateRunStep(input)
+	created, err := store.CreateRunStep(input)
 	return created, false, err
 }
 
@@ -546,20 +683,20 @@ func runStatusForError(err error) RunStatus {
 	return RunFailed
 }
 
-func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunStep, execution WorkflowExecution, err error) (Run, error) {
+func (r *Runner) finishSingleStepExecution(store Store, run Run, workerID string, step RunStep, execution WorkflowExecution, err error) (Run, error) {
 	for _, event := range execution.Events {
-		_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
+		_, _ = store.AddEvent(run.ID, event.Type, event.Message)
 	}
 	for _, artifact := range execution.Artifacts {
 		artifact.RunID = run.ID
-		_, _ = r.store.AddArtifact(artifact)
+		_, _ = store.AddArtifact(artifact)
 	}
 	if err != nil {
 		stepStatus := stepStatusForError(err)
 		runStatus := runStatusForError(err)
-		_, _ = r.store.FinishRunStep(step.ID, stepStatus, "", err.Error(), nil)
-		_, _ = r.store.AddEvent(run.ID, "workflow."+string(runStatus), err.Error())
-		return r.finishRun(run.ID, workerID, runStatus, err.Error())
+		_, _ = store.FinishRunStep(step.ID, stepStatus, "", err.Error(), nil)
+		_, _ = store.AddEvent(run.ID, "workflow."+string(runStatus), err.Error())
+		return r.finishRun(store, run, workerID, runStatus, err.Error())
 	}
 	summary := execution.Summary
 	if summary == "" {
@@ -573,22 +710,26 @@ func (r *Runner) finishSingleStepExecution(run Run, workerID string, step RunSte
 	if status == RunPaused {
 		stepStatus = StepPaused
 	}
-	_, _ = r.store.FinishRunStep(step.ID, stepStatus, summary, "", nil)
-	return r.finishRun(run.ID, workerID, status, summary)
+	_, _ = store.FinishRunStep(step.ID, stepStatus, summary, "", nil)
+	return r.finishRun(store, run, workerID, status, summary)
 }
 
 func (r *Runner) finishExecution(run Run, workerID string, execution WorkflowExecution, err error) (Run, error) {
+	return r.finishExecutionWithStore(r.store, run, workerID, execution, err)
+}
+
+func (r *Runner) finishExecutionWithStore(store Store, run Run, workerID string, execution WorkflowExecution, err error) (Run, error) {
 	for _, event := range execution.Events {
-		_, _ = r.store.AddEvent(run.ID, event.Type, event.Message)
+		_, _ = store.AddEvent(run.ID, event.Type, event.Message)
 	}
 	for _, artifact := range execution.Artifacts {
 		artifact.RunID = run.ID
-		_, _ = r.store.AddArtifact(artifact)
+		_, _ = store.AddArtifact(artifact)
 	}
 	if err != nil {
 		status := runStatusForError(err)
-		_, _ = r.store.AddEvent(run.ID, "workflow."+string(status), err.Error())
-		return r.finishRun(run.ID, workerID, status, err.Error())
+		_, _ = store.AddEvent(run.ID, "workflow."+string(status), err.Error())
+		return r.finishRun(store, run, workerID, status, err.Error())
 	}
 	summary := execution.Summary
 	if summary == "" {
@@ -598,23 +739,23 @@ func (r *Runner) finishExecution(run Run, workerID string, execution WorkflowExe
 	if status == "" {
 		status = RunSucceeded
 	}
-	return r.finishRun(run.ID, workerID, status, summary)
+	return r.finishRun(store, run, workerID, status, summary)
 }
 
-func (r *Runner) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
-	if detail, err := r.store.RunDetail(id); err == nil && isTerminalRunStatus(detail.Run.Status) {
-		return detail.Run, nil
-	}
+func (r *Runner) finishRun(store Store, run Run, workerID string, status RunStatus, summary string) (Run, error) {
 	if workerID != "" {
-		finished, err := r.store.FinishClaimedRun(id, workerID, status, summary)
-		if err == ErrNotFound {
-			if detail, detailErr := r.store.RunDetail(id); detailErr == nil && isTerminalRunStatus(detail.Run.Status) {
+		finished, err := store.FinishClaimedRun(run.ID, workerID, run.AttemptCount, status, summary)
+		if err != nil {
+			if detail, detailErr := store.RunDetail(run.ID); detailErr == nil && detail.Run.AttemptCount == run.AttemptCount && isTerminalRunStatus(detail.Run.Status) {
 				return detail.Run, nil
 			}
 		}
 		return finished, err
 	}
-	return r.store.FinishRun(id, status, summary)
+	if detail, err := store.RunDetail(run.ID); err == nil && isTerminalRunStatus(detail.Run.Status) {
+		return detail.Run, nil
+	}
+	return store.FinishRun(run.ID, status, summary)
 }
 
 func isTerminalRunStatus(status RunStatus) bool {
@@ -651,6 +792,12 @@ func validateCreateRunInput(input CreateRunInput) error {
 			return ErrInvalid
 		}
 		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") {
+			return ErrInvalid
+		}
+		if input.WorkflowID == string(WorkflowOpenPilot) && reservedOpenPilotAffinityInput(key) {
+			return ErrInvalid
+		}
+		if input.WorkflowID == string(WorkflowOpenPilot) && (key == "retry_from_run" || key == "retry_from_step_id") {
 			return ErrInvalid
 		}
 	}

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,14 +14,19 @@ func TestClaimAndCreateOpenPilotResumeRunIsAtomic(t *testing.T) {
 	if err := SeedDefaults(store); err != nil {
 		t.Fatal(err)
 	}
-	prior, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "owner/repo", "issue": "1"}})
+	_, prior, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "1", trustedOpenPilotInput("owner/repo", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot)}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.FinishRun(prior.ID, RunFailed, "CI failed"); err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.UpsertOpenPilotIssueState(OpenPilotIssueState{Repo: "owner/repo", Issue: "1", Phase: OpenPilotPhaseRequested, RunID: prior.ID, PullRequestURL: "https://gitea.test/owner/repo/pulls/1", PullRequestID: 1, PullRequestNum: 1})
+	state, err := store.OpenPilotIssueState("owner/repo", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.PullRequestURL, state.PullRequestID, state.PullRequestNum = "https://gitea.test/owner/repo/pulls/1", 1, 1
+	state, err = store.UpsertOpenPilotIssueState(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +37,7 @@ func TestClaimAndCreateOpenPilotResumeRunIsAtomic(t *testing.T) {
 		}
 	}
 	input := CreateRunInput{WorkflowID: string(WorkflowOpenPilot)}
+	input = trustedOpenPilotInput(state.Repo, state.Issue, input)
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for range 2 {
@@ -54,12 +61,115 @@ func TestClaimAndCreateOpenPilotResumeRunIsAtomic(t *testing.T) {
 	}
 }
 
+func TestOpenPilotLifecycleCanResumeTwice(t *testing.T) {
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	target := OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "1", ExecutorGeneration: "legacy"}
+	state, prior, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "1", trustedOpenPilotInput("owner/repo", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishRun(prior.ID, RunFailed, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	state.Branch, state.Base, state.WorktreePath, state.LastStepName = "branch", "main", "/worktree", "open-pilot.agent-work"
+	state.ResumeInputs = map[string]string{"resume.open-pilot.branch-plan.repo": "owner/repo", "resume.open-pilot.branch-plan.branch": "branch", "resume.open-pilot.branch-plan.base_branch": "main", "resume.open-pilot.branch-plan.worktree_path": "/worktree", "resume.open-pilot.branch-plan.executed": "true", "resume.open-pilot.prompt": "prompt"}
+	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionOpenPilotIssueState(state.Repo, state.Issue, OpenPilotPhaseFailed); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(store, MapExecutorRegistry{})
+	runner.SetOpenPilotAdmissionGate(openPilotAdmissionGateForTarget(t, target))
+	resumeOnce := func() Run {
+		t.Helper()
+		current, err := store.OpenPilotIssueState("owner/repo", "1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs, err := safeOpenPilotResumeInputs(current, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := runner.prepareOpenPilotStateRunInput(current, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun(current.Repo, current.Issue, prepared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resumed.Inputs[openPilotLifecycleResumeInputKey] != "true" {
+			t.Fatalf("resume marker = %q", resumed.Inputs[openPilotLifecycleResumeInputKey])
+		}
+		return resumed
+	}
+	first := resumeOnce()
+	if _, err := store.FinishRun(first.ID, RunFailed, "failed again"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionOpenPilotIssueState("owner/repo", "1", OpenPilotPhaseFailed); err != nil {
+		t.Fatal(err)
+	}
+	_ = resumeOnce()
+}
+
+func TestSafeOpenPilotEarlyResumeDerivesCursorAndRejectsCallerCursor(t *testing.T) {
+	pipeline := Pipeline{Steps: []PipelineStep{{Name: "open-pilot.agent-work", Position: 44}}}
+	state := OpenPilotIssueState{RunID: "terminal-run", Phase: OpenPilotPhaseFailed, LastStepName: "open-pilot.agent-work", Branch: "branch", Base: "main", WorktreePath: "/worktree", ResumeInputs: map[string]string{
+		"retry_from_step": "open-pilot.merge-pr", "retry_from_step_position": "11", "resume.open-pilot.prompt": "prompt", "resume.open-pilot.branch-plan.executed": "true", "resume.open-pilot.branch-plan.branch": "branch", "resume.open-pilot.branch-plan.worktree_path": "/worktree",
+	}}
+	inputs, err := safeOpenPilotResumeInputs(state, &pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputs["retry_from_step"] != "open-pilot.agent-work" || inputs["retry_from_step_position"] != "44" {
+		t.Fatalf("derived cursor = %+v", inputs)
+	}
+	state.WorktreePath = ""
+	if _, err := safeOpenPilotResumeInputs(state, &pipeline); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing evidence error = %v", err)
+	}
+	state.LastStepName = "open-pilot.merge-pr"
+	if _, err := safeOpenPilotResumeInputs(state, &pipeline); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("merge rewind error = %v", err)
+	}
+}
+
+func TestMemoryLifecycleResumeRejectsNullDurableAffinity(t *testing.T) {
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	target := *trustedOpenPilotInput("owner/repo", "2", CreateRunInput{}).OpenPilotTarget
+	state, prior, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "2", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), OpenPilotTarget: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishRun(prior.ID, RunFailed, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	state.RepositoryID, state.ExecutorGeneration, state.CanonicalRepo, state.CanonicalIssue = "", "", "", ""
+	state.Phase, state.LastStepName = OpenPilotPhaseFailed, "open-pilot.ai-review"
+	state.PullRequestURL, state.PullRequestID, state.PullRequestNum = "https://git/pulls/2", 2, 2
+	store.openPilotIssueStates[openPilotIssueStateKey(state.Repo, state.Issue)] = state
+	store.mu.Unlock()
+	if _, _, err := store.ClaimAndCreateOpenPilotResumeRun(state.Repo, state.Issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), OpenPilotTarget: &target}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("null affinity resume error = %v", err)
+	}
+}
+
 func TestClaimAndCreateOpenPilotInitialRunIsAtomic(t *testing.T) {
 	store := NewStore(nil)
 	if err := SeedDefaults(store); err != nil {
 		t.Fatal(err)
 	}
 	input := CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: "gitea-open-pilot-poll", Inputs: map[string]string{"issue_id": "10", "issue_verified_at": "2026-08-22T00:00:00Z"}}
+	input = trustedOpenPilotInput("owner/repo", "10", input)
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for range 2 {
@@ -286,26 +396,25 @@ func (fakeOpenPilotStateRow) Scan(dest ...any) error {
 	*dest[0].(*string) = "opi-1"
 	*dest[1].(*string) = "OWNER/REPO"
 	*dest[2].(*string) = "123"
-	*dest[3].(*OpenPilotPhase) = OpenPilotPhaseRequested
-	*dest[4].(*sql.NullString) = sql.NullString{}
-	*dest[5].(*sql.NullString) = sql.NullString{}
-	*dest[6].(*sql.NullString) = sql.NullString{}
-	*dest[7].(*sql.NullString) = sql.NullString{}
-	*dest[8].(*sql.NullString) = sql.NullString{}
-	*dest[9].(*sql.NullString) = sql.NullString{}
-	*dest[10].(*sql.NullInt64) = sql.NullInt64{}
-	*dest[11].(*sql.NullInt64) = sql.NullInt64{}
-	*dest[12].(*sql.NullString) = sql.NullString{}
-	*dest[13].(*bool) = false
-	*dest[14].(*[]byte) = []byte(`{"broken":`)
-	*dest[15].(*[]byte) = []byte(`{"branch":"open-pilot/issue-123"}`)
-	*dest[16].(*int) = 0
-	*dest[17].(*int) = 2
+	for index := 3; index < 9; index++ {
+		*dest[index].(*sql.NullString) = sql.NullString{}
+	}
+	*dest[9].(*OpenPilotPhase) = OpenPilotPhaseRequested
+	for index := 10; index < 16; index++ {
+		*dest[index].(*sql.NullString) = sql.NullString{}
+	}
+	*dest[16].(*sql.NullInt64) = sql.NullInt64{}
+	*dest[17].(*sql.NullInt64) = sql.NullInt64{}
 	*dest[18].(*sql.NullString) = sql.NullString{}
-	*dest[19].(*sql.NullString) = sql.NullString{}
-	*dest[20].(*sql.NullString) = sql.NullString{}
-	*dest[21].(*sql.NullString) = sql.NullString{}
-	*dest[22].(*time.Time) = time.Unix(100, 0).UTC()
-	*dest[23].(*time.Time) = time.Unix(101, 0).UTC()
+	*dest[19].(*bool) = false
+	*dest[20].(*[]byte) = []byte(`{"broken":`)
+	*dest[21].(*[]byte) = []byte(`{"branch":"open-pilot/issue-123"}`)
+	*dest[22].(*int) = 0
+	*dest[23].(*int) = 2
+	for index := 24; index < 28; index++ {
+		*dest[index].(*sql.NullString) = sql.NullString{}
+	}
+	*dest[28].(*time.Time) = time.Unix(100, 0).UTC()
+	*dest[29].(*time.Time) = time.Unix(101, 0).UTC()
 	return nil
 }

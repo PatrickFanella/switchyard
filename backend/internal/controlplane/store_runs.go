@@ -92,8 +92,8 @@ func (s *MemoryStore) ClaimNextRun(workerID string, lease time.Duration) (Run, e
 	return r, nil
 }
 
-func (s *MemoryStore) ExtendRunLease(id string, workerID string, lease time.Duration) (Run, error) {
-	if id == "" || workerID == "" || lease <= 0 {
+func (s *MemoryStore) ExtendRunLease(id string, workerID string, attempt int, lease time.Duration) (Run, error) {
+	if id == "" || workerID == "" || attempt < 1 || lease <= 0 {
 		return Run{}, ErrInvalid
 	}
 	s.mu.Lock()
@@ -102,10 +102,10 @@ func (s *MemoryStore) ExtendRunLease(id string, workerID string, lease time.Dura
 	if !ok {
 		return Run{}, ErrNotFound
 	}
-	if r.Status != RunRunning || r.ClaimedBy != workerID {
+	now := s.now().UTC()
+	if r.Status != RunRunning || r.ClaimedBy != workerID || r.AttemptCount != attempt || r.LeaseExpiresAt == nil || !r.LeaseExpiresAt.After(now) {
 		return Run{}, ErrInvalid
 	}
-	now := s.now().UTC()
 	expires := now.Add(lease).UTC()
 	r.ClaimedAt = &now
 	r.LeaseExpiresAt = &expires
@@ -114,7 +114,7 @@ func (s *MemoryStore) ExtendRunLease(id string, workerID string, lease time.Dura
 	return r, nil
 }
 
-func (s *MemoryStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
+func (s *MemoryStore) RecoverLeasedRuns(at time.Time, gates ...*OpenPilotAdmissionGate) (int, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := at.UTC()
@@ -123,6 +123,22 @@ func (s *MemoryStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
 	for id, run := range s.runs {
 		if run.Status != RunRunning || run.LeaseExpiresAt == nil || run.LeaseExpiresAt.After(now) {
 			continue
+		}
+		if run.WorkflowID == string(WorkflowOpenPilot) && len(gates) > 0 {
+			stateCount := 0
+			for _, state := range s.openPilotIssueStates {
+				if state.RunID == id {
+					stateCount++
+				}
+			}
+			if stateCount > 1 {
+				s.quarantineDuplicateOpenPilotRunStatesLocked(run, now)
+				continue
+			}
+			if _, _, err := s.adoptOpenPilotRunAffinityLocked(id, gates[0], now); err != nil {
+				continue
+			}
+			run = s.runs[id]
 		}
 		run.ClaimedAt = nil
 		run.ClaimedBy = ""
@@ -176,27 +192,30 @@ func (s *MemoryStore) RequeueFailedRun(id string, availableAt time.Time, summary
 }
 
 func (s *MemoryStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
-	return s.finishRun(id, "", status, summary)
+	return s.finishRunFenced(RunAttemptFence{}, false, nil, id, "", 0, status, summary)
 }
 
-func (s *MemoryStore) FinishClaimedRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
-	if workerID == "" {
+func (s *MemoryStore) FinishClaimedRun(id string, workerID string, expectedAttemptCount int, status RunStatus, summary string) (Run, error) {
+	if workerID == "" || expectedAttemptCount < 1 {
 		return Run{}, ErrInvalid
 	}
-	return s.finishRun(id, workerID, status, summary)
+	return s.finishRunFenced(RunAttemptFence{}, false, nil, id, workerID, expectedAttemptCount, status, summary)
 }
 
-func (s *MemoryStore) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
+func (s *MemoryStore) finishRunFenced(fence RunAttemptFence, present bool, fenceErr error, id string, workerID string, expectedAttemptCount int, status RunStatus, summary string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, id); err != nil {
+		return Run{}, err
+	}
+	now := s.now().UTC()
 	r, ok := s.runs[id]
 	if !ok {
 		return Run{}, ErrNotFound
 	}
-	if workerID != "" && (r.Status != RunRunning || r.ClaimedBy != workerID) {
+	if workerID != "" && (r.Status != RunRunning || r.ClaimedBy != workerID || r.AttemptCount != expectedAttemptCount || r.LeaseExpiresAt == nil || !r.LeaseExpiresAt.After(now)) {
 		return Run{}, ErrInvalid
 	}
-	now := s.now().UTC()
 	r.Status = status
 	r.FinishedAt = &now
 	r.ClaimedAt = nil
@@ -220,11 +239,18 @@ func (s *MemoryStore) finishRun(id string, workerID string, status RunStatus, su
 }
 
 func (s *MemoryStore) CreateRunStep(input CreateRunStepInput) (RunStep, error) {
+	return s.createRunStep(RunAttemptFence{}, false, nil, input)
+}
+
+func (s *MemoryStore) createRunStep(fence RunAttemptFence, present bool, fenceErr error, input CreateRunStepInput) (RunStep, error) {
 	if input.RunID == "" || input.Position < 1 || input.Name == "" || input.Executor == "" {
 		return RunStep{}, ErrInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, input.RunID); err != nil {
+		return RunStep{}, err
+	}
 	if _, ok := s.runs[input.RunID]; !ok {
 		return RunStep{}, ErrNotFound
 	}
@@ -241,11 +267,18 @@ func (s *MemoryStore) CreateRunStep(input CreateRunStepInput) (RunStep, error) {
 }
 
 func (s *MemoryStore) StartRunStep(id string) (RunStep, error) {
+	return s.startRunStep(RunAttemptFence{}, false, nil, id)
+}
+
+func (s *MemoryStore) startRunStep(fence RunAttemptFence, present bool, fenceErr error, id string) (RunStep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	if step.Status != StepQueued {
 		return RunStep{}, ErrInvalid
@@ -263,11 +296,18 @@ func (s *MemoryStore) StartRunStep(id string) (RunStep, error) {
 }
 
 func (s *MemoryStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunStep, error) {
+	return s.updateRunStep(RunAttemptFence{}, false, nil, id, input)
+}
+
+func (s *MemoryStore) updateRunStep(fence RunAttemptFence, present bool, fenceErr error, id string, input UpdateRunStepInput) (RunStep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	if input.Inputs != nil {
 		step.Inputs = cloneMap(input.Inputs)
@@ -277,6 +317,10 @@ func (s *MemoryStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunSte
 }
 
 func (s *MemoryStore) FinishRunStep(id string, status RunStepStatus, outputSummary string, errText string, correlationIDs map[string]string) (RunStep, error) {
+	return s.finishRunStep(RunAttemptFence{}, false, nil, id, status, outputSummary, errText, correlationIDs)
+}
+
+func (s *MemoryStore) finishRunStep(fence RunAttemptFence, present bool, fenceErr error, id string, status RunStepStatus, outputSummary string, errText string, correlationIDs map[string]string) (RunStep, error) {
 	if !isTerminalStepStatus(status) {
 		return RunStep{}, ErrInvalid
 	}
@@ -285,6 +329,9 @@ func (s *MemoryStore) FinishRunStep(id string, status RunStepStatus, outputSumma
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	if step.Status != StepRunning && step.Status != StepQueued {
 		return RunStep{}, ErrInvalid
@@ -308,11 +355,18 @@ func (s *MemoryStore) FinishRunStep(id string, status RunStepStatus, outputSumma
 }
 
 func (s *MemoryStore) MergeRunStepCorrelationIDs(id string, correlationIDs map[string]string) (RunStep, error) {
+	return s.mergeRunStepCorrelationIDs(RunAttemptFence{}, false, nil, id, correlationIDs)
+}
+
+func (s *MemoryStore) mergeRunStepCorrelationIDs(fence RunAttemptFence, present bool, fenceErr error, id string, correlationIDs map[string]string) (RunStep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	step.CorrelationIDs = mergeStringMaps(step.CorrelationIDs, correlationIDs)
 	s.steps[id] = step
@@ -320,8 +374,15 @@ func (s *MemoryStore) MergeRunStepCorrelationIDs(id string, correlationIDs map[s
 }
 
 func (s *MemoryStore) RecordRunStepBackendDecision(runID, stepID string, decision BackendDecision) error {
+	return s.recordRunStepBackendDecision(RunAttemptFence{}, false, nil, runID, stepID, decision)
+}
+
+func (s *MemoryStore) recordRunStepBackendDecision(fence RunAttemptFence, present bool, fenceErr error, runID, stepID string, decision BackendDecision) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, runID); err != nil {
+		return err
+	}
 	if _, ok := s.runs[runID]; !ok {
 		return ErrNotFound
 	}
@@ -341,11 +402,18 @@ func (s *MemoryStore) RecordRunStepBackendDecision(runID, stepID string, decisio
 }
 
 func (s *MemoryStore) RetryRunStep(id string) (RunStep, error) {
+	return s.retryRunStep(RunAttemptFence{}, false, nil, id)
+}
+
+func (s *MemoryStore) retryRunStep(fence RunAttemptFence, present bool, fenceErr error, id string) (RunStep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	if step.Status != StepFailed && step.Status != StepCanceled && step.Status != StepTimedOut && step.Status != StepPaused {
 		return RunStep{}, ErrInvalid
@@ -362,11 +430,18 @@ func (s *MemoryStore) RetryRunStep(id string) (RunStep, error) {
 }
 
 func (s *MemoryStore) RecoverRunStep(id string) (RunStep, error) {
+	return s.recoverRunStep(RunAttemptFence{}, false, nil, id)
+}
+
+func (s *MemoryStore) recoverRunStep(fence RunAttemptFence, present bool, fenceErr error, id string) (RunStep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	if step.Status != StepRunning {
 		return RunStep{}, ErrInvalid
@@ -383,11 +458,18 @@ func (s *MemoryStore) RecoverRunStep(id string) (RunStep, error) {
 }
 
 func (s *MemoryStore) CancelRunStep(id string) (RunStep, error) {
+	return s.cancelRunStep(RunAttemptFence{}, false, nil, id)
+}
+
+func (s *MemoryStore) cancelRunStep(fence RunAttemptFence, present bool, fenceErr error, id string) (RunStep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
 	if !ok {
 		return RunStep{}, ErrNotFound
+	}
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, step.RunID); err != nil {
+		return RunStep{}, err
 	}
 	if step.Status != StepQueued && step.Status != StepRunning {
 		return RunStep{}, ErrInvalid
@@ -425,8 +507,15 @@ func (s *MemoryStore) RunStep(id string) (RunStep, error) {
 }
 
 func (s *MemoryStore) AddEvent(runID, typ, message string) (RunEvent, error) {
+	return s.addEvent(RunAttemptFence{}, false, nil, runID, typ, message)
+}
+
+func (s *MemoryStore) addEvent(fence RunAttemptFence, present bool, fenceErr error, runID, typ, message string) (RunEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, runID); err != nil {
+		return RunEvent{}, err
+	}
 	if _, ok := s.runs[runID]; !ok {
 		return RunEvent{}, ErrNotFound
 	}
@@ -436,11 +525,18 @@ func (s *MemoryStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 }
 
 func (s *MemoryStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
+	return s.addArtifact(RunAttemptFence{}, false, nil, input)
+}
+
+func (s *MemoryStore) addArtifact(fence RunAttemptFence, present bool, fenceErr error, input CreateArtifactInput) (Artifact, error) {
 	if err := validateArtifactInput(input); err != nil {
 		return Artifact{}, ErrInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.validateRunAttemptFenceLocked(fence, present, fenceErr, input.RunID); err != nil {
+		return Artifact{}, err
+	}
 	if _, ok := s.runs[input.RunID]; !ok {
 		return Artifact{}, ErrNotFound
 	}

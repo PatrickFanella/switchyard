@@ -1,7 +1,7 @@
 {
   "contract_version": "switchyard.postgres-object-set.v1",
   "provider": "postgres",
-  "migration_head": "024_webhook_dispatch.sql",
+  "migration_head": "026_open_pilot_candidate_monotonicity.sql",
   "migration_ledger": [
     "001_controlplane.sql",
     "002_trigger_scheduler.sql",
@@ -25,7 +25,9 @@
     "021_artifact_measurement.sql",
     "022_compatibility_observations.sql",
     "023_transactional_artifact_and_compatibility_accounting.sql",
-    "024_webhook_dispatch.sql"
+    "024_webhook_dispatch.sql",
+    "025_open_pilot_repository_affinity.sql",
+    "026_open_pilot_candidate_monotonicity.sql"
   ],
   "required_objects": [
     "artifact_lifecycle_daily",

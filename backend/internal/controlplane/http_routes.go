@@ -65,6 +65,7 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/model-broker/requests/{id}/drop", a.dropModelBrokerRequest)
 	mux.HandleFunc("GET /api/opencode-executor/status", a.openCodeExecutorStatus)
 	mux.HandleFunc("GET /api/open-pilot/states", a.openPilotStates)
+	mux.HandleFunc("GET /api/open-pilot/repository-audit", a.openPilotRepositoryAudit)
 	mux.HandleFunc("GET /api/open-pilot/state", a.openPilotState)
 	mux.HandleFunc("POST /api/open-pilot/state/pause", a.pauseOpenPilotState)
 	mux.HandleFunc("POST /api/open-pilot/state/resume", a.resumeOpenPilotState)

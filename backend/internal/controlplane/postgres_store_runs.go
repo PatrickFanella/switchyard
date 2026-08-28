@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -115,8 +116,8 @@ func (s *PostgresStore) ClaimNextRun(workerID string, lease time.Duration) (Run,
 	return r, nil
 }
 
-func (s *PostgresStore) ExtendRunLease(id string, workerID string, lease time.Duration) (Run, error) {
-	if id == "" || workerID == "" || lease <= 0 {
+func (s *PostgresStore) ExtendRunLease(id string, workerID string, attempt int, lease time.Duration) (Run, error) {
+	if id == "" || workerID == "" || attempt < 1 || lease <= 0 {
 		return Run{}, ErrInvalid
 	}
 	now := s.now().UTC()
@@ -125,7 +126,7 @@ func (s *PostgresStore) ExtendRunLease(id string, workerID string, lease time.Du
 	if err != nil {
 		return Run{}, err
 	}
-	row := tx.QueryRowContext(s.operationContext(), `update runs set claimed_at=$3, lease_expires_at=$4 where id=$1 and status=$5 and claimed_by=$2 returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary, pipeline_id, pipeline_version, pipeline_snapshot`, id, workerID, now, expires, RunRunning)
+	row := tx.QueryRowContext(s.operationContext(), `update runs set claimed_at=$3, lease_expires_at=$4 where id=$1 and status=$5 and claimed_by=$2 and attempt_count=$6 and lease_expires_at is not null and lease_expires_at > clock_timestamp() returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary, pipeline_id, pipeline_version, pipeline_snapshot`, id, workerID, now, expires, RunRunning, attempt)
 	r, err := scanRunRow(row)
 	if err != nil {
 		_ = tx.Rollback()
@@ -141,11 +142,111 @@ func (s *PostgresStore) ExtendRunLease(id string, workerID string, lease time.Du
 	return r, nil
 }
 
-func (s *PostgresStore) RecoverLeasedRuns(at time.Time) (int, int, error) {
+func (s *PostgresStore) RecoverLeasedRuns(at time.Time, gates ...*OpenPilotAdmissionGate) (int, int, error) {
 	now := at.UTC()
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
 		return 0, 0, err
+	}
+	if len(gates) > 0 {
+		rows, err := tx.QueryContext(s.operationContext(), `select id from runs where workflow_id=$1 and status=$2 and lease_expires_at is not null and lease_expires_at <= $3 order by id`, string(WorkflowOpenPilot), RunRunning, now)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, 0, err
+		}
+		runIDs := []string{}
+		for rows.Next() {
+			var runID string
+			if scanErr := rows.Scan(&runID); scanErr != nil {
+				rows.Close()
+				_ = tx.Rollback()
+				return 0, 0, scanErr
+			}
+			runIDs = append(runIDs, runID)
+		}
+		if err := rows.Close(); err != nil {
+			_ = tx.Rollback()
+			return 0, 0, err
+		}
+		for _, runID := range runIDs {
+			if _, err := tx.ExecContext(s.operationContext(), `savepoint open_pilot_recovery_run`); err != nil {
+				_ = tx.Rollback()
+				return 0, 0, err
+			}
+			quarantineRecoveryError := func(recoveryErr error) error {
+				if _, err := tx.ExecContext(s.operationContext(), `rollback to savepoint open_pilot_recovery_run`); err != nil {
+					return errors.Join(recoveryErr, err)
+				}
+				if _, err := lockPostgresOpenPilotStatesForRun(s.operationContext(), tx, runID); err != nil {
+					return errors.Join(recoveryErr, err)
+				}
+				result, err := tx.ExecContext(s.operationContext(), `update runs set status=$2,summary=$3,finished_at=$4,claimed_at=null,claimed_by='',lease_expires_at=null where id=$1 and status=$5 and lease_expires_at is not null and lease_expires_at <= $4`, runID, RunPaused, openPilotAffinityAdoptionDiagnostic, now, RunRunning)
+				if err != nil {
+					return errors.Join(recoveryErr, err)
+				}
+				updated, err := result.RowsAffected()
+				if err != nil {
+					return err
+				}
+				if updated == 0 {
+					_, err := tx.ExecContext(s.operationContext(), `release savepoint open_pilot_recovery_run`)
+					return err
+				}
+				if _, err := tx.ExecContext(s.operationContext(), `update open_pilot_issue_states set phase=$2,last_error=$3,failing_gate='repository_affinity',operator_summary=$3,recommended_next_action='manual_review',updated_at=$4 where run_id=$1`, runID, OpenPilotPhasePaused, openPilotAffinityAdoptionDiagnostic, now); err != nil {
+					return errors.Join(recoveryErr, err)
+				}
+				if _, err = tx.ExecContext(s.operationContext(), `insert into run_events(id,run_id,type,message,created_at) values($1,$2,'run.paused',$3,$4)`, newID("evt"), runID, openPilotAffinityAdoptionDiagnostic, now); err != nil {
+					return err
+				}
+				_, err = tx.ExecContext(s.operationContext(), `release savepoint open_pilot_recovery_run`)
+				return err
+			}
+			stateCount, err := lockPostgresOpenPilotStatesForRun(s.operationContext(), tx, runID)
+			if err != nil {
+				if quarantineErr := quarantineRecoveryError(err); quarantineErr != nil {
+					_ = tx.Rollback()
+					return 0, 0, quarantineErr
+				}
+				continue
+			}
+			run, err := scanRunRow(tx.QueryRowContext(s.operationContext(), `select `+postgresRunColumns+` from runs where id=$1 for update`, runID))
+			if err != nil {
+				if quarantineErr := quarantineRecoveryError(mapScanErr(err)); quarantineErr != nil {
+					_ = tx.Rollback()
+					return 0, 0, quarantineErr
+				}
+				continue
+			}
+			if run.Status != RunRunning || run.LeaseExpiresAt == nil || run.LeaseExpiresAt.After(now) {
+				if _, err := tx.ExecContext(s.operationContext(), `release savepoint open_pilot_recovery_run`); err != nil {
+					_ = tx.Rollback()
+					return 0, 0, err
+				}
+				continue
+			}
+			if stateCount > 1 {
+				if err := quarantinePostgresDuplicateOpenPilotRunStates(s.operationContext(), tx, run, now); err != nil {
+					_ = tx.Rollback()
+					return 0, 0, err
+				}
+				if _, err := tx.ExecContext(s.operationContext(), `release savepoint open_pilot_recovery_run`); err != nil {
+					_ = tx.Rollback()
+					return 0, 0, err
+				}
+				continue
+			}
+			if _, _, adoptErr := adoptPostgresOpenPilotRunAffinity(s.operationContext(), tx, run, gates[0], now); adoptErr != nil && !errors.Is(adoptErr, ErrConflict) {
+				if quarantineErr := quarantineRecoveryError(adoptErr); quarantineErr != nil {
+					_ = tx.Rollback()
+					return 0, 0, quarantineErr
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(s.operationContext(), `release savepoint open_pilot_recovery_run`); err != nil {
+				_ = tx.Rollback()
+				return 0, 0, err
+			}
+		}
 	}
 	requeueRows, err := tx.QueryContext(s.operationContext(), `update runs set status=$2, available_at=$3, claimed_at=null, claimed_by='', lease_expires_at=null where status=$1 and lease_expires_at is not null and lease_expires_at <= $3 and attempt_count < max_attempts returning id`, RunRunning, RunQueued, now)
 	if err != nil {
@@ -236,27 +337,31 @@ func (s *PostgresStore) RequeueFailedRun(id string, availableAt time.Time, summa
 }
 
 func (s *PostgresStore) FinishRun(id string, status RunStatus, summary string) (Run, error) {
-	return s.finishRun(id, "", status, summary)
+	return s.finishRun(id, "", 0, status, summary)
 }
 
-func (s *PostgresStore) FinishClaimedRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
-	if workerID == "" {
+func (s *PostgresStore) FinishClaimedRun(id string, workerID string, expectedAttemptCount int, status RunStatus, summary string) (Run, error) {
+	if workerID == "" || expectedAttemptCount < 1 {
 		return Run{}, ErrInvalid
 	}
-	return s.finishRun(id, workerID, status, summary)
+	return s.finishRun(id, workerID, expectedAttemptCount, status, summary)
 }
 
-func (s *PostgresStore) finishRun(id string, workerID string, status RunStatus, summary string) (Run, error) {
+func (s *PostgresStore) finishRun(id string, workerID string, expectedAttemptCount int, status RunStatus, summary string) (Run, error) {
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
 		return Run{}, err
 	}
-	query := `update runs set status=$2, finished_at=$3, summary=$4, claimed_at=null, claimed_by='', lease_expires_at=null where id=$1`
-	args := []any{id, status, now, summary}
+	if err := s.lockRunAttemptFenceTx(tx, id); err != nil {
+		_ = tx.Rollback()
+		return Run{}, err
+	}
+	query := `update runs set status=$2, finished_at=clock_timestamp(), summary=$3, claimed_at=null, claimed_by='', lease_expires_at=null where id=$1`
+	args := []any{id, status, summary}
 	if workerID != "" {
-		query += ` and status=$5 and claimed_by=$6`
-		args = append(args, RunRunning, workerID)
+		query += ` and status=$4 and claimed_by=$5 and attempt_count=$6 and lease_expires_at is not null and lease_expires_at > clock_timestamp()`
+		args = append(args, RunRunning, workerID, expectedAttemptCount)
 	}
 	query += ` returning id, workflow_id, coalesce(trigger_id,''), status, inputs, created_at, queued_at, available_at, started_at, finished_at, claimed_at, claimed_by, lease_expires_at, attempt_count, max_attempts, summary, pipeline_id, pipeline_version, pipeline_snapshot`
 	row := tx.QueryRowContext(s.operationContext(), query, args...)
@@ -317,6 +422,10 @@ func (s *PostgresStore) CreateRunStep(input CreateRunStepInput) (RunStep, error)
 	if err != nil {
 		return RunStep{}, err
 	}
+	if err := s.lockRunAttemptFenceTx(tx, input.RunID); err != nil {
+		_ = tx.Rollback()
+		return RunStep{}, err
+	}
 	if _, err := tx.ExecContext(s.operationContext(), `insert into run_steps(id, run_id, position, name, executor, model, status, inputs, correlation_ids, created_at) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10)`, step.ID, step.RunID, step.Position, step.Name, step.Executor, step.Model, step.Status, string(inputs), string(correlationIDs), step.CreatedAt); err != nil {
 		_ = tx.Rollback()
 		return RunStep{}, mapPgErr(err)
@@ -335,6 +444,10 @@ func (s *PostgresStore) StartRunStep(id string) (RunStep, error) {
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
+		return RunStep{}, err
+	}
+	if _, err := s.lockRunAttemptFenceForStepTx(tx, id); err != nil {
+		_ = tx.Rollback()
 		return RunStep{}, err
 	}
 	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, attempt_count=attempt_count+1, started_at=$3, finished_at=null, error='', output_summary='' where id=$1 and status=$4 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, StepRunning, now, StepQueued)
@@ -358,12 +471,21 @@ func (s *PostgresStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunS
 	if err != nil {
 		return RunStep{}, err
 	}
-	row := s.db.QueryRowContext(s.operationContext(), `update run_steps set inputs=$2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(inputs))
+	tx, err := s.db.BeginTx(s.operationContext(), nil)
+	if err != nil {
+		return RunStep{}, err
+	}
+	if _, err := s.lockRunAttemptFenceForStepTx(tx, id); err != nil {
+		_ = tx.Rollback()
+		return RunStep{}, err
+	}
+	row := tx.QueryRowContext(s.operationContext(), `update run_steps set inputs=$2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(inputs))
 	step, err := scanRunStepRow(row)
 	if err != nil {
+		_ = tx.Rollback()
 		return RunStep{}, mapScanErr(err)
 	}
-	return step, nil
+	return step, tx.Commit()
 }
 
 func (s *PostgresStore) FinishRunStep(id string, status RunStepStatus, outputSummary string, errText string, correlationIDs map[string]string) (RunStep, error) {
@@ -377,6 +499,10 @@ func (s *PostgresStore) FinishRunStep(id string, status RunStepStatus, outputSum
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
+		return RunStep{}, err
+	}
+	if _, err := s.lockRunAttemptFenceForStepTx(tx, id); err != nil {
+		_ = tx.Rollback()
 		return RunStep{}, err
 	}
 	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, output_summary=$3, error=$4, correlation_ids=correlation_ids || $5::jsonb, finished_at=$6 where id=$1 and status in ($7,$8) returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, status, outputSummary, errText, string(encodedCorrelationIDs), now, StepRunning, StepQueued)
@@ -407,8 +533,20 @@ func (s *PostgresStore) MergeRunStepCorrelationIDs(id string, correlationIDs map
 	if err != nil {
 		return RunStep{}, err
 	}
-	step, err := scanRunStepRow(s.db.QueryRowContext(s.operationContext(), `update run_steps set correlation_ids=correlation_ids || $2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(encoded)))
-	return step, mapScanErr(err)
+	tx, err := s.db.BeginTx(s.operationContext(), nil)
+	if err != nil {
+		return RunStep{}, err
+	}
+	if _, err := s.lockRunAttemptFenceForStepTx(tx, id); err != nil {
+		_ = tx.Rollback()
+		return RunStep{}, err
+	}
+	step, err := scanRunStepRow(tx.QueryRowContext(s.operationContext(), `update run_steps set correlation_ids=correlation_ids || $2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(encoded)))
+	if err != nil {
+		_ = tx.Rollback()
+		return RunStep{}, mapScanErr(err)
+	}
+	return step, tx.Commit()
 }
 
 func (s *PostgresStore) RecordRunStepBackendDecision(runID, stepID string, decision BackendDecision) error {
@@ -418,6 +556,10 @@ func (s *PostgresStore) RecordRunStepBackendDecision(runID, stepID string, decis
 	}
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
+		return err
+	}
+	if err := s.lockRunAttemptFenceTx(tx, runID); err != nil {
+		_ = tx.Rollback()
 		return err
 	}
 	result, err := tx.ExecContext(s.operationContext(), `update run_steps set correlation_ids=correlation_ids || $3::jsonb where id=$1 and run_id=$2`, stepID, runID, string(encoded))
@@ -474,6 +616,10 @@ func (s *PostgresStore) transitionRunStep(id string, allowed []RunStepStatus, ne
 	if err != nil {
 		return RunStep{}, err
 	}
+	if _, err := s.lockRunAttemptFenceForStepTx(tx, id); err != nil {
+		_ = tx.Rollback()
+		return RunStep{}, err
+	}
 	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, started_at=case when $2=$6 then null else started_at end, finished_at=$3, error=$4, output_summary=case when $2=$6 then '' else output_summary end where id=$1 and status = any($5) returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, next, finished, errorText, allowedStrings, StepQueued)
 	step, err := scanRunStepRow(row)
 	if err != nil {
@@ -513,8 +659,19 @@ func (s *PostgresStore) RunStep(id string) (RunStep, error) {
 func (s *PostgresStore) AddEvent(runID, typ, message string) (RunEvent, error) {
 	now := s.now().UTC()
 	e := RunEvent{ID: newID("evt"), RunID: runID, Type: typ, Message: message, CreatedAt: now}
-	_, err := s.db.ExecContext(s.operationContext(), `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, e.ID, e.RunID, e.Type, e.Message, e.CreatedAt)
-	return e, mapPgErr(err)
+	tx, err := s.db.BeginTx(s.operationContext(), nil)
+	if err != nil {
+		return RunEvent{}, err
+	}
+	if err := s.lockRunAttemptFenceTx(tx, runID); err != nil {
+		_ = tx.Rollback()
+		return RunEvent{}, err
+	}
+	if _, err := tx.ExecContext(s.operationContext(), `insert into run_events(id, run_id, type, message, created_at) values($1,$2,$3,$4,$5)`, e.ID, e.RunID, e.Type, e.Message, e.CreatedAt); err != nil {
+		_ = tx.Rollback()
+		return RunEvent{}, mapPgErr(err)
+	}
+	return e, tx.Commit()
 }
 
 func (s *PostgresStore) AddArtifact(input CreateArtifactInput) (Artifact, error) {
@@ -529,6 +686,10 @@ func (s *PostgresStore) AddArtifact(input CreateArtifactInput) (Artifact, error)
 	artifact := Artifact{ID: newID("art"), RunID: input.RunID, Name: input.Name, Kind: input.Kind, URI: input.URI, StorageClass: metadata.StorageClass, ContentType: metadata.ContentType, ByteSize: metadata.ByteSize, SHA256: metadata.SHA256, RetentionUntil: metadata.RetentionUntil, CreatedAt: now}
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
+		return Artifact{}, err
+	}
+	if err := s.lockRunAttemptFenceTx(tx, input.RunID); err != nil {
+		_ = tx.Rollback()
 		return Artifact{}, err
 	}
 	if err := enableArtifactTriggerLifecycleAccounting(s.operationContext(), tx); err != nil {

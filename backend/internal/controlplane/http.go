@@ -553,6 +553,8 @@ func writeControlError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}

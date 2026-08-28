@@ -95,6 +95,7 @@ func openPilotCITestState() OpenPilotIssueState {
 		ResumeInputs: map[string]string{
 			"resume.open-pilot.branch-plan.branch":      "open-pilot/issue-123",
 			"resume.open-pilot.branch-plan.base_branch": "main",
+			"resume.open-pilot.commit-changes.sha":      openPilotTestCommitSHA,
 		},
 	}
 }
@@ -108,11 +109,11 @@ func TestOpenPilotCIChecksPassesAndLooksUpPRByHead(t *testing.T) {
 	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "success",
-			SHA:      "abc123",
+			SHA:      openPilotTestCommitSHA,
 			Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}},
 			Checks:   []GiteaCheckRun{{Name: "lint", Status: "completed", Conclusion: "success"}, {Name: "test", Status: "completed", Conclusion: "success"}},
 		}},
@@ -137,7 +138,7 @@ func TestOpenPilotCIChecksPassesAndLooksUpPRByHead(t *testing.T) {
 	if state.Phase != OpenPilotPhaseCIPassed || state.GateStatus["ci_checks"] != "passed" {
 		t.Fatalf("state = %+v", state)
 	}
-	if len(reader.findCalls) != 2 || reader.findCalls[0] != "open-pilot/issue-123" || len(reader.checkCalls) != 1 || reader.checkCalls[0].Head.SHA != "abc123" {
+	if len(reader.findCalls) != 2 || reader.findCalls[0] != "open-pilot/issue-123" || len(reader.checkCalls) != 1 || reader.checkCalls[0].Head.SHA != openPilotTestCommitSHA {
 		t.Fatalf("reader calls = %+v %+v", reader.findCalls, reader.checkCalls)
 	}
 	if detail, err := store.RunDetail(run.ID); err != nil {
@@ -155,10 +156,10 @@ func TestOpenPilotCIChecksPreservesFreshlyCheckedPRForMerge(t *testing.T) {
 	seed := openPilotCITestState()
 	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
 	seedOpenPilotIssueState(t, store, seed)
-	checked := completeCITestPullRequest(GiteaPullRequest{ID: 99, Number: 7, State: "open", HTMLURL: seed.PullRequestURL, Head: GiteaPullRequestRef{Ref: seed.Branch, SHA: "abc123"}})
+	checked := completeCITestPullRequest(GiteaPullRequest{ID: 99, Number: 7, State: "open", HTMLURL: seed.PullRequestURL, Head: GiteaPullRequestRef{Ref: seed.Branch, SHA: openPilotTestCommitSHA}})
 	fresh := checked
 	fresh.Base.Ref = "main"
-	reader := &scriptedCIGiteaReader{findPRs: []GiteaPullRequest{checked, fresh}, findFound: true, checks: []GiteaCheckSummary{{State: "success", SHA: "abc123", Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}}, Checks: []GiteaCheckRun{{Name: "lint", Status: "completed", Conclusion: "success"}, {Name: "test", Status: "completed", Conclusion: "success"}}}}}
+	reader := &scriptedCIGiteaReader{findPRs: []GiteaPullRequest{checked, fresh}, findFound: true, checks: []GiteaCheckSummary{{State: "success", SHA: openPilotTestCommitSHA, Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}}, Checks: []GiteaCheckRun{{Name: "lint", Status: "completed", Conclusion: "success"}, {Name: "test", Status: "completed", Conclusion: "success"}}}}}
 	env := newOpenPilotCICheckTestEnv(store)
 	env.giteaReader = reader
 	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": seed.Repo, "issue": seed.Issue, "branch": seed.Branch}})
@@ -173,12 +174,12 @@ func TestOpenPilotCIChecksPreservesFreshlyCheckedPRForMerge(t *testing.T) {
 		t.Fatalf("CI-passed PR = %+v", state["open-pilot.ci-passed-pull-request"])
 	}
 	saved, err := store.OpenPilotIssueState(seed.Repo, seed.Issue)
-	if err != nil || saved.ResumeInputs[openPilotCIPassedHeadSHAKey] != "abc123" {
+	if err != nil || saved.ResumeInputs[openPilotCIPassedHeadSHAKey] != openPilotTestCommitSHA {
 		t.Fatalf("saved CI head = %+v, %v", saved.ResumeInputs, err)
 	}
 	recovered := map[string]any{}
 	(openPilotExecutor{env: env}).hydrateOpenPilotPipelineStateFromIssueState(run, saved, recovered)
-	if got, ok := recovered["open-pilot.ci-passed-pull-request"].(GiteaPullRequest); !ok || got.Head.SHA != "abc123" || got.Number != fresh.Number {
+	if got, ok := recovered["open-pilot.ci-passed-pull-request"].(GiteaPullRequest); !ok || got.Head.SHA != openPilotTestCommitSHA || got.Number != fresh.Number {
 		t.Fatalf("recovered CI-passed PR = %+v", recovered["open-pilot.ci-passed-pull-request"])
 	}
 }
@@ -200,10 +201,10 @@ func TestOpenPilotCIChecksRejectsPassedSnapshotWhenFreshPRChanges(t *testing.T) 
 			seed := openPilotCITestState()
 			seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
 			seedOpenPilotIssueState(t, store, seed)
-			checked := GiteaPullRequest{ID: 99, Number: 7, State: "open", HTMLURL: seed.PullRequestURL, Head: GiteaPullRequestRef{Ref: seed.Branch, SHA: "abc123"}}
+			checked := GiteaPullRequest{ID: 99, Number: 7, State: "open", HTMLURL: seed.PullRequestURL, Head: GiteaPullRequestRef{Ref: seed.Branch, SHA: openPilotTestCommitSHA}}
 			fresh := checked
 			test.mutate(&fresh)
-			reader := &scriptedCIGiteaReader{findPRs: []GiteaPullRequest{checked, fresh}, findFound: true, checks: []GiteaCheckSummary{{State: "success", SHA: "abc123"}}}
+			reader := &scriptedCIGiteaReader{findPRs: []GiteaPullRequest{checked, fresh}, findFound: true, checks: []GiteaCheckSummary{{State: "success", SHA: openPilotTestCommitSHA}}}
 			env := newOpenPilotCICheckTestEnv(store)
 			env.giteaReader = reader
 			run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": seed.Repo, "issue": seed.Issue, "branch": seed.Branch}})
@@ -240,11 +241,11 @@ func TestOpenPilotCIChecksFailsOnRequiredCheckFailure(t *testing.T) {
 	seed.PullRequestURL = "https://git/OWNER/REPO/pulls/7"
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "failure",
-			SHA:      "abc123",
+			SHA:      openPilotTestCommitSHA,
 			Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}},
 			Checks:   []GiteaCheckRun{{Name: "lint", Status: "completed", Conclusion: "failure"}},
 		}},
@@ -278,9 +279,9 @@ func TestOpenPilotCIChecksTimeoutsOnPendingChecks(t *testing.T) {
 	seed := openPilotCITestState()
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
-		checks:    []GiteaCheckSummary{{State: "pending", SHA: "abc123"}},
+		checks:    []GiteaCheckSummary{{State: "pending", SHA: openPilotTestCommitSHA}},
 	}
 	env := newOpenPilotCICheckTestEnv(store)
 	env.giteaReader = reader
@@ -314,11 +315,11 @@ func TestOpenPilotCIChecksFailsOnAggregateFailureWithUnmatchedRequiredNames(t *t
 	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", Label: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", Label: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "failure",
-			SHA:      "abc123",
+			SHA:      openPilotTestCommitSHA,
 			Statuses: []GiteaCommitStatus{{Context: "template-check / verify (push)", Status: "failure"}, {Context: "template-check / verify (pull_request)", Status: "failure"}},
 		}},
 	}
@@ -352,11 +353,11 @@ func TestOpenPilotCIChecksPassesOnAggregateSuccessWithUnmatchedRequiredNames(t *
 	seed.GateStatus = OpenPilotGateStatus{"ai_review": "approved"}
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", Label: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", Label: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "success",
-			SHA:      "abc123",
+			SHA:      openPilotTestCommitSHA,
 			Statuses: []GiteaCommitStatus{{Context: "template-check / verify (push)", Status: "success"}, {Context: "template-check / verify (pull_request)", Status: "success"}},
 		}},
 	}
@@ -481,11 +482,11 @@ func TestOpenPilotCIChecksResumeUsesPersistedGateStatus(t *testing.T) {
 	seed.ResumeInputs["resume.open-pilot.pr-plan.pull_request_url"] = seed.PullRequestURL
 	seedOpenPilotIssueState(t, store, seed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "success",
-			SHA:      "abc123",
+			SHA:      openPilotTestCommitSHA,
 			Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}, {Context: "lint", Status: "success"}, {Context: "test", Status: "success"}},
 		}},
 	}
@@ -526,11 +527,11 @@ func TestOpenPilotCIChecksResumeFromAIReviewedUsesPersistedGateStatus(t *testing
 	seed.ResumeInputs["resume.open-pilot.pr-plan.pull_request_number"] = "7"
 	seedOpenPilotStateAtPhase(t, store, seed, OpenPilotPhaseAIReviewed)
 	reader := &scriptedCIGiteaReader{
-		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: "abc123"}},
+		findPR:    GiteaPullRequest{ID: 99, Number: 7, HTMLURL: "https://git/OWNER/REPO/pulls/7", Head: GiteaPullRequestRef{Ref: "open-pilot/issue-123", SHA: openPilotTestCommitSHA}},
 		findFound: true,
 		checks: []GiteaCheckSummary{{
 			State:    "success",
-			SHA:      "abc123",
+			SHA:      openPilotTestCommitSHA,
 			Statuses: []GiteaCommitStatus{{Context: "verify", Status: "success"}, {Context: "lint", Status: "success"}, {Context: "test", Status: "success"}},
 		}},
 	}

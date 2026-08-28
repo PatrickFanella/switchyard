@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from validate_production_config import (
     MANAGED_MARKER,
@@ -23,6 +24,12 @@ def make_owned_workspace(parent: str) -> tuple[Path, int, int]:
     workspace.mkdir(mode=0o750)
     subprocess.run(
         ["git", "init", "--initial-branch=main", str(workspace)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(workspace), "remote", "add", "origin", "https://git.example.test/OWNER/REPO.git"],
         check=True,
         capture_output=True,
         text=True,
@@ -68,6 +75,8 @@ class ProductionConfigTest(unittest.TestCase):
             "OPENCODE_DATA_DIR": str(workspace.parent / "opencode-data"),
             "OPEN_PILOT_REPO_PATH": "/workspace",
             "OPEN_PILOT_WORKTREE_ROOT": "/workspace/.open-pilot-worktrees",
+            "OPEN_PILOT_SINGLETON_REPOSITORY": "OWNER/REPO",
+            "OPEN_PILOT_EXECUTOR_GENERATION": "legacy",
             "OPEN_PILOT_CI_AUTO_REPAIR_MODE": "allow",
             "OPEN_PILOT_CI_CHECK_MODE": "require-pass",
             "OPEN_PILOT_AUTO_COMMIT_MODE": "allow",
@@ -105,6 +114,47 @@ class ProductionConfigTest(unittest.TestCase):
 
     def test_accepts_approved_tailscale_contract(self) -> None:
         self.assertEqual(validate(self.env), [])
+
+    def test_rejects_noncanonical_repository_origins(self) -> None:
+        message = "OPEN_PILOT_SINGLETON_REPOSITORY must exactly match the source origin"
+        workspace = self.env["OPENCODE_WORKSPACE"]
+        for origin in (
+            "http://git.example.test/OWNER/REPO.git",
+            "git@git.example.test:OWNER/REPO.git",
+            "https://user:password@git.example.test/OWNER/REPO.git",
+            "https://other.example.test/OWNER/REPO.git",
+            "https://git.example.test/extra/OWNER/REPO.git",
+            "https://git.example.test/owner/repo.git",
+            "https://git.example.test/OWNER/REPO",
+            "https://git.example.test/OWNER/REPO.git?token=value",
+            "https://git.example.test/OWNER/REPO.git#fragment",
+        ):
+            with self.subTest(origin=origin):
+                subprocess.run(
+                    ["git", "-C", workspace, "remote", "set-url", "origin", origin],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertIn(message, validate(self.env))
+
+    def test_origin_validation_ignores_git_config_environment(self) -> None:
+        injected = "https://git.example.test/OWNER/REPO.git"
+        workspace = self.env["OPENCODE_WORKSPACE"]
+        subprocess.run(
+            ["git", "-C", workspace, "remote", "set-url", "origin", "https://other.example.test/OWNER/REPO.git"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "remote.origin.url", "GIT_CONFIG_VALUE_0": injected},
+        ):
+            self.assertIn(
+                "OPEN_PILOT_SINGLETON_REPOSITORY must exactly match the source origin",
+                validate(self.env),
+            )
 
     def test_rejects_non_strict_opencode(self) -> None:
         self.assert_rejected(
@@ -397,6 +447,16 @@ class ProductionConfigTest(unittest.TestCase):
             validate(self.env),
         )
 
+    def test_push_allow_rejects_malformed_gitea_url_without_raising(self) -> None:
+        message = "GITEA_BASE_URL must be an absolute sanitized HTTPS URL when Open Pilot Git push is allowed"
+        for value in ("https://[", "https://git.example.test:not-a-port"):
+            with self.subTest(value=value):
+                env = dict(self.env)
+                env["GITEA_BASE_URL"] = value
+                errors = validate(env)
+                self.assertIn(message, errors)
+                self.assertNotIn(value, "\n".join(errors))
+
     def test_rejects_runtime_inaccessible_git_metadata(self) -> None:
         workspace = Path(self.env["OPENCODE_WORKSPACE"])
         git_metadata = workspace / ".git"
@@ -426,6 +486,23 @@ class ProductionConfigTest(unittest.TestCase):
             "OPEN_PILOT_WORKTREE_ROOT",
             "/tmp/worktrees",
             "OPEN_PILOT_WORKTREE_ROOT must be /workspace/.open-pilot-worktrees",
+        )
+
+    def test_rejects_phase_one_runtime_manifest_and_invalid_generation(self) -> None:
+        self.assert_rejected(
+            "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST",
+            "/run/switchyard/open-pilot-runtime.json",
+            "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST must be absent in the Phase 1 production release",
+        )
+        self.assert_rejected(
+            "OPEN_PILOT_EXECUTOR_GENERATION",
+            "Bad_generation",
+            "OPEN_PILOT_EXECUTOR_GENERATION must be a stable lowercase ASCII ID",
+        )
+        self.assert_rejected(
+            "OPEN_PILOT_SINGLETON_REPOSITORY",
+            "owner//repo",
+            "OPEN_PILOT_SINGLETON_REPOSITORY must be an exact ASCII owner/repo slug",
         )
 
     def test_rejects_http_transport(self) -> None:
@@ -686,6 +763,9 @@ class ProductionConfigCLITest(unittest.TestCase):
                 "OPENCODE_DATA_DIR": str(workspace.parent / "opencode-data"),
                 "OPEN_PILOT_REPO_PATH": "/workspace",
                 "OPEN_PILOT_WORKTREE_ROOT": "/workspace/.open-pilot-worktrees",
+                "OPEN_PILOT_SINGLETON_REPOSITORY": "OWNER/REPO",
+                "OPEN_PILOT_EXECUTOR_GENERATION": "legacy",
+                "GITEA_BASE_URL": "https://git.example.test",
                 "SWITCHYARD_WEB_TRANSPORT": "tailscale",
                 "SWITCHYARD_WEB_BIND_HOST": "100.65.164.66",
                 "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",

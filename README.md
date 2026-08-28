@@ -178,6 +178,10 @@ Open Pilot command execution is deny-by-default. If a run includes `test_command
 
 `OPEN_PILOT_AUTONOMY_MODE=full` is the single-user homelab preset for full Open Pilot autonomy. Unless overridden, it makes worktree creation `allow`, command policy `allow`, auto-commit `allow`, git push `allow`, Gitea PR creation `allow`, merge `allow`, issue close `allow`, CI checks `require-pass`, and worktree cleanup `on-success`; command and Git allowlists remain enforced. Use it only behind reverse-proxy authentication and with a repo/worktree path visible to the API container.
 
+Phase 1 repository affinity remains singleton-only. Set `OPEN_PILOT_SINGLETON_REPOSITORY` to the exact `owner/repo` spelling of the configured source origin and keep `OPEN_PILOT_EXECUTOR_GENERATION` stable while runs can resume. `SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST` accepts the strict generated v1 contract, but every entry except the execution-bound singleton is rejected. Production validation requires the manifest to remain absent for this compatibility release. The authenticated control listener exposes `GET /api/open-pilot/repository-audit`; model ingress does not expose it. The report is bounded and omits paths and secrets. See `docs/schemas/open-pilot-repository-contracts.md`.
+
+Run-attempt mutation fencing requires a coordinated worker rollout. Stop and drain every worker before deploying or rolling back this version, then start the new worker set together. Do not run fenced and unfenced worker versions against the same database during a rolling deployment.
+
 For Docker, `OPEN_PILOT_REPO_PATH` and `OPEN_PILOT_WORKTREE_ROOT` must point to paths visible inside the `api` container, typically via explicit bind mounts. Worktree creation uses `git worktree add -b` and fails if the target branch already exists rather than resetting existing work.
 
 Switchyard also ships its own CLI contract:

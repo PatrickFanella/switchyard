@@ -30,12 +30,23 @@ func (s *PostgresStore) HandleOpenPilotCIFailure(request OpenPilotCIRepairReques
 	}
 	state, err := scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `select `+openPilotIssueStateColumns+` from open_pilot_issue_states where repo=$1 and issue=$2 for update`, request.Repo, request.Issue))
 	if err != nil {
+		if _, present, _ := runAttemptFenceFromContext(ctx); present && errors.Is(err, sql.ErrNoRows) {
+			return rollback(ErrStaleRunAttempt)
+		}
 		return rollback(mapScanErr(err))
+	}
+	if fence, present, fenceErr := runAttemptFenceFromContext(ctx); present {
+		if fenceErr != nil || state.RunID != fence.RunID || request.ParentRunID != fence.RunID || request.ExpectedWorkerID != fence.WorkerID || request.ExpectedAttemptCount != fence.Attempt {
+			return rollback(ErrStaleRunAttempt)
+		}
 	}
 	if state.RunID != request.ParentRunID {
 		child, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1`, state.RunID))
 		if err != nil {
 			return rollback(mapScanErr(err))
+		}
+		if err := validateOpenPilotRunStateTarget(child, state, request.Target); err != nil {
+			return rollback(err)
 		}
 		if child.Inputs[openPilotCIRepairParentRunIDKey] != request.ParentRunID {
 			return rollback(ErrConflict)
@@ -43,6 +54,9 @@ func (s *PostgresStore) HandleOpenPilotCIFailure(request OpenPilotCIRepairReques
 		parent, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1`, request.ParentRunID))
 		if err != nil {
 			return rollback(mapScanErr(err))
+		}
+		if err := validateOpenPilotRunAffinityTarget(parent, state, request.Target); err != nil {
+			return rollback(err)
 		}
 		attempt, err := openPilotCIRepairCount(child.Inputs)
 		if err != nil {
@@ -57,6 +71,9 @@ func (s *PostgresStore) HandleOpenPilotCIFailure(request OpenPilotCIRepairReques
 	parent, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1 for update`, request.ParentRunID))
 	if err != nil {
 		return rollback(mapScanErr(err))
+	}
+	if err := validateOpenPilotRunStateTarget(parent, state, request.Target); err != nil {
+		return rollback(err)
 	}
 	if replay, ok := exhaustedOpenPilotCIRepairReplay(state, parent, request); ok {
 		if err := tx.Commit(); err != nil {
@@ -178,7 +195,11 @@ func insertPostgresOpenPilotCIRepairArtifact(ctx context.Context, tx *sql.Tx, in
 	return err
 }
 
-func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminal(runID string) (bool, error) {
+func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminal(runID string, gates ...*OpenPilotAdmissionGate) (bool, error) {
+	gate := firstOpenPilotGate(gates)
+	if gate == nil {
+		return false, ErrInvalid
+	}
 	ctx := s.operationContext()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -199,6 +220,9 @@ func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminal(runID string) (bool, 
 	if err != nil {
 		return rollback(mapScanErr(err))
 	}
+	if _, err := gate.ValidateRunState(run, state); err != nil {
+		return rollback(err)
+	}
 	if run.Inputs[openPilotCIRepairParentRunIDKey] == "" || (run.Status != RunFailed && run.Status != RunTimedOut && run.Status != RunCanceled) {
 		if err := tx.Commit(); err != nil {
 			return false, err
@@ -215,7 +239,11 @@ func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminal(runID string) (bool, 
 	return true, nil
 }
 
-func (s *PostgresStore) ReconcileOpenPilotMergeTerminal(runID string) (bool, error) {
+func (s *PostgresStore) ReconcileOpenPilotMergeTerminal(runID string, gates ...*OpenPilotAdmissionGate) (bool, error) {
+	gate := firstOpenPilotGate(gates)
+	if gate == nil {
+		return false, ErrInvalid
+	}
 	ctx := s.operationContext()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -236,6 +264,9 @@ func (s *PostgresStore) ReconcileOpenPilotMergeTerminal(runID string) (bool, err
 	if err != nil {
 		return rollback(mapScanErr(err))
 	}
+	if _, err := gate.ValidateRunState(run, state); err != nil {
+		return rollback(err)
+	}
 	if run.WorkflowID != string(WorkflowOpenPilot) || (run.Status != RunFailed && run.Status != RunTimedOut) || run.AttemptCount < run.MaxAttempts {
 		if err := tx.Commit(); err != nil {
 			return false, err
@@ -252,8 +283,9 @@ func (s *PostgresStore) ReconcileOpenPilotMergeTerminal(runID string) (bool, err
 	return true, nil
 }
 
-func (s *PostgresStore) ReconcileOpenPilotMergeTerminals(limit int) (int, error) {
-	if limit < 1 || limit > 100 {
+func (s *PostgresStore) ReconcileOpenPilotMergeTerminals(limit int, gates ...*OpenPilotAdmissionGate) (int, error) {
+	gate := firstOpenPilotGate(gates)
+	if gate == nil || limit < 1 || limit > 100 {
 		return 0, ErrInvalid
 	}
 	ctx := s.operationContext()
@@ -278,24 +310,30 @@ func (s *PostgresStore) ReconcileOpenPilotMergeTerminals(limit int) (int, error)
 	if err := rows.Close(); err != nil {
 		return rollback(err)
 	}
+	reconciled := 0
 	for _, state := range states {
 		run, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1 for update`, state.RunID))
 		if err != nil {
 			return rollback(mapScanErr(err))
 		}
+		if _, err := gate.ValidateRunState(run, state); err != nil {
+			continue
+		}
 		setOpenPilotMergeTerminalDiagnostic(&state, run.Summary, s.now().UTC())
 		if _, err := updatePostgresOpenPilotCIRepairState(ctx, tx, state, nil); err != nil {
 			return rollback(err)
 		}
+		reconciled++
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return len(states), nil
+	return reconciled, nil
 }
 
-func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminals(limit int) (int, error) {
-	if limit < 1 || limit > 100 {
+func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminals(limit int, gates ...*OpenPilotAdmissionGate) (int, error) {
+	gate := firstOpenPilotGate(gates)
+	if gate == nil || limit < 1 || limit > 100 {
 		return 0, ErrInvalid
 	}
 	ctx := s.operationContext()
@@ -325,6 +363,9 @@ func (s *PostgresStore) ReconcileOpenPilotCIRepairTerminals(limit int) (int, err
 		run, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1 for update`, state.RunID))
 		if err != nil {
 			return rollback(mapScanErr(err))
+		}
+		if _, err := gate.ValidateRunState(run, state); err != nil {
+			continue
 		}
 		if run.Inputs[openPilotCIRepairParentRunIDKey] == "" || (run.Status != RunFailed && run.Status != RunTimedOut && run.Status != RunCanceled) {
 			continue
@@ -364,6 +405,247 @@ func (s *PostgresStore) OpenPilotIssueState(repo, issue string) (OpenPilotIssueS
 	return state, mapScanErr(err)
 }
 
+func (s *PostgresStore) OpenPilotIssueStateForTarget(target OpenPilotTarget) (OpenPilotIssueState, error) {
+	if err := validateOpenPilotTarget(target); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	rows, err := s.db.QueryContext(s.operationContext(), `select `+openPilotIssueStateColumns+` from open_pilot_issue_states where canonical_issue=$1 and (lower(canonical_repo)=any($2::text[]) or coalesce(canonical_candidates,array[]::text[]) && $2::text[]) order by id limit 2`, target.Issue, openPilotTargetCandidates(target))
+	if err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	defer rows.Close()
+	var matched OpenPilotIssueState
+	matches := 0
+	for rows.Next() {
+		matched, err = scanOpenPilotIssueStateRow(rows)
+		if err != nil {
+			return OpenPilotIssueState{}, err
+		}
+		matches++
+	}
+	if err := rows.Err(); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	if matches > 1 {
+		return OpenPilotIssueState{}, ErrConflict
+	}
+	if matches == 0 {
+		return OpenPilotIssueState{}, ErrNotFound
+	}
+	return matched, nil
+}
+
+func (s *PostgresStore) BindOpenPilotIssueStateAffinity(repo, issue string, target OpenPilotTarget) (OpenPilotIssueState, error) {
+	if err := validateOpenPilotTarget(target); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	rollback := func(err error) (OpenPilotIssueState, error) { _ = tx.Rollback(); return OpenPilotIssueState{}, err }
+	state, err := scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `select `+openPilotIssueStateColumns+` from open_pilot_issue_states where repo=$1 and issue=$2 for update`, repo, issue))
+	if err != nil {
+		return rollback(mapScanErr(err))
+	}
+	if err := lockPostgresOpenPilotCandidates(ctx, tx, target); err != nil {
+		return rollback(err)
+	}
+	if err := postgresOpenPilotCanonicalCollision(ctx, tx, state.ID, target); err != nil {
+		return rollback(err)
+	}
+	if state.RepositoryID != "" {
+		if state.RepositoryID != target.RepositoryID || state.ExecutorGeneration != target.ExecutorGeneration || state.CanonicalRepo != target.RepositorySlug || state.CanonicalIssue != target.Issue {
+			return rollback(ErrConflict)
+		}
+		state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set canonical_candidates=(select array_agg(distinct lower(value) order by lower(value)) from unnest(coalesce(canonical_candidates,array[]::text[]) || $2::text[]) value) where id=$1 returning `+openPilotIssueStateColumns, state.ID, openPilotTargetCandidates(target)))
+		if err != nil {
+			return rollback(mapScanErr(err))
+		}
+		if err := tx.Commit(); err != nil {
+			return OpenPilotIssueState{}, err
+		}
+		return state, nil
+	}
+	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set repository_id=$3,executor_generation=$4,canonical_repo=$5,canonical_issue=$6,canonical_candidates=(select array_agg(distinct lower(value) order by lower(value)) from unnest(coalesce(canonical_candidates,array[]::text[]) || $7::text[]) value),updated_at=$8 where repo=$1 and issue=$2 and repository_id is null and executor_generation is null returning `+openPilotIssueStateColumns, repo, issue, target.RepositoryID, target.ExecutorGeneration, target.RepositorySlug, target.Issue, openPilotTargetCandidates(target), s.now().UTC()))
+	if err != nil {
+		return rollback(mapScanErr(err))
+	}
+	if err := tx.Commit(); err != nil {
+		return OpenPilotIssueState{}, err
+	}
+	return state, nil
+}
+
+func (s *PostgresStore) AdoptOpenPilotRunAffinity(runID, expectedWorkerID string, expectedAttemptCount int, gate *OpenPilotAdmissionGate) (Run, OpenPilotIssueState, error) {
+	if runID == "" || expectedWorkerID == "" || expectedAttemptCount < 1 {
+		return Run{}, OpenPilotIssueState{}, ErrInvalid
+	}
+	ctx := s.operationContext()
+	fence, fencePresent, fenceErr := runAttemptFenceFromContext(ctx)
+	if fencePresent && (fenceErr != nil || fence.RunID != runID || fence.WorkerID != expectedWorkerID || fence.Attempt != expectedAttemptCount) {
+		return Run{}, OpenPilotIssueState{}, ErrStaleRunAttempt
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	if err := lockPostgresOpenPilotStateForRun(ctx, tx, runID); err != nil {
+		_ = tx.Rollback()
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	if fencePresent {
+		if err := s.lockRunAttemptFenceTx(tx, runID); err != nil {
+			_ = tx.Rollback()
+			return Run{}, OpenPilotIssueState{}, err
+		}
+	}
+	run, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1 for update`, runID))
+	if err != nil {
+		_ = tx.Rollback()
+		return Run{}, OpenPilotIssueState{}, mapScanErr(err)
+	}
+	if run.WorkflowID == string(WorkflowOpenPilot) && run.Status != RunQueued && run.Status != RunRunning {
+		_ = tx.Rollback()
+		return Run{}, OpenPilotIssueState{}, ErrConflict
+	}
+	var claimLive bool
+	if err := tx.QueryRowContext(ctx, `select status=$2 and claimed_by=$3 and attempt_count=$4 and lease_expires_at is not null and lease_expires_at > clock_timestamp() from runs where id=$1`, runID, RunRunning, expectedWorkerID, expectedAttemptCount).Scan(&claimLive); err != nil {
+		_ = tx.Rollback()
+		return Run{}, OpenPilotIssueState{}, mapScanErr(err)
+	}
+	if !claimLive {
+		_ = tx.Rollback()
+		return Run{}, OpenPilotIssueState{}, ErrConflict
+	}
+	run, state, adoptErr := adoptPostgresOpenPilotRunAffinity(ctx, tx, run, gate, s.now().UTC())
+	if adoptErr != nil && !errors.Is(adoptErr, ErrConflict) {
+		_ = tx.Rollback()
+		return Run{}, OpenPilotIssueState{}, adoptErr
+	}
+	if err := tx.Commit(); err != nil {
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	return run, state, adoptErr
+}
+
+func lockPostgresOpenPilotStateForRun(ctx context.Context, tx *sql.Tx, runID string) error {
+	count, err := lockPostgresOpenPilotStatesForRun(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if count > 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func lockPostgresOpenPilotStatesForRun(ctx context.Context, tx *sql.Tx, runID string) (int, error) {
+	rows, err := tx.QueryContext(ctx, `select id from open_pilot_issue_states where run_id=$1 order by id limit 2 for update`, runID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func quarantinePostgresDuplicateOpenPilotRunStates(ctx context.Context, tx *sql.Tx, run Run, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `update runs set status=$2,summary=$3,finished_at=$4,claimed_at=null,claimed_by='',lease_expires_at=null where id=$1`, run.ID, RunPaused, openPilotAffinityAdoptionDiagnostic, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update open_pilot_issue_states set phase=$2,last_error=$3,failing_gate='repository_affinity',operator_summary=$3,recommended_next_action='manual_review',updated_at=$4 where run_id=$1`, run.ID, OpenPilotPhasePaused, openPilotAffinityAdoptionDiagnostic, now); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `insert into run_events(id,run_id,type,message,created_at) values($1,$2,'run.paused',$3,$4)`, newID("evt"), run.ID, openPilotAffinityAdoptionDiagnostic, now)
+	return err
+}
+
+func adoptPostgresOpenPilotRunAffinity(ctx context.Context, tx *sql.Tx, run Run, gate *OpenPilotAdmissionGate, now time.Time) (Run, OpenPilotIssueState, error) {
+	if run.WorkflowID != string(WorkflowOpenPilot) {
+		return run, OpenPilotIssueState{}, nil
+	}
+	state, err := scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `select `+openPilotIssueStateColumns+` from open_pilot_issue_states where repo=$1 and issue=$2 for update`, run.Inputs["repo"], run.Inputs["issue"]))
+	stateFound := err == nil
+	unsafe := gate == nil || (!stateFound && errors.Is(err, sql.ErrNoRows))
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	unsafe = unsafe || state.RunID != run.ID || state.Repo != run.Inputs["repo"] || state.Issue != run.Inputs["issue"]
+	var target OpenPilotTarget
+	if !unsafe {
+		target, err = gate.Resolve(state.Repo, state.Issue)
+		unsafe = err != nil
+	}
+	stateNull := state.RepositoryID == "" && state.ExecutorGeneration == ""
+	runNull := run.Inputs[openPilotRepositoryIDInputKey] == "" && run.Inputs[openPilotExecutorGenerationInputKey] == ""
+	stateExact := !stateNull && state.RepositoryID == target.RepositoryID && state.ExecutorGeneration == target.ExecutorGeneration && state.CanonicalRepo == target.RepositorySlug && state.CanonicalIssue == target.Issue
+	runExact := !runNull && run.Inputs[openPilotRepositoryIDInputKey] == target.RepositoryID && run.Inputs[openPilotExecutorGenerationInputKey] == target.ExecutorGeneration
+	if !unsafe && ((stateExact && runExact) || (stateNull && runNull)) {
+		if err := lockPostgresOpenPilotCandidates(ctx, tx, target); err != nil {
+			return Run{}, OpenPilotIssueState{}, err
+		}
+		if err := postgresOpenPilotCanonicalCollision(ctx, tx, state.ID, target); err != nil {
+			if !errors.Is(err, ErrConflict) {
+				return Run{}, OpenPilotIssueState{}, err
+			}
+			unsafe = true
+		}
+	}
+	if !unsafe && (state.Repo != target.RepositorySlug || state.Issue != target.Issue) {
+		var canonicalStateID string
+		err = tx.QueryRowContext(ctx, `select id from open_pilot_issue_states where repo=$1 and issue=$2`, target.RepositorySlug, target.Issue).Scan(&canonicalStateID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Run{}, OpenPilotIssueState{}, err
+		}
+		unsafe = err == nil && canonicalStateID != state.ID
+	}
+	if unsafe || (!stateExact && !stateNull) || (!runExact && !runNull) {
+		return quarantinePostgresOpenPilotRunAffinity(ctx, tx, run, state, stateFound, now)
+	}
+	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set repo=$2,issue=$3,repository_id=$4,executor_generation=$5,canonical_repo=$2,canonical_issue=$3,canonical_candidates=(select array_agg(distinct lower(value) order by lower(value)) from unnest(coalesce(canonical_candidates,array[]::text[]) || $6::text[]) value),legacy_repo=coalesce(legacy_repo,repo),legacy_issue=coalesce(legacy_issue,issue),updated_at=$7 where id=$1 returning `+openPilotIssueStateColumns, state.ID, target.RepositorySlug, target.Issue, target.RepositoryID, target.ExecutorGeneration, openPilotTargetCandidates(target), now))
+	if err != nil {
+		return Run{}, OpenPilotIssueState{}, mapScanErr(err)
+	}
+	run.Inputs = cloneMap(run.Inputs)
+	run.Inputs["repo"], run.Inputs["issue"] = target.RepositorySlug, target.Issue
+	setOpenPilotAffinityInputs(run.Inputs, target)
+	encodedInputs, err := json.Marshal(run.Inputs)
+	if err != nil {
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	run, err = scanRunRow(tx.QueryRowContext(ctx, `update runs set inputs=$2::jsonb where id=$1 and status in ($3,$4) returning `+postgresRunColumns, run.ID, string(encodedInputs), RunQueued, RunRunning))
+	if err != nil {
+		return Run{}, OpenPilotIssueState{}, mapScanErr(err)
+	}
+	return run, state, nil
+}
+
+func quarantinePostgresOpenPilotRunAffinity(ctx context.Context, tx *sql.Tx, run Run, state OpenPilotIssueState, stateFound bool, now time.Time) (Run, OpenPilotIssueState, error) {
+	var err error
+	run, err = scanRunRow(tx.QueryRowContext(ctx, `update runs set status=$2,summary=$3,finished_at=$4,claimed_at=null,claimed_by='',lease_expires_at=null where id=$1 returning `+postgresRunColumns, run.ID, RunPaused, openPilotAffinityAdoptionDiagnostic, now))
+	if err != nil {
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	if stateFound {
+		state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set phase=$2,last_error=$3,failing_gate='repository_affinity',operator_summary=$3,recommended_next_action='manual_review',updated_at=$4 where id=$1 returning `+openPilotIssueStateColumns, state.ID, OpenPilotPhasePaused, openPilotAffinityAdoptionDiagnostic, now))
+		if err != nil {
+			return Run{}, OpenPilotIssueState{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `insert into run_events(id,run_id,type,message,created_at) values($1,$2,'run.paused',$3,$4)`, newID("evt"), run.ID, openPilotAffinityAdoptionDiagnostic, now); err != nil {
+		return Run{}, OpenPilotIssueState{}, err
+	}
+	return run, state, ErrConflict
+}
+
 func (s *PostgresStore) UpsertOpenPilotIssueState(input OpenPilotIssueState) (OpenPilotIssueState, error) {
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
@@ -379,6 +661,16 @@ func (s *PostgresStore) UpsertOpenPilotIssueState(input OpenPilotIssueState) (Op
 	var existingPtr *OpenPilotIssueState
 	if err == nil {
 		existingPtr = &existing
+	}
+	if fence, present, fenceErr := runAttemptFenceFromContext(s.operationContext()); present {
+		if fenceErr != nil || existingPtr == nil || existing.RunID != fence.RunID || input.RunID != fence.RunID {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, ErrStaleRunAttempt
+		}
+		if err := s.lockRunAttemptFenceTx(tx, fence.RunID); err != nil {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
 	}
 	state, err := validateOpenPilotIssueStateForUpsert(input, existingPtr)
 	if err != nil {
@@ -409,16 +701,16 @@ func (s *PostgresStore) UpsertOpenPilotIssueState(input OpenPilotIssueState) (Op
 	}
 	if existingPtr == nil {
 		row = tx.QueryRowContext(s.operationContext(), `
-			insert into open_pilot_issue_states(id, repo, issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, failing_gate, operator_summary, recommended_next_action, created_at, updated_at)
-			values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24)
+			insert into open_pilot_issue_states(id, repo, issue, repository_id, executor_generation, canonical_repo, canonical_issue, legacy_repo, legacy_issue, phase, run_id, last_step_name, branch, base, worktree_path, pull_request_url, pull_request_id, pull_request_number, merge_commit_sha, issue_closed, gate_status, resume_inputs, repair_attempts, max_repair_attempts, last_error, failing_gate, operator_summary, recommended_next_action, created_at, updated_at)
+			values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30)
 			returning `+openPilotIssueStateColumns+``,
-			state.ID, state.Repo, state.Issue, state.Phase, state.RunID, state.LastStepName, state.Branch, state.Base, state.WorktreePath, state.PullRequestURL, nullInt64(state.PullRequestID), nullInt64(state.PullRequestNum), state.MergeCommitSHA, state.IssueClosed, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, state.LastError, nullString(state.FailingGate), nullString(state.OperatorSummary), nullString(state.RecommendedNextAction), state.CreatedAt, state.UpdatedAt)
+			state.ID, state.Repo, state.Issue, nullString(state.RepositoryID), nullString(state.ExecutorGeneration), nullString(state.CanonicalRepo), nullString(state.CanonicalIssue), nullString(state.LegacyRepo), nullString(state.LegacyIssue), state.Phase, state.RunID, state.LastStepName, state.Branch, state.Base, state.WorktreePath, state.PullRequestURL, nullInt64(state.PullRequestID), nullInt64(state.PullRequestNum), state.MergeCommitSHA, state.IssueClosed, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, state.LastError, nullString(state.FailingGate), nullString(state.OperatorSummary), nullString(state.RecommendedNextAction), state.CreatedAt, state.UpdatedAt)
 	} else {
 		row = tx.QueryRowContext(s.operationContext(), `
-			update open_pilot_issue_states set phase=$3, run_id=$4, last_step_name=$5, branch=$6, base=$7, worktree_path=$8, pull_request_url=$9, pull_request_id=$10, pull_request_number=$11, merge_commit_sha=$12, issue_closed=$13, gate_status=$14::jsonb, resume_inputs=$15::jsonb, repair_attempts=$16, max_repair_attempts=$17, last_error=$18, failing_gate=$19, operator_summary=$20, recommended_next_action=$21, updated_at=$22
+			update open_pilot_issue_states set repository_id=$3, executor_generation=$4, canonical_repo=$5, canonical_issue=$6, legacy_repo=$7, legacy_issue=$8, phase=$9, run_id=$10, last_step_name=$11, branch=$12, base=$13, worktree_path=$14, pull_request_url=$15, pull_request_id=$16, pull_request_number=$17, merge_commit_sha=$18, issue_closed=$19, gate_status=$20::jsonb, resume_inputs=$21::jsonb, repair_attempts=$22, max_repair_attempts=$23, last_error=$24, failing_gate=$25, operator_summary=$26, recommended_next_action=$27, updated_at=$28
 			where repo=$1 and issue=$2
 			returning `+openPilotIssueStateColumns+``,
-			state.Repo, state.Issue, state.Phase, state.RunID, state.LastStepName, state.Branch, state.Base, state.WorktreePath, state.PullRequestURL, nullInt64(state.PullRequestID), nullInt64(state.PullRequestNum), state.MergeCommitSHA, state.IssueClosed, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, state.LastError, nullString(state.FailingGate), nullString(state.OperatorSummary), nullString(state.RecommendedNextAction), state.UpdatedAt)
+			state.Repo, state.Issue, nullString(state.RepositoryID), nullString(state.ExecutorGeneration), nullString(state.CanonicalRepo), nullString(state.CanonicalIssue), nullString(state.LegacyRepo), nullString(state.LegacyIssue), state.Phase, state.RunID, state.LastStepName, state.Branch, state.Base, state.WorktreePath, state.PullRequestURL, nullInt64(state.PullRequestID), nullInt64(state.PullRequestNum), state.MergeCommitSHA, state.IssueClosed, string(gateStatus), string(resumeInputs), state.RepairAttempts, state.MaxRepairAttempts, state.LastError, nullString(state.FailingGate), nullString(state.OperatorSummary), nullString(state.RecommendedNextAction), state.UpdatedAt)
 	}
 	saved, err := scanOpenPilotIssueStateRow(row)
 	if err != nil {
@@ -446,6 +738,10 @@ func (s *PostgresStore) TransitionOpenPilotIssueState(repo, issue string, next O
 		if !errors.Is(err, sql.ErrNoRows) {
 			_ = tx.Rollback()
 			return OpenPilotIssueState{}, err
+		}
+		if _, present, _ := runAttemptFenceFromContext(s.operationContext()); present {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, ErrStaleRunAttempt
 		}
 		if err := ValidateOpenPilotTransition("", next); err != nil {
 			_ = tx.Rollback()
@@ -481,6 +777,16 @@ func (s *PostgresStore) TransitionOpenPilotIssueState(repo, issue string, next O
 			return OpenPilotIssueState{}, err
 		}
 		return saved, nil
+	}
+	if fence, present, fenceErr := runAttemptFenceFromContext(s.operationContext()); present {
+		if fenceErr != nil || existing.RunID != fence.RunID {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, ErrStaleRunAttempt
+		}
+		if err := s.lockRunAttemptFenceTx(tx, fence.RunID); err != nil {
+			_ = tx.Rollback()
+			return OpenPilotIssueState{}, err
+		}
 	}
 	if err := normalizeOpenPilotRepairCounts(&existing); err != nil {
 		_ = tx.Rollback()
@@ -555,25 +861,47 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 		_ = tx.Rollback()
 		return OpenPilotIssueState{}, Run{}, err
 	}
+	if input.OpenPilotTarget == nil {
+		return rollback(ErrInvalid)
+	}
+	if err := validateOpenPilotTarget(*input.OpenPilotTarget); err != nil {
+		return rollback(err)
+	}
 	state, err := scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `select `+openPilotIssueStateColumns+` from open_pilot_issue_states where repo=$1 and issue=$2 for update`, repo, issue))
 	if err != nil {
 		return rollback(mapScanErr(err))
 	}
-	var priorStatus RunStatus
-	if err := tx.QueryRowContext(ctx, `select status from runs where id=$1`, state.RunID).Scan(&priorStatus); err != nil {
+	if err := lockPostgresOpenPilotCandidates(ctx, tx, *input.OpenPilotTarget); err != nil {
+		return rollback(err)
+	}
+	if target := input.OpenPilotTarget; target != nil {
+		if state.RepositoryID != target.RepositoryID || state.ExecutorGeneration != target.ExecutorGeneration || state.CanonicalRepo != target.RepositorySlug || state.CanonicalIssue != target.Issue {
+			return rollback(ErrConflict)
+		}
+		state.RepositoryID, state.ExecutorGeneration = target.RepositoryID, target.ExecutorGeneration
+		state.CanonicalRepo, state.CanonicalIssue = target.RepositorySlug, target.Issue
+		if err := postgresOpenPilotCanonicalCollision(ctx, tx, state.ID, *target); err != nil {
+			return rollback(err)
+		}
+	}
+	prior, err := scanRunRow(tx.QueryRowContext(ctx, `select `+postgresRunColumns+` from runs where id=$1 for update`, state.RunID))
+	if err != nil {
 		return rollback(mapScanErr(err))
 	}
-	if priorStatus == RunQueued || priorStatus == RunRunning {
+	if prior.Status == RunQueued || prior.Status == RunRunning {
 		return rollback(ErrInvalid)
 	}
+	if err := validateOpenPilotRunStateTarget(prior, state, *input.OpenPilotTarget); err != nil {
+		return rollback(err)
+	}
 	var active bool
-	if err := tx.QueryRowContext(ctx, `select exists(select 1 from runs where workflow_id=$1 and status in ($2,$3) and inputs->>'repo'=$4 and inputs->>'issue'=$5)`, string(WorkflowOpenPilot), RunQueued, RunRunning, repo, issue).Scan(&active); err != nil {
+	if err := tx.QueryRowContext(ctx, `select exists(select 1 from runs where workflow_id=$1 and status in ($2,$3) and inputs->>$4=$5 and (regexp_replace(inputs->>'issue','^0+','')=$6 or inputs->>'issue'=$6))`, string(WorkflowOpenPilot), RunQueued, RunRunning, openPilotRepositoryIDInputKey, input.OpenPilotTarget.RepositoryID, input.OpenPilotTarget.Issue).Scan(&active); err != nil {
 		return rollback(err)
 	}
 	if active {
 		return rollback(ErrInvalid)
 	}
-	inputs, err := safeOpenPilotResumeInputs(state)
+	inputs, err := safeOpenPilotResumeInputs(state, input.PipelineSnapshot)
 	if err != nil {
 		return rollback(err)
 	}
@@ -583,6 +911,9 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 		}
 	}
 	stripOpenPilotCIRepairInputs(inputs)
+	inputs["repo"], inputs["issue"] = input.OpenPilotTarget.RepositorySlug, input.OpenPilotTarget.Issue
+	setOpenPilotAffinityInputs(inputs, *input.OpenPilotTarget)
+	inputs[openPilotLifecycleResumeInputKey] = "true"
 	input.Inputs = inputs
 	encodedInputs, err := json.Marshal(inputs)
 	if err != nil {
@@ -616,7 +947,7 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 	if err != nil {
 		return rollback(err)
 	}
-	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set phase=$3, run_id=$4, resume_inputs=$5::jsonb, last_error='', failing_gate='', operator_summary='', recommended_next_action='', updated_at=$6 where repo=$1 and issue=$2 returning `+openPilotIssueStateColumns, repo, issue, phase, run.ID, string(resumeJSON), now))
+	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `update open_pilot_issue_states set phase=$3, run_id=$4, resume_inputs=$5::jsonb, repository_id=$6, executor_generation=$7, canonical_repo=$8, canonical_issue=$9, canonical_candidates=(select array_agg(distinct lower(value) order by lower(value)) from unnest(coalesce(canonical_candidates,array[]::text[]) || $10::text[]) value), last_error='', failing_gate='', operator_summary='', recommended_next_action='', updated_at=$11 where repo=$1 and issue=$2 returning `+openPilotIssueStateColumns, repo, issue, phase, run.ID, string(resumeJSON), nullString(state.RepositoryID), nullString(state.ExecutorGeneration), nullString(state.CanonicalRepo), nullString(state.CanonicalIssue), openPilotTargetCandidates(*input.OpenPilotTarget), now))
 	if err != nil {
 		return rollback(mapScanErr(err))
 	}
@@ -639,8 +970,35 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotInitialRun(repo, issue string, in
 		_ = tx.Rollback()
 		return OpenPilotIssueState{}, Run{}, err
 	}
+	if input.OpenPilotTarget != nil {
+		target := input.OpenPilotTarget
+		if err := validateOpenPilotTarget(*target); err != nil {
+			return rollback(err)
+		}
+		canonicalRepo, repoErr := ParseOpenPilotRepositorySlug(repo)
+		canonicalIssue, issueErr := ParseOpenPilotIssue(issue)
+		if repoErr != nil || issueErr != nil || !strings.EqualFold(target.RepositorySlug, canonicalRepo) || target.Issue != canonicalIssue {
+			return rollback(ErrInvalid)
+		}
+		if err := lockPostgresOpenPilotCandidates(ctx, tx, *target); err != nil {
+			return rollback(err)
+		}
+		var collision bool
+		if err := tx.QueryRowContext(ctx, `select exists(select 1 from open_pilot_issue_states where canonical_issue=$2 and (lower(canonical_repo)=any($1::text[]) or canonical_candidates && $1::text[]))`, openPilotTargetCandidates(*target), target.Issue).Scan(&collision); err != nil {
+			return rollback(err)
+		}
+		if collision {
+			return rollback(ErrConflict)
+		}
+	} else {
+		return rollback(ErrInvalid)
+	}
 	input.Inputs = cloneMap(input.Inputs)
+	if input.Inputs == nil {
+		input.Inputs = map[string]string{}
+	}
 	input.Inputs["repo"], input.Inputs["issue"] = repo, issue
+	setOpenPilotAffinityInputs(input.Inputs, *input.OpenPilotTarget)
 	encodedInputs, err := json.Marshal(input.Inputs)
 	if err != nil {
 		return rollback(err)
@@ -669,9 +1027,13 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotInitialRun(repo, issue string, in
 	if err != nil {
 		return rollback(err)
 	}
-	state := OpenPilotIssueState{ID: newID("opi"), Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, RunID: run.ID, ResumeInputs: cloneMap(input.Inputs), MaxRepairAttempts: 2, CreatedAt: now, UpdatedAt: now}
+	state := OpenPilotIssueState{ID: newID("opi"), Repo: repo, Issue: issue, Phase: OpenPilotPhaseRequested, RunID: run.ID, ResumeInputs: cloneMap(input.Inputs), MaxRepairAttempts: 2, CreatedAt: now, UpdatedAt: now, LegacyRepo: repo, LegacyIssue: issue}
+	if target := input.OpenPilotTarget; target != nil {
+		state.RepositoryID, state.ExecutorGeneration = target.RepositoryID, target.ExecutorGeneration
+		state.CanonicalRepo, state.CanonicalIssue = target.RepositorySlug, target.Issue
+	}
 	gateJSON, _ := marshalOpenPilotJSONMap(nil)
-	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `insert into open_pilot_issue_states(id,repo,issue,phase,run_id,last_step_name,branch,base,worktree_path,pull_request_url,pull_request_id,pull_request_number,merge_commit_sha,issue_closed,gate_status,resume_inputs,repair_attempts,max_repair_attempts,last_error,failing_gate,operator_summary,recommended_next_action,created_at,updated_at) values($1,$2,$3,$4,$5,'','','','','',null,null,'',false,$6::jsonb,$7::jsonb,0,2,'',null,null,null,$8,$8) on conflict (repo,issue) do nothing returning `+openPilotIssueStateColumns, state.ID, repo, issue, state.Phase, run.ID, string(gateJSON), string(resumeJSON), now))
+	state, err = scanOpenPilotIssueStateRow(tx.QueryRowContext(ctx, `insert into open_pilot_issue_states(id,repo,issue,repository_id,executor_generation,canonical_repo,canonical_issue,canonical_candidates,legacy_repo,legacy_issue,phase,run_id,last_step_name,branch,base,worktree_path,pull_request_url,pull_request_id,pull_request_number,merge_commit_sha,issue_closed,gate_status,resume_inputs,repair_attempts,max_repair_attempts,last_error,failing_gate,operator_summary,recommended_next_action,created_at,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8::text[],$9,$10,$11,$12,'','','','','',null,null,'',false,$13::jsonb,$14::jsonb,0,2,'',null,null,null,$15,$15) on conflict (repo,issue) do nothing returning `+openPilotIssueStateColumns, state.ID, repo, issue, nullString(state.RepositoryID), nullString(state.ExecutorGeneration), nullString(state.CanonicalRepo), nullString(state.CanonicalIssue), openPilotTargetCandidates(*input.OpenPilotTarget), state.LegacyRepo, state.LegacyIssue, state.Phase, run.ID, string(gateJSON), string(resumeJSON), now))
 	if errors.Is(err, sql.ErrNoRows) {
 		return rollback(ErrAlreadyClaimed)
 	}
@@ -700,6 +1062,56 @@ func (s *PostgresStore) ListOpenPilotIssueStates() []OpenPilotIssueState {
 		}
 	}
 	return out
+}
+
+func (s *PostgresStore) ListOpenPilotIssueStatesForAudit(limit int) ([]OpenPilotIssueState, error) {
+	if limit < 1 || limit > maxOpenPilotAuditStates+1 {
+		return nil, ErrInvalid
+	}
+	rows, err := s.db.QueryContext(s.operationContext(), `select `+openPilotIssueStateColumns+` from open_pilot_issue_states order by repo, issue, id limit $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]OpenPilotIssueState, 0, limit)
+	for rows.Next() {
+		state, err := scanOpenPilotIssueStateRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func openPilotCanonicalLockKey(repo, issue string) string {
+	return strings.ToLower(repo) + "#" + issue
+}
+
+func lockPostgresOpenPilotCandidates(ctx context.Context, tx *sql.Tx, target OpenPilotTarget) error {
+	for _, candidate := range openPilotTargetCandidates(target) {
+		if _, err := tx.ExecContext(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, openPilotCanonicalLockKey(candidate, target.Issue)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func postgresOpenPilotCanonicalCollision(ctx context.Context, tx *sql.Tx, excludeID string, target OpenPilotTarget) error {
+	var collision bool
+	if err := tx.QueryRowContext(ctx, `select exists(select 1 from open_pilot_issue_states where id<>$1 and canonical_issue=$3 and (lower(canonical_repo)=any($2::text[]) or canonical_candidates && $2::text[]))`, excludeID, openPilotTargetCandidates(target), target.Issue).Scan(&collision); err != nil {
+		return err
+	}
+	if collision {
+		return ErrConflict
+	}
+	return nil
 }
 
 func nullInt64(v int) any {
@@ -733,10 +1145,14 @@ func scanOpenPilotIssueStateRow(row scanner) (OpenPilotIssueState, error) {
 	var gateStatusBytes []byte
 	var resumeInputsBytes []byte
 	var pullRequestID, pullRequestNum sql.NullInt64
+	var repositoryID, executorGeneration, canonicalRepo, canonicalIssue, legacyRepo, legacyIssue sql.NullString
 	var runID, lastStepName, branch, base, worktreePath, pullRequestURL, mergeCommitSHA, lastError, failingGate, operatorSummary, recommendedNextAction sql.NullString
-	if err := row.Scan(&state.ID, &state.Repo, &state.Issue, &state.Phase, &runID, &lastStepName, &branch, &base, &worktreePath, &pullRequestURL, &pullRequestID, &pullRequestNum, &mergeCommitSHA, &state.IssueClosed, &gateStatusBytes, &resumeInputsBytes, &state.RepairAttempts, &state.MaxRepairAttempts, &lastError, &failingGate, &operatorSummary, &recommendedNextAction, &state.CreatedAt, &state.UpdatedAt); err != nil {
+	if err := row.Scan(&state.ID, &state.Repo, &state.Issue, &repositoryID, &executorGeneration, &canonicalRepo, &canonicalIssue, &legacyRepo, &legacyIssue, &state.Phase, &runID, &lastStepName, &branch, &base, &worktreePath, &pullRequestURL, &pullRequestID, &pullRequestNum, &mergeCommitSHA, &state.IssueClosed, &gateStatusBytes, &resumeInputsBytes, &state.RepairAttempts, &state.MaxRepairAttempts, &lastError, &failingGate, &operatorSummary, &recommendedNextAction, &state.CreatedAt, &state.UpdatedAt); err != nil {
 		return OpenPilotIssueState{}, err
 	}
+	state.RepositoryID, state.ExecutorGeneration = repositoryID.String, executorGeneration.String
+	state.CanonicalRepo, state.CanonicalIssue = canonicalRepo.String, canonicalIssue.String
+	state.LegacyRepo, state.LegacyIssue = legacyRepo.String, legacyIssue.String
 	if runID.Valid {
 		state.RunID = runID.String
 	}

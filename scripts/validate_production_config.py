@@ -161,6 +161,51 @@ def _value(env: Mapping[str, str], name: str, default: str = "") -> str:
     return env.get(name, default).strip()
 
 
+def _origin_matches_repository(workspace: Path, base_url: str, repository: str) -> bool:
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={workspace}",
+            "-C",
+            str(workspace),
+            "config",
+            "--get",
+            "remote.origin.url",
+        ],
+        env=sanitized_git_env(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        origin = urlsplit(result.stdout.strip())
+        base = urlsplit(base_url.strip())
+        valid_urls = (
+            origin.scheme.lower() == "https"
+            and base.scheme.lower() == "https"
+            and bool(origin.hostname)
+            and bool(base.hostname)
+            and origin.username is None
+            and origin.password is None
+            and base.username is None
+            and base.password is None
+            and not origin.query
+            and not origin.fragment
+            and not base.query
+            and not base.fragment
+            and origin.netloc.casefold() == base.netloc.casefold()
+        )
+    except ValueError:
+        return False
+    if not valid_urls:
+        return False
+    expected_path = f"{base.path.rstrip('/')}/{repository}.git"
+    return origin.path == expected_path
+
+
 def _port(env: Mapping[str, str], name: str, default: str, errors: list[str]) -> int | None:
     raw = _value(env, name, default)
     try:
@@ -370,6 +415,21 @@ def validate(env: Mapping[str, str]) -> list[str]:
         errors.append(
             "OPEN_PILOT_WORKTREE_ROOT must be /workspace/.open-pilot-worktrees"
         )
+    if _value(env, "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST"):
+        errors.append("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST must be absent in the Phase 1 production release")
+    executor_generation = _value(env, "OPEN_PILOT_EXECUTOR_GENERATION", "legacy")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", executor_generation):
+        errors.append("OPEN_PILOT_EXECUTOR_GENERATION must be a stable lowercase ASCII ID")
+    singleton_repository = _value(env, "OPEN_PILOT_SINGLETON_REPOSITORY")
+    if not singleton_repository or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}",
+        singleton_repository,
+    ):
+        errors.append("OPEN_PILOT_SINGLETON_REPOSITORY must be an exact ASCII owner/repo slug")
+    elif workspace is None or not _origin_matches_repository(
+        workspace, _value(env, "GITEA_BASE_URL"), singleton_repository
+    ):
+        errors.append("OPEN_PILOT_SINGLETON_REPOSITORY must exactly match the source origin")
 
     if _value(env, "OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE").lower() == "true":
         errors.append("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE must not be enabled in production")

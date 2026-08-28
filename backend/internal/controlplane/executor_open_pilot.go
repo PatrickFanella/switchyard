@@ -32,6 +32,29 @@ type OpenPilotCommitResult struct {
 	NameStatus   string `json:"name_status,omitempty"`
 }
 
+type openPilotCommitIntent struct {
+	Parent       string
+	Tree         string
+	Message      string
+	StatusBefore string
+	DiffStat     string
+	NameStatus   string
+}
+
+var errOpenPilotCommitReconciliation = errors.New("Open Pilot commit reconciliation requires operator review")
+
+func openPilotCommitIntentFromResume(inputs map[string]string) openPilotCommitIntent {
+	const prefix = "resume.open-pilot.commit-intent."
+	return openPilotCommitIntent{
+		Parent: inputs[prefix+"parent"], Tree: inputs[prefix+"tree"], Message: inputs[prefix+"message"],
+		StatusBefore: inputs[prefix+"status_before"], DiffStat: inputs[prefix+"diffstat"], NameStatus: inputs[prefix+"name_status"],
+	}
+}
+
+func (i openPilotCommitIntent) complete() bool {
+	return openPilotFullGitSHA(strings.TrimSpace(i.Parent)) && openPilotFullGitSHA(strings.TrimSpace(i.Tree)) && strings.TrimSpace(i.Message) != ""
+}
+
 func (r OpenPilotCommitResult) StepInputs() map[string]string {
 	inputs := map[string]string{"mode": r.Mode}
 	if r.WorktreePath != "" {
@@ -169,17 +192,18 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		fallbackExecution := WorkflowExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, fallbackExecution.Summary, "", nil)
 		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", openPilotAgentWorkRequiresWorktreeMessage)
-		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", openPilotAgentWorkRequiresWorktreeMessage, map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}); persistErr != nil {
+		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", openPilotAgentWorkRequiresWorktreeMessage, map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, openPilotAttemptStoreStateKey: store}); persistErr != nil {
 			return fallbackExecution, persistErr
 		}
 		return fallbackExecution, nil
 	}
-	response, err := o.env.openCodeExecutor.SendPrompt(ctx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath, PreAttempt: preAttemptFromContext(ctx)})
+	agentCtx := withRunStepPreAttempt(ctx, store, run.ID, agent.ID)
+	response, err := o.env.openCodeExecutor.SendPrompt(agentCtx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath, PreAttempt: preAttemptFromContext(agentCtx), OnCorrelation: runStepCorrelationFromContext(agentCtx)})
 	if err != nil {
 		fallbackExecution := WorkflowExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, fallbackExecution.Summary, "", nil)
 		_, _ = store.AddEvent(run.ID, "open-pilot.agent.fallback", err.Error())
-		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", err.Error(), map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}); persistErr != nil {
+		if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, "open-pilot.agent-work", err.Error(), map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, openPilotAttemptStoreStateKey: store}); persistErr != nil {
 			return fallbackExecution, persistErr
 		}
 		return fallbackExecution, nil
@@ -437,6 +461,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 		mergedInputs["resume.open-pilot.pr-plan.pull_request_number"] = fmt.Sprintf("%d", issueState.PullRequestNum)
 	}
 	if issueState.ResumeInputs != nil {
+		if commitResult, ok := openPilotCommitResultFromInputs(issueState.ResumeInputs); ok {
+			state["open-pilot.commit-result"] = commitResult
+		}
 		if prompt := issueState.ResumeInputs["resume.open-pilot.prompt"]; prompt != "" {
 			state["open-pilot.prompt"] = prompt
 		}
@@ -445,6 +472,10 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 		}
 		if response := issueState.ResumeInputs["resume.open-pilot.agent-work.response"]; response != "" {
 			state["open-pilot.response"] = response
+			state["open-pilot.agent-completed"] = true
+		}
+		if summary := issueState.ResumeInputs["resume.open-pilot.agent-work.summary"]; summary != "" {
+			state["open-pilot.agent-summary"] = summary
 			state["open-pilot.agent-completed"] = true
 		}
 		if corr := mergeResumeCorrelation(issueState.ResumeInputs, "resume.open-pilot.agent-work.correlation."); len(corr) > 0 {
@@ -493,6 +524,9 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 }
 
 func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run, state map[string]any) {
+	if commitResult, ok := openPilotCommitResultFromInputs(run.Inputs); ok {
+		state["open-pilot.commit-result"] = commitResult
+	}
 	issueSummary := run.Inputs["resume.open-pilot.validate-issue.summary"]
 	if issueSummary != "" {
 		state["open-pilot.issue-summary"] = issueSummary
@@ -684,6 +718,22 @@ func openPilotCloseIssueStepReady(run Run, state map[string]any) bool {
 	return run.Inputs["repo"] != "" && run.Inputs["issue"] != ""
 }
 
+const openPilotAttemptStoreStateKey = "open-pilot.attempt-store"
+
+func openPilotAttemptStore(state map[string]any, fallback Store) Store {
+	if store, ok := state[openPilotAttemptStoreStateKey].(Store); ok && store != nil {
+		return store
+	}
+	return fallback
+}
+
+func openPilotStoreFromContext(ctx context.Context, fallback Store) Store {
+	if store, ok := ctx.Value(runAttemptStoreContextKey{}).(Store); ok && store != nil {
+		return store
+	}
+	return fallback
+}
+
 func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPhase, stepName, lastErr string, state map[string]any) error {
 	if o.env == nil || o.env.store == nil {
 		return nil
@@ -693,8 +743,9 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 	if repo == "" || issue == "" {
 		return nil
 	}
+	store := openPilotAttemptStore(state, o.env.store)
 	missing := false
-	saved, err := o.env.store.OpenPilotIssueState(repo, issue)
+	saved, err := store.OpenPilotIssueState(repo, issue)
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
 			return err
@@ -705,6 +756,7 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 	if !missing && saved.Phase == OpenPilotPhasePaused && run.Inputs["retry_from_step"] == "" && phase != OpenPilotPhasePaused && phase != OpenPilotPhaseFailed {
 		return errors.New("open-pilot issue is paused by operator")
 	}
+	previousPhase := saved.Phase
 	saved.Phase = phase
 	saved.RunID = run.ID
 	saved.LastStepName = stepName
@@ -885,16 +937,16 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 	if saved.MaxRepairAttempts == 0 {
 		saved.MaxRepairAttempts = openPilotDefaultMaxRepairAttempts
 	}
-	if missing {
-		if err := o.bootstrapOpenPilotIssueState(repo, issue, stepName, saved, phase); err != nil {
+	if missing || (previousPhase == OpenPilotPhaseRequested && phase != OpenPilotPhaseRequested && phase != OpenPilotPhaseValidated) {
+		if err := o.bootstrapOpenPilotIssueState(store, repo, issue, stepName, saved, phase); err != nil {
 			return err
 		}
 	}
-	_, err = o.env.store.UpsertOpenPilotIssueState(saved)
+	_, err = store.UpsertOpenPilotIssueState(saved)
 	return err
 }
 
-func (o openPilotExecutor) bootstrapOpenPilotIssueState(repo, issue, stepName string, saved OpenPilotIssueState, target OpenPilotPhase) error {
+func (o openPilotExecutor) bootstrapOpenPilotIssueState(store Store, repo, issue, stepName string, saved OpenPilotIssueState, target OpenPilotPhase) error {
 	if o.env == nil || o.env.store == nil {
 		return nil
 	}
@@ -902,18 +954,18 @@ func (o openPilotExecutor) bootstrapOpenPilotIssueState(repo, issue, stepName st
 	seed.Phase = OpenPilotPhaseRequested
 	seed.LastStepName = stepName
 	seed.LastError = ""
-	if _, err := o.env.store.UpsertOpenPilotIssueState(seed); err != nil {
+	if _, err := store.UpsertOpenPilotIssueState(seed); err != nil {
 		return err
 	}
 	if target == OpenPilotPhaseRequested {
 		return nil
 	}
 	if target == OpenPilotPhaseFailed || target == OpenPilotPhasePaused {
-		_, err := o.env.store.TransitionOpenPilotIssueState(repo, issue, target)
+		_, err := store.TransitionOpenPilotIssueState(repo, issue, target)
 		return err
 	}
 	if target == OpenPilotPhaseValidated {
-		_, err := o.env.store.TransitionOpenPilotIssueState(repo, issue, target)
+		_, err := store.TransitionOpenPilotIssueState(repo, issue, target)
 		return err
 	}
 	phaseIndex := -1
@@ -927,7 +979,7 @@ func (o openPilotExecutor) bootstrapOpenPilotIssueState(repo, issue, stepName st
 		return ErrInvalid
 	}
 	for _, next := range openPilotPhaseChain[1 : phaseIndex+1] {
-		if _, err := o.env.store.TransitionOpenPilotIssueState(repo, issue, next); err != nil {
+		if _, err := store.TransitionOpenPilotIssueState(repo, issue, next); err != nil {
 			return err
 		}
 	}
@@ -935,7 +987,9 @@ func (o openPilotExecutor) bootstrapOpenPilotIssueState(repo, issue, stepName st
 }
 
 func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Run, step PipelineStep, state map[string]any, err error) {
-	_ = ctx
+	if store, ok := ctx.Value(runAttemptStoreContextKey{}).(Store); ok {
+		state[openPilotAttemptStoreStateKey] = store
+	}
 	if err == nil {
 		return
 	}
@@ -968,8 +1022,8 @@ func (o openPilotExecutor) HandlePipelineStepFailure(ctx context.Context, run Ru
 		phase = OpenPilotPhaseFailed
 	}
 	if persistErr := o.persistOpenPilotIssueState(run, phase, step.Name, err.Error(), state); persistErr != nil {
-		if o.env != nil && o.env.store != nil {
-			_, _ = o.env.store.AddEvent(run.ID, "open-pilot.lifecycle.failure.persistence.failed", step.Name+": "+persistErr.Error())
+		if store := openPilotAttemptStore(state, o.env.store); store != nil {
+			_, _ = store.AddEvent(run.ID, "open-pilot.lifecycle.failure.persistence.failed", step.Name+": "+persistErr.Error())
 		}
 	}
 }
@@ -996,9 +1050,112 @@ func (o openPilotExecutor) PipelineStepCorrelationIDs(run Run, step PipelineStep
 	return correlation
 }
 
+func openPilotRecoveredExecution(ctx context.Context, run Run) bool {
+	recovered, _ := ctx.Value(recoveredRunStepContextKey{}).(bool)
+	return recovered || run.AttemptCount > 1 || run.Inputs[openPilotLifecycleResumeInputKey] == "true"
+}
+
+func openPilotRecoverySideEffectStep(stepID string) bool {
+	switch stepID {
+	case "branch-plan", "agent-work", "verify-command", "commit-changes", "push-branch", "pr-plan", "ai-review", "ci-checks", "merge-pr", "close-issue":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o openPilotExecutor) revalidateOpenPilotRecoveredStep(ctx context.Context, run Run, stepID string, state map[string]any) error {
+	if o.env == nil || o.env.store == nil || o.env.openPilotGate == nil || o.env.openPilotGateError != nil {
+		return errors.New("Open Pilot recovery affinity gate is not configured")
+	}
+	saved, err := openPilotStoreFromContext(ctx, o.env.store).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+	if err != nil {
+		return fmt.Errorf("reload durable Open Pilot state: %w", err)
+	}
+	if _, err := o.env.openPilotGate.ValidateRunState(run, saved); err != nil {
+		return fmt.Errorf("revalidate durable Open Pilot affinity: %w", err)
+	}
+	plan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+	if plan.Branch == "" {
+		plan = openPilotWorktreePlanFromResume(saved.ResumeInputs)
+	}
+	if saved.Branch == "" || (plan.Branch != "" && plan.Branch != saved.Branch) {
+		return errors.New("durable Open Pilot branch identity changed")
+	}
+	switch stepID {
+	case "branch-plan":
+		if saved.WorktreePath == "" || plan.WorktreePath != saved.WorktreePath || plan.Repo != saved.Repo {
+			return errors.New("durable Open Pilot worktree identity changed")
+		}
+		identity, err := validateOpenPilotWorktreeIdentity(ctx, saved.Repo, plan.RepoPath, saved.WorktreePath, saved.Branch, false)
+		if err != nil {
+			return fmt.Errorf("revalidate durable Open Pilot worktree: %w", err)
+		}
+		return identity.Close()
+	case "agent-work", "verify-command", "commit-changes", "push-branch":
+		if saved.WorktreePath == "" || plan.WorktreePath != saved.WorktreePath || plan.Repo != saved.Repo {
+			return errors.New("durable Open Pilot worktree identity changed")
+		}
+		identity, err := validateOpenPilotWorktreeIdentity(ctx, saved.Repo, plan.RepoPath, saved.WorktreePath, saved.Branch, false)
+		if err != nil {
+			return fmt.Errorf("revalidate durable Open Pilot worktree: %w", err)
+		}
+		return identity.Close()
+	case "pr-plan":
+		if saved.WorktreePath == "" || plan.WorktreePath != saved.WorktreePath || plan.Repo != saved.Repo {
+			return errors.New("durable Open Pilot worktree identity changed")
+		}
+	case "ai-review", "ci-checks", "merge-pr":
+		fresh, found, err := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+		if err != nil || !found {
+			return firstNonNilError(err, errors.New("durable Open Pilot pull request revalidation failed"))
+		}
+		state["open-pilot.pull-request"] = fresh
+	case "close-issue":
+		if saved.MergeCommitSHA == "" {
+			return errors.New("durable Open Pilot merge identity is unavailable")
+		}
+	}
+	return nil
+}
+
+func openPilotCommitResultFromInputs(inputs map[string]string) (OpenPilotCommitResult, bool) {
+	sha := strings.TrimSpace(inputs["resume.open-pilot.commit-changes.sha"])
+	if sha == "" {
+		return OpenPilotCommitResult{}, false
+	}
+	return OpenPilotCommitResult{
+		Mode: inputs["resume.open-pilot.commit-changes.mode"], WorktreePath: inputs["resume.open-pilot.commit-changes.worktree_path"],
+		Branch: inputs["resume.open-pilot.commit-changes.branch"], BaseBranch: inputs["resume.open-pilot.commit-changes.base_branch"],
+		SHA: sha, Subject: inputs["resume.open-pilot.commit-changes.subject"], StatusBefore: inputs["resume.open-pilot.commit-changes.status_before"],
+		StatusAfter: inputs["resume.open-pilot.commit-changes.status_after"], DiffStat: inputs["resume.open-pilot.commit-changes.diffstat"],
+		NameStatus: inputs["resume.open-pilot.commit-changes.name_status"], Executed: inputs["resume.open-pilot.commit-changes.executed"] == "true",
+		DryRun: inputs["resume.open-pilot.commit-changes.dry_run"] == "true",
+	}, true
+}
+
+func openPilotCommittedHeadSHA(state map[string]any, inputs map[string]string) string {
+	if result, ok := state["open-pilot.commit-result"].(OpenPilotCommitResult); ok {
+		return strings.TrimSpace(result.SHA)
+	}
+	return strings.TrimSpace(inputs["resume.open-pilot.commit-changes.sha"])
+}
+
 func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
+	if o.env != nil && o.env.store != nil {
+		state[openPilotAttemptStoreStateKey] = openPilotStoreFromContext(ctx, o.env.store)
+	}
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
+	if openPilotRecoveredExecution(ctx, run) && openPilotRecoverySideEffectStep(step.ID) {
+		if err := o.revalidateOpenPilotRecoveredStep(ctx, run, step.ID, state); err != nil {
+			message := "Open Pilot recovered step paused: " + err.Error()
+			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), state); persistErr != nil {
+				return PipelineStepExecution{Summary: message, Halt: true}, errors.Join(err, persistErr)
+			}
+			return PipelineStepExecution{Summary: message, Halt: true}, nil
+		}
+	}
 	switch step.ID {
 	case "validate-issue":
 		if repo == "" || issue == "" {
@@ -1092,16 +1249,23 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		model := firstNonEmpty(step.Model, o.env.openPilotModel)
 		if !openPilotHasExecutedWorktree(branchPlan) {
 			state["summary"] = "Open Pilot paused: isolated worktree required"
-			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
+			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, openPilotAttemptStoreStateKey: openPilotAttemptStore(state, o.env.store)}
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, openPilotAgentWorkRequiresWorktreeMessage, fallbackState); persistErr != nil {
 				return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
 			}
 			return PipelineStepExecution{Summary: "Open Pilot paused: isolated worktree required", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: openPilotAgentWorkRequiresWorktreeMessage}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, nil
 		}
+		if openPilotRecoveredExecution(ctx, run) && run.Inputs[openPilotCIRepairParentRunIDKey] == "" {
+			identity, err := validateOpenPilotWorktreeIdentity(ctx, branchPlan.Repo, branchPlan.RepoPath, branchPlan.WorktreePath, branchPlan.Branch, false)
+			if err != nil {
+				return PipelineStepExecution{}, fmt.Errorf("revalidate managed worktree before resumed OpenCode execution: %w", err)
+			}
+			_ = identity.Close()
+		}
 		if run.Inputs[openPilotCIRepairParentRunIDKey] != "" {
 			if err := o.validateOpenPilotCIRepairAgentTarget(ctx, run, branchPlan); err != nil {
 				message := fmt.Sprintf("Open Pilot CI repair paused: %v", err)
-				fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary}
+				fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, openPilotAttemptStoreStateKey: openPilotAttemptStore(state, o.env.store)}
 				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), fallbackState); persistErr != nil {
 					return PipelineStepExecution{Summary: message, Halt: true}, errors.Join(err, persistErr)
 				}
@@ -1113,7 +1277,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		request.OnCorrelation = runStepCorrelationFromContext(ctx)
 		response, err := o.env.openCodeExecutor.SendPrompt(ctx, request)
 		if err != nil {
-			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, "open-pilot.agent-correlation": response.CorrelationIDs}
+			fallbackState := map[string]any{"open-pilot.prompt": prompt, "open-pilot.branch-plan": branchPlan, "open-pilot.issue-summary": issueSummary, "open-pilot.agent-correlation": response.CorrelationIDs, openPilotAttemptStoreStateKey: openPilotAttemptStore(state, o.env.store)}
 			state["summary"] = "Prepared Open Pilot prompt for issue " + issue
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), fallbackState); persistErr != nil {
 				return PipelineStepExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}, Halt: true}, persistErr
@@ -1142,6 +1306,13 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		workdir := ""
 		if branchPlan.Executed {
 			workdir = branchPlan.WorktreePath
+		}
+		if o.env.openPilotWriteMode == "allow" {
+			identity, err := validateOpenPilotWorktreeIdentity(ctx, branchPlan.Repo, branchPlan.RepoPath, branchPlan.WorktreePath, branchPlan.Branch, false)
+			if err != nil {
+				return PipelineStepExecution{}, fmt.Errorf("revalidate managed worktree before resumed verification: %w", err)
+			}
+			_ = identity.Close()
 		}
 		result, err := o.env.commandRunner.Run(ctx, command, workdir)
 		correlation := map[string]string{"policy_reason": result.Decision.Reason}
@@ -1217,7 +1388,11 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		}
 		artifacts := openPilotCommitArtifacts(result)
 		if err != nil {
-			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+			failurePhase := OpenPilotPhaseFailed
+			if errors.Is(err, errOpenPilotCommitReconciliation) {
+				failurePhase = OpenPilotPhasePaused
+			}
+			if persistErr := o.persistOpenPilotIssueState(run, failurePhase, step.Name, err.Error(), state); persistErr != nil {
 				return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, errors.Join(err, persistErr)
 			}
 			return PipelineStepExecution{Summary: result.Summary(), Inputs: result.StepInputs(), Artifacts: artifacts, CorrelationIDs: correlation}, err
@@ -1278,6 +1453,26 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			if pushPlan.Executed && strings.TrimSpace(status) != "clean" {
 				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires a clean worktree; commit or discard uncommitted changes")
 			}
+			if pushPlan.Executed {
+				if o.env.store == nil {
+					return out, errors.New("Open Pilot push requires durable state")
+				}
+				saved, err := openPilotAttemptStore(state, o.env.store).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+				if err != nil {
+					return out, fmt.Errorf("load durable committed HEAD before push: %w", err)
+				}
+				expectedSHA := strings.TrimSpace(saved.ResumeInputs["resume.open-pilot.commit-changes.sha"])
+				if !openPilotFullGitSHA(expectedSHA) {
+					return out, errors.New("Open Pilot push requires a persisted full committed HEAD SHA")
+				}
+				currentSHA, err := identityGitOutput(ctx, pushIdentity, nil, "rev-parse", "HEAD")
+				if err != nil {
+					return out, err
+				}
+				if strings.TrimSpace(currentSHA) != expectedSHA {
+					return out, errors.New("managed worktree HEAD changed after the persisted Open Pilot commit")
+				}
+			}
 			ahead, err := o.env.openPilotWorktreeAheadCountValidated(ctx, branchPlan, pushIdentity)
 			if err != nil {
 				return out, err
@@ -1318,9 +1513,51 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		response, _ := state["open-pilot.response"].(string)
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		pushPlan, _ := state["open-pilot.push-plan"].(OpenPilotPushPlan)
+		expectedCommitSHA := ""
+		if o.env.openPilotWriteMode == "allow" {
+			if o.env.store == nil {
+				return PipelineStepExecution{}, errors.New("Open Pilot pull request creation requires durable state")
+			}
+			saved, err := openPilotAttemptStore(state, o.env.store).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+			if err != nil {
+				return PipelineStepExecution{}, fmt.Errorf("load durable pull request plan: %w", err)
+			}
+			canonicalRepo := firstNonEmpty(saved.CanonicalRepo, saved.Repo)
+			canonicalIssue := firstNonEmpty(saved.CanonicalIssue, saved.Issue)
+			branchPlan = openPilotWorktreePlanFromResume(saved.ResumeInputs)
+			if canonicalRepo == "" || canonicalIssue == "" || branchPlan.Repo != canonicalRepo || branchPlan.BaseBranch == "" || branchPlan.Branch == "" {
+				return PipelineStepExecution{}, errors.New("durable Open Pilot target and worktree branch plan are required for pull request creation")
+			}
+			repo, issue, branchName = canonicalRepo, canonicalIssue, branchPlan.Branch
+			pushPlan = openPilotPushPlanFromResume(saved.ResumeInputs)
+			expectedCommitSHA = strings.TrimSpace(saved.ResumeInputs["resume.open-pilot.commit-changes.sha"])
+		}
 		existingPR, hasExistingPR := state["open-pilot.pull-request"].(GiteaPullRequest)
 		prKnown := hasExistingPR && openPilotPullRequestKnown(existingPR)
+		if openPilotRecoveredExecution(ctx, run) || (o.env.openPilotWriteMode == "allow" && prKnown) {
+			if o.env == nil || o.env.giteaReader == nil {
+				return PipelineStepExecution{}, errors.New("gitea pull request reader not configured")
+			}
+			head := branchPlan.Branch
+			fresh, found, err := o.env.giteaReader.FindPullRequestByHead(ctx, repo, head)
+			if err != nil {
+				return PipelineStepExecution{}, err
+			}
+			if prKnown && !found {
+				return PipelineStepExecution{}, errors.New("persisted open-pilot pull request not found by head")
+			}
+			if found {
+				if err := validateOpenPilotCIPullRequestIdentity(repo, branchPlan.Branch, branchPlan.BaseBranch, expectedCommitSHA, existingPR, fresh); err != nil {
+					return PipelineStepExecution{}, err
+				}
+				existingPR, prKnown = fresh, true
+				state["open-pilot.pull-request"] = fresh
+			}
+		}
 		prInput := o.env.openPilotPullRequestInput(repo, issue, branchName, issueSummary, response, run.Inputs, state)
+		if o.env.openPilotWriteMode == "allow" {
+			prInput.Repo, prInput.Head, prInput.Base = repo, branchPlan.Branch, branchPlan.BaseBranch
+		}
 		prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
 		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}}}
 		switch o.env.openPilotWriteMode {
@@ -1330,6 +1567,14 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 					return out, persistErr
 				}
 				return out, errors.New("OPEN_PILOT_GITEA_WRITE_MODE=allow requires pushed worktree branch or externally published head")
+			}
+			if !openPilotFullGitSHA(expectedCommitSHA) {
+				return out, errors.New("Open Pilot pull request creation requires a persisted full committed HEAD SHA")
+			}
+			if branchPlan.Executed {
+				if err := o.env.validateOpenPilotRemoteHeadMatchesWorktree(ctx, pushPlan, expectedCommitSHA); err != nil {
+					return out, err
+				}
 			}
 			if prKnown {
 				out.Summary = "Using existing pull request"
@@ -1342,6 +1587,9 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 					return out, errors.Join(err, persistErr)
 				}
 				return out, err
+			}
+			if err := validateOpenPilotCIPullRequestIdentity(repo, prInput.Head, prInput.Base, expectedCommitSHA, GiteaPullRequest{}, created); err != nil {
+				return out, fmt.Errorf("validate created Open Pilot pull request: %w", err)
 			}
 			state["open-pilot.pull-request"] = created
 			prKnown = true
@@ -1386,6 +1634,13 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		if o.env == nil || o.env.modelExecutor == nil {
 			return PipelineStepExecution{}, errors.New("model executor not configured")
 		}
+		if openPilotRecoveredExecution(ctx, run) {
+			pr, found, err := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+			if err != nil || !found {
+				return PipelineStepExecution{}, firstNonNilError(err, errors.New("open-pilot pull request revalidation failed"))
+			}
+			state["open-pilot.pull-request"] = pr
+		}
 		model := firstNonEmpty(step.Model, o.env.openPilotModel)
 		if o.env.issueFetcher != nil {
 			fetchedIssue, fetchErr := o.env.issueFetcher.FetchIssue(ctx, repo, issue)
@@ -1426,7 +1681,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		var existing OpenPilotIssueState
 		var existingErr error
 		if o.env != nil && o.env.store != nil {
-			existing, existingErr = o.env.store.OpenPilotIssueState(repo, issue)
+			existing, existingErr = openPilotAttemptStore(state, o.env.store).OpenPilotIssueState(repo, issue)
 			if existingErr == nil {
 				gateStatus = cloneOpenPilotGateStatus(existing.GateStatus)
 			}
@@ -1482,6 +1737,18 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported open-pilot pipeline step %q", step.ID)
 	}
+}
+
+func openPilotFullGitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, char := range value {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePolledOpenPilotIssue(run Run, issue *GiteaIssue) error {
@@ -1545,6 +1812,16 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 	if gateStatus == nil {
 		gateStatus = map[string]string{}
 	}
+	var pr GiteaPullRequest
+	prFound := false
+	var err error
+	if openPilotRecoveredExecution(ctx, run) {
+		pr, prFound, err = o.refreshOpenPilotCIPullRequest(ctx, run, state)
+		if err != nil || !prFound {
+			return PipelineStepExecution{}, firstNonNilError(err, errors.New("open-pilot pull request revalidation failed"))
+		}
+		state["open-pilot.pull-request"] = pr
+	}
 	if mode == "disabled" {
 		gateStatus["ci_checks"] = "skipped"
 		state["open-pilot.gate-status"] = gateStatus
@@ -1553,7 +1830,9 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 		}
 		return PipelineStepExecution{Summary: "CI checks skipped"}, nil
 	}
-	pr, prFound, err := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+	if !prFound {
+		pr, prFound, err = o.refreshOpenPilotCIPullRequest(ctx, run, state)
+	}
 	if err != nil {
 		gateStatus["ci_checks"] = "failed"
 		state["open-pilot.gate-status"] = gateStatus
@@ -1666,13 +1945,26 @@ func (o openPilotExecutor) refreshOpenPilotCIPullRequest(ctx context.Context, ru
 		}
 		return GiteaPullRequest{}, false, errors.New("open-pilot pull request not found by head")
 	}
-	if err := validateOpenPilotCIPullRequestIdentity(run.Inputs["repo"], head, persisted, pr); err != nil {
+	plan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+	base := plan.BaseBranch
+	expectedCommitSHA := ""
+	if base == "" && o.env.store != nil {
+		if saved, stateErr := openPilotStoreFromContext(ctx, o.env.store).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"]); stateErr == nil {
+			base = saved.Base
+			expectedCommitSHA = strings.TrimSpace(saved.ResumeInputs["resume.open-pilot.commit-changes.sha"])
+		}
+	} else if o.env.store != nil {
+		if saved, stateErr := openPilotStoreFromContext(ctx, o.env.store).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"]); stateErr == nil {
+			expectedCommitSHA = strings.TrimSpace(saved.ResumeInputs["resume.open-pilot.commit-changes.sha"])
+		}
+	}
+	if err := validateOpenPilotCIPullRequestIdentity(run.Inputs["repo"], head, base, expectedCommitSHA, persisted, pr); err != nil {
 		return GiteaPullRequest{}, false, err
 	}
 	return pr, true, nil
 }
 
-func validateOpenPilotCIPullRequestIdentity(repo, head string, persisted, fresh GiteaPullRequest) error {
+func validateOpenPilotCIPullRequestIdentity(repo, head, base, expectedCommitSHA string, persisted, fresh GiteaPullRequest) error {
 	if !strings.EqualFold(strings.TrimSpace(fresh.State), "open") {
 		return errors.New("open-pilot pull request is not open")
 	}
@@ -1685,11 +1977,20 @@ func validateOpenPilotCIPullRequestIdentity(repo, head string, persisted, fresh 
 	if strings.TrimSpace(fresh.Head.Ref) != strings.TrimSpace(head) {
 		return errors.New("open-pilot pull request head branch changed")
 	}
-	if fresh.Head.Repo != nil && strings.TrimSpace(fresh.Head.Repo.FullName) != "" && strings.TrimSpace(fresh.Head.Repo.FullName) != strings.TrimSpace(repo) {
-		return errors.New("open-pilot pull request repository changed")
+	if fresh.Head.Repo == nil || strings.TrimSpace(fresh.Head.Repo.FullName) != strings.TrimSpace(repo) {
+		return errors.New("open-pilot pull request head repository changed")
 	}
-	if strings.TrimSpace(fresh.Head.SHA) == "" {
-		return errors.New("open-pilot pull request head sha is required")
+	if fresh.Base.Repo == nil || strings.TrimSpace(fresh.Base.Repo.FullName) != strings.TrimSpace(repo) {
+		return errors.New("open-pilot pull request base repository changed")
+	}
+	if strings.TrimSpace(base) == "" || strings.TrimSpace(fresh.Base.Ref) != strings.TrimSpace(base) {
+		return errors.New("open-pilot pull request base branch changed")
+	}
+	if !openPilotFullGitSHA(strings.TrimSpace(expectedCommitSHA)) {
+		return errors.New("open-pilot persisted full commit sha is required")
+	}
+	if strings.TrimSpace(fresh.Head.SHA) != strings.TrimSpace(expectedCommitSHA) {
+		return errors.New("open-pilot pull request head sha changed from the persisted commit")
 	}
 	return nil
 }
@@ -1698,9 +1999,11 @@ func (o openPilotExecutor) validateOpenPilotCIRepairAgentTarget(ctx context.Cont
 	repo := strings.TrimSpace(run.Inputs[openPilotCIRepairRepoKey])
 	head := strings.TrimSpace(run.Inputs[openPilotCIRepairHeadBranchKey])
 	failedSHA := strings.TrimSpace(run.Inputs[openPilotCIRepairFailedHeadSHAKey])
+	baseRepo := strings.TrimSpace(run.Inputs[openPilotCIRepairBaseRepoKey])
+	baseBranch := strings.TrimSpace(run.Inputs[openPilotCIRepairBaseBranchKey])
 	prID, idErr := strconv.Atoi(strings.TrimSpace(run.Inputs[openPilotCIRepairPRIDKey]))
 	prNumber, numberErr := strconv.Atoi(strings.TrimSpace(run.Inputs[openPilotCIRepairPRNumberKey]))
-	if repo == "" || repo != strings.TrimSpace(run.Inputs["repo"]) || head == "" || failedSHA == "" || idErr != nil || numberErr != nil || prID < 1 || prNumber < 1 {
+	if repo == "" || repo != strings.TrimSpace(run.Inputs["repo"]) || head == "" || failedSHA == "" || baseRepo != repo || baseBranch == "" || idErr != nil || numberErr != nil || prID < 1 || prNumber < 1 {
 		return errors.New("protected CI repair pull request identity is invalid")
 	}
 	if o.env == nil || o.env.issueFetcher == nil || o.env.giteaReader == nil {
@@ -1717,7 +2020,7 @@ func (o openPilotExecutor) validateOpenPilotCIRepairAgentTarget(ctx context.Cont
 	if err != nil {
 		return fmt.Errorf("re-fetch CI repair pull request: %w", err)
 	}
-	if !found || pr.ID != prID || pr.Number != prNumber || !strings.EqualFold(strings.TrimSpace(pr.State), "open") || strings.TrimSpace(pr.Head.Ref) != head || pr.Head.Repo == nil || strings.TrimSpace(pr.Head.Repo.FullName) != repo {
+	if !found || pr.ID != prID || pr.Number != prNumber || !strings.EqualFold(strings.TrimSpace(pr.State), "open") || strings.TrimSpace(pr.Head.Ref) != head || pr.Head.Repo == nil || strings.TrimSpace(pr.Head.Repo.FullName) != repo || pr.Base.Repo == nil || strings.TrimSpace(pr.Base.Repo.FullName) != baseRepo || strings.TrimSpace(pr.Base.Ref) != baseBranch {
 		return errors.New("CI repair pull request identity changed")
 	}
 	if strings.TrimSpace(pr.Head.SHA) != failedSHA {
@@ -1756,9 +2059,17 @@ func (o openPilotExecutor) tryOpenPilotCIRepair(ctx context.Context, run Run, st
 	if workerID == "" || o.env.store == nil {
 		return PipelineStepExecution{}, nil
 	}
-	saved, err := o.env.store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+	store := openPilotAttemptStore(state, openPilotStoreFromContext(ctx, o.env.store))
+	saved, err := store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
 	if err != nil || saved.RunID != run.ID || saved.Branch == "" || saved.WorktreePath == "" || saved.PullRequestID < 1 || saved.PullRequestNum < 1 {
 		return PipelineStepExecution{}, nil
+	}
+	if o.env.openPilotGateError != nil {
+		return PipelineStepExecution{}, o.env.openPilotGateError
+	}
+	target, err := o.env.openPilotGate.ValidateRunState(run, saved)
+	if err != nil {
+		return PipelineStepExecution{}, err
 	}
 	if saved.Branch != pr.Head.Ref || saved.PullRequestID != pr.ID || saved.PullRequestNum != pr.Number || saved.PullRequestURL != pr.HTMLURL {
 		return PipelineStepExecution{}, nil
@@ -1785,13 +2096,14 @@ func (o openPilotExecutor) tryOpenPilotCIRepair(ctx context.Context, run Run, st
 	}
 	prompt := buildOpenPilotCIRepairPrompt(feedback)
 	request := OpenPilotCIRepairRequest{
-		Repo: saved.Repo, Issue: saved.Issue, ParentRunID: run.ID, ExpectedWorkerID: workerID, ExpectedAttemptCount: run.AttemptCount,
+		Target: target,
+		Repo:   saved.Repo, Issue: saved.Issue, ParentRunID: run.ID, ExpectedWorkerID: workerID, ExpectedAttemptCount: run.AttemptCount,
 		PullRequestID: freshPR.ID, PullRequestNumber: freshPR.Number, HeadBranch: freshPR.Head.Ref, FailedHeadSHA: freshPR.Head.SHA,
 		Feedback: feedback, ChildRun: CreateRunInput{Inputs: map[string]string{"resume.open-pilot.prompt": prompt}},
 	}
-	result, err := o.env.store.HandleOpenPilotCIFailure(request)
+	result, err := store.HandleOpenPilotCIFailure(request)
 	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrNotFound) {
-		result, err = o.env.store.HandleOpenPilotCIFailure(request)
+		result, err = store.HandleOpenPilotCIFailure(request)
 	}
 	if err != nil {
 		return PipelineStepExecution{}, err
@@ -1894,7 +2206,7 @@ func (o openPilotExecutor) executeOpenPilotMerge(ctx context.Context, run Run, s
 			return PipelineStepExecution{}, errors.New("gitea pull request merger not configured")
 		}
 		ciPassedPR, _ := state["open-pilot.ci-passed-pull-request"].(GiteaPullRequest)
-		durableState, stateErr := o.env.store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+		durableState, stateErr := openPilotAttemptStore(state, openPilotStoreFromContext(ctx, o.env.store)).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
 		if stateErr == nil && (durableState.RunID != run.ID || (durableState.Phase != OpenPilotPhaseCIPassed && durableState.Phase != OpenPilotPhaseMergeReady)) {
 			stateErr = errors.New("durable open-pilot state is not CI-passed for this run")
 		}
@@ -1915,7 +2227,31 @@ func (o openPilotExecutor) executeOpenPilotMerge(ctx context.Context, run Run, s
 		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseMergeReady, "open-pilot.merge-pr", "", state); err != nil {
 			return PipelineStepExecution{}, err
 		}
-		result, err := o.env.giteaMerger.MergePullRequest(ctx, run.Inputs["repo"], expectedPR)
+		var result GiteaMergeResult
+		if openPilotRecoveredExecution(ctx, run) {
+			if o.env.giteaPullRequestGetter == nil {
+				return PipelineStepExecution{}, errors.New("gitea pull request getter not configured for merge reconciliation")
+			}
+			fresh, err := o.env.giteaPullRequestGetter.GetPullRequest(ctx, run.Inputs["repo"], expectedPR.Number)
+			if err != nil {
+				return PipelineStepExecution{}, fmt.Errorf("reconcile Open Pilot merge: %w", err)
+			}
+			if !sameGiteaPullRequestMergeIdentity(expectedPR, fresh) ||
+				!strings.EqualFold(strings.TrimSpace(fresh.Head.Repo.FullName), strings.TrimSpace(run.Inputs["repo"])) ||
+				!strings.EqualFold(strings.TrimSpace(fresh.Base.Repo.FullName), strings.TrimSpace(run.Inputs["repo"])) {
+				return PipelineStepExecution{}, errors.New("reconcile Open Pilot merge identity: pull request identity changed")
+			}
+			if fresh.Merged {
+				if strings.TrimSpace(fresh.MergeCommitSHA) == "" {
+					return PipelineStepExecution{}, errors.New("merged pull request is missing merge_commit_sha")
+				}
+				result = GiteaMergeResult{Merged: true, SHA: fresh.MergeCommitSHA, Message: "reconciled already-merged pull request"}
+			}
+		}
+		var err error
+		if !result.Merged {
+			result, err = o.env.giteaMerger.MergePullRequest(ctx, run.Inputs["repo"], expectedPR)
+		}
 		if err != nil {
 			gateStatus["merge"] = "merge_ready"
 			state["open-pilot.gate-status"] = gateStatus
@@ -1982,6 +2318,33 @@ func (o openPilotExecutor) executeOpenPilotCloseIssue(ctx context.Context, run R
 	case "allow":
 		if o.env == nil || o.env.giteaMerger == nil {
 			return PipelineStepExecution{}, errors.New("gitea issue closer not configured")
+		}
+		if openPilotRecoveredExecution(ctx, run) {
+			if o.env.store == nil || o.env.issueFetcher == nil {
+				return PipelineStepExecution{}, errors.New("durable state and issue fetcher are required for close reconciliation")
+			}
+			durable, err := openPilotAttemptStore(state, openPilotStoreFromContext(ctx, o.env.store)).OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+			if err != nil {
+				return PipelineStepExecution{}, err
+			}
+			testedPR, testedOK := openPilotCIPassedPullRequestFromResume(durable.ResumeInputs)
+			if durable.Phase != OpenPilotPhaseMerged || strings.TrimSpace(durable.MergeCommitSHA) == "" || durable.PullRequestNum < 1 || !testedOK || testedPR.ID != durable.PullRequestID || testedPR.Number != durable.PullRequestNum {
+				return PipelineStepExecution{}, errors.New("exact durable merged pull request identity is required for close reconciliation")
+			}
+			fresh, err := o.env.issueFetcher.FetchIssue(ctx, firstNonEmpty(durable.CanonicalRepo, durable.Repo), firstNonEmpty(durable.CanonicalIssue, durable.Issue))
+			if err != nil {
+				return PipelineStepExecution{}, fmt.Errorf("reconcile Open Pilot issue close: %w", err)
+			}
+			if strings.EqualFold(fresh.State, "closed") {
+				gateStatus["issue_close"] = "closed"
+				state["open-pilot.gate-status"] = gateStatus
+				state["open-pilot.issue-closed"] = true
+				state["open-pilot.issue-close-result"] = fresh
+				if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseIssueClosed, "open-pilot.close-issue", "", state); err != nil {
+					return PipelineStepExecution{Summary: "Reconciled already-closed issue"}, err
+				}
+				return PipelineStepExecution{Summary: "Reconciled already-closed issue"}, nil
+			}
 		}
 		closed, err := o.env.giteaMerger.CloseIssue(ctx, run.Inputs["repo"], run.Inputs["issue"])
 		if err != nil {
@@ -2430,6 +2793,18 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 	}
 	result := OpenPilotCommitResult{Mode: mode, WorktreePath: plan.WorktreePath, Branch: plan.Branch, BaseBranch: plan.BaseBranch}
 	if mode == "disabled" {
+		if openPilotHasExecutedWorktree(plan) {
+			identity, err := validateOpenPilotWorktreeIdentity(ctx, plan.Repo, plan.RepoPath, plan.WorktreePath, plan.Branch, false)
+			if err != nil {
+				return result, fmt.Errorf("validate managed worktree before recording committed HEAD: %w", err)
+			}
+			defer identity.Close()
+			sha, err := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD")
+			if err != nil {
+				return result, err
+			}
+			result.SHA = strings.TrimSpace(sha)
+		}
 		return result, nil
 	}
 	if mode != "dry-run" && mode != "allow" {
@@ -2447,6 +2822,17 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 		return result, fmt.Errorf("validate managed worktree before commit: %w", err)
 	}
 	defer identity.Close()
+	var intent openPilotCommitIntent
+	if e.store != nil {
+		store := openPilotAttemptStore(state, e.store)
+		saved, loadErr := store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+		if loadErr != nil && !errors.Is(loadErr, ErrNotFound) {
+			return result, fmt.Errorf("load durable commit intent: %w", loadErr)
+		}
+		if loadErr == nil {
+			intent = openPilotCommitIntentFromResume(saved.ResumeInputs)
+		}
+	}
 	branch, err := identityGitOutput(ctx, identity, nil, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return result, err
@@ -2460,6 +2846,25 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 	}
 	result.StatusBefore = status
 	if strings.TrimSpace(status) == "clean" {
+		if intent.complete() {
+			head, headErr := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD")
+			parent, parentErr := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD^")
+			tree, treeErr := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD^{tree}")
+			message, messageErr := identityGitOutput(ctx, identity, nil, "log", "-1", "--pretty=%B")
+			if headErr == nil && parentErr == nil && treeErr == nil && messageErr == nil &&
+				strings.TrimSpace(parent) == strings.TrimSpace(intent.Parent) &&
+				strings.TrimSpace(tree) == strings.TrimSpace(intent.Tree) &&
+				strings.TrimSpace(message) == strings.TrimSpace(intent.Message) {
+				result.SHA = strings.TrimSpace(head)
+				result.Subject, _ = identityGitOutput(ctx, identity, nil, "log", "-1", "--pretty=%s")
+				result.Subject = strings.TrimSpace(result.Subject)
+				result.StatusBefore, result.StatusAfter = intent.StatusBefore, status
+				result.DiffStat, result.NameStatus = intent.DiffStat, intent.NameStatus
+				result.Executed = true
+				return result, nil
+			}
+			return result, fmt.Errorf("%w: worktree HEAD does not match durable commit intent", errOpenPilotCommitReconciliation)
+		}
 		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow requires worktree changes to commit")
 	}
 	if _, err := identityGitOutput(ctx, identity, nil, "diff", "--check"); err != nil {
@@ -2494,10 +2899,29 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow found no staged changes to commit")
 	}
 	message := firstNonEmpty(strings.TrimSpace(run.Inputs["commit_message"]), "Open Pilot: issue "+run.Inputs["issue"])
+	parent, err := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return result, err
+	}
+	tree, err := identityGitOutput(ctx, identity, nil, "write-tree")
+	if err != nil {
+		return result, err
+	}
+	if intent.complete() {
+		if strings.TrimSpace(parent) != strings.TrimSpace(intent.Parent) || strings.TrimSpace(tree) != strings.TrimSpace(intent.Tree) || message != intent.Message {
+			return result, fmt.Errorf("%w: staged changes do not match durable commit intent", errOpenPilotCommitReconciliation)
+		}
+		message, result.StatusBefore, result.DiffStat, result.NameStatus = intent.Message, intent.StatusBefore, intent.DiffStat, intent.NameStatus
+	} else {
+		intent = openPilotCommitIntent{Parent: strings.TrimSpace(parent), Tree: strings.TrimSpace(tree), Message: message, StatusBefore: status, DiffStat: diffStat, NameStatus: nameStatus}
+		if err := e.persistOpenPilotCommitIntent(run, state, intent); err != nil {
+			return result, err
+		}
+	}
 	if _, err := identityGitOutput(ctx, identity, nil, "-c", "user.name=Switchyard Open Pilot", "-c", "user.email=open-pilot@switchyard.local", "commit", "-m", message); err != nil {
 		return result, err
 	}
-	sha, err := identityGitOutput(ctx, identity, nil, "rev-parse", "--short", "HEAD")
+	sha, err := identityGitOutput(ctx, identity, nil, "rev-parse", "HEAD")
 	if err != nil {
 		return result, err
 	}
@@ -2514,6 +2938,31 @@ func (e *EnvWorkflowExecutors) openPilotCommitChanges(ctx context.Context, run R
 		return result, errors.New("OPEN_PILOT_AUTO_COMMIT_MODE=allow committed changes but worktree is still dirty")
 	}
 	return result, nil
+}
+
+func (e *EnvWorkflowExecutors) persistOpenPilotCommitIntent(run Run, state map[string]any, intent openPilotCommitIntent) error {
+	if e.store == nil {
+		return errors.New("Open Pilot commit requires durable state")
+	}
+	store := openPilotAttemptStore(state, e.store)
+	saved, err := store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+	if err != nil {
+		return fmt.Errorf("load Open Pilot state before commit: %w", err)
+	}
+	if saved.ResumeInputs == nil {
+		saved.ResumeInputs = map[string]string{}
+	}
+	const prefix = "resume.open-pilot.commit-intent."
+	saved.ResumeInputs[prefix+"parent"] = intent.Parent
+	saved.ResumeInputs[prefix+"tree"] = intent.Tree
+	saved.ResumeInputs[prefix+"message"] = intent.Message
+	saved.ResumeInputs[prefix+"status_before"] = intent.StatusBefore
+	saved.ResumeInputs[prefix+"diffstat"] = intent.DiffStat
+	saved.ResumeInputs[prefix+"name_status"] = intent.NameStatus
+	if _, err := store.UpsertOpenPilotIssueState(saved); err != nil {
+		return fmt.Errorf("persist Open Pilot commit intent: %w", err)
+	}
+	return nil
 }
 
 func openPilotCommitArtifacts(result OpenPilotCommitResult) []CreateArtifactInput {
@@ -2666,6 +3115,38 @@ func (e *EnvWorkflowExecutors) openPilotRemoteBranchExistsValidated(ctx context.
 		message = err.Error()
 	}
 	return false, errors.New(message)
+}
+
+func (e *EnvWorkflowExecutors) validateOpenPilotRemoteHeadMatchesWorktree(ctx context.Context, plan OpenPilotPushPlan, expectedCommitSHA string) error {
+	if !openPilotFullGitSHA(strings.TrimSpace(expectedCommitSHA)) {
+		return errors.New("revalidate Open Pilot remote head requires a persisted full committed HEAD SHA")
+	}
+	identity, err := validateOpenPilotAuthenticatedWorktree(ctx, plan)
+	if err != nil {
+		return fmt.Errorf("revalidate managed worktree before resumed PR creation: %w", err)
+	}
+	defer identity.Close()
+	localOutput, err := identity.Command(ctx, nil, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("read resumed PR local head: %w", err)
+	}
+	remoteCommand := identity.Command(ctx, nil, "ls-remote", "--exit-code", "--heads", identity.OriginURL, plan.Branch)
+	env, cleanup, err := openPilotGitCredentialEnv()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	remoteCommand.Env = append(remoteCommand.Env, env...)
+	remoteOutput, err := remoteCommand.CombinedOutput()
+	if err != nil {
+		return errors.New("revalidate resumed PR remote head: " + firstNonEmpty(strings.TrimSpace(string(remoteOutput)), err.Error()))
+	}
+	fields := strings.Fields(string(remoteOutput))
+	localSHA := strings.TrimSpace(string(localOutput))
+	if len(fields) < 2 || localSHA != expectedCommitSHA || fields[0] != expectedCommitSHA {
+		return errors.New("Open Pilot PR remote and managed worktree heads do not match the persisted commit")
+	}
+	return nil
 }
 
 func validateOpenPilotAuthenticatedWorktree(ctx context.Context, plan OpenPilotPushPlan) (gitworktree.Identity, error) {

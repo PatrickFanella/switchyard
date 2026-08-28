@@ -562,7 +562,7 @@ func openPilotRepoSlugFromRemote(remote string) (string, bool) {
 		return exactOpenPilotRepoSlug(strings.TrimSuffix(path, ".git"))
 	}
 	parsed, err := url.Parse(remote)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", false
 	}
 	return exactOpenPilotRepoSlug(strings.TrimSuffix(strings.TrimPrefix(parsed.EscapedPath(), "/"), ".git"))

@@ -12,63 +12,70 @@ func (a *API) openPilotStates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"states": openPilotStatesOrEmpty(a.store.ListOpenPilotIssueStates())})
 }
 
-func (a *API) openPilotState(w http.ResponseWriter, r *http.Request) {
-	repo, issue, ok := openPilotRepoIssueFromQuery(w, r)
-	if !ok {
+func (a *API) openPilotRepositoryAudit(w http.ResponseWriter, _ *http.Request) {
+	if a.runner.openPilotGateError != nil || a.runner.openPilotGate == nil {
+		writeControlError(w, firstNonNilError(a.runner.openPilotGateError, ErrInvalid))
 		return
 	}
-	state, err := a.store.OpenPilotIssueState(repo, issue)
+	states, err := a.store.ListOpenPilotIssueStatesForAudit(maxOpenPilotAuditStates + 1)
 	if err != nil {
 		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buildOpenPilotRepositoryAudit(a.runner.openPilotGate, states))
+}
+
+func firstNonNilError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return ErrInvalid
+}
+
+func (a *API) openPilotState(w http.ResponseWriter, r *http.Request) {
+	state, ok := a.openPilotStateFromQuery(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, openPilotStateResponse{State: state, NextAction: openPilotNextAction(state)})
 }
 
 func (a *API) pauseOpenPilotState(w http.ResponseWriter, r *http.Request) {
-	repo, issue, ok := openPilotRepoIssueFromQuery(w, r)
+	state, ok := a.openPilotStateFromQuery(w, r)
 	if !ok {
-		return
-	}
-	state, err := a.store.OpenPilotIssueState(repo, issue)
-	if err != nil {
-		writeControlError(w, err)
 		return
 	}
 	state.ResumeInputs = mergeOpenPilotResumeStateInputs(state)
 	state.Phase = OpenPilotPhasePaused
 	state.LastError = firstNonEmpty(state.LastError, "paused by operator")
-	state, err = a.store.UpsertOpenPilotIssueState(state)
+	state, err := a.store.UpsertOpenPilotIssueState(state)
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
-	a.cancelOpenPilotRuns(repo, issue, "Paused Open Pilot issue "+repo+"#"+issue)
+	a.cancelOpenPilotRuns(state.Repo, state.Issue, "Paused Open Pilot issue "+state.Repo+"#"+state.Issue)
 	writeJSON(w, http.StatusOK, openPilotStateResponse{State: state, NextAction: openPilotNextAction(state)})
 }
 
 func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
-	repo, issue, ok := openPilotRepoIssueFromQuery(w, r)
+	state, ok := a.openPilotStateFromQuery(w, r)
 	if !ok {
-		return
-	}
-	state, err := a.store.OpenPilotIssueState(repo, issue)
-	if err != nil {
-		writeControlError(w, err)
 		return
 	}
 	inputs, err := safeOpenPilotResumeInputs(state)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "state is not safely resumable from AI review or CI checks")
+		writeError(w, http.StatusBadRequest, "state lacks safe durable evidence for Open Pilot lifecycle resume")
 		return
 	}
 	removeOpenPilotCIRepairInputs(inputs)
-	prepared, err := a.runner.prepareRunInput(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
+	prepared, err := a.runner.prepareOpenPilotStateRunInput(state, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
 	if err != nil {
 		writeControlError(w, err)
 		return
 	}
-	state, run, err := a.store.ClaimAndCreateOpenPilotResumeRun(repo, issue, prepared)
+	state, run, err := a.store.ClaimAndCreateOpenPilotResumeRun(state.Repo, state.Issue, prepared)
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -83,7 +90,7 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if fresh, err := a.store.OpenPilotIssueState(repo, issue); err == nil {
+	if fresh, err := a.store.OpenPilotIssueState(state.Repo, state.Issue); err == nil {
 		state = fresh
 	}
 	status := http.StatusCreated
@@ -138,7 +145,7 @@ func (a *API) runOpenPilotWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repo and issue are required")
 		return
 	}
-	inputs := map[string]string{"repo": strings.TrimSpace(input.Repo), "issue": strings.TrimSpace(input.Issue)}
+	inputs := map[string]string{"repo": input.Repo, "issue": input.Issue}
 	if testCommand := strings.TrimSpace(input.TestCommand); testCommand != "" {
 		inputs["test_command"] = testCommand
 	}
@@ -190,14 +197,32 @@ type openPilotStateResponse struct {
 	NextAction string              `json:"next_action"`
 }
 
-func openPilotRepoIssueFromQuery(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
-	issue := strings.TrimSpace(r.URL.Query().Get("issue"))
+func (a *API) openPilotStateFromQuery(w http.ResponseWriter, r *http.Request) (OpenPilotIssueState, bool) {
+	if a.runner.openPilotGateError != nil {
+		writeControlError(w, a.runner.openPilotGateError)
+		return OpenPilotIssueState{}, false
+	}
+	repo := r.URL.Query().Get("repo")
+	issue := r.URL.Query().Get("issue")
 	if repo == "" || issue == "" {
 		writeError(w, http.StatusBadRequest, "repo and issue are required")
-		return "", "", false
+		return OpenPilotIssueState{}, false
 	}
-	return repo, issue, true
+	target, err := a.runner.openPilotGate.Resolve(repo, issue)
+	if err != nil {
+		writeControlError(w, err)
+		return OpenPilotIssueState{}, false
+	}
+	state, err := a.store.OpenPilotIssueStateForTarget(target)
+	if err != nil {
+		writeControlError(w, err)
+		return OpenPilotIssueState{}, false
+	}
+	if _, err := a.runner.openPilotGate.ValidateState(state); err != nil {
+		writeControlError(w, err)
+		return OpenPilotIssueState{}, false
+	}
+	return state, true
 }
 
 func openPilotStatesOrEmpty(items []OpenPilotIssueState) []OpenPilotIssueState {

@@ -2,6 +2,7 @@ package controlplane_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,7 +85,7 @@ func TestRunnerRunsOpenPilotPromptPipelineWithoutOCQ(t *testing.T) {
 
 func TestRunnerFetchesOpenPilotIssueWhenGiteaConfigured(t *testing.T) {
 	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repos/OWNER/REPO/issues/123" {
+		if r.URL.Path != "/api/v1/repos/owner/repo/issues/123" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
@@ -283,21 +284,17 @@ func TestRunnerRejectsOpenPilotMismatchedRepoPathOrigin(t *testing.T) {
 	}
 	runner := controlplane.NewRunner(store)
 	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
-	if err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
+	if !errors.Is(err, controlplane.ErrInvalid) {
+		t.Fatalf("RunOnce() error = %v, want ErrInvalid", err)
 	}
 	if atomic.LoadInt32(&ocqCalls) != 0 {
 		t.Fatalf("ocqCalls = %d", ocqCalls)
 	}
-	if run.Status != controlplane.RunFailed || !strings.Contains(run.Summary, "does not match requested repo") {
+	if run.ID != "" {
 		t.Fatalf("run = %+v", run)
 	}
-	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
-	if err != nil {
-		t.Fatalf("OpenPilotIssueState() error = %v", err)
-	}
-	if state.Phase != controlplane.OpenPilotPhaseFailed || state.LastStepName != "open-pilot.branch-plan" || !strings.Contains(state.LastError, "OWNER/OTHER") {
-		t.Fatalf("state = %+v", state)
+	if len(store.ListOpenPilotIssueStates()) != 0 {
+		t.Fatal("mismatched source admission created durable state")
 	}
 }
 
@@ -482,7 +479,7 @@ func TestRunnerReusesStoredOpenPilotPromptFromResumeInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	state, err := store.OpenPilotIssueState("owner/repo", "123")
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
@@ -530,6 +527,7 @@ func TestRunnerPersistsOpenPilotStateThroughAgentWork(t *testing.T) {
 func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
 	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	headSHA := gitHeadForTest(t, repoPath)
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
 	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
@@ -546,7 +544,7 @@ func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/issues/123" && r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost:
-			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"open-pilot/issue-123-fix-switchyard","sha":"` + headSHA + `","repo":{"full_name":"OWNER/REPO"}},"base":{"ref":"main","repo":{"full_name":"OWNER/REPO"}}}`))
 		default:
 			t.Fatalf("unexpected PR request %s %s", r.Method, r.URL.Path)
 		}
@@ -590,6 +588,7 @@ func TestRunnerPersistsOpenPilotPullRequestFields(t *testing.T) {
 func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing.T) {
 	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	headSHA := gitHeadForTest(t, repoPath)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
@@ -606,7 +605,7 @@ func TestRunnerPersistsOpenPilotPullRequestAfterVerifyWhenPushSkipped(t *testing
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/issues/123" && r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost:
-			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"open-pilot/issue-123-fix-switchyard","sha":"` + headSHA + `","repo":{"full_name":"OWNER/REPO"}},"base":{"ref":"main","repo":{"full_name":"OWNER/REPO"}}}`))
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -690,7 +689,7 @@ func TestRunnerFailsOpenPilotWhenConfiguredGiteaFetchFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	state, err := store.OpenPilotIssueState("OWNER/REPO", "123")
+	state, err := store.OpenPilotIssueState("owner/repo", "123")
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
@@ -706,6 +705,9 @@ func TestRunnerPrefersOpenPilotDBStateForHydration(t *testing.T) {
 	}
 	if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "123", controlplane.OpenPilotPhaseRequested); err != nil {
 		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
+	}
+	if _, err := store.BindOpenPilotIssueStateAffinity("OWNER/REPO", "123", controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "123", ExecutorGeneration: "legacy"}); err != nil {
+		t.Fatalf("BindOpenPilotIssueStateAffinity() error = %v", err)
 	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
 		Repo:              "OWNER/REPO",
@@ -725,7 +727,7 @@ func TestRunnerPrefersOpenPilotDBStateForHydration(t *testing.T) {
 	t.Setenv("OPEN_PILOT_ALLOWED_COMMANDS", "make,git")
 	t.Setenv("OPEN_PILOT_ALLOWED_GIT_VERBS", "diff")
 	runner := controlplane.NewRunner(store)
-	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{
+	run, err := runTrustedOpenPilotResumeTest(t, store, runner, controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{
 		"repo":                                  "OWNER/REPO",
 		"issue":                                 "123",
 		"test_command":                          "make verify",
@@ -763,6 +765,9 @@ func TestRunnerReusesKnownOpenPilotPullRequestOnResume(t *testing.T) {
 	if _, err := store.TransitionOpenPilotIssueState("OWNER/REPO", "123", controlplane.OpenPilotPhaseRequested); err != nil {
 		t.Fatalf("TransitionOpenPilotIssueState() error = %v", err)
 	}
+	if _, err := store.BindOpenPilotIssueStateAffinity("OWNER/REPO", "123", controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "123", ExecutorGeneration: "legacy"}); err != nil {
+		t.Fatalf("BindOpenPilotIssueStateAffinity() error = %v", err)
+	}
 	if _, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
 		Repo:              "OWNER/REPO",
 		Issue:             "123",
@@ -774,14 +779,18 @@ func TestRunnerReusesKnownOpenPilotPullRequestOnResume(t *testing.T) {
 		PullRequestURL:    "https://git/OWNER/REPO/pulls/7",
 		PullRequestID:     99,
 		PullRequestNum:    7,
-		ResumeInputs:      map[string]string{"resume.open-pilot.validate-issue.summary": "db summary", "resume.open-pilot.agent-work.response": "db response", "resume.open-pilot.branch-plan.branch": "open-pilot/issue-123", "resume.open-pilot.branch-plan.base_branch": "main"},
+		ResumeInputs:      map[string]string{"resume.open-pilot.validate-issue.summary": "db summary", "resume.open-pilot.agent-work.response": "db response", "resume.open-pilot.branch-plan.repo": "owner/repo", "resume.open-pilot.branch-plan.branch": "open-pilot/issue-123", "resume.open-pilot.branch-plan.base_branch": "main", "resume.open-pilot.commit-changes.sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		MaxRepairAttempts: 2,
 	}); err != nil {
 		t.Fatalf("UpsertOpenPilotIssueState() error = %v", err)
 	}
 	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost {
+		if r.URL.Path == "/api/v1/repos/owner/repo/pulls" && r.Method == http.MethodPost {
 			t.Fatalf("CreatePullRequest should not be called when DB state already records PR")
+		}
+		if r.URL.Path == "/api/v1/repos/owner/repo/pulls" && r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`[{"id":99,"number":7,"state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"open-pilot/issue-123","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"owner/repo"}},"base":{"ref":"main","sha":"base123","repo":{"full_name":"owner/repo"}}}]`))
+			return
 		}
 		_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
 	}))
@@ -792,7 +801,7 @@ func TestRunnerReusesKnownOpenPilotPullRequestOnResume(t *testing.T) {
 	t.Setenv("LLAMA_LINE_BASE_URL", "")
 
 	runner := controlplane.NewRunner(store)
-	run, err := runner.RunOnce(t.Context(), controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step_position": "8", "retry_from_step": "open-pilot.pr-plan"}})
+	run, err := runTrustedOpenPilotResumeTest(t, store, runner, controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "retry_from_step_position": "8", "retry_from_step": "open-pilot.pr-plan"}})
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -954,6 +963,7 @@ func TestRunnerRejectsOpenPilotPullRequestForUnpushedWorktreeBranch(t *testing.T
 func TestRunnerCreatesOpenPilotPullRequestForExistingRemoteHead(t *testing.T) {
 	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	headSHA := gitHeadForTest(t, repoPath)
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
 	runGitForTest(t, repoPath, "remote", "add", "test-origin", remotePath)
@@ -970,7 +980,7 @@ func TestRunnerCreatesOpenPilotPullRequestForExistingRemoteHead(t *testing.T) {
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/issues/123" && r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"","body":"Acceptance criteria","state":"open","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
 		case r.URL.Path == "/api/v1/repos/OWNER/REPO/pulls" && r.Method == http.MethodPost:
-			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"open-pilot/issue-123","sha":"` + headSHA + `","repo":{"full_name":"OWNER/REPO"}},"base":{"ref":"main","repo":{"full_name":"OWNER/REPO"}}}`))
 		default:
 			t.Fatalf("unexpected PR request %s %s", r.Method, r.URL.Path)
 		}
@@ -1043,17 +1053,8 @@ func TestRunnerRejectsOpenPilotPushWithoutCommittedChanges(t *testing.T) {
 		t.Fatalf("RunDetail() error = %v", err)
 	}
 	last := detail.Steps[len(detail.Steps)-1]
-	if run.Status != controlplane.RunFailed || last.Name != "open-pilot.push-branch" || last.Status != controlplane.StepFailed || last.CorrelationIDs["commits_ahead"] != "0" {
+	if run.Status != controlplane.RunFailed || last.Name != "open-pilot.push-branch" || last.Status != controlplane.StepFailed || !strings.Contains(last.Error, "persisted full committed HEAD SHA") {
 		t.Fatalf("run = %+v last = %+v", run, last)
-	}
-	foundAhead := false
-	for _, artifact := range detail.Artifacts {
-		if artifact.Name == "open-pilot-git-ahead.txt" && strings.Contains(artifact.URI, "0%0A") {
-			foundAhead = true
-		}
-	}
-	if !foundAhead {
-		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
 
@@ -1120,7 +1121,7 @@ func TestRunnerAutoCommitsVerifiedOpenPilotWorktreeChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPilotIssueState() error = %v", err)
 	}
-	if state.ResumeInputs["resume.open-pilot.commit-changes.sha"] == "" || state.ResumeInputs["resume.open-pilot.commit-changes.executed"] != "true" || state.GateStatus["local_verify"] != "passed" {
+	if len(state.ResumeInputs["resume.open-pilot.commit-changes.sha"]) != 40 || state.ResumeInputs["resume.open-pilot.commit-changes.executed"] != "true" || state.GateStatus["local_verify"] != "passed" {
 		t.Fatalf("state = %+v", state)
 	}
 }
@@ -1176,6 +1177,7 @@ func TestRunnerRejectsOpenPilotPushWithDirtyWorktree(t *testing.T) {
 func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
 	repoPath := initTestGitRepo(t)
+	headSHA := gitHeadForTest(t, repoPath)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
 	runGitForTest(t, t.TempDir(), "init", "--bare", remotePath)
@@ -1202,7 +1204,7 @@ func TestRunnerCreatesOpenPilotPullRequestWhenWriteAllowed(t *testing.T) {
 			if body["base"] != "main" || body["head"] != "open-pilot/issue-123-fix-switchyard" || body["draft"] != true {
 				t.Fatalf("pr body = %+v", body)
 			}
-			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7"}`))
+			_, _ = w.Write([]byte(`{"id":99,"number":7,"title":"Open Pilot: issue 123","state":"open","html_url":"https://git/OWNER/REPO/pulls/7","head":{"ref":"open-pilot/issue-123-fix-switchyard","sha":"` + headSHA + `","repo":{"full_name":"OWNER/REPO"}},"base":{"ref":"main","repo":{"full_name":"OWNER/REPO"}}}`))
 		default:
 			t.Fatalf("path = %s", r.URL.Path)
 		}
@@ -1343,6 +1345,17 @@ func runGitForTest(t *testing.T, dir string, args ...string) {
 	}
 }
 
+func gitHeadForTest(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v\n%s", err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output))
+}
+
 func addLocalBareTestRemote(t *testing.T, repoPath string) string {
 	t.Helper()
 	remotePath := filepath.Join(t.TempDir(), "remote.git")
@@ -1460,4 +1473,33 @@ func TestRunnerExecutesNativeChangemakerTemplate(t *testing.T) {
 	if len(detail.Artifacts) != 3 {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
+}
+
+func runTrustedOpenPilotResumeTest(t *testing.T, store *controlplane.MemoryStore, runner *controlplane.Runner, input controlplane.CreateRunInput) (controlplane.Run, error) {
+	t.Helper()
+	for _, pipeline := range runner.Pipelines() {
+		if pipeline.WorkflowID == input.WorkflowID {
+			input.PipelineSnapshot = &pipeline
+			break
+		}
+	}
+	state, err := store.OpenPilotIssueState(input.Inputs["repo"], input.Inputs["issue"])
+	if err != nil {
+		return controlplane.Run{}, err
+	}
+	input.Inputs["_switchyard.open_pilot.repository_id"] = state.RepositoryID
+	input.Inputs["_switchyard.open_pilot.executor_generation"] = state.ExecutorGeneration
+	run, err := store.CreateRun(input)
+	if err != nil {
+		return controlplane.Run{}, err
+	}
+	state.RunID = run.ID
+	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
+		return controlplane.Run{}, err
+	}
+	run, err = store.StartRun(run.ID)
+	if err != nil {
+		return controlplane.Run{}, err
+	}
+	return runner.ExecuteRun(t.Context(), run)
 }

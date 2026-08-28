@@ -111,6 +111,10 @@ type GiteaPullRequestReader interface {
 	PullRequestChecks(ctx context.Context, repo string, pr GiteaPullRequest) (GiteaCheckSummary, error)
 }
 
+type GiteaPullRequestGetter interface {
+	GetPullRequest(ctx context.Context, repo string, number int) (GiteaPullRequest, error)
+}
+
 // GiteaPullRequestMerger merges pull requests and closes issues in Gitea.
 type GiteaPullRequestMerger interface {
 	MergePullRequest(ctx context.Context, repo string, expected GiteaPullRequest) (GiteaMergeResult, error)
@@ -407,6 +411,33 @@ func (c *EnvGiteaClient) PullRequestChecks(ctx context.Context, repo string, pr 
 	checks := append([]GiteaCheckRun{}, raw.Checks...)
 	checks = append(checks, raw.CheckRuns...)
 	return GiteaCheckSummary{State: raw.State, SHA: raw.SHA, TotalCount: raw.TotalCount, Statuses: raw.Statuses, Checks: checks}, nil
+}
+
+func (c *EnvGiteaClient) GetPullRequest(ctx context.Context, repo string, number int) (GiteaPullRequest, error) {
+	if c.baseURL == "" {
+		return GiteaPullRequest{}, fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	owner, name, err := c.repoParts(repo)
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	if number < 1 {
+		return GiteaPullRequest{}, fmt.Errorf("pull request number is required")
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "pulls", strconv.Itoa(number))
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	var pr GiteaPullRequest
+	resp, err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &pr)
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return GiteaPullRequest{}, fmt.Errorf("gitea pull request fetch failed: %s", resp.Status)
+	}
+	return pr, nil
 }
 
 // MergePullRequest merges the specified pull request.

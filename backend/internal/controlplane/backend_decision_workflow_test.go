@@ -227,6 +227,10 @@ func (l workflowDecisionLimiter) Acquire(context.Context, string) (func(), error
 
 type workflowDecisionFailStore struct{ Store }
 
+func (s workflowDecisionFailStore) WithContext(ctx context.Context) Store {
+	return workflowDecisionFailStore{Store: s.Store.WithContext(ctx)}
+}
+
 func (workflowDecisionFailStore) RecordRunStepBackendDecision(string, string, BackendDecision) error {
 	return errors.New("atomic decision write failed")
 }

@@ -879,6 +879,11 @@ paths:
       summary: List Open Pilot issue states
       responses:
         "200": { $ref: "#/components/responses/OpenPilotStatesResponse" }
+  /api/open-pilot/repository-audit:
+    get:
+      summary: Report bounded Open Pilot repository affinity and canonical identity readiness
+      responses:
+        "200": { description: Secret-free singleton admission audit report }
   /api/open-pilot/state:
     get:
       summary: Get Open Pilot issue state
@@ -1339,6 +1344,12 @@ components:
         id: { type: string }
         repo: { type: string }
         issue: { type: string }
+        repository_id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        executor_generation: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        canonical_repo: { type: string }
+        canonical_issue: { type: string }
+        legacy_repo: { type: string }
+        legacy_issue: { type: string }
         phase: { type: string }
         run_id: { type: string }
         last_step_name: { type: string }

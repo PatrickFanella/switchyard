@@ -33,6 +33,14 @@ func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
 	}
 	assigned := 0
 	for _, repo := range a.repos {
+		if a.runner.openPilotGateError != nil {
+			return assigned, a.runner.openPilotGateError
+		}
+		target, err := a.runner.openPilotGate.Resolve(repo, "1")
+		if err != nil {
+			return assigned, err
+		}
+		repo = target.RepositorySlug
 		listed, err := a.issues.ListIssues(ctx, repo, a.labels)
 		if err != nil {
 			return assigned, err
@@ -54,9 +62,9 @@ func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
 			if prepareErr != nil {
 				return assigned, prepareErr
 			}
-			if _, _, claimErr := a.store.ClaimAndCreateOpenPilotInitialRun(repo, issueNumber, prepared); claimErr == nil {
+			if _, _, claimErr := a.store.ClaimAndCreateOpenPilotInitialRun(prepared.Inputs["repo"], prepared.Inputs["issue"], prepared); claimErr == nil {
 				assigned++
-			} else if !errors.Is(claimErr, ErrInvalid) && !errors.Is(claimErr, ErrAlreadyClaimed) {
+			} else if !errors.Is(claimErr, ErrInvalid) && !errors.Is(claimErr, ErrAlreadyClaimed) && !errors.Is(claimErr, ErrConflict) {
 				return assigned, claimErr
 			}
 		}

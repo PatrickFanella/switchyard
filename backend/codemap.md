@@ -8,6 +8,7 @@ Implements Switchyard's Go control-plane API, workflow runtime, native model bro
 - `internal/runtimeconfig/defaults-v1.json` is the versioned source for critical runtime defaults consumed by Go and checked against rendered Compose and `.env.example`.
 - `ModelService` is the single model-runtime lifecycle owner. PostgreSQL mode continuously watches its dedicated session advisory lock, permanently fences the runtime on first loss, and rejects a second healthy owner; memory mode remains process-local. Workflows receive the narrow `ModelGeneration` capability; authenticated control and compatibility handlers receive lifecycle operations through `ModelRuntimeControl` or a thin facade.
 - Interfaces (`Store`, `WorkflowExecutor`, `ModelGeneration`, `ModelRuntimeControl`, `OpenCodeExecutor`) isolate persistence and compatibility backends; memory and PostgreSQL implementations are split by workflow, run, Open Pilot, broker, and artifact measurement domains.
+- `OpenPilotAdmissionGate` canonicalizes repository/issue identity, binds new and resumed runs to the current singleton executor generation, and rejects runtime-manifest entries that cannot use that singleton. Migration 025 keeps legacy keys while adding durable affinity, alias-equivalent reservations, canonical collision evidence, and atomic adoption for safe migrated runs.
 - The API, model-compatible ingress, and opt-in HMAC webhook ingress use separate handlers and listeners.
 
 ## Flow
