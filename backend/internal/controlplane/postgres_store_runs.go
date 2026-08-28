@@ -94,6 +94,21 @@ func (s *PostgresStore) ClaimNextRun(workerID string, lease time.Duration) (Run,
 		with next_run as (
 			select id from runs
 			where status=$1 and available_at <= $2
+			  and (
+				workflow_id <> 'open-pilot'
+				or exists (
+					select 1 from open_pilot_rollout_control control
+					where control.singleton and (
+						control.mode in ('legacy','allow')
+						or (control.mode='proof' and control.expires_at > clock_timestamp() and exists (
+							select 1 from jsonb_array_elements(control.proof_targets) target
+							where target->>'repository_id'=runs.inputs->>'_switchyard.open_pilot.repository_id'
+							  and target->>'executor_generation'=runs.inputs->>'_switchyard.open_pilot.executor_generation'
+							  and target->>'issue'=runs.inputs->>'issue'
+						))
+					)
+				)
+			  )
 			order by created_at, id
 			for update skip locked
 			limit 1

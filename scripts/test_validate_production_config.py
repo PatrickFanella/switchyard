@@ -492,14 +492,16 @@ class ProductionConfigTest(unittest.TestCase):
         self.assert_rejected(
             "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST",
             "/run/switchyard/open-pilot-runtime.json",
-            "multi-repository runtime manifest requires disabled production activation",
+            "multi-repository runtime manifest requires disabled or durable production activation",
         )
         env = dict(self.env)
         env["SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST"] = "/run/switchyard/open-pilot-runtime.json"
         env["SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE"] = "disabled"
-        self.assertNotIn("multi-repository runtime manifest requires disabled production activation", validate(env))
+        self.assertNotIn("multi-repository runtime manifest requires disabled or durable production activation", validate(env))
+        env["SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE"] = "durable"
+        self.assertNotIn("multi-repository runtime manifest requires disabled or durable production activation", validate(env))
         env["SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE"] = "isolated-test"
-        self.assertIn("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE must be legacy-singleton or disabled in production", validate(env))
+        self.assertIn("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE must be legacy-singleton, disabled, or durable in production", validate(env))
 
     def test_rejects_invalid_generation(self) -> None:
         self.assert_rejected(

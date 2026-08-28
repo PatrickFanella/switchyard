@@ -99,6 +99,9 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 		registry = executors[0]
 	}
 	gate, gateErr := NewEnvOpenPilotAdmissionGate()
+	if gate != nil {
+		gate.rollout = store
+	}
 	if env, ok := registry.(*EnvWorkflowExecutors); ok {
 		env.openPilotGate, env.openPilotGateError = gate, gateErr
 	}

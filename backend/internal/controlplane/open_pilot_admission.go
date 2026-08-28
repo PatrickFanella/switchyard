@@ -14,6 +14,7 @@ type OpenPilotAdmissionGate struct {
 	registry *OpenPilotRepositoryRegistry
 	bound    OpenPilotRuntimeRepository
 	mode     string
+	rollout  Store
 }
 
 const (
@@ -25,7 +26,7 @@ const (
 func NewEnvOpenPilotAdmissionGate() (*OpenPilotAdmissionGate, error) {
 	manifestPath := strings.TrimSpace(os.Getenv("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST"))
 	activationMode := firstNonEmpty(strings.TrimSpace(os.Getenv("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE")), "legacy-singleton")
-	if activationMode != "legacy-singleton" && activationMode != "disabled" && activationMode != "isolated-test" {
+	if activationMode != "legacy-singleton" && activationMode != "disabled" && activationMode != "isolated-test" && activationMode != "durable" {
 		return nil, errors.New("invalid Open Pilot activation mode")
 	}
 	if manifestPath != "" && activationMode != "legacy-singleton" {
@@ -134,6 +135,26 @@ func (g *OpenPilotAdmissionGate) Resolve(repo, issue string) (OpenPilotTarget, e
 	target, err := g.registry.ResolveTarget(repo, issue)
 	if err != nil || g.mode == "disabled" {
 		return OpenPilotTarget{}, ErrInvalid
+	}
+	if g.mode == "durable" {
+		if g.rollout == nil {
+			return OpenPilotTarget{}, ErrInvalid
+		}
+		status, statusErr := g.rollout.OpenPilotRolloutStatus()
+		if statusErr != nil || status.RegistryFingerprint != g.registry.manifest.RegistryFingerprint || status.Mode == "disabled" || status.Mode == "legacy" {
+			return OpenPilotTarget{}, ErrInvalid
+		}
+		if status.Mode == "proof" {
+			allowed := false
+			for _, proof := range status.ProofTargets {
+				allowed = allowed || (proof.RepositoryID == target.RepositoryID && proof.ExecutorGeneration == target.ExecutorGeneration && proof.Issue == target.Issue)
+			}
+			if !allowed {
+				return OpenPilotTarget{}, ErrInvalid
+			}
+		} else if status.Mode != "allow" {
+			return OpenPilotTarget{}, ErrInvalid
+		}
 	}
 	if (g.mode == "" || g.mode == "legacy-singleton") && (target.RepositoryID != g.bound.ID || target.ExecutorGeneration != g.bound.ExecutorGeneration) {
 		return OpenPilotTarget{}, ErrInvalid

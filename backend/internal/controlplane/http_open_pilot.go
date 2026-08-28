@@ -25,6 +25,83 @@ func (a *API) openPilotRepositoryAudit(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, buildOpenPilotRepositoryAudit(a.runner.openPilotGate, states))
 }
 
+type openPilotRollbackStatus struct {
+	Gate                    OpenPilotRolloutStatus `json:"gate"`
+	ActiveRegistryStates    int                    `json:"active_registry_states"`
+	ResumableRegistryStates int                    `json:"resumable_registry_states"`
+	CancellableRegistryRuns int                    `json:"cancellable_registry_runs"`
+	SingletonRollbackSafe   bool                   `json:"singleton_rollback_safe"`
+}
+
+func (a *API) openPilotRollout(w http.ResponseWriter, r *http.Request) {
+	if a.runner == nil || a.runner.openPilotGateError != nil || a.runner.openPilotGate == nil || a.runner.openPilotGate.registry == nil {
+		writeControlError(w, ErrInvalid)
+		return
+	}
+	if r.Method == http.MethodPost {
+		if a.runner.openPilotGate.mode != "durable" {
+			writeError(w, http.StatusConflict, "durable Open Pilot activation is not configured")
+			return
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var input ConfigureOpenPilotRolloutInput
+		if err := decoder.Decode(&input); err != nil {
+			writeJSONDecodeError(w, err)
+			return
+		}
+		manifest := a.runner.openPilotGate.registry.manifest
+		if input.RegistryFingerprint != manifest.RegistryFingerprint {
+			writeControlError(w, ErrConflict)
+			return
+		}
+		for _, target := range input.ProofTargets {
+			repository, ok := a.runner.openPilotGate.registry.RepositoryByID(target.RepositoryID)
+			if !ok || repository.Slug != target.RepositorySlug || repository.ExecutorGeneration != target.ExecutorGeneration {
+				writeControlError(w, ErrConflict)
+				return
+			}
+		}
+		if _, err := a.store.ConfigureOpenPilotRollout(input); err != nil {
+			writeControlError(w, err)
+			return
+		}
+	}
+	status, err := a.openPilotRollbackEvidence()
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *API) openPilotRollbackEvidence() (openPilotRollbackStatus, error) {
+	gate, err := a.store.OpenPilotRolloutStatus()
+	if err != nil {
+		return openPilotRollbackStatus{}, err
+	}
+	status := openPilotRollbackStatus{Gate: gate}
+	for _, state := range a.store.ListOpenPilotIssueStates() {
+		if state.RepositoryID == "" || state.ExecutorGeneration == "" {
+			continue
+		}
+		switch state.Phase {
+		case OpenPilotPhaseIssueClosed:
+		case OpenPilotPhaseFailed, OpenPilotPhasePaused, OpenPilotPhaseMerged:
+			status.ResumableRegistryStates++
+		default:
+			status.ActiveRegistryStates++
+		}
+	}
+	for _, run := range a.store.ListRuns() {
+		if run.WorkflowID == string(WorkflowOpenPilot) && run.Inputs[openPilotRepositoryIDInputKey] != "" && (run.Status == RunQueued || run.Status == RunRunning) {
+			status.CancellableRegistryRuns++
+		}
+	}
+	status.SingletonRollbackSafe = gate.Mode == "disabled" && status.ActiveRegistryStates == 0 && status.ResumableRegistryStates == 0 && status.CancellableRegistryRuns == 0
+	return status, nil
+}
+
 func firstNonNilError(errs ...error) error {
 	for _, err := range errs {
 		if err != nil {

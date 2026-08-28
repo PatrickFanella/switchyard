@@ -46,6 +46,8 @@ type Store interface {
 	ReconcileOpenPilotMergeTerminals(int, ...*OpenPilotAdmissionGate) (int, error)
 	ListOpenPilotIssueStates() []OpenPilotIssueState
 	ListOpenPilotIssueStatesForAudit(int) ([]OpenPilotIssueState, error)
+	OpenPilotRolloutStatus() (OpenPilotRolloutStatus, error)
+	ConfigureOpenPilotRollout(ConfigureOpenPilotRolloutInput) (OpenPilotRolloutStatus, error)
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger
 	Trigger(string) (Trigger, bool)
@@ -142,6 +144,7 @@ type MemoryStore struct {
 	triggers                   map[string]Trigger
 	openPilotIssueStates       map[string]OpenPilotIssueState
 	openPilotReservations      map[string][]string
+	openPilotRollout           OpenPilotRolloutStatus
 	runs                       map[string]Run
 	steps                      map[string]RunStep
 	events                     map[string][]RunEvent
@@ -168,7 +171,8 @@ func NewStore(now func() time.Time) *MemoryStore {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: now().UTC(), webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
+	created := now().UTC()
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, openPilotRollout: OpenPilotRolloutStatus{Mode: "legacy", ProofTargets: []OpenPilotProofTarget{}, UpdatedAt: created}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: created, webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
 }
 
 func (s *MemoryStore) Ready(context.Context) error { return nil }

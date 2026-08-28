@@ -67,6 +67,24 @@ verifier mount rejects writes, one repository continues while its sibling is
 stopped, both sidecars recover healthy after restart, written state persists,
 and the isolated project is removed afterward.
 
+## Phase 5 durable rollout gate
+
+Production uses `SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE=durable`. The
+authenticated `GET /api/open-pilot/rollout` route reports the PostgreSQL gate,
+proof targets, expiry, generation, close reason, registry-bound lifecycle
+counts, and singleton rollback safety. `POST /api/open-pilot/rollout` accepts an
+exact registry fingerprint and atomically closes the gate, starts a proof for
+exactly two distinct repository/issue/executor-generation targets for at most
+24 hours, or promotes that same fingerprint to `allow`.
+
+The database claim query fences queued Open Pilot work while disabled and, in
+proof mode, claims only the two exact targets. A proof failure or pause closes
+the gate in the same database transaction as the issue-state mutation; an
+expired proof is also treated as closed by admission and claims. Promotion to
+`allow` requires both durable proof states to be `issue_closed`. Before a
+singleton binary rollback, close the gate and require the reported active,
+resumable, and cancellable registry-bound counts all to be zero.
+
 ## Required labels
 
 Open Pilot only runs after both labels are present:

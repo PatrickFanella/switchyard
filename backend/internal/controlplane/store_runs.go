@@ -69,6 +69,10 @@ func (s *MemoryStore) ClaimNextRun(workerID string, lease time.Duration) (Run, e
 		if run.Status != RunQueued || run.AvailableAt.After(now) {
 			continue
 		}
+		s.reconcileOpenPilotRolloutLocked(now)
+		if !openPilotRolloutAllows(s.openPilotRollout, run, now) {
+			continue
+		}
 		candidate := run
 		if selected == nil || candidate.CreatedAt.Before(selected.CreatedAt) || (candidate.CreatedAt.Equal(selected.CreatedAt) && candidate.ID < selected.ID) {
 			selected = &candidate

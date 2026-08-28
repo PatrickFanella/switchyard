@@ -47,6 +47,10 @@ type openPilotCancelRoute struct {
 }
 
 func NewEnvCancelDispatcher() *EnvCancelDispatcher {
+	return NewEnvCancelDispatcherWithStore(nil)
+}
+
+func NewEnvCancelDispatcherWithStore(store Store) *EnvCancelDispatcher {
 	dispatcher := &EnvCancelDispatcher{
 		ocqBaseURL:        strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey:     os.Getenv("OCQ_GATEWAY_KEY"),
@@ -59,6 +63,9 @@ func NewEnvCancelDispatcher() *EnvCancelDispatcher {
 		client:            &http.Client{Timeout: 5 * time.Second},
 	}
 	dispatcher.openPilotGate, dispatcher.openPilotRouteErr = NewEnvOpenPilotAdmissionGate()
+	if dispatcher.openPilotGate != nil {
+		dispatcher.openPilotGate.rollout = store
+	}
 	if dispatcher.openPilotRouteErr == nil {
 		var bundles map[string]openPilotExecutionBundle
 		bundles, dispatcher.openPilotRouteErr = newOpenPilotExecutionBundles(dispatcher.openPilotGate)

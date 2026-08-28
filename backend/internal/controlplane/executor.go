@@ -150,6 +150,9 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 	}
 	giteaClient := NewEnvGiteaClient()
 	openPilotGate, openPilotGateError := NewEnvOpenPilotAdmissionGate()
+	if openPilotGate != nil {
+		openPilotGate.rollout = configuredStore
+	}
 	env := &EnvWorkflowExecutors{
 		store:                        configuredStore,
 		openPilotCommand:             strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
