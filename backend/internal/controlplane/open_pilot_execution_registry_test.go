@@ -3,9 +3,12 @@ package controlplane
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -144,5 +147,110 @@ func TestReadOpenPilotPasswordFileRejectsUnsafeInputs(t *testing.T) {
 	}
 	if _, err := readOpenPilotPasswordFile(path); err == nil {
 		t.Fatal("password symlink accepted")
+	}
+}
+
+func TestOpenPilotCancellationUsesRepositoryAffinity(t *testing.T) {
+	var alphaCalls, betaCalls atomic.Int32
+	alpha := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { alphaCalls.Add(1) }))
+	defer alpha.Close()
+	beta := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		betaCalls.Add(1)
+		_, password, ok := request.BasicAuth()
+		if !ok || password != strings.Repeat("b", 40) {
+			response.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer beta.Close()
+
+	manifest, manifestPath := testMultiRepositoryRuntimeManifest(t)
+	manifest.Repositories[0].OpenCodeEndpoint = alpha.URL
+	manifest.Repositories[1].OpenCodeEndpoint = beta.URL
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST", manifestPath)
+	t.Setenv("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE", "isolated-test")
+	t.Setenv("OPEN_PILOT_REPO_PATH", "")
+	t.Setenv("OPEN_PILOT_WORKDIR", "")
+	dispatcher := NewEnvCancelDispatcher()
+	repository := manifest.Repositories[1]
+	run := Run{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{
+		"repo": repository.Slug, "issue": "9",
+		openPilotRepositoryIDInputKey:       repository.ID,
+		openPilotExecutorGenerationInputKey: repository.ExecutorGeneration,
+	}}
+	detail := RunDetail{Run: run, Steps: []RunStep{{Status: StepRunning, CorrelationIDs: map[string]string{"opencode_session_id": "session-beta"}}}}
+	result := dispatcher.CancelRunDetail(t.Context(), detail)
+	if alphaCalls.Load() != 0 || betaCalls.Load() != 1 {
+		t.Fatalf("cancellation calls alpha=%d beta=%d events=%+v", alphaCalls.Load(), betaCalls.Load(), result.Events)
+	}
+
+	run.Inputs[openPilotRepositoryIDInputKey] = manifest.Repositories[0].ID
+	result = dispatcher.CancelRunDetail(t.Context(), RunDetail{Run: run, Steps: detail.Steps})
+	if betaCalls.Load() != 1 {
+		t.Fatalf("hostile affinity reached executor: beta calls=%d", betaCalls.Load())
+	}
+	foundFailure := false
+	for _, event := range result.Events {
+		foundFailure = foundFailure || event.Type == "opencode.abort.failed"
+	}
+	if !foundFailure {
+		t.Fatalf("hostile affinity events = %+v", result.Events)
+	}
+}
+
+func TestOpenPilotRepositoryStatusProjectsEachExecutor(t *testing.T) {
+	servers := make([]*httptest.Server, 0, 2)
+	for index := range 2 {
+		password := strings.Repeat(string(rune('a'+index)), 40)
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.URL.Path == "/session" {
+				_, supplied, ok := request.BasicAuth()
+				if !ok || supplied != password {
+					response.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				response.Header().Set("Content-Type", "application/json")
+				_, _ = response.Write([]byte("[]"))
+				return
+			}
+			if request.URL.Path == "/healthz" {
+				response.WriteHeader(http.StatusOK)
+				return
+			}
+			response.WriteHeader(http.StatusNotFound)
+		}))
+		servers = append(servers, server)
+		defer server.Close()
+	}
+	manifest, manifestPath := testMultiRepositoryRuntimeManifest(t)
+	for index := range manifest.Repositories {
+		manifest.Repositories[index].OpenCodeEndpoint = servers[index].URL
+		manifest.Repositories[index].VerifierEndpoint = servers[index].URL
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST", manifestPath)
+	t.Setenv("SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE", "disabled")
+	t.Setenv("OPEN_PILOT_REPO_PATH", "")
+	t.Setenv("OPEN_PILOT_WORKDIR", "")
+	status := NewEnvOpenPilotRepositoryStatusProvider().Status(t.Context())
+	if !status.Configured || !status.Healthy || status.ActivationMode != "disabled" || len(status.Repositories) != 2 {
+		t.Fatalf("repository status = %+v", status)
+	}
+	for index, repository := range status.Repositories {
+		if !repository.Healthy || !repository.OpenCode.Healthy || !repository.VerifierHealthy || repository.MaxConcurrentVerification != 1 || repository.RepositoryID != manifest.Repositories[index].ID {
+			t.Fatalf("repository status %d = %+v", index, repository)
+		}
 	}
 }

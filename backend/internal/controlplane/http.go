@@ -24,6 +24,7 @@ type API struct {
 	ownedModelService     *ModelService
 	compatBroker          *llamaLineCompatTracker
 	openCode              OpenCodeExecutorStatusProvider
+	openPilotRepositories OpenPilotRepositoryStatusProvider
 	canceler              CancelDispatcher
 	scheduler             *Scheduler
 	workerPool            *WorkerPool
@@ -49,7 +50,7 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), canceler: NewEnvCancelDispatcher()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
@@ -386,7 +387,11 @@ func (a *API) modelBrokerStatus(w http.ResponseWriter, r *http.Request) {
 func (a *API) openCodeExecutorStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"opencode_executor": a.openCode.Status(ctx)})
+	payload := map[string]any{"opencode_executor": a.openCode.Status(ctx)}
+	if a.openPilotRepositories != nil {
+		payload["open_pilot_repositories"] = a.openPilotRepositories.Status(ctx)
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (a *API) schedulerStatus(w http.ResponseWriter, r *http.Request) {

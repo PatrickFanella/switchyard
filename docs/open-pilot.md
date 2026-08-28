@@ -28,6 +28,24 @@ calling the canonical Docker boundary. These Phase 2 artifacts prepare topology
 only; multi-repository runtime admission remains disabled until repo-keyed
 routing and isolated proof are complete.
 
+## Phase 3 repository execution routing
+
+With a generated runtime manifest, the API constructs one immutable execution
+bundle for each `(repository_id, executor_generation)` pair. A bundle contains
+only operator-rendered source/worktree paths, the repository's OpenCode endpoint
+and private password-file value, and its verifier endpoint. Every execution and
+cancellation re-resolves the canonical repository and requires the protected run
+affinity fields to match before choosing a bundle; filesystem paths and raw run
+slugs never select an executor.
+
+Set `SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE=disabled` to load and health-check the
+topology without admitting work. `isolated-test` permits registered repositories
+for bounded non-production proof, while production validation rejects that mode.
+`legacy-singleton` retains the compatibility deployment when no generated
+manifest is active. `GET /api/opencode-executor/status` projects each configured
+repository's OpenCode and verifier health plus its verifier concurrency limit,
+without exposing passwords or host paths.
+
 ## Required labels
 
 Open Pilot only runs after both labels are present:
