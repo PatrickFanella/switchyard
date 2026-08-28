@@ -269,6 +269,8 @@ def _opencode_service(repository: Mapping[str, Any]) -> dict[str, Any]:
             "XDG_STATE_HOME": "/home/opencode/.local/state", "OPENCODE_SERVER_HOSTNAME": "0.0.0.0",
             "OPENCODE_SERVER_PORT": "4096", "OPENCODE_SERVER_USERNAME": "${OPENCODE_SERVER_USERNAME:-switchyard}",
             "OPENCODE_SERVER_PASSWORD_FILE": f"/run/secrets/open-pilot-{identifier}-password",
+            "OPENAI_BASE_URL": "${OPEN_PILOT_OPENAI_BASE_URL:-http://api:11434/v1}",
+            "OPENAI_API_KEY": "${OPEN_PILOT_MODEL_API_KEY:-switchyard-internal}",
             "OPENCODE_SECURITY_MODE": "${OPENCODE_SECURITY_MODE:-strict}", "OPENCODE_DB": ":memory:",
             "OPENCODE_DISABLE_PROJECT_CONFIG": "true", "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "true",
             "OPENCODE_RUNTIME_UID": "${OPENCODE_RUNTIME_UID:-1000}", "OPENCODE_RUNTIME_GID": "${OPENCODE_RUNTIME_GID:-1000}",
