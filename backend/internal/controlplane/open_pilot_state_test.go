@@ -211,6 +211,7 @@ func TestOpenPilotPhaseAllowsV1Transitions(t *testing.T) {
 		{OpenPilotPhaseValidated, OpenPilotPhaseBranchPrepared},
 		{OpenPilotPhaseBranchPrepared, OpenPilotPhaseAgentCompleted},
 		{OpenPilotPhaseAgentCompleted, OpenPilotPhaseVerified},
+		{OpenPilotPhaseAgentCompleted, OpenPilotPhaseCommitted},
 		{OpenPilotPhaseVerified, OpenPilotPhasePushed},
 		{OpenPilotPhasePushed, OpenPilotPhasePRCreated},
 		{OpenPilotPhasePRCreated, OpenPilotPhaseAIReviewed},

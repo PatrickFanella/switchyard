@@ -141,6 +141,9 @@ func ValidateOpenPilotTransition(from, to OpenPilotPhase) error {
 	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePushed {
 		return nil
 	}
+	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhaseCommitted {
+		return nil
+	}
 	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePRCreated {
 		return nil
 	}
