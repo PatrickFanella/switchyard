@@ -129,14 +129,6 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	w.Header().Set("X-OCQ-Status", "running")
 	w.Header().Set("X-OCQ-Streaming-Mode", a.compatBroker.runtime.StreamingMode(model))
 	w.WriteHeader(http.StatusOK)
-	if err := writeCompatSSE(w, "status", map[string]any{"status": "queued", "request_id": requestID, "backend": "switchyard-native"}); err != nil {
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), nil)
-		return
-	}
-	if err := writeCompatSSE(w, "status", map[string]any{"status": "running", "request_id": requestID, "backend": "switchyard-native"}); err != nil {
-		finish(ModelBrokerRequestFailed, `{}`, err.Error(), nil)
-		return
-	}
 	if err := flushCompatSSE(w); err != nil {
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), nil)
 		return
@@ -196,7 +188,6 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 		_ = writeCompatRaw(w, "data: [DONE]\n\n")
 		return
 	}
-	_ = writeCompatSSE(w, "status", map[string]any{"status": "completed", "request_id": requestID, "backend": "switchyard-native"})
 	finishPayload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, "", true))
 	_ = writeCompatRaw(w, fmt.Sprintf("data: %s\n\ndata: [DONE]\n\n", finishPayload))
 }

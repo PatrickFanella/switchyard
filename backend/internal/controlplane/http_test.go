@@ -1074,10 +1074,13 @@ func TestAPILlamaLineCompatStreamingUsesNativeSSEChunksAndStatusEvents(t *testin
 		t.Fatalf("stream headers = mode:%q status:%q", resp.Header.Get("X-OCQ-Streaming-Mode"), resp.Header.Get("X-OCQ-Status"))
 	}
 	body := mustReadBody(t, resp.Body)
-	for _, want := range []string{"event: status", `"status":"queued"`, `"status":"running"`, `"status":"completed"`, `"object":"chat.completion.chunk"`, `"content":"stream "`, `"content":"answer"`, "data: [DONE]"} {
+	for _, want := range []string{`"object":"chat.completion.chunk"`, `"content":"stream "`, `"content":"answer"`, "data: [DONE]"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream body missing %q: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "event: status") || strings.Contains(body, `"status":"queued"`) {
+		t.Fatalf("OpenAI-compatible stream contains nonstandard lifecycle events: %s", body)
 	}
 }
 
