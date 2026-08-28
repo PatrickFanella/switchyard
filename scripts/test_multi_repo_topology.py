@@ -37,6 +37,11 @@ def main() -> int:
             source.mkdir(parents=True, mode=0o700)
             run("git", "init", "--initial-branch=main", str(source))
             run("git", "-C", str(source), "remote", "add", "origin", f"https://git.example.test/owner/{identifier}.git")
+            run("git", "-C", str(source), "config", "user.name", "Switchyard Smoke")
+            run("git", "-C", str(source), "config", "user.email", "switchyard-smoke@example.test")
+            (source / "README.md").write_text(f"{identifier}\n", encoding="utf-8")
+            run("git", "-C", str(source), "add", "README.md")
+            run("git", "-C", str(source), "commit", "-m", "initial smoke commit")
             worktrees = source / ".open-pilot-worktrees"
             config = base / "config"
             data = base / "data"
@@ -45,12 +50,18 @@ def main() -> int:
             marker = worktrees / ".switchyard-managed"
             marker.write_text("switchyard-managed-worktree-root\n", encoding="utf-8")
             marker.chmod(0o600)
+            proof_worktree = worktrees / "proof"
+            run("git", "-C", str(source), "worktree", "add", "-b", "open-pilot/smoke-proof", str(proof_worktree), "main")
             password = base / "password"
             password.write_text(identifier * 24 + "\n", encoding="utf-8")
             password.chmod(0o600)
             if os.geteuid() == 0:
                 for path in (source, source / ".git", worktrees, marker, config, data):
                     os.chown(path, uid, gid)
+                for directory, names, files in os.walk(proof_worktree):
+                    os.chown(directory, uid, gid)
+                    for name in names + files:
+                        os.chown(Path(directory) / name, uid, gid)
             repositories.append({
                 "id": identifier, "slug": f"owner/{identifier}", "aliases": [],
                 "executor_generation": "smoke-1", "source_path": str(source),
@@ -97,7 +108,33 @@ def main() -> int:
                     networks = set(inspection["NetworkSettings"]["Networks"])
                     if any(sibling in network for network in networks):
                         raise RuntimeError("generated service joined a sibling repository network")
-            print("Two-repository generated topology isolation smoke passed")
+                opencode_container = run(*command, "ps", "-q", f"open-pilot-opencode-{identifier}").stdout.strip()
+                own = f"/open-pilot/repositories/{identifier}/worktrees/proof/{identifier}.txt"
+                sibling_path = f"/open-pilot/repositories/{sibling}/worktrees/proof/{sibling}.txt"
+                run(str(DOCKER), "exec", "--user", f"{uid}:{gid}", opencode_container, "sh", "-eu", "-c", f"printf '%s\\n' {identifier} > {own}; test ! -e {sibling_path}")
+                verifier_container = run(*command, "ps", "-q", f"open-pilot-verifier-{identifier}").stdout.strip()
+                denied = run(str(DOCKER), "exec", verifier_container, "sh", "-c", f"touch /open-pilot/repositories/{identifier}/worktrees/proof/verifier-must-not-write", check=False)
+                if denied.returncode == 0:
+                    raise RuntimeError(f"verifier {identifier} unexpectedly wrote to its read-only worktree")
+
+            alpha = run(*command, "ps", "-q", "open-pilot-opencode-alpha").stdout.strip()
+            beta = run(*command, "ps", "-q", "open-pilot-opencode-beta").stdout.strip()
+            run(str(DOCKER), "stop", beta)
+            run(str(DOCKER), "exec", "--user", f"{uid}:{gid}", alpha, "sh", "-eu", "-c", "printf 'sibling-down\\n' >> /open-pilot/repositories/alpha/worktrees/proof/alpha.txt")
+            run(str(DOCKER), "start", beta)
+            run(str(DOCKER), "restart", alpha)
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                alpha_state = run(*command, "ps", "--format", "json", "open-pilot-opencode-alpha", check=False)
+                beta_state = run(*command, "ps", "--format", "json", "open-pilot-opencode-beta", check=False)
+                if '"Health":"healthy"' in alpha_state.stdout and '"Health":"healthy"' in beta_state.stdout:
+                    break
+                time.sleep(2)
+            else:
+                raise RuntimeError("repository sidecars did not recover after stop/restart proof")
+            alpha = run(*command, "ps", "-q", "open-pilot-opencode-alpha").stdout.strip()
+            run(str(DOCKER), "exec", "--user", f"{uid}:{gid}", alpha, "sh", "-eu", "-c", "grep -q sibling-down /open-pilot/repositories/alpha/worktrees/proof/alpha.txt")
+            print("Two-repository generated topology, write, outage, and restart isolation smoke passed")
             return 0
         finally:
             run(*command, "down", "-v", "--remove-orphans", check=False)

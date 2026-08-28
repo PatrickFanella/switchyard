@@ -12,9 +12,6 @@ runtime_cache_home="${XDG_CACHE_HOME:-$runtime_home/.cache}"
 runtime_state_home="${XDG_STATE_HOME:-$runtime_home/.local/state}"
 worktree_root="${OPEN_PILOT_WORKTREE_ROOT:-/workspace/.open-pilot-worktrees}"
 
-. /usr/local/libexec/switchyard-opencode-password
-load_opencode_password
-
 case "$runtime_uid:$runtime_gid" in
   *[!0-9:]* | *:*:*)
     echo "OPENCODE_RUNTIME_UID and OPENCODE_RUNTIME_GID must be numeric" >&2
@@ -25,6 +22,9 @@ if [ "$runtime_uid" -eq 0 ] || [ "$runtime_gid" -eq 0 ]; then
   echo "OPENCODE_RUNTIME_UID and OPENCODE_RUNTIME_GID must be non-root" >&2
   exit 64
 fi
+
+. /usr/local/libexec/switchyard-opencode-password
+load_opencode_password
 
 if [ "$runtime_config_home" != "/home/opencode/.config" ] || \
    [ "$runtime_data_home" != "/home/opencode/.local/share" ] || \

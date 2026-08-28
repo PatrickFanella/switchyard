@@ -46,6 +46,27 @@ manifest is active. `GET /api/opencode-executor/status` projects each configured
 repository's OpenCode and verifier health plus its verifier concurrency limit,
 without exposing passwords or host paths.
 
+## Phase 4 crash and write lifecycle
+
+Recovery reloads durable affinity and accepts a persisted worktree only when
+its canonical source equals the selected bundle source, its canonical worktree
+is strictly beneath that bundle's managed root, and its Git identity still
+matches the recorded repository, branch, and common directory. A sibling
+repository path is never adopted.
+
+Open Pilot requests use fail-closed stale-session handling. A missing durable
+correlated session pauses for operator review, and a stale response after a
+message POST never causes an automatic repost. The executor may replace only a
+session created during the current call that disappeared before the first
+message attempt, where no prior worktree mutation could have occurred.
+
+`make open-pilot-topology-smoke` uses a unique Compose project to build two
+production-shaped OpenCode/verifier pairs and real managed Git worktrees. It
+proves each OpenCode runtime can write only its repository worktree, each
+verifier mount rejects writes, one repository continues while its sibling is
+stopped, both sidecars recover healthy after restart, written state persists,
+and the isolated project is removed afterward.
+
 ## Required labels
 
 Open Pilot only runs after both labels are present:
