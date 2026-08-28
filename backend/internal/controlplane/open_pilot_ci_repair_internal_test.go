@@ -82,9 +82,11 @@ func TestBuildOpenPilotCIRepairFeedbackIncludesAllTerminalFailures(t *testing.T)
 }
 
 func TestValidateCreateRunInputRejectsCIRepairKeys(t *testing.T) {
-	err := validateCreateRunInput(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "1", openPilotCIRepairCountKey: "1"}})
-	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("error = %v", err)
+	for _, key := range []string{openPilotCIRepairCountKey, openPilotCIRepairFeedbackKey, openPilotCIRepairOriginalPromptKey} {
+		err := validateCreateRunInput(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "1", key: "injected"}})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("key %q error = %v", key, err)
+		}
 	}
 }
 
@@ -158,6 +160,7 @@ func TestOpenPilotCIRepairRevalidatesPRAndWorktreeBeforeOpenCode(t *testing.T) {
 			openCode := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "repaired"}}
 			env := newOpenPilotAIReviewTestEnv(nil)
 			env.giteaReader, env.openCodeExecutor = reader, openCode
+			env.issueFetcher = &stubIssueFetcher{issue: GiteaIssue{ID: 1, Number: 1, Repository: "owner/repo", State: "open"}}
 			run := Run{ID: "repair-child", Inputs: map[string]string{
 				"repo": "owner/repo", "issue": "1", openPilotCIRepairParentRunIDKey: "parent",
 				openPilotCIRepairRepoKey: "owner/repo", openPilotCIRepairPRIDKey: "90", openPilotCIRepairPRNumberKey: "9",
@@ -300,15 +303,15 @@ func TestMemoryExternalResumeStripsCIRepairControlInputs(t *testing.T) {
 	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
 		t.Fatal(err)
 	}
-	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2})
+	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{openPilotCIRepairCountKey: "0", openPilotCIRepairFeedbackKey: "forged", openPilotCIRepairOriginalPromptKey: "forged"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Inputs["retry_from_step"] != "open-pilot.ci-checks" || resumed.Inputs[openPilotCIRepairCountKey] != "1" {
-		t.Fatalf("resume cursor/count = %+v", resumed.Inputs)
+	if resumed.Inputs["retry_from_step"] != "open-pilot.ci-checks" || resumed.Inputs[openPilotCIRepairCountKey] != "1" || resumed.Inputs[openPilotCIRepairFeedbackKey] != "failed" || resumed.Inputs[openPilotCIRepairOriginalPromptKey] != "original issue prompt" {
+		t.Fatalf("resume cursor/context = %+v", resumed.Inputs)
 	}
 	for key := range resumed.Inputs {
-		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") && key != openPilotCIRepairCountKey {
+		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") && !openPilotCIRepairExternalResumeInputAllowed(key) {
 			t.Fatalf("external resume retained protected input %q", key)
 		}
 	}
@@ -464,15 +467,15 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 	if _, err := store.UpsertOpenPilotIssueState(resumable); err != nil {
 		t.Fatal(err)
 	}
-	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun(repo, issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2})
+	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun(repo, issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{openPilotCIRepairCountKey: "0", openPilotCIRepairFeedbackKey: "forged", openPilotCIRepairOriginalPromptKey: "forged"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Inputs["retry_from_step"] != "open-pilot.ci-checks" || resumed.Inputs[openPilotCIRepairCountKey] != "2" {
-		t.Fatalf("postgres resume cursor/count = %+v", resumed.Inputs)
+	if resumed.Inputs["retry_from_step"] != "open-pilot.ci-checks" || resumed.Inputs[openPilotCIRepairCountKey] != "2" || resumed.Inputs[openPilotCIRepairFeedbackKey] != "verify failed again" || resumed.Inputs[openPilotCIRepairOriginalPromptKey] != "original" {
+		t.Fatalf("postgres resume cursor/context = %+v", resumed.Inputs)
 	}
 	for key := range resumed.Inputs {
-		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") && key != openPilotCIRepairCountKey {
+		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") && !openPilotCIRepairExternalResumeInputAllowed(key) {
 			t.Fatalf("postgres external resume retained protected input %q", key)
 		}
 	}

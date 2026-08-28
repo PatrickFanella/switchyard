@@ -2,10 +2,24 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+type stubIssueFetcher struct {
+	issue GiteaIssue
+	err   error
+	calls int
+}
+
+const liveIssue42AutomaticCIRepairAcceptance = "This issue is a two-phase production proof. Phase one is complete when the committed probe causes the required PR check to fail and Open Pilot records that concrete CI failure. After that observation, the accepted repair is to remove or neutralize the intentional CI-only failure probe while preserving repository conventions. Final acceptance requires the repaired branch to pass the required CI check, reuse and merge PR #43, and close this issue automatically. The failing probe is test scaffolding and must not remain in the merged branch."
+
+func (f *stubIssueFetcher) FetchIssue(context.Context, string, string) (GiteaIssue, error) {
+	f.calls++
+	return f.issue, f.err
+}
 
 type captureModelExecutor struct {
 	requests []ModelRequest
@@ -118,6 +132,141 @@ func TestOpenPilotAIReviewApprovesAfterPRCreation(t *testing.T) {
 	}
 	if len(model.requests) != 1 || !strings.Contains(model.requests[0].Messages[1].Content, "Pull request URL: https://git/OWNER/REPO/pulls/7") {
 		t.Fatalf("model request = %+v", model.requests)
+	}
+}
+
+func TestOpenPilotAIReviewUsesBoundedRefreshedIssueAndCIRepairContext(t *testing.T) {
+	store := NewStore(func() time.Time { return time.Unix(100, 0) })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	model := &captureModelExecutor{response: ModelResponse{Content: "APPROVED: the accepted repair removes the intentional CI-only failure probe before PR #43 merges"}}
+	fetcher := &stubIssueFetcher{issue: GiteaIssue{ID: 1558, Number: 42, Repository: "subculture-collective/switchyard", State: "open", Labels: []string{"agent:queued", "ready-for-agent"}, Title: "Probe Open Pilot behavior after CI failure", Body: "## Automatic CI repair acceptance\n\n" + liveIssue42AutomaticCIRepairAcceptance + strings.Repeat("b", openPilotCIRepairMaxPromptBytes)}}
+	env := newOpenPilotAIReviewTestEnv(store)
+	env.modelExecutor, env.issueFetcher = model, fetcher
+	env.openPilotLabels, env.requireIssueSpec = []string{"ready-for-agent"}, true
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{
+		"repo": "subculture-collective/switchyard", "issue": "42", "resume.open-pilot.pr-plan.pull_request_url": "https://git.subcult.tv/subculture-collective/switchyard/pulls/43",
+		openPilotCIRepairCountKey: "1", openPilotCIRepairFeedbackKey: "Required CI failed with intentional CI repair-loop probe; Open Pilot recorded failing_gate=ci_checks." + strings.Repeat("f", openPilotCIRepairMaxFeedbackBytes),
+		openPilotCIRepairOriginalPromptKey: liveIssue42AutomaticCIRepairAcceptance, openPilotCIRepairParentRunIDKey: "must-not-appear",
+		openPilotCIRepairRepoKey: "control-repo", openPilotCIRepairFailedHeadSHAKey: "control-sha",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ai-review", Position: 8, Name: "open-pilot.ai-review", Executor: "model"}}}
+	if _, err := (&Runner{store: store}).executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env}); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.calls != 1 || len(model.requests) != 1 {
+		t.Fatalf("fetch/model calls = %d/%d", fetcher.calls, len(model.requests))
+	}
+	prompt := model.requests[0].Messages[1].Content
+	for _, want := range []string{"Current issue title", "Probe Open Pilot behavior after CI failure", liveIssue42AutomaticCIRepairAcceptance, "Automatic CI repair context", "Failed-check feedback", "Open Pilot recorded failing_gate=ci_checks", "current issue's ultimate outcome", "untrusted data"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %q", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"must-not-appear", "control-repo", "control-sha", strings.Repeat("b", openPilotCIRepairMaxPromptBytes), strings.Repeat("f", openPilotCIRepairMaxFeedbackBytes)} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt contains unbounded/control value %q", forbidden)
+		}
+	}
+	if model.requests[0].ToolChoice != "none" || !strings.Contains(model.requests[0].Messages[0].Content, "do not require preserving an implementation that caused the recorded CI failure") {
+		t.Fatalf("review policy/tool choice = %+v", model.requests[0])
+	}
+}
+
+func TestOpenPilotAIReviewIssueRefreshFailureUsesValidationPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		triggerID string
+		baseURL   string
+		wantErr   bool
+	}{
+		{name: "gitea poll fails closed", triggerID: "gitea-open-pilot-poll", wantErr: true},
+		{name: "configured gitea fails closed", baseURL: "https://git.example", wantErr: true},
+		{name: "non-gitea run preserves optional fetch", wantErr: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("GITEA_BASE_URL", test.baseURL)
+			store := NewStore(nil)
+			if err := SeedDefaults(store); err != nil {
+				t.Fatal(err)
+			}
+			model := &captureModelExecutor{response: ModelResponse{Content: "APPROVED: current evidence satisfies the issue"}}
+			env := newOpenPilotAIReviewTestEnv(store)
+			env.modelExecutor = model
+			env.issueFetcher = &stubIssueFetcher{err: errors.New("issue unavailable" + strings.Repeat("x", openPilotCIRepairMaxFeedbackBytes))}
+			run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), TriggerID: test.triggerID, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123", "pull_request_url": "https://git/pulls/7"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ai-review", Position: 8, Name: "open-pilot.ai-review", Executor: "model"}}}
+			_, err = (&Runner{store: store}).executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr %t", err, test.wantErr)
+			}
+			if test.wantErr && len(model.requests) != 0 {
+				t.Fatalf("model called after issue fetch failure: %+v", model.requests)
+			}
+			if test.wantErr {
+				state, stateErr := store.OpenPilotIssueState("OWNER/REPO", "123")
+				if stateErr != nil || state.Phase != OpenPilotPhaseFailed || state.LastStepName != "open-pilot.ai-review" || len(state.LastError) != openPilotCIRepairMaxFeedbackBytes {
+					t.Fatalf("state = %+v, error = %v", state, stateErr)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenPilotAIReviewRejectsInvalidRefreshedIssue(t *testing.T) {
+	valid := GiteaIssue{
+		ID: 1558, Number: 42, Repository: "subculture-collective/switchyard", State: "open",
+		Labels: []string{"agent:queued", "ready-for-agent"}, Title: "Probe Open Pilot behavior after CI failure",
+		Body: "## Automatic CI repair acceptance\n\n" + liveIssue42AutomaticCIRepairAcceptance,
+	}
+	for _, test := range []struct {
+		name    string
+		mutate  func(*GiteaIssue)
+		wantErr string
+	}{
+		{name: "closed", mutate: func(issue *GiteaIssue) { issue.State = "closed" }, wantErr: "not open"},
+		{name: "missing required label", mutate: func(issue *GiteaIssue) { issue.Labels = []string{"agent:queued"} }, wantErr: "missing required labels"},
+		{name: "invalid spec", mutate: func(issue *GiteaIssue) { issue.Body = "Two phase cleanup." }, wantErr: "acceptance criteria and test instructions"},
+		{name: "mismatched number", mutate: func(issue *GiteaIssue) { issue.Number = 41 }, wantErr: "identity does not match"},
+		{name: "mismatched repository", mutate: func(issue *GiteaIssue) { issue.Repository = "other/switchyard" }, wantErr: "identity does not match"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			current := valid
+			test.mutate(&current)
+			store := NewStore(nil)
+			if err := SeedDefaults(store); err != nil {
+				t.Fatal(err)
+			}
+			model := &captureModelExecutor{response: ModelResponse{Content: "APPROVED: unreachable"}}
+			env := newOpenPilotAIReviewTestEnv(store)
+			env.modelExecutor, env.issueFetcher = model, &stubIssueFetcher{issue: current}
+			env.openPilotLabels, env.requireIssueSpec = []string{"ready-for-agent"}, true
+			run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{
+				"repo": "subculture-collective/switchyard", "issue": "42", "pull_request_url": "https://git.subcult.tv/subculture-collective/switchyard/pulls/43",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pipeline := Pipeline{ID: "test", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "ai-review", Position: 8, Name: "open-pilot.ai-review", Executor: "model"}}}
+			_, err = (&Runner{store: store}).executePipeline(t.Context(), run, pipeline, openPilotExecutor{env: env}, openPilotExecutor{env: env})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
+			}
+			if len(model.requests) != 0 {
+				t.Fatalf("model called after refreshed issue rejection: %+v", model.requests)
+			}
+			state, stateErr := store.OpenPilotIssueState("subculture-collective/switchyard", "42")
+			if stateErr != nil || state.Phase != OpenPilotPhaseFailed || state.LastStepName != "open-pilot.ai-review" || !strings.Contains(state.LastError, test.wantErr) || len(state.LastError) > openPilotCIRepairMaxFeedbackBytes {
+				t.Fatalf("state = %+v, error = %v", state, stateErr)
+			}
+		})
 	}
 }
 

@@ -18,7 +18,7 @@ func TestEnvGiteaClientFetchesIssue(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"id":10,"number":123,"title":"Fix switchyard","body":"Acceptance criteria","state":"open","html_url":"https://git/OWNER/REPO/issues/123","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		_, _ = w.Write([]byte(`{"id":10,"number":123,"repository":{"full_name":"OWNER/REPO"},"title":"Fix switchyard","body":"Acceptance criteria","state":"open","html_url":"https://git/OWNER/REPO/issues/123","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("GITEA_BASE_URL", server.URL)
@@ -28,7 +28,7 @@ func TestEnvGiteaClientFetchesIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchIssue() error = %v", err)
 	}
-	if issue.Number != 123 || issue.Title != "Fix switchyard" || len(issue.Labels) != 2 || issue.Labels[0] != "ready-for-agent" {
+	if issue.Number != 123 || issue.Repository != "OWNER/REPO" || issue.Title != "Fix switchyard" || len(issue.Labels) != 2 || issue.Labels[0] != "ready-for-agent" {
 		t.Fatalf("issue = %+v", issue)
 	}
 }

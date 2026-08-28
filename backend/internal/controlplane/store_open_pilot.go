@@ -544,7 +544,7 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 		return OpenPilotIssueState{}, Run{}, err
 	}
 	for name, value := range input.Inputs {
-		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" {
+		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" && !strings.HasPrefix(name, "resume.open-pilot.ci-repair.") {
 			inputs[name] = value
 		}
 	}
@@ -575,9 +575,26 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 
 func stripOpenPilotCIRepairInputs(inputs map[string]string) {
 	for key := range inputs {
-		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") && key != openPilotCIRepairCountKey {
+		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") && !openPilotCIRepairExternalResumeInputAllowed(key) {
 			delete(inputs, key)
 		}
+	}
+}
+
+func removeOpenPilotCIRepairInputs(inputs map[string]string) {
+	for key := range inputs {
+		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") {
+			delete(inputs, key)
+		}
+	}
+}
+
+func openPilotCIRepairExternalResumeInputAllowed(key string) bool {
+	switch key {
+	case openPilotCIRepairCountKey, openPilotCIRepairFeedbackKey, openPilotCIRepairOriginalPromptKey:
+		return true
+	default:
+		return false
 	}
 }
 

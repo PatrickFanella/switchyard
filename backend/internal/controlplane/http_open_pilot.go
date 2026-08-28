@@ -62,11 +62,7 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "state is not safely resumable from AI review or CI checks")
 		return
 	}
-	for key := range inputs {
-		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") {
-			delete(inputs, key)
-		}
-	}
+	removeOpenPilotCIRepairInputs(inputs)
 	prepared, err := a.runner.prepareRunInput(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
 	if err != nil {
 		writeControlError(w, err)

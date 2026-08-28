@@ -578,7 +578,7 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 		return rollback(err)
 	}
 	for name, value := range input.Inputs {
-		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" {
+		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" && !strings.HasPrefix(name, "resume.open-pilot.ci-repair.") {
 			inputs[name] = value
 		}
 	}

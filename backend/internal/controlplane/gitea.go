@@ -16,14 +16,15 @@ import (
 
 // GiteaIssue models the issue payload used by the control plane.
 type GiteaIssue struct {
-	ID      int      `json:"id"`
-	Number  int      `json:"number"`
-	Title   string   `json:"title"`
-	Body    string   `json:"body"`
-	State   string   `json:"state"`
-	URL     string   `json:"url"`
-	HTMLURL string   `json:"html_url"`
-	Labels  []string `json:"labels"`
+	ID         int      `json:"id"`
+	Number     int      `json:"number"`
+	Repository string   `json:"-"`
+	Title      string   `json:"title"`
+	Body       string   `json:"body"`
+	State      string   `json:"state"`
+	URL        string   `json:"url"`
+	HTMLURL    string   `json:"html_url"`
+	Labels     []string `json:"labels"`
 }
 
 // IssueFetcher fetches issues from Gitea.
@@ -211,6 +212,9 @@ func (c *EnvGiteaClient) FetchIssue(ctx context.Context, repo string, issue stri
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return GiteaIssue{}, err
@@ -221,7 +225,7 @@ func (c *EnvGiteaClient) FetchIssue(ctx context.Context, repo string, issue stri
 			labels = append(labels, label.Name)
 		}
 	}
-	return GiteaIssue{ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, URL: raw.URL, HTMLURL: raw.HTMLURL, Labels: labels}, nil
+	return GiteaIssue{ID: raw.ID, Number: raw.Number, Repository: raw.Repository.FullName, Title: raw.Title, Body: raw.Body, State: raw.State, URL: raw.URL, HTMLURL: raw.HTMLURL, Labels: labels}, nil
 }
 
 func (c *EnvGiteaClient) ListIssues(ctx context.Context, repo string, labels []string) ([]GiteaIssue, error) {

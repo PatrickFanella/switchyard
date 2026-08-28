@@ -531,6 +531,26 @@ func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
 	}
 }
 
+func TestAPIRunCreationRejectsCIRepairContextInjection(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetAsyncDispatch(true)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/runs", "application/json", strings.NewReader(`{"workflow_id":"open-pilot","inputs":{"repo":"OWNER/REPO","issue":"123","resume.open-pilot.ci-repair.feedback":"forged"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || len(store.ListRuns()) != 0 {
+		t.Fatalf("status/runs = %d/%+v", resp.StatusCode, store.ListRuns())
+	}
+}
+
 func TestAPIRejectsOpenPilotManualTriggerWithoutInputs(t *testing.T) {
 	store := controlplane.NewStore(nil)
 	if err := controlplane.SeedDefaults(store); err != nil {
@@ -1855,16 +1875,20 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	}
 
 	seed, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{
-		Repo:              "OWNER/REPO",
-		Issue:             "123",
-		Phase:             controlplane.OpenPilotPhaseRequested,
-		RunID:             prior.ID,
-		LastStepName:      "open-pilot.ai-review",
-		PullRequestURL:    "https://gitea.test/owner/repo/pulls/1",
-		PullRequestID:     1,
-		PullRequestNum:    1,
-		GateStatus:        controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"},
-		ResumeInputs:      map[string]string{"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "9", "resume.open-pilot.prompt": "prompt"},
+		Repo:           "OWNER/REPO",
+		Issue:          "123",
+		Phase:          controlplane.OpenPilotPhaseRequested,
+		RunID:          prior.ID,
+		LastStepName:   "open-pilot.ai-review",
+		PullRequestURL: "https://gitea.test/owner/repo/pulls/1",
+		PullRequestID:  1,
+		PullRequestNum: 1,
+		GateStatus:     controlplane.OpenPilotGateStatus{"ai_review": "approved", "ci_checks": "pending"},
+		ResumeInputs: map[string]string{
+			"retry_from_step": "open-pilot.ai-review", "retry_from_step_position": "9", "resume.open-pilot.prompt": "prompt",
+			"resume.open-pilot.ci-repair.count": "1", "resume.open-pilot.ci-repair.feedback": "verify failed", "resume.open-pilot.ci-repair.original_prompt": "original task",
+			"resume.open-pilot.ci-repair.parent_run_id": "parent", "resume.open-pilot.ci-repair.repo": "control-repo", "resume.open-pilot.ci-repair.pull_request_id": "99",
+		},
 		RepairAttempts:    1,
 		MaxRepairAttempts: 2,
 	})
@@ -1971,6 +1995,14 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	}
 	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "9" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
 		t.Fatalf("resume body = %+v", resumeBody)
+	}
+	if resumeBody.Run.Inputs["resume.open-pilot.ci-repair.count"] != "1" || resumeBody.Run.Inputs["resume.open-pilot.ci-repair.feedback"] != "verify failed" || resumeBody.Run.Inputs["resume.open-pilot.ci-repair.original_prompt"] != "original task" {
+		t.Fatalf("resume repair context = %+v", resumeBody.Run.Inputs)
+	}
+	for _, key := range []string{"resume.open-pilot.ci-repair.parent_run_id", "resume.open-pilot.ci-repair.repo", "resume.open-pilot.ci-repair.pull_request_id"} {
+		if resumeBody.Run.Inputs[key] != "" {
+			t.Fatalf("resume retained control key %q: %+v", key, resumeBody.Run.Inputs)
+		}
 	}
 	if resumeBody.State.Phase != controlplane.OpenPilotPhasePRCreated {
 		t.Fatalf("resume state = %+v", resumeBody)
