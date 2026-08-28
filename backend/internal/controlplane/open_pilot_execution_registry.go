@@ -119,3 +119,30 @@ func (e *EnvWorkflowExecutors) openPilotExecutionForRun(run Run) (openPilotExecu
 	}
 	return bundle, nil
 }
+
+func validateOpenPilotRecoveredBundleWorktree(bundle openPilotExecutionBundle, plan OpenPilotWorktreePlan) error {
+	if bundle.repository.ID == "" {
+		return nil
+	}
+	source, err := canonicalOpenPilotSourcePath(bundle.repository.SourcePath)
+	if err != nil {
+		return errors.New("repository bundle source path is unavailable")
+	}
+	planSource, err := canonicalOpenPilotSourcePath(plan.RepoPath)
+	if err != nil || planSource != source {
+		return errors.New("durable Open Pilot source path does not match its repository bundle")
+	}
+	root, err := canonicalOpenPilotSourcePath(bundle.repository.WorktreeRoot)
+	if err != nil {
+		return errors.New("repository bundle worktree root is unavailable")
+	}
+	worktree, err := canonicalOpenPilotSourcePath(plan.WorktreePath)
+	if err != nil {
+		return errors.New("durable Open Pilot worktree path is unavailable")
+	}
+	relative, err := filepath.Rel(root, worktree)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("durable Open Pilot worktree is outside its repository bundle")
+	}
+	return nil
+}

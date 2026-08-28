@@ -17,12 +17,15 @@ import (
 )
 
 type OpenCodeRequest struct {
-	Model      string
-	Prompt     string
-	SessionID  string
-	RequestID  string
-	WorkDir    string
-	PreAttempt PreAttemptCallback
+	Model     string
+	Prompt    string
+	SessionID string
+	RequestID string
+	WorkDir   string
+	// FailClosedOnStaleSession prevents reposting after a correlated session is
+	// lost or after any message request may have crossed the mutation boundary.
+	FailClosedOnStaleSession bool
+	PreAttempt               PreAttemptCallback
 	// OnCorrelation is called as soon as an upstream session identity exists,
 	// before a potentially long-running message request starts.
 	OnCorrelation func(map[string]string) error
@@ -217,10 +220,13 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
 	defer cancel()
 	replaced := false
+	originalSessionProvided := request.SessionID != ""
+	messageAttempted := false
 	for {
 		priorMessageID, err := e.openCodeLatestMessageID(messageCtx, sessionID)
 		if err == nil {
 			preAttemptPending := request.PreAttempt != nil
+			messageAttempted = true
 			_, err = e.postOpenCodeMessage(messageCtx, sessionID, request)
 			if preAttemptPending {
 				request.PreAttempt = nil
@@ -233,7 +239,8 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		if err == nil {
 			return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
 		}
-		if isStaleOpenCodeSession(err) && !replaced {
+		mayReplaceStale := !request.FailClosedOnStaleSession || (!originalSessionProvided && !messageAttempted)
+		if isStaleOpenCodeSession(err) && !replaced && mayReplaceStale {
 			createCtx, createCancel := context.WithTimeout(messageCtx, openCodeSessionCreateTimeout())
 			preAttemptPending := request.PreAttempt != nil
 			replacementID, createErr := e.createOpenCodeSession(createCtx, directory, request.PreAttempt)

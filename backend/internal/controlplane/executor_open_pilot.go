@@ -202,7 +202,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return fallbackExecution, nil
 	}
 	agentCtx := withRunStepPreAttempt(ctx, store, run.ID, agent.ID)
-	response, err := execution.openCodeExecutor.SendPrompt(agentCtx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath, PreAttempt: preAttemptFromContext(agentCtx), OnCorrelation: runStepCorrelationFromContext(agentCtx)})
+	response, err := execution.openCodeExecutor.SendPrompt(agentCtx, OpenCodeRequest{Model: model, Prompt: prompt, SessionID: openCodeSessionID(run.Inputs), RequestID: openPilotOpenCodeRequestID(run, "open-pilot.agent-work"), WorkDir: branchPlan.WorktreePath, FailClosedOnStaleSession: true, PreAttempt: preAttemptFromContext(agentCtx), OnCorrelation: runStepCorrelationFromContext(agentCtx)})
 	if err != nil {
 		fallbackExecution := WorkflowExecution{Summary: "OpenCode executor unavailable; prompt prepared for operator handoff", Events: []WorkflowExecutionEvent{{Type: "open-pilot.agent.fallback", Message: err.Error()}, {Type: "open-pilot.prepared", Message: "Prompt artifact ready for " + repo + "#" + issue}}}
 		_, _ = store.FinishRunStep(agent.ID, StepSucceeded, fallbackExecution.Summary, "", nil)
@@ -1068,7 +1068,7 @@ func openPilotRecoverySideEffectStep(stepID string) bool {
 	}
 }
 
-func (o openPilotExecutor) revalidateOpenPilotRecoveredStep(ctx context.Context, run Run, stepID string, state map[string]any) error {
+func (o openPilotExecutor) revalidateOpenPilotRecoveredStep(ctx context.Context, run Run, stepID string, state map[string]any, execution openPilotExecutionBundle) error {
 	if o.env == nil || o.env.store == nil || o.env.openPilotGate == nil || o.env.openPilotGateError != nil {
 		return errors.New("Open Pilot recovery affinity gate is not configured")
 	}
@@ -1085,6 +1085,9 @@ func (o openPilotExecutor) revalidateOpenPilotRecoveredStep(ctx context.Context,
 	}
 	if saved.Branch == "" || (plan.Branch != "" && plan.Branch != saved.Branch) {
 		return errors.New("durable Open Pilot branch identity changed")
+	}
+	if err := validateOpenPilotRecoveredBundleWorktree(execution, plan); err != nil {
+		return err
 	}
 	switch stepID {
 	case "branch-plan":
@@ -1156,7 +1159,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
 	if openPilotRecoveredExecution(ctx, run) && openPilotRecoverySideEffectStep(step.ID) {
-		if err := o.revalidateOpenPilotRecoveredStep(ctx, run, step.ID, state); err != nil {
+		if err := o.revalidateOpenPilotRecoveredStep(ctx, run, step.ID, state, execution); err != nil {
 			message := "Open Pilot recovered step paused: " + err.Error()
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhasePaused, step.Name, err.Error(), state); persistErr != nil {
 				return PipelineStepExecution{Summary: message, Halt: true}, errors.Join(err, persistErr)
@@ -1280,7 +1283,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return PipelineStepExecution{Summary: message, Halt: true}, nil
 			}
 		}
-		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath}
+		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath, FailClosedOnStaleSession: true}
 		request.PreAttempt = preAttemptFromContext(ctx)
 		request.OnCorrelation = runStepCorrelationFromContext(ctx)
 		response, err := execution.openCodeExecutor.SendPrompt(ctx, request)

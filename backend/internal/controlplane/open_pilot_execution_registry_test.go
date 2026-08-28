@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,17 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+type repositoryWritingExecutor struct {
+	marker string
+}
+
+func (e repositoryWritingExecutor) SendPrompt(_ context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
+	if err := os.WriteFile(filepath.Join(request.WorkDir, e.marker), []byte(e.marker+"\n"), 0o600); err != nil {
+		return OpenCodeResponse{}, err
+	}
+	return OpenCodeResponse{Content: e.marker, SessionID: "session-" + e.marker}, nil
+}
 
 func testMultiRepositoryRuntimeManifest(t *testing.T) (OpenPilotRuntimeManifest, string) {
 	t.Helper()
@@ -251,6 +263,105 @@ func TestOpenPilotRepositoryStatusProjectsEachExecutor(t *testing.T) {
 	for index, repository := range status.Repositories {
 		if !repository.Healthy || !repository.OpenCode.Healthy || !repository.VerifierHealthy || repository.MaxConcurrentVerification != 1 || repository.RepositoryID != manifest.Repositories[index].ID {
 			t.Fatalf("repository status %d = %+v", index, repository)
+		}
+	}
+}
+
+func TestRecoveredWorktreeMustBelongToSelectedRepositoryBundle(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	worktreeRoot := filepath.Join(root, "worktrees")
+	inside := filepath.Join(worktreeRoot, "issue-1")
+	outside := filepath.Join(root, "sibling-worktrees", "issue-1")
+	for _, path := range []string{source, inside, outside} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle := openPilotExecutionBundle{repository: OpenPilotRuntimeRepository{ID: "alpha", SourcePath: source, WorktreeRoot: worktreeRoot}}
+	plan := OpenPilotWorktreePlan{RepoPath: source, WorktreePath: inside}
+	if err := validateOpenPilotRecoveredBundleWorktree(bundle, plan); err != nil {
+		t.Fatalf("inside worktree rejected: %v", err)
+	}
+	plan.WorktreePath = outside
+	if err := validateOpenPilotRecoveredBundleWorktree(bundle, plan); err == nil {
+		t.Fatal("sibling repository worktree adopted")
+	}
+	plan.RepoPath = filepath.Join(root, "other-source")
+	if err := os.MkdirAll(plan.RepoPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plan.WorktreePath = inside
+	if err := validateOpenPilotRecoveredBundleWorktree(bundle, plan); err == nil {
+		t.Fatal("sibling repository source adopted")
+	}
+}
+
+func TestTwoRepositoryWriteLifecycleRemainsIsolated(t *testing.T) {
+	manifest := validOpenPilotRuntimeManifest()
+	manifest.RegistryGeneration = "two-repo-write-proof"
+	manifest.Repositories = nil
+	for _, id := range []string{"alpha", "beta"} {
+		repo := initWorktreeTestRepo(t)
+		slug := "owner/" + id
+		runWorktreeTestGit(t, repo, "remote", "set-url", "origin", "https://git.example.test/"+slug+".git")
+		manifest.Repositories = append(manifest.Repositories, OpenPilotRuntimeRepository{
+			ID: id, Slug: slug, ExecutorGeneration: "generation-" + id,
+			SourcePath: repo, WorktreeRoot: filepath.Join(t.TempDir(), "worktrees"),
+			OpenCodeEndpoint: "http://opencode-" + id + ":4096", VerifierEndpoint: "http://verifier-" + id + ":8090",
+			PasswordFile: filepath.Join(t.TempDir(), "password"),
+		})
+	}
+	registry, err := NewOpenPilotRepositoryRegistry(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &OpenPilotAdmissionGate{registry: registry, mode: "isolated-test"}
+	env := &EnvWorkflowExecutors{openPilotGate: gate, openPilotBundles: map[string]openPilotExecutionBundle{}}
+	for _, repository := range manifest.Repositories {
+		env.openPilotBundles[openPilotExecutionBundleKey(repository.ID, repository.ExecutorGeneration)] = openPilotExecutionBundle{
+			repository:       repository,
+			openCodeExecutor: repositoryWritingExecutor{marker: repository.ID + ".txt"},
+			commandRunner:    NewPolicyCommandRunner(CommandPolicy{Mode: CommandPolicyDeny}),
+			worktreeManager:  NewGitOpenPilotWorktreeManager(OpenPilotWorktreeAllow, repository.SourcePath, repository.WorktreeRoot),
+		}
+	}
+
+	plans := map[string]OpenPilotWorktreePlan{}
+	for issueIndex, repository := range manifest.Repositories {
+		run := Run{ID: "run-" + repository.ID, Inputs: map[string]string{
+			"repo": repository.Slug, "issue": string(rune('1' + issueIndex)),
+			openPilotRepositoryIDInputKey:       repository.ID,
+			openPilotExecutorGenerationInputKey: repository.ExecutorGeneration,
+		}}
+		bundle, err := env.openPilotExecutionForRun(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := bundle.worktreeManager.Prepare(t.Context(), run, repository.Slug, "main", "open-pilot/issue-"+run.Inputs["issue"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans[repository.ID] = plan
+		if _, err := bundle.openCodeExecutor.SendPrompt(t.Context(), OpenCodeRequest{WorkDir: plan.WorktreePath}); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateOpenPilotRecoveredBundleWorktree(bundle, plan); err != nil {
+			t.Fatalf("recover %s: %v", repository.ID, err)
+		}
+	}
+	for _, repository := range manifest.Repositories {
+		plan := plans[repository.ID]
+		if raw, err := os.ReadFile(filepath.Join(plan.WorktreePath, repository.ID+".txt")); err != nil || string(raw) != repository.ID+".txt\n" {
+			t.Fatalf("repository %s marker=%q error=%v", repository.ID, raw, err)
+		}
+		for _, sibling := range manifest.Repositories {
+			if sibling.ID == repository.ID {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(plan.WorktreePath, sibling.ID+".txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("repository %s received sibling %s write", repository.ID, sibling.ID)
+			}
 		}
 	}
 }
