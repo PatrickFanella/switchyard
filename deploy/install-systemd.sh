@@ -6,6 +6,7 @@ run_user="${SWITCHYARD_RUN_USER:-${SUDO_USER:-$(id -un)}}"
 run_group="${SWITCHYARD_RUN_GROUP:-$(id -gn "$run_user")}"
 docker_group="${SWITCHYARD_DOCKER_GROUP:-docker}"
 docker_local="$repo_root/deploy/docker-local"
+compose_wrapper="$repo_root/deploy/switchyard-compose"
 env_file="${SWITCHYARD_ENV_FILE:-$repo_root/.env}"
 unit_src="$repo_root/deploy/switchyard.service"
 backup_unit_src="$repo_root/deploy/switchyard-backup.service"
@@ -57,7 +58,7 @@ PY
   exit 1
 fi
 
-if [[ ! -f "$repo_root/docker-compose.yml" || ! -x "$docker_local" ]]; then
+if [[ ! -f "$repo_root/docker-compose.yml" || ! -x "$docker_local" || ! -x "$compose_wrapper" ]]; then
   echo "missing docker-compose.yml under $repo_root" >&2
   exit 1
 fi
@@ -125,6 +126,53 @@ for property in Requires After; do
     exit 1
   fi
 done
+
+mapfile -t open_pilot_paths < <(python3 - "$env_file" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+values = {}
+for line in path.read_text(encoding="utf-8").splitlines():
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key in {
+        "SWITCHYARD_OPEN_PILOT_OPERATOR_REGISTRY", "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST",
+        "SWITCHYARD_OPEN_PILOT_COMPOSE_OVERRIDE", "SWITCHYARD_OPEN_PILOT_COMPOSE_FILE_SET",
+        "GITEA_BASE_URL", "OPENCODE_RUNTIME_UID", "OPENCODE_RUNTIME_GID",
+    }:
+        values[key] = value
+for key in (
+    "SWITCHYARD_OPEN_PILOT_OPERATOR_REGISTRY", "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST",
+    "SWITCHYARD_OPEN_PILOT_COMPOSE_OVERRIDE", "SWITCHYARD_OPEN_PILOT_COMPOSE_FILE_SET",
+):
+    value = values.get(key, "")
+    candidate = pathlib.Path(value)
+    if not value or not candidate.is_absolute() or value != str(candidate.absolute()) or any(ord(char) < 32 for char in value):
+        raise SystemExit(1)
+    print(value)
+base_url = values.get("GITEA_BASE_URL", "")
+if not base_url.startswith("https://") or any(ord(char) < 32 for char in base_url):
+    raise SystemExit(1)
+print(base_url)
+for key in ("OPENCODE_RUNTIME_UID", "OPENCODE_RUNTIME_GID"):
+    value = values.get(key, "")
+    if not value.isascii() or not value.isdecimal() or not 1 <= int(value) <= 2147483647:
+        raise SystemExit(1)
+    print(value)
+PY
+)
+if [[ ${#open_pilot_paths[@]} -ne 7 ]]; then
+  echo "production requires all Open Pilot registry and generated topology paths" >&2
+  exit 1
+fi
+operator_registry=${open_pilot_paths[0]}
+runtime_manifest=${open_pilot_paths[1]}
+compose_override=${open_pilot_paths[2]}
+compose_file_set=${open_pilot_paths[3]}
+gitea_base_url=${open_pilot_paths[4]}
+opencode_runtime_uid=${open_pilot_paths[5]}
+opencode_runtime_gid=${open_pilot_paths[6]}
+compose_command=("$compose_wrapper" --env-file "$env_file" --file-set "$compose_file_set" --)
 
 if [[ "${SWITCHYARD_INSTALL_BACKUP_TIMER:-0}" == "1" ]]; then
   if ! grep -Eq '^SWITCHYARD_BACKUP_DIR=.+$' "$env_file" || ! grep -Eq '^SWITCHYARD_BACKUP_POLICY=.+$' "$env_file"; then
@@ -195,7 +243,16 @@ restore_timer_snapshot="$(mktemp)"
 main_unit_snapshot="$(mktemp)"
 backup_unit_snapshot="$(mktemp)"
 backup_timer_snapshot="$(mktemp)"
+operator_registry_snapshot="$(mktemp)"
+runtime_manifest_snapshot="$(mktemp)"
+compose_override_snapshot="$(mktemp)"
+compose_file_set_snapshot="$(mktemp)"
 unit_mutation_started=0
+topology_mutation_started=0
+operator_registry_existed=0
+runtime_manifest_existed=0
+compose_override_existed=0
+compose_file_set_existed=0
 restore_unit_existed=0
 restore_timer_existed=0
 backup_unit_existed=0
@@ -217,6 +274,30 @@ running_services=()
 compose_services=()
 cleanup() {
   status=$?
+  if [[ $status -ne 0 && $topology_mutation_started -eq 1 ]]; then
+    python3 - \
+      "$operator_registry_snapshot" "$operator_registry" "$operator_registry_existed" \
+      "$runtime_manifest_snapshot" "$runtime_manifest" "$runtime_manifest_existed" \
+      "$compose_override_snapshot" "$compose_override" "$compose_override_existed" \
+      "$compose_file_set_snapshot" "$compose_file_set" "$compose_file_set_existed" <<'PY' || true
+import os, pathlib, shutil, sys
+for offset in range(1, len(sys.argv), 3):
+    source = pathlib.Path(sys.argv[offset])
+    target = pathlib.Path(sys.argv[offset + 1])
+    existed = sys.argv[offset + 2] == "1"
+    if not existed:
+        target.unlink(missing_ok=True)
+        continue
+    temporary = target.parent / f".{target.name}.rollback-{os.getpid()}"
+    shutil.copy2(source, temporary, follow_symlinks=False)
+    os.replace(temporary, target)
+    directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+PY
+  fi
   if [[ $status -ne 0 && $unit_mutation_started -eq 1 ]]; then
     # Stop every possibly changed definition before restoring files and state.
     for unit in switchyard.service switchyard-backup.service switchyard-backup.timer switchyard-restore-drill.service switchyard-restore-drill.timer; do
@@ -287,9 +368,9 @@ PY
           for running in "${running_services[@]}"; do [[ "$service" != "$running" ]] || found=1; done
           [[ $found -eq 1 ]] || stopped_services+=("$service")
         done
-        [[ ${#stopped_services[@]} -eq 0 ]] || "$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" stop "${stopped_services[@]}" >/dev/null 2>&1 || true
+        [[ ${#stopped_services[@]} -eq 0 ]] || "${compose_command[@]}" stop "${stopped_services[@]}" >/dev/null 2>&1 || true
       elif [[ ${#running_services[@]} -gt 0 ]]; then
-        "$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" up -d --no-deps "${running_services[@]}" >/dev/null 2>&1 || true
+        "${compose_command[@]}" up -d --no-deps "${running_services[@]}" >/dev/null 2>&1 || true
       fi
     fi
     [[ $backup_service_active -eq 0 ]] || systemctl start switchyard-backup.service >/dev/null 2>&1 || true
@@ -298,18 +379,46 @@ PY
     [[ $restore_timer_active -eq 0 ]] || systemctl start switchyard-restore-drill.timer >/dev/null 2>&1 || true
   fi
   rm -f "$tmp_unit" "$tmp_backup_unit" "$tmp_restore_unit" "$tmp_restore_timer" "$metrics_snapshot" \
-    "$restore_unit_snapshot" "$restore_timer_snapshot" "$main_unit_snapshot" "$backup_unit_snapshot" "$backup_timer_snapshot"
+    "$restore_unit_snapshot" "$restore_timer_snapshot" "$main_unit_snapshot" "$backup_unit_snapshot" "$backup_timer_snapshot" \
+    "$operator_registry_snapshot" "$runtime_manifest_snapshot" "$compose_override_snapshot" "$compose_file_set_snapshot"
   return "$status"
 }
 trap cleanup EXIT
 
-python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$docker_group" "$env_file" "$gate_renderer" "$gate_rules" "$ufw_helper" <<'PY'
+topology_labels=(operator_registry runtime_manifest compose_override compose_file_set)
+topology_paths=("$operator_registry" "$runtime_manifest" "$compose_override" "$compose_file_set")
+topology_snapshots=("$operator_registry_snapshot" "$runtime_manifest_snapshot" "$compose_override_snapshot" "$compose_file_set_snapshot")
+for index in "${!topology_labels[@]}"; do
+  label=${topology_labels[$index]}
+  path=${topology_paths[$index]}
+  snapshot=${topology_snapshots[$index]}
+  if [[ -L "$path" || -e "$path" && ! -f "$path" ]]; then
+    echo "$label must be a regular non-symlink file" >&2
+    exit 1
+  fi
+  if [[ -e "$path" ]]; then
+    printf -v "${label}_existed" '%s' 1
+    cp -p -- "$path" "$snapshot"
+  fi
+done
+[[ $operator_registry_existed -eq 1 ]] || { echo "Open Pilot operator registry must already exist" >&2; exit 1; }
+topology_mutation_started=1
+python3 "$repo_root/scripts/prepare_open_pilot_registry.py" --registry "$operator_registry" \
+  --runtime-uid "$opencode_runtime_uid" --runtime-gid "$opencode_runtime_gid" --gitea-base-url "$gitea_base_url"
+python3 "$repo_root/scripts/render_open_pilot_topology.py" --registry "$operator_registry" \
+  --runtime-manifest "$runtime_manifest" --compose-override "$compose_override" \
+  --compose-file-set "$compose_file_set" --runtime-uid "$opencode_runtime_uid" \
+  --runtime-gid "$opencode_runtime_gid" --gitea-base-url "$gitea_base_url"
+python3 "$repo_root/scripts/resolve_open_pilot_compose_file_set.py" \
+  --file-set "$compose_file_set" --expected-base "$repo_root/docker-compose.yml" >/dev/null
+
+python3 - "$unit_src" "$tmp_unit" "$repo_root" "$run_user" "$run_group" "$docker_group" "$env_file" "$gate_renderer" "$gate_rules" "$ufw_helper" "$compose_file_set" <<'PY'
 import pathlib, sys
-source, target, root, user, group, docker_group, env_file, renderer, rules, ufw_helper = sys.argv[1:]
+source, target, root, user, group, docker_group, env_file, renderer, rules, ufw_helper, compose_file_set = sys.argv[1:]
 value = pathlib.Path(source).read_text(encoding="utf-8")
-for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__DOCKER_GROUP__", docker_group), ("__ENV_FILE__", env_file), ("__RENDERER__", renderer), ("__NFT_RULES__", rules), ("__UFW_HELPER__", ufw_helper)):
+for placeholder, replacement in (("__REPO_ROOT__", root), ("__RUN_USER__", user), ("__RUN_GROUP__", group), ("__DOCKER_GROUP__", docker_group), ("__ENV_FILE__", env_file), ("__RENDERER__", renderer), ("__NFT_RULES__", rules), ("__UFW_HELPER__", ufw_helper), ("__COMPOSE_FILE_SET__", compose_file_set)):
     value = value.replace(placeholder, replacement)
-if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__DOCKER_GROUP__", "__ENV_FILE__", "__RENDERER__", "__NFT_RULES__", "__UFW_HELPER__")):
+if any(placeholder in value for placeholder in ("__REPO_ROOT__", "__RUN_USER__", "__RUN_GROUP__", "__DOCKER_GROUP__", "__ENV_FILE__", "__RENDERER__", "__NFT_RULES__", "__UFW_HELPER__", "__COMPOSE_FILE_SET__")):
     raise SystemExit("unresolved switchyard unit placeholder")
 pathlib.Path(target).write_text(value, encoding="utf-8")
 PY
@@ -346,8 +455,8 @@ fi
 
 # Last preflight: validate Compose and capture the exact workload state before
 # the first filesystem or systemd mutation.
-compose_services_output="$("$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" config --services)"
-running_services_output="$("$docker_local" compose --env-file "$env_file" -f "$repo_root/docker-compose.yml" ps --status running --services)"
+compose_services_output="$("${compose_command[@]}" config --services)"
+running_services_output="$("${compose_command[@]}" ps --status running --services)"
 mapfile -t compose_services <<<"$compose_services_output"
 mapfile -t running_services <<<"$running_services_output"
 [[ -n "$compose_services_output" ]] || { echo "Docker Compose returned no services" >&2; exit 1; }

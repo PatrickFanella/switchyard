@@ -860,13 +860,13 @@ class ProductionConfigCLITest(unittest.TestCase):
         unit = (REPO_ROOT / "deploy/switchyard.service").read_text(encoding="utf-8")
         validator = "scripts/validate_production_config.py --env-file __ENV_FILE__"
         self.assertIn(f"ExecStartPre=/usr/bin/python3 __REPO_ROOT__/{validator}", unit)
-        docker = "__REPO_ROOT__/deploy/docker-local compose"
-        self.assertLess(unit.index("ExecStartPre="), unit.index(f"ExecStart={docker}"))
-        self.assertLess(unit.index("ExecReload=/usr/bin/python3"), unit.index(f"ExecReload={docker}"))
+        compose = "__REPO_ROOT__/deploy/switchyard-compose"
+        self.assertLess(unit.index("ExecStartPre="), unit.index(f"ExecStart={compose}"))
+        self.assertLess(unit.index("ExecReload=/usr/bin/python3"), unit.index(f"ExecReload={compose}"))
         self.assertEqual(unit.count(validator), 2)
-        self.assertEqual(unit.count(f"{docker} --env-file __ENV_FILE__ -f __REPO_ROOT__/docker-compose.yml"), 5)
+        self.assertEqual(unit.count(f"{compose} --env-file __ENV_FILE__ --file-set __COMPOSE_FILE_SET__ --"), 5)
         self.assertEqual(unit.count("verify-gate --env-file __ENV_FILE__"), 2)
-        self.assertEqual(unit.count("docker-compose.yml stop web"), 2)
+        self.assertEqual(unit.count("-- stop web"), 2)
         self.assertNotIn("--env-file __REPO_ROOT__/.env", unit)
 
     def test_smoke_rejects_different_public_url(self) -> None:

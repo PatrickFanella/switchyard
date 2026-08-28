@@ -28,6 +28,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.log = self.root / "mutations.log"
         uid = os.getuid()
         self.runtime_uid = uid or 1000
+        self.runtime_gid = os.getgid() or 1000
         self.user = pwd.getpwuid(uid).pw_name
         self.group = grp.getgrgid(os.getgid()).gr_name
         tools = {
@@ -42,6 +43,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'is-active --quiet switchyard-web-gate.service') [ \"${GATE_ACTIVE:-1}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard.service') [ \"${PRIOR_MAIN_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard.service') { [ -e \"$MAIN_STATE\" ] || [ \"${PRIOR_MAIN_ACTIVE:-0}\" = 1 ]; }; exit;;\n  'show docker.service --property=Requires --value'|'show docker.service --property=After --value') printf 'switchyard-web-gate.service\\n'; exit;;\n  'is-enabled --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.service') [ \"${PRIOR_SERVICE_ACTIVE:-0}\" = 1 ]; exit;;\n  'is-enabled --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ENABLED:-0}\" = 1 ]; exit;;\n  'is-active --quiet switchyard-restore-drill.timer') [ \"${PRIOR_TIMER_ACTIVE:-0}\" = 1 ]; exit;;\n  list-unit-files*) exit 1;;\nesac\nprintf 'systemctl %s\\n' \"$*\" >>\"$MUTATION_LOG\"\nif [ \"$*\" = 'restart switchyard.service' ]; then [ \"${FAIL_MAIN_RESTART:-0}\" = 0 ] || exit 1; : >\"$MAIN_STATE\"; fi\nif [ \"${FAIL_RESTORE_ENABLE:-0}\" = 1 ] && [ \"$*\" = 'enable --now switchyard-restore-drill.timer' ]; then exit 1; fi\nexit 0\n",
             "install": "#!/bin/sh\n/usr/bin/install \"$@\" || exit\nprintf 'install %s\\n' \"$*\" >>\"$MUTATION_LOG\"\n",
             "runuser": "#!/bin/sh\noriginal=\"$*\"\nprintf '%s\\n' \"$original\" >>\"$RUNUSER_LOG\"\nuser= primary= supplementary=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -u) user=$2; shift 2;;\n    -g) primary=$2; shift 2;;\n    -G) supplementary=$2; shift 2;;\n    --) shift; break;;\n    *) exit 2;;\n  esac\ndone\npython3 - \"$RUNTIME_UID\" \"$@\" <<'PY'\nimport os, sys\nos.setuid(int(sys.argv[1]))\nos.execvp(sys.argv[2], sys.argv[2:])\nPY\nstatus=$?\n[ $status -eq 0 ] || exit $status\ncase \"$*\" in *initialize-deadline*) printf 'initialize-deadline\\n' >>\"$MUTATION_LOG\";; esac\n",
+            "switchyard-compose": "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -- ] && { shift; break; }; shift; done\nexec \"$FAKE_DOCKER\" compose \"$@\"\n",
         }
         backup_state_probes = (
             "  'is-enabled --quiet switchyard-backup.service') [ \"${PRIOR_BACKUP_SERVICE_ENABLED:-0}\" = 1 ]; exit;;\n"
@@ -66,6 +68,9 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         ).replace(
             'docker_local="$repo_root/deploy/docker-local"',
             f'docker_local="{self.bin / "docker"}"',
+        ).replace(
+            'compose_wrapper="$repo_root/deploy/switchyard-compose"',
+            f'compose_wrapper="{self.bin / "switchyard-compose"}"',
         )
         self.installer = self.root / "install-systemd.sh"
         self.installer.write_text(installer)
@@ -83,9 +88,33 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "alert_grace_seconds": 5,
         }))
         self.env_file = self.root / "switchyard.env"
+        self.registry = self.root / "open-pilot-registry.json"
+        self.runtime_manifest = self.root / "open-pilot-runtime.json"
+        self.compose_override = self.root / "open-pilot-compose.json"
+        self.compose_file_set = self.root / "open-pilot-file-set.json"
+        source = self.root / "open-pilot-source"
+        source.mkdir(mode=0o700)
+        subprocess.run(["git", "init", "--initial-branch=main", str(source)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(source), "remote", "add", "origin", "https://git.example.test/owner/repo.git"], check=True)
+        worktrees = source / ".open-pilot-worktrees"
+        worktrees.mkdir(mode=0o700)
+        marker = worktrees / ".switchyard-managed"
+        marker.write_text("switchyard-managed-worktree-root\n")
+        marker.chmod(0o600)
+        config = self.private("open-pilot-config")
+        data = self.private("open-pilot-data")
+        password = self.root / "open-pilot-password"
+        password.write_text("p" * 48 + "\n")
+        password.chmod(0o600)
+        self.registry.write_text(json.dumps({"version": 1, "generation": "test-1", "repositories": [{
+            "id": "repo", "slug": "owner/repo", "aliases": [], "executor_generation": "test-1",
+            "source_path": str(source), "worktree_root": str(worktrees), "config_path": str(config),
+            "data_path": str(data), "password_file": str(password),
+        }]}))
+        self.registry.chmod(0o600)
         if uid == 0:
-            for path in (self.root, self.bin, self.backup, self.evidence, self.metrics):
-                os.chown(path, self.runtime_uid, -1)
+            for path in (self.root, self.bin, self.backup, self.evidence, self.metrics, source, source / ".git", worktrees, marker, config, data):
+                os.chown(path, self.runtime_uid, self.runtime_gid)
 
     def private(self, name):
         path = self.root / name
@@ -104,6 +133,12 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "SWITCHYARD_RESTORE_DRILL_METRICS_FILE": self.metrics / "restore-drill.prom",
             "SWITCHYARD_RESTORE_TIMEOUT_SECONDS": "10",
             "OPENCODE_RUNTIME_UID": str(self.runtime_uid),
+            "OPENCODE_RUNTIME_GID": str(self.runtime_gid),
+            "GITEA_BASE_URL": "https://git.example.test",
+            "SWITCHYARD_OPEN_PILOT_OPERATOR_REGISTRY": self.registry,
+            "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST": self.runtime_manifest,
+            "SWITCHYARD_OPEN_PILOT_COMPOSE_OVERRIDE": self.compose_override,
+            "SWITCHYARD_OPEN_PILOT_COMPOSE_FILE_SET": self.compose_file_set,
             "SWITCHYARD_WEB_BIND_HOST": "100.65.164.66",
             "SWITCHYARD_TAILSCALE_PROXY_IPV4": "100.77.128.80",
             "WEB_PORT": "8081",
@@ -151,6 +186,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
             "RUNUSER_LOG": str(self.root / "runuser.log"),
             "EXPECTED_RUN_USER": self.user,
             "EXPECTED_RUN_GROUP": self.group,
+            "FAKE_DOCKER": str(self.bin / "docker"),
         })
         env.update(extra_env or {})
         env["EXPECTED_DOCKER_GROUP"] = env.get("SWITCHYARD_DOCKER_GROUP", "docker")
@@ -192,6 +228,12 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertIn(f"EnvironmentFile=-{self.env_file}", backup_service)
         self.assertIn(f"Environment=SWITCHYARD_ENV_FILE={self.env_file}", backup_service)
         main = (self.units / "switchyard.service").read_text()
+        self.assertIn(f"--file-set {self.compose_file_set}", main)
+        manifest = json.loads(self.runtime_manifest.read_text())
+        override = json.loads(self.compose_override.read_text())
+        file_set = json.loads(self.compose_file_set.read_text())
+        self.assertEqual(manifest["registry_fingerprint"], file_set["registry_fingerprint"])
+        self.assertEqual(override["services"]["api"]["environment"]["SWITCHYARD_OPEN_PILOT_REGISTRY_FINGERPRINT"], file_set["registry_fingerprint"])
         for name in ("switchyard.service", "switchyard-backup.service", "switchyard-restore-drill.service"):
             self.assertIn("SupplementaryGroups=docker", (self.units / name).read_text())
         self.assertEqual(main.count(f"--env-file {self.env_file}"), 11)
@@ -336,6 +378,24 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         self.assertIn("systemctl enable switchyard.service", mutations)
         restored = next(line for line in mutations if line.startswith("docker ") and " up -d --no-deps web" in line)
         self.assertGreater(mutations.index(restored), mutations.index("systemctl daemon-reload"))
+
+    def test_failure_restores_exact_prior_generated_topology(self):
+        self.write_env()
+        originals = {
+            self.runtime_manifest: (b"old runtime\n", 0o640),
+            self.compose_override: (b"old override\n", 0o600),
+            self.compose_file_set: (b"old file set\n", 0o604),
+        }
+        for path, (content, mode) in originals.items():
+            path.write_bytes(content)
+            path.chmod(mode)
+        registry_before = self.registry.read_bytes()
+        result = self.run_installer({"FAIL_MAIN_RESTART": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.registry.read_bytes(), registry_before)
+        for path, (content, mode) in originals.items():
+            self.assertEqual(path.read_bytes(), content)
+            self.assertEqual(path.stat().st_mode & 0o777, mode)
 
     def test_compose_preflight_failure_does_not_mutate_units(self):
         self.write_env()
