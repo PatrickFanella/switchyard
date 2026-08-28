@@ -333,6 +333,7 @@ def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fi
         root = f"/open-pilot/repositories/{identifier}"
         api_volumes.extend([
             {"type": "bind", "source": repository["source_path"], "target": f"{root}/source", "bind": {"create_host_path": False}},
+            {"type": "bind", "source": repository["worktree_root"], "target": f"{root}/worktrees", "bind": {"create_host_path": False}},
             {"type": "bind", "source": repository["password_file"], "target": f"/run/secrets/open-pilot-{identifier}-password", "read_only": True, "bind": {"create_host_path": False}},
         ])
     services["api"] = {

@@ -83,6 +83,11 @@ class OpenPilotRegistryTest(unittest.TestCase):
         self.assertFalse(first_sources & second_sources)
         self.assertNotIn("OPENCODE_SERVER_PASSWORD", first["environment"])
         self.assertIn("OPENCODE_SERVER_PASSWORD_FILE", first["environment"])
+        api_mounts = {volume["target"]: volume["source"] for volume in services["api"]["volumes"]}
+        for repository in registry["repositories"]:
+            root = f"/open-pilot/repositories/{repository['id']}"
+            self.assertEqual(api_mounts[f"{root}/source"], repository["source_path"])
+            self.assertEqual(api_mounts[f"{root}/worktrees"], repository["worktree_root"])
 
     def test_rejects_alias_collision_before_filesystem_validation(self) -> None:
         first = self.repository("one", "Owner/Repo")
