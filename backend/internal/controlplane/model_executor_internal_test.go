@@ -67,6 +67,35 @@ func TestDecodeModelBrokerChatResponsePreservesToolCalls(t *testing.T) {
 	}
 }
 
+func TestModelAdapterPromptAndResponsePreserveToolContract(t *testing.T) {
+	request := ModelRequest{
+		Messages:   []ModelMessage{{Role: "user", Content: "write the proof"}},
+		Tools:      []any{map[string]any{"type": "function", "function": map[string]any{"name": "write", "parameters": map[string]any{"type": "object"}}}},
+		ToolChoice: "auto",
+	}
+	prompt, err := modelAdapterPrompt(request)
+	if err != nil || !strings.Contains(prompt, `"name":"write"`) || !strings.Contains(prompt, `"tool_choice":"auto"`) {
+		t.Fatalf("modelAdapterPrompt() = %q, %v", prompt, err)
+	}
+	content, calls, err := decodeModelAdapterResponse("```json\n{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_write\",\"name\":\"write\",\"arguments\":{\"path\":\"PROOF.md\",\"content\":\"proof\"}}]}\n```")
+	if err != nil || content != "" || len(calls) != 1 {
+		t.Fatalf("decodeModelAdapterResponse() content=%q calls=%v err=%v", content, calls, err)
+	}
+	call := calls[0].(map[string]any)
+	function := call["function"].(map[string]any)
+	if function["name"] != "write" || !strings.Contains(function["arguments"].(string), `"path":"PROOF.md"`) {
+		t.Fatalf("tool call = %#v", call)
+	}
+}
+
+func TestDecodeModelAdapterResponseFailsClosed(t *testing.T) {
+	for _, raw := range []string{"not json", `{}`, `{"content":"","tool_calls":[{"name":"write"}]}`} {
+		if _, _, err := decodeModelAdapterResponse(raw); err == nil {
+			t.Fatalf("decodeModelAdapterResponse(%q) succeeded", raw)
+		}
+	}
+}
+
 func TestDecodeModelBrokerChatResponseRejectsOpenAIErrorPayload(t *testing.T) {
 	body := []byte("data: {\"error\":{\"message\":\"upstream exploded\",\"type\":\"server_error\"}}\n\n")
 	_, err := decodeModelBrokerChatResponse(body)

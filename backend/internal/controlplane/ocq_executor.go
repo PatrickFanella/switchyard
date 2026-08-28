@@ -18,6 +18,7 @@ import (
 
 type OpenCodeRequest struct {
 	Model     string
+	Agent     string
 	Prompt    string
 	SessionID string
 	RequestID string
@@ -468,6 +469,9 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 	body := map[string]any{"parts": []map[string]string{{"type": "text", "text": request.Prompt}}}
 	if request.Model != "" {
 		body["model"] = openCodeModelPayload(request.Model)
+	}
+	if request.Agent != "" {
+		body["agent"] = request.Agent
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

@@ -181,14 +181,21 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 	}
 	response.CorrelationIDs["llama_line_request_id"] = requestID
 	setCompatRequestHeaders(w.Header(), requestID, response.CorrelationIDs)
-	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "correlation_ids": response.CorrelationIDs})
+	if len(response.ToolCalls) > 0 {
+		payload, _ := json.Marshal(openAIChatCompletionToolCallChunkBody(model, requestID, response.ToolCalls))
+		if err := setCompatWriteDeadline(w); err == nil {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			_ = flushCompatSSE(w)
+		}
+	}
+	responseBody, _ := json.Marshal(map[string]any{"content": response.Content, "tool_calls": response.ToolCalls, "correlation_ids": response.CorrelationIDs})
 	finish(ModelBrokerRequestCompleted, string(responseBody), "", response.CorrelationIDs)
 	if !a.modelRequestCompleted(ctx, requestID) {
 		_ = writeCompatSSE(w, "error", map[string]any{"status": "canceled", "request_id": requestID, "error": "request canceled", "backend": "switchyard-native"})
 		_ = writeCompatRaw(w, "data: [DONE]\n\n")
 		return
 	}
-	finishPayload, _ := json.Marshal(openAIChatCompletionChunkBody(model, requestID, "", true))
+	finishPayload, _ := json.Marshal(openAIChatCompletionFinishChunkBody(model, requestID, openAIFinishReason(response)))
 	_ = writeCompatRaw(w, fmt.Sprintf("data: %s\n\ndata: [DONE]\n\n", finishPayload))
 }
 
@@ -438,6 +445,16 @@ func openAIChatCompletionChunkBody(model string, requestID string, content strin
 		choice["delta"] = map[string]string{}
 		choice["finish_reason"] = "stop"
 	}
+	return map[string]any{"id": firstNonEmpty(requestID, "chatcmpl-"+shortRandomID()), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{choice}}
+}
+
+func openAIChatCompletionToolCallChunkBody(model string, requestID string, calls []any) map[string]any {
+	choice := map[string]any{"index": 0, "delta": map[string]any{"tool_calls": openAIToolCalls(calls)}, "finish_reason": nil}
+	return map[string]any{"id": firstNonEmpty(requestID, "chatcmpl-"+shortRandomID()), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{choice}}
+}
+
+func openAIChatCompletionFinishChunkBody(model string, requestID string, finishReason string) map[string]any {
+	choice := map[string]any{"index": 0, "delta": map[string]string{}, "finish_reason": finishReason}
 	return map[string]any{"id": firstNonEmpty(requestID, "chatcmpl-"+shortRandomID()), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{choice}}
 }
 

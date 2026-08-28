@@ -93,7 +93,7 @@ func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 	t.Setenv("OPENCODE_SERVER_URL", server.URL)
 	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
 
-	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Prompt: "do native work", RequestID: "req-native", WorkDir: "/tmp/worktree"})
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Agent: "switchyard-model-adapter", Prompt: "do native work", RequestID: "req-native", WorkDir: "/tmp/worktree"})
 	if err != nil {
 		t.Fatalf("SendPrompt() error = %v", err)
 	}
@@ -105,6 +105,9 @@ func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 	}
 	if messageBody["model"] == nil || len(messageBody["parts"].([]any)) != 1 {
 		t.Fatalf("message body = %+v", messageBody)
+	}
+	if messageBody["agent"] != "switchyard-model-adapter" {
+		t.Fatalf("message agent = %v", messageBody["agent"])
 	}
 }
 

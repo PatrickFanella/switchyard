@@ -667,13 +667,22 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 	executor := NewEnvOpenCodeExecutor()
 	executor.client = e.client
 	prompt := modelMessagesToPrompt(request.Messages)
+	agent := ""
+	if len(request.Tools) > 0 {
+		var promptErr error
+		prompt, promptErr = modelAdapterPrompt(request)
+		if promptErr != nil {
+			return ModelResponse{}, promptErr
+		}
+		agent = "switchyard-model-adapter"
+	}
 	requestID := firstNonEmpty(strings.TrimSpace(request.RequestID), "model-broker-"+shortRandomID())
 	preAttempt := request.PreAttempt
 	if preAttempt != nil {
 		decision := resolveModelExecutionRoute(request.Model, strings.TrimSpace(e.ollamaBaseURL) != "")
 		preAttempt = func(BackendDecision) error { return request.PreAttempt(decision) }
 	}
-	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: request.Model, Prompt: prompt, RequestID: requestID, WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"), PreAttempt: preAttempt})
+	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: request.Model, Agent: agent, Prompt: prompt, RequestID: requestID, WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"), PreAttempt: preAttempt})
 	if err != nil {
 		return ModelResponse{CorrelationIDs: response.CorrelationIDs}, err
 	}
@@ -684,7 +693,72 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 	correlation["model_broker"] = "switchyard"
 	correlation["model_source"] = "opencode"
 	correlation["model_broker_backend"] = "native"
-	return ModelResponse{Content: response.Content, CorrelationIDs: correlation}, nil
+	result := ModelResponse{Content: response.Content, CorrelationIDs: correlation}
+	if len(request.Tools) > 0 {
+		content, toolCalls, decodeErr := decodeModelAdapterResponse(response.Content)
+		if decodeErr != nil {
+			return ModelResponse{CorrelationIDs: correlation}, decodeErr
+		}
+		result.Content = content
+		result.ToolCalls = toolCalls
+	}
+	return result, nil
+}
+
+type modelAdapterEnvelope struct {
+	Content   string `json:"content"`
+	ToolCalls []struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Arguments any    `json:"arguments"`
+	} `json:"tool_calls"`
+}
+
+func modelAdapterPrompt(request ModelRequest) (string, error) {
+	payload, err := json.Marshal(map[string]any{
+		"messages":    request.Messages,
+		"tools":       request.Tools,
+		"tool_choice": request.ToolChoice,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode model adapter request: %w", err)
+	}
+	return "Return one JSON object matching the managed adapter envelope. Do not use your own tools. Adapter input:\n" + string(payload), nil
+}
+
+func decodeModelAdapterResponse(raw string) (string, []any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "```") {
+		firstNewline := strings.IndexByte(trimmed, '\n')
+		lastFence := strings.LastIndex(trimmed, "```")
+		if firstNewline < 0 || lastFence <= firstNewline {
+			return "", nil, errors.New("model adapter returned an invalid fenced envelope")
+		}
+		trimmed = strings.TrimSpace(trimmed[firstNewline+1 : lastFence])
+	}
+	var envelope modelAdapterEnvelope
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return "", nil, fmt.Errorf("decode model adapter envelope: %w", err)
+	}
+	if strings.TrimSpace(envelope.Content) == "" && len(envelope.ToolCalls) == 0 {
+		return "", nil, errors.New("model adapter returned neither content nor tool calls")
+	}
+	toolCalls := make([]any, 0, len(envelope.ToolCalls))
+	for index, call := range envelope.ToolCalls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" || call.Arguments == nil {
+			return "", nil, errors.New("model adapter returned an invalid tool call")
+		}
+		arguments, err := json.Marshal(call.Arguments)
+		if err != nil {
+			return "", nil, fmt.Errorf("encode model adapter tool arguments: %w", err)
+		}
+		id := firstNonEmpty(strings.TrimSpace(call.ID), fmt.Sprintf("call_%d", index))
+		toolCalls = append(toolCalls, map[string]any{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": string(arguments)}})
+	}
+	return envelope.Content, toolCalls, nil
 }
 
 func modelMessagesToPrompt(messages []ModelMessage) string {
