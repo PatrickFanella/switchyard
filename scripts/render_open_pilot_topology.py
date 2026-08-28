@@ -13,6 +13,7 @@ from open_pilot_registry import (
     load_operator_registry,
     registry_fingerprint,
     render_compose_override,
+    render_compose_file_set,
     render_runtime_manifest,
     validate_registry_filesystem,
     write_atomic,
@@ -24,6 +25,8 @@ def main() -> int:
     parser.add_argument("--registry", type=Path, required=True)
     parser.add_argument("--runtime-manifest", type=Path, required=True)
     parser.add_argument("--compose-override", type=Path, required=True)
+    parser.add_argument("--compose-file-set", type=Path, required=True)
+    parser.add_argument("--base-compose", type=Path, default=Path(__file__).resolve().parents[1] / "docker-compose.yml")
     parser.add_argument("--runtime-uid", type=int, default=int(os.environ.get("OPENCODE_RUNTIME_UID", "1000")))
     parser.add_argument("--runtime-gid", type=int, default=int(os.environ.get("OPENCODE_RUNTIME_GID", "1000")))
     parser.add_argument("--gitea-base-url", default=os.environ.get("GITEA_BASE_URL", ""))
@@ -35,12 +38,15 @@ def main() -> int:
         fingerprint = registry_fingerprint(registry)
         manifest = canonical_json(render_runtime_manifest(registry, fingerprint))
         override = canonical_json(render_compose_override(registry, args.runtime_manifest.resolve(), fingerprint))
+        file_set = canonical_json(render_compose_file_set(args.base_compose, args.compose_override, args.runtime_manifest, fingerprint))
         if args.check:
-            if args.runtime_manifest.read_bytes() != manifest or args.compose_override.read_bytes() != override:
+            if (args.runtime_manifest.read_bytes() != manifest or args.compose_override.read_bytes() != override
+                    or args.compose_file_set.read_bytes() != file_set):
                 raise ValueError("generated Open Pilot topology does not match the operator registry")
         else:
             write_atomic(args.runtime_manifest, manifest)
             write_atomic(args.compose_override, override)
+            write_atomic(args.compose_file_set, file_set)
     except (OSError, ValueError) as error:
         print(f"open pilot topology: {error}", file=sys.stderr)
         return 1

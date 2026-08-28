@@ -10,12 +10,15 @@ from open_pilot_registry import (
     canonical_json,
     load_operator_registry,
     registry_fingerprint,
+    prepare_registry_filesystem,
     render_compose_override,
+    render_compose_file_set,
     render_runtime_manifest,
     validate_registry_filesystem,
     write_atomic,
 )
 from validate_production_config import MANAGED_MARKER, MANAGED_MARKER_CONTENT
+from resolve_open_pilot_compose_file_set import resolve
 
 
 class OpenPilotRegistryTest(unittest.TestCase):
@@ -114,6 +117,26 @@ class OpenPilotRegistryTest(unittest.TestCase):
             validate_registry_filesystem(registry, self.uid, self.gid, "https://git.example.test")
         self.assertNotIn("secret", str(raised.exception))
 
+    def test_prepares_all_missing_worktree_roots_only_after_complete_preflight(self) -> None:
+        first = self.repository("one", "owner/one")
+        second = self.repository("two", "owner/two")
+        for repository in (first, second):
+            worktree = Path(repository["worktree_root"])
+            (worktree / MANAGED_MARKER).unlink()
+            worktree.rmdir()
+        Path(second["password_file"]).chmod(0o644)
+        registry = load_operator_registry(self.write_registry([first, second]))
+        with self.assertRaisesRegex(ValueError, "password file is unsafe"):
+            prepare_registry_filesystem(registry, self.uid, self.gid, "https://git.example.test")
+        self.assertFalse(Path(first["worktree_root"]).exists())
+        Path(second["password_file"]).chmod(0o600)
+        prepared = prepare_registry_filesystem(registry, self.uid, self.gid, "https://git.example.test")
+        self.assertEqual(len(prepared), 2)
+        for repository in (first, second):
+            marker = Path(repository["worktree_root"]) / MANAGED_MARKER
+            self.assertEqual(marker.read_text(encoding="utf-8"), MANAGED_MARKER_CONTENT)
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+
     @skipUnless(subprocess.run(["sh", "-c", "command -v docker >/dev/null && docker compose version >/dev/null 2>&1"], check=False).returncode == 0, "Docker Compose is unavailable")
     def test_rendered_override_is_accepted_by_docker_compose(self) -> None:
         registry = load_operator_registry(self.write_registry([
@@ -125,6 +148,10 @@ class OpenPilotRegistryTest(unittest.TestCase):
         override_path = self.root / "compose.json"
         write_atomic(manifest_path, canonical_json(render_runtime_manifest(registry, fingerprint)))
         write_atomic(override_path, canonical_json(render_compose_override(registry, manifest_path, fingerprint)))
+        file_set_path = self.root / "file-set.json"
+        base_compose = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+        write_atomic(file_set_path, canonical_json(render_compose_file_set(base_compose, override_path, manifest_path, fingerprint)))
+        self.assertEqual(resolve(file_set_path, base_compose), (base_compose.resolve(), override_path.resolve()))
         environment = os.environ.copy()
         environment.update({"POSTGRES_PASSWORD": "compose-test-password", "OPENCODE_SERVER_PASSWORD": "legacy-compose-test-password"})
         result = subprocess.run(

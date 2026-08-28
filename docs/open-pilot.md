@@ -10,6 +10,24 @@ The runtime remains bound to one executor. Set `OPEN_PILOT_SINGLETON_REPOSITORY`
 
 Use the authenticated control route `GET /api/open-pilot/repository-audit` before changing registry data. It lists bounded collision, parse, affinity, and active/resumable evidence without paths or secrets. The route is absent from model ingress.
 
+## Phase 2 topology preparation
+
+`scripts/prepare_open_pilot_registry.py` validates every operator-registry entry
+before creating any missing managed worktree root or marker. It checks exact
+Gitea origin identity, runtime ownership and modes, non-overlapping repository
+paths, private password files, and existing Git/config/data directories. It
+never clones, changes ownership, or derives a path from a run input.
+
+`scripts/render_open_pilot_topology.py` deterministically writes a runtime
+manifest, Compose override, and exact Compose file-set record with one shared
+registry fingerprint. Each rendered repository receives a separate OpenCode
+service, verifier service, internal networks, state/cache volumes, source Git
+mount, worktree mount, and password-file mount. The host wrapper
+`deploy/switchyard-compose` refuses mismatched fingerprints or file paths before
+calling the canonical Docker boundary. These Phase 2 artifacts prepare topology
+only; multi-repository runtime admission remains disabled until repo-keyed
+routing and isolated proof are complete.
+
 ## Required labels
 
 Open Pilot only runs after both labels are present:

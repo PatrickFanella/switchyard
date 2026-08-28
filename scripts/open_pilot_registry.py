@@ -53,7 +53,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _absolute_path(value: Any, label: str) -> Path:
-    if not isinstance(value, str) or not value or len(value) > 4096:
+    if not isinstance(value, str) or not value or len(value) > 4096 or any(ord(character) < 32 for character in value):
         raise ValueError(f"{label} must be a bounded absolute path")
     path = Path(value)
     if not path.is_absolute():
@@ -113,7 +113,9 @@ def _require_owned_directory(path: Path, label: str, uid: int, gid: int) -> os.s
     return info
 
 
-def validate_registry_filesystem(registry: Mapping[str, Any], uid: int, gid: int, gitea_base_url: str) -> list[dict[str, Any]]:
+def validate_registry_filesystem(
+    registry: Mapping[str, Any], uid: int, gid: int, gitea_base_url: str, *, allow_unprepared_worktrees: bool = False
+) -> list[dict[str, Any]]:
     """Validate every entry without mutation and return prepared path metadata."""
     prepared: list[dict[str, Any]] = []
     claimed_paths: list[tuple[str, Path]] = []
@@ -143,15 +145,29 @@ def validate_registry_filesystem(registry: Mapping[str, Any], uid: int, gid: int
         accepted_without_suffix = f"{expected_host}/{repository['slug']}"
         if origin.returncode != 0 or origin.stdout.strip() not in {accepted, accepted_without_suffix}:
             raise ValueError(f"repository {identifier} origin does not exactly match its registered slug")
-        for key in ("worktree_root", "config_path", "data_path"):
+        for key in ("config_path", "data_path"):
             _require_owned_directory(paths[key], f"repository {identifier} {key}", uid, gid)
+        worktree_prepared = paths["worktree_root"].exists() or paths["worktree_root"].is_symlink()
+        if worktree_prepared:
+            _require_owned_directory(paths["worktree_root"], f"repository {identifier} worktree_root", uid, gid)
+        elif allow_unprepared_worktrees:
+            parent = paths["worktree_root"].parent
+            _require_owned_directory(parent, f"repository {identifier} worktree_root parent", uid, gid)
+        else:
+            raise ValueError(f"repository {identifier} worktree_root must be a non-symlink directory")
         marker = paths["worktree_root"] / MANAGED_MARKER
-        marker_info = marker.lstat()
-        if (stat.S_ISLNK(marker_info.st_mode) or not stat.S_ISREG(marker_info.st_mode)
-                or marker.read_text(encoding="utf-8") != MANAGED_MARKER_CONTENT
-                or marker_info.st_uid != uid or marker_info.st_gid != gid
-                or stat.S_IMODE(marker_info.st_mode) & 0o077):
+        marker_prepared = marker.exists() or marker.is_symlink()
+        if marker_prepared:
+            marker_info = marker.lstat()
+            if (stat.S_ISLNK(marker_info.st_mode) or not stat.S_ISREG(marker_info.st_mode)
+                    or marker.read_text(encoding="utf-8") != MANAGED_MARKER_CONTENT
+                    or marker_info.st_uid != uid or marker_info.st_gid != gid
+                    or stat.S_IMODE(marker_info.st_mode) & 0o077):
+                raise ValueError(f"repository {identifier} managed worktree marker is invalid")
+        elif not allow_unprepared_worktrees:
             raise ValueError(f"repository {identifier} managed worktree marker is invalid")
+        elif worktree_prepared and any(paths["worktree_root"].iterdir()):
+            raise ValueError(f"repository {identifier} unprepared worktree root must be empty")
         password_info = paths["password_file"].lstat()
         if (stat.S_ISLNK(password_info.st_mode) or not stat.S_ISREG(password_info.st_mode)
                 or paths["password_file"].resolve(strict=True) != paths["password_file"]
@@ -172,8 +188,41 @@ def validate_registry_filesystem(registry: Mapping[str, Any], uid: int, gid: int
                     raise ValueError(f"repository {identifier} {key} overlaps its {prior_key}")
             entry_claims.append((key, path))
         claimed_paths.extend((f"repository {identifier} {key}", path) for key, path in entry_claims)
-        prepared.append({"repository": repository, "paths": paths})
+        prepared.append({"repository": repository, "paths": paths, "worktree_prepared": worktree_prepared, "marker_prepared": marker_prepared})
     return prepared
+
+
+def prepare_registry_filesystem(registry: Mapping[str, Any], uid: int, gid: int, gitea_base_url: str) -> list[dict[str, Any]]:
+    """Validate the complete registry, then create only missing managed roots/markers."""
+    prepared = validate_registry_filesystem(
+        registry, uid, gid, gitea_base_url, allow_unprepared_worktrees=True
+    )
+    created: list[Path] = []
+    try:
+        for item in prepared:
+            root = item["paths"]["worktree_root"]
+            if not item["worktree_prepared"]:
+                os.mkdir(root, mode=0o700)
+                created.append(root)
+            marker = root / MANAGED_MARKER
+            if not item["marker_prepared"]:
+                descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                    output.write(MANAGED_MARKER_CONTENT)
+                    output.flush()
+                    os.fsync(output.fileno())
+                created.append(marker)
+        return validate_registry_filesystem(registry, uid, gid, gitea_base_url)
+    except (OSError, ValueError):
+        for path in reversed(created):
+            try:
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def registry_fingerprint(registry: Mapping[str, Any]) -> str:
@@ -291,6 +340,16 @@ def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fi
         "depends_on": depends, "volumes": api_volumes, "networks": api_networks,
     }
     return {"name": "switchyard", "services": services, "networks": networks, "volumes": volumes}
+
+
+def render_compose_file_set(base_compose: Path, compose_override: Path, runtime_manifest: Path, fingerprint: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "registry_fingerprint": fingerprint,
+        "base_compose": str(base_compose.resolve()),
+        "compose_override": str(compose_override.resolve()),
+        "runtime_manifest": str(runtime_manifest.resolve()),
+    }
 
 
 def canonical_json(document: Mapping[str, Any]) -> bytes:
