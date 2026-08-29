@@ -88,6 +88,15 @@ func TestModelAdapterPromptAndResponsePreserveToolContract(t *testing.T) {
 	}
 }
 
+func TestModelBrokerOpenCodeModelNormalizesInternalProvider(t *testing.T) {
+	if got := modelBrokerOpenCodeModel("switchyard/gpt-5.6-sol"); got != "openai/gpt-5.6-sol" {
+		t.Fatalf("modelBrokerOpenCodeModel() = %q", got)
+	}
+	if got := modelBrokerOpenCodeModel("openai/gpt-5.6-sol"); got != "openai/gpt-5.6-sol" {
+		t.Fatalf("modelBrokerOpenCodeModel() changed external model to %q", got)
+	}
+}
+
 func TestDecodeModelAdapterResponseFailsClosed(t *testing.T) {
 	for _, raw := range []string{"not json", `{}`, `{"content":"","tool_calls":[{"name":"write"}]}`} {
 		if _, _, err := decodeModelAdapterResponse(raw); err == nil {

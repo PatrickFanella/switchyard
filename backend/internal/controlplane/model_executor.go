@@ -682,7 +682,7 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 		decision := resolveModelExecutionRoute(request.Model, strings.TrimSpace(e.ollamaBaseURL) != "")
 		preAttempt = func(BackendDecision) error { return request.PreAttempt(decision) }
 	}
-	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: request.Model, Agent: agent, Prompt: prompt, RequestID: requestID, WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"), PreAttempt: preAttempt})
+	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: modelBrokerOpenCodeModel(request.Model), Agent: agent, Prompt: prompt, RequestID: requestID, WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"), PreAttempt: preAttempt})
 	if err != nil {
 		return ModelResponse{CorrelationIDs: response.CorrelationIDs}, err
 	}
@@ -703,6 +703,14 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 		result.ToolCalls = toolCalls
 	}
 	return result, nil
+}
+
+func modelBrokerOpenCodeModel(model string) string {
+	model = strings.TrimSpace(model)
+	if id, ok := strings.CutPrefix(model, "switchyard/"); ok {
+		return "openai/" + id
+	}
+	return model
 }
 
 type modelAdapterEnvelope struct {
