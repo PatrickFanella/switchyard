@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -66,28 +67,54 @@ func (p *envOpenPilotRepositoryStatusProvider) Status(ctx context.Context) OpenP
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	status.Healthy = true
-	for _, key := range keys {
+	repositories := make([]OpenPilotRepositoryExecutorStatus, len(keys))
+	valid := make([]bool, len(keys))
+	var probes sync.WaitGroup
+	for index, key := range keys {
 		bundle := p.bundles[key]
 		executor, ok := bundle.openCodeExecutor.(*EnvOpenCodeExecutor)
 		if !ok {
+			continue
+		}
+		valid[index] = true
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			var openCode OpenCodeExecutorStatus
+			var verifierHealthy bool
+			var verifierStatus string
+			var services sync.WaitGroup
+			services.Add(2)
+			go func() {
+				defer services.Done()
+				openCode = (&EnvOpenCodeExecutorStatusProvider{
+					openCodeURL: executor.baseURL, username: executor.username, password: executor.password,
+					backend: "native", client: p.client,
+				}).Status(ctx)
+			}()
+			go func() {
+				defer services.Done()
+				verifierHealthy, verifierStatus = p.verifierStatus(ctx, bundle.repository.VerifierEndpoint)
+			}()
+			services.Wait()
+			repositories[index] = OpenPilotRepositoryExecutorStatus{
+				RepositoryID: bundle.repository.ID, RepositorySlug: bundle.repository.Slug,
+				ExecutorGeneration: bundle.repository.ExecutorGeneration,
+				Healthy:            openCode.Healthy && verifierHealthy, OpenCode: openCode,
+				VerifierHealthy: verifierHealthy, VerifierStatus: verifierStatus,
+				MaxConcurrentVerification: 1,
+			}
+		}()
+	}
+	probes.Wait()
+	status.Healthy = true
+	for index, repository := range repositories {
+		if !valid[index] {
 			status.Healthy = false
 			continue
 		}
-		openCode := (&EnvOpenCodeExecutorStatusProvider{
-			openCodeURL: executor.baseURL, username: executor.username, password: executor.password,
-			backend: "native", client: p.client,
-		}).Status(ctx)
-		verifierHealthy, verifierStatus := p.verifierStatus(ctx, bundle.repository.VerifierEndpoint)
-		repositoryStatus := OpenPilotRepositoryExecutorStatus{
-			RepositoryID: bundle.repository.ID, RepositorySlug: bundle.repository.Slug,
-			ExecutorGeneration: bundle.repository.ExecutorGeneration,
-			Healthy:            openCode.Healthy && verifierHealthy, OpenCode: openCode,
-			VerifierHealthy: verifierHealthy, VerifierStatus: verifierStatus,
-			MaxConcurrentVerification: 1,
-		}
-		status.Healthy = status.Healthy && repositoryStatus.Healthy
-		status.Repositories = append(status.Repositories, repositoryStatus)
+		status.Healthy = status.Healthy && repository.Healthy
+		status.Repositories = append(status.Repositories, repository)
 	}
 	return status
 }

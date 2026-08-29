@@ -385,11 +385,27 @@ func (a *API) modelBrokerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) openCodeExecutorStatus(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	payload := map[string]any{"opencode_executor": a.openCode.Status(ctx)}
+	var openCodeStatus OpenCodeExecutorStatus
+	var repositoryStatus OpenPilotRepositoryStatus
+	var probes sync.WaitGroup
+	probes.Add(1)
+	go func() {
+		defer probes.Done()
+		openCodeStatus = a.openCode.Status(ctx)
+	}()
 	if a.openPilotRepositories != nil {
-		payload["open_pilot_repositories"] = a.openPilotRepositories.Status(ctx)
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			repositoryStatus = a.openPilotRepositories.Status(ctx)
+		}()
+	}
+	probes.Wait()
+	payload := map[string]any{"opencode_executor": openCodeStatus}
+	if a.openPilotRepositories != nil {
+		payload["open_pilot_repositories"] = repositoryStatus
 	}
 	writeJSON(w, http.StatusOK, payload)
 }

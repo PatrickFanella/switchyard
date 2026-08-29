@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -217,10 +218,21 @@ func TestOpenPilotCancellationUsesRepositoryAffinity(t *testing.T) {
 }
 
 func TestOpenPilotRepositoryStatusProjectsEachExecutor(t *testing.T) {
+	release := make(chan struct{})
+	var started atomic.Int32
+	var releaseOnce sync.Once
 	servers := make([]*httptest.Server, 0, 2)
 	for index := range 2 {
 		password := strings.Repeat(string(rune('a'+index)), 40)
 		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if count := started.Add(1); count == 4 {
+				releaseOnce.Do(func() { close(release) })
+			}
+			select {
+			case <-release:
+			case <-request.Context().Done():
+				return
+			}
 			if request.URL.Path == "/session" {
 				_, supplied, ok := request.BasicAuth()
 				if !ok || supplied != password {
