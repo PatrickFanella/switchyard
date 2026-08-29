@@ -2784,12 +2784,13 @@ func (e *EnvWorkflowExecutors) openPilotPullRequestInput(repo string, issue stri
 }
 
 func openPilotVerifySummaryForContext(inputs map[string]string, state map[string]any) string {
-	verifySummary := firstNonEmpty(inputs["resume.open-pilot.verify-command.summary"], inputs["open-pilot.verify-summary"])
-	if verifySummary == "" && state != nil {
+	verifySummary := ""
+	if state != nil {
 		if summary, ok := state["open-pilot.verify-summary"].(string); ok {
 			verifySummary = summary
 		}
 	}
+	verifySummary = firstNonEmpty(verifySummary, inputs["resume.open-pilot.verify-command.summary"], inputs["open-pilot.verify-summary"])
 	command := firstNonEmpty(inputs["test_command"], inputs["resume.open-pilot.verify-command.command"])
 	if command != "" && verifySummary != "" {
 		return fmt.Sprintf("Switchyard ran `%s`: %s.", command, verifySummary)
@@ -2806,9 +2807,9 @@ func openPilotCommitSummaryForContext(inputs map[string]string, state map[string
 	diffstat := inputs["resume.open-pilot.commit-changes.diffstat"]
 	if state != nil {
 		if result, ok := state["open-pilot.commit-result"].(OpenPilotCommitResult); ok {
-			sha = firstNonEmpty(sha, result.SHA)
-			subject = firstNonEmpty(subject, result.Subject)
-			diffstat = firstNonEmpty(diffstat, result.DiffStat)
+			sha = firstNonEmpty(result.SHA, sha)
+			subject = firstNonEmpty(result.Subject, subject)
+			diffstat = firstNonEmpty(result.DiffStat, diffstat)
 		}
 	}
 	if sha == "" && subject == "" && diffstat == "" {
@@ -3447,21 +3448,19 @@ func buildOpenPilotAIReviewPrompt(repo, issue string, inputs map[string]string, 
 	if commitSummary := openPilotCommitSummaryForContext(inputs, state); commitSummary != "" {
 		builder.WriteString("Commit summary: " + strings.ReplaceAll(commitSummary, "\n", " ") + "\n")
 	}
-	agentSummary := firstNonEmpty(inputs["resume.open-pilot.agent-work.summary"], inputs["open-pilot.agent-summary"])
-	if agentSummary == "" {
-		if summary, ok := state["open-pilot.agent-summary"].(string); ok {
-			agentSummary = summary
-		}
+	agentSummary := ""
+	if summary, ok := state["open-pilot.agent-summary"].(string); ok {
+		agentSummary = summary
 	}
+	agentSummary = firstNonEmpty(agentSummary, inputs["resume.open-pilot.agent-work.summary"], inputs["open-pilot.agent-summary"])
 	if agentSummary != "" {
 		builder.WriteString("Agent summary: " + agentSummary + "\n")
 	}
-	agentResponse := firstNonEmpty(inputs["resume.open-pilot.agent-work.response"], inputs["open-pilot.response"])
-	if agentResponse == "" {
-		if response, ok := state["open-pilot.response"].(string); ok {
-			agentResponse = response
-		}
+	agentResponse := ""
+	if response, ok := state["open-pilot.response"].(string); ok {
+		agentResponse = response
 	}
+	agentResponse = firstNonEmpty(agentResponse, inputs["resume.open-pilot.agent-work.response"], inputs["open-pilot.response"])
 	if agentResponse != "" {
 		builder.WriteString("Agent response: " + agentResponse + "\n")
 	}
