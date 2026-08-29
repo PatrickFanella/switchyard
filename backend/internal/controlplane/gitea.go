@@ -111,6 +111,13 @@ type GiteaPullRequestReader interface {
 	PullRequestChecks(ctx context.Context, repo string, pr GiteaPullRequest) (GiteaCheckSummary, error)
 }
 
+// GiteaCIJobLogReader retrieves the bounded log tail referenced by a Gitea
+// Actions commit status. It is intentionally separate from
+// GiteaPullRequestReader so test and compatibility readers can omit it.
+type GiteaCIJobLogReader interface {
+	FetchActionsJobLog(ctx context.Context, repo string, targetURL string) (string, error)
+}
+
 type GiteaPullRequestGetter interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (GiteaPullRequest, error)
 }
@@ -411,6 +418,99 @@ func (c *EnvGiteaClient) PullRequestChecks(ctx context.Context, repo string, pr 
 	checks := append([]GiteaCheckRun{}, raw.Checks...)
 	checks = append(checks, raw.CheckRuns...)
 	return GiteaCheckSummary{State: raw.State, SHA: raw.SHA, TotalCount: raw.TotalCount, Statuses: raw.Statuses, Checks: checks}, nil
+}
+
+const (
+	giteaActionsJobLogMaxRead = 16 << 20
+	giteaActionsJobLogMaxTail = 16 << 10
+)
+
+// FetchActionsJobLog follows only a same-repository Gitea Actions job target,
+// translates it to the authenticated API endpoint, and returns a bounded tail.
+// Redirects are rejected so the Gitea token cannot be forwarded elsewhere.
+func (c *EnvGiteaClient) FetchActionsJobLog(ctx context.Context, repo string, targetURL string) (string, error) {
+	if c.baseURL == "" {
+		return "", fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	owner, name, err := c.repoParts(repo)
+	if err != nil {
+		return "", err
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("GITEA_BASE_URL is invalid")
+	}
+	target, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil {
+		return "", fmt.Errorf("invalid Gitea Actions target URL")
+	}
+	if target.Host != "" && !target.IsAbs() {
+		return "", fmt.Errorf("Gitea Actions target URL must not be scheme-relative")
+	}
+	if target.IsAbs() && (!strings.EqualFold(target.Scheme, base.Scheme) || !strings.EqualFold(target.Host, base.Host)) {
+		return "", fmt.Errorf("Gitea Actions target URL must use the configured Gitea origin")
+	}
+	parts := strings.Split(strings.Trim(target.Path, "/"), "/")
+	if len(parts) != 7 || !strings.EqualFold(parts[0], owner) || !strings.EqualFold(parts[1], name) || parts[2] != "actions" || parts[3] != "runs" || parts[5] != "jobs" {
+		return "", fmt.Errorf("Gitea Actions target URL does not identify a job in %s", repo)
+	}
+	if _, err := strconv.ParseUint(parts[4], 10, 64); err != nil {
+		return "", fmt.Errorf("Gitea Actions run id is invalid")
+	}
+	jobID, err := strconv.ParseUint(parts[6], 10, 64)
+	if err != nil || jobID == 0 {
+		return "", fmt.Errorf("Gitea Actions job id is invalid")
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "actions", "jobs", strconv.FormatUint(jobID, 10), "logs")
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	c.setAuth(req)
+	client := *c.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", fmt.Errorf("gitea actions job log fetch failed: %s", resp.Status)
+	}
+	tail := boundedTailBuffer{max: giteaActionsJobLogMaxTail}
+	read, err := io.Copy(&tail, io.LimitReader(resp.Body, giteaActionsJobLogMaxRead+1))
+	if err != nil {
+		return "", err
+	}
+	if read > giteaActionsJobLogMaxRead {
+		return "", fmt.Errorf("gitea actions job log exceeds the read limit")
+	}
+	return string(tail.buf), nil
+}
+
+type boundedTailBuffer struct {
+	buf []byte
+	max int
+}
+
+func (b *boundedTailBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if b.max <= 0 {
+		return written, nil
+	}
+	if len(p) >= b.max {
+		b.buf = append(b.buf[:0], p[len(p)-b.max:]...)
+		return written, nil
+	}
+	if overflow := len(b.buf) + len(p) - b.max; overflow > 0 {
+		copy(b.buf, b.buf[overflow:])
+		b.buf = b.buf[:len(b.buf)-overflow]
+	}
+	b.buf = append(b.buf, p...)
+	return written, nil
 }
 
 func (c *EnvGiteaClient) GetPullRequest(ctx context.Context, repo string, number int) (GiteaPullRequest, error) {

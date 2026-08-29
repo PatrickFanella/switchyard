@@ -15,6 +15,16 @@ type ciRepairHandoffExecutor struct {
 	store Store
 }
 
+type staticCIJobLogReader struct {
+	target string
+	log    string
+}
+
+func (r *staticCIJobLogReader) FetchActionsJobLog(_ context.Context, _ string, target string) (string, error) {
+	r.target = target
+	return r.log, nil
+}
+
 func (e ciRepairHandoffExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {
 	return WorkflowExecution{}, nil
 }
@@ -78,6 +88,18 @@ func TestBuildOpenPilotCIRepairFeedbackIncludesAllTerminalFailures(t *testing.T)
 				t.Fatalf("feedback = %q, %t", feedback, ok)
 			}
 		})
+	}
+}
+
+func TestAugmentOpenPilotCIRepairFeedbackIncludesRedactedDiagnosticLines(t *testing.T) {
+	reader := &staticCIJobLogReader{log: "ordinary setup\nOpen Pilot repair proof: append 'CI repair acknowledged.' to PROOF.md\ntoken=super-secret\nexitcode '1': failure\n"}
+	snapshot := GiteaCheckSummary{SHA: "head", Statuses: []GiteaCommitStatus{{Context: "verify", Status: "failure", TargetURL: "/OWNER/REPO/actions/runs/2/jobs/3"}}}
+	feedback := augmentOpenPilotCIRepairFeedback(t.Context(), reader, "OWNER/REPO", []string{"verify"}, snapshot, "verify failed")
+	if reader.target != snapshot.Statuses[0].TargetURL || !strings.Contains(feedback, "CI repair acknowledged.") || !strings.Contains(feedback, "exitcode '1': failure") {
+		t.Fatalf("feedback = %q, target = %q", feedback, reader.target)
+	}
+	if strings.Contains(feedback, "ordinary setup") || strings.Contains(feedback, "super-secret") {
+		t.Fatalf("feedback included noise or secret: %q", feedback)
 	}
 }
 

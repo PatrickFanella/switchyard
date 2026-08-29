@@ -1884,6 +1884,9 @@ func (o openPilotExecutor) executeOpenPilotCIChecks(ctx context.Context, run Run
 				currentPR, currentFound, refreshErr := o.refreshOpenPilotCIPullRequest(ctx, run, state)
 				if refreshErr == nil && currentFound {
 					if feedback, concrete := buildOpenPilotCIRepairFeedback(requiredChecks, snapshot, currentPR.Head.SHA); concrete {
+						if logReader, ok := o.env.giteaReader.(GiteaCIJobLogReader); ok {
+							feedback = augmentOpenPilotCIRepairFeedback(ctx, logReader, run.Inputs["repo"], requiredChecks, snapshot, feedback)
+						}
 						if handoff, handoffErr := o.tryOpenPilotCIRepair(ctx, run, state, currentPR, snapshot.SHA, feedback); handoffErr != nil {
 							state["open-pilot.failure-diagnostics.persisted"] = true
 							return PipelineStepExecution{Summary: "CI repair handoff failed", CorrelationIDs: prCorrelationIDs(currentPR)}, handoffErr
@@ -2557,6 +2560,49 @@ func buildOpenPilotCIRepairFeedback(requiredChecks []string, snapshot GiteaCheck
 		}
 	}
 	return boundedOpenPilotCIRepairText(b.String(), openPilotCIFeedbackMaxTotal), true
+}
+
+func augmentOpenPilotCIRepairFeedback(ctx context.Context, reader GiteaCIJobLogReader, repo string, requiredChecks []string, snapshot GiteaCheckSummary, feedback string) string {
+	for _, required := range requiredChecks {
+		for _, status := range snapshot.Statuses {
+			if status.Context != required || !openPilotCIFailureState(status.Status) {
+				continue
+			}
+			log, err := reader.FetchActionsJobLog(ctx, repo, firstNonEmpty(status.TargetURL, status.URL))
+			if err != nil {
+				continue
+			}
+			if excerpt := openPilotCIJobLogExcerpt(log); excerpt != "" {
+				return boundedOpenPilotCIRepairText(feedback+"\n\nRelevant CI log lines:\n"+excerpt, openPilotCIFeedbackMaxTotal)
+			}
+		}
+	}
+	return feedback
+}
+
+func openPilotCIJobLogExcerpt(raw string) string {
+	keywords := []string{"error", "fail", "fatal", "panic", "expected", "required", "repair", "append", "exitcode"}
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	selected := make([]string, 0, 16)
+	for _, line := range lines {
+		line = strings.Map(func(r rune) rune {
+			if r == '\t' || r >= 0x20 && r != 0x7f {
+				return r
+			}
+			return -1
+		}, line)
+		lower := strings.ToLower(line)
+		for _, keyword := range keywords {
+			if strings.Contains(lower, keyword) {
+				selected = append(selected, RedactForLog(boundedOpenPilotCIRepairText(line, 512)))
+				break
+			}
+		}
+	}
+	if len(selected) > 16 {
+		selected = selected[len(selected)-16:]
+	}
+	return boundedOpenPilotCIRepairText(strings.Join(selected, "\n"), 2048)
 }
 
 func openPilotCIFailureState(value string) bool {
