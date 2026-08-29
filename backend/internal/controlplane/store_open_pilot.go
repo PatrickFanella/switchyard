@@ -370,6 +370,13 @@ func buildOpenPilotCIRepairChild(state OpenPilotIssueState, parent Run, request 
 	for key, value := range state.ResumeInputs {
 		inputs[key] = value
 	}
+	// A CI repair adds a new commit on top of the failed head. The prior
+	// attempt's intent remains useful audit evidence on that run, but it cannot
+	// reconcile the repair diff. Start a fresh durable intent for this child;
+	// retries of the child will persist and reuse the replacement intent.
+	for _, field := range []string{"parent", "tree", "message", "status_before", "diffstat", "name_status"} {
+		delete(inputs, openPilotCommitIntentPrefix+field)
+	}
 	originalPrompt := firstNonEmpty(inputs[openPilotCIRepairOriginalPromptKey], inputs["resume.open-pilot.prompt"])
 	preparedPrompt := boundedOpenPilotCIRepairText(request.ChildRun.Inputs["resume.open-pilot.prompt"], openPilotCIRepairMaxPromptBytes)
 	if preparedPrompt == "" {

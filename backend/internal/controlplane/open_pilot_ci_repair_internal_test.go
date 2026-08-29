@@ -434,6 +434,30 @@ func TestMemoryStoreSerializesDuplicateCIRepairHandoff(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreCIRepairStartsFreshCommitIntent(t *testing.T) {
+	store, parent, _ := seedOpenPilotCIRepairParent(t)
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"parent", "tree", "message", "status_before", "diffstat", "name_status"} {
+		state.ResumeInputs[openPilotCommitIntentPrefix+field] = "prior-" + field
+	}
+	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	handoff, err := store.HandleOpenPilotCIFailure(testOpenPilotCIRepairRequest(parent, "worker-1", "verify failed"))
+	if err != nil || handoff.ChildRun == nil {
+		t.Fatalf("handoff = %+v, %v", handoff, err)
+	}
+	for _, field := range []string{"parent", "tree", "message", "status_before", "diffstat", "name_status"} {
+		if value := handoff.ChildRun.Inputs[openPilotCommitIntentPrefix+field]; value != "" {
+			t.Fatalf("repair child retained prior commit intent %s=%q", field, value)
+		}
+	}
+}
+
 func TestRunnerReturnsTerminalParentAfterCIRepairHandoff(t *testing.T) {
 	store, claimed, _ := seedOpenPilotCIRepairParent(t)
 	claimed.Inputs["retry_from_step"] = "open-pilot.ci-checks"

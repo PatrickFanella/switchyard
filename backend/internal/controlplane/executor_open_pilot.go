@@ -43,11 +43,12 @@ type openPilotCommitIntent struct {
 
 var errOpenPilotCommitReconciliation = errors.New("Open Pilot commit reconciliation requires operator review")
 
+const openPilotCommitIntentPrefix = "resume.open-pilot.commit-intent."
+
 func openPilotCommitIntentFromResume(inputs map[string]string) openPilotCommitIntent {
-	const prefix = "resume.open-pilot.commit-intent."
 	return openPilotCommitIntent{
-		Parent: inputs[prefix+"parent"], Tree: inputs[prefix+"tree"], Message: inputs[prefix+"message"],
-		StatusBefore: inputs[prefix+"status_before"], DiffStat: inputs[prefix+"diffstat"], NameStatus: inputs[prefix+"name_status"],
+		Parent: inputs[openPilotCommitIntentPrefix+"parent"], Tree: inputs[openPilotCommitIntentPrefix+"tree"], Message: inputs[openPilotCommitIntentPrefix+"message"],
+		StatusBefore: inputs[openPilotCommitIntentPrefix+"status_before"], DiffStat: inputs[openPilotCommitIntentPrefix+"diffstat"], NameStatus: inputs[openPilotCommitIntentPrefix+"name_status"],
 	}
 }
 
@@ -3009,13 +3010,12 @@ func (e *EnvWorkflowExecutors) persistOpenPilotCommitIntent(run Run, state map[s
 	if saved.ResumeInputs == nil {
 		saved.ResumeInputs = map[string]string{}
 	}
-	const prefix = "resume.open-pilot.commit-intent."
-	saved.ResumeInputs[prefix+"parent"] = intent.Parent
-	saved.ResumeInputs[prefix+"tree"] = intent.Tree
-	saved.ResumeInputs[prefix+"message"] = intent.Message
-	saved.ResumeInputs[prefix+"status_before"] = intent.StatusBefore
-	saved.ResumeInputs[prefix+"diffstat"] = intent.DiffStat
-	saved.ResumeInputs[prefix+"name_status"] = intent.NameStatus
+	saved.ResumeInputs[openPilotCommitIntentPrefix+"parent"] = intent.Parent
+	saved.ResumeInputs[openPilotCommitIntentPrefix+"tree"] = intent.Tree
+	saved.ResumeInputs[openPilotCommitIntentPrefix+"message"] = intent.Message
+	saved.ResumeInputs[openPilotCommitIntentPrefix+"status_before"] = intent.StatusBefore
+	saved.ResumeInputs[openPilotCommitIntentPrefix+"diffstat"] = intent.DiffStat
+	saved.ResumeInputs[openPilotCommitIntentPrefix+"name_status"] = intent.NameStatus
 	if _, err := store.UpsertOpenPilotIssueState(saved); err != nil {
 		return fmt.Errorf("persist Open Pilot commit intent: %w", err)
 	}
