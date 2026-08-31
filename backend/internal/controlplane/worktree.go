@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/runtimeconfig"
@@ -34,6 +35,7 @@ type OpenPilotWorktreePlan struct {
 	Repo                string `json:"repo"`
 	RepoPath            string `json:"repo_path,omitempty"`
 	BaseBranch          string `json:"base_branch"`
+	BaseSHA             string `json:"base_sha,omitempty"`
 	Branch              string `json:"branch"`
 	Mode                string `json:"mode"`
 	PlannedWorktreePath string `json:"planned_worktree_path,omitempty"`
@@ -51,6 +53,9 @@ func (p OpenPilotWorktreePlan) StepInputs() map[string]string {
 	}
 	if p.RepoPath != "" {
 		inputs["repo_path"] = p.RepoPath
+	}
+	if p.BaseSHA != "" {
+		inputs["base_sha"] = p.BaseSHA
 	}
 	if p.PlannedWorktreePath != "" {
 		inputs["planned_worktree_path"] = p.PlannedWorktreePath
@@ -122,6 +127,8 @@ type GitOpenPilotWorktreeManager struct {
 	root        string
 	timeout     time.Duration
 	beforeAdd   func()
+	syncSource  bool
+	sourceMu    sync.Mutex
 }
 
 func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
@@ -145,6 +152,7 @@ func NewEnvOpenPilotWorktreeManager() *GitOpenPilotWorktreeManager {
 		repoPath:    repoPath,
 		root:        root,
 		timeout:     timeout,
+		syncSource:  mode == string(OpenPilotWorktreeAllow),
 	}
 }
 
@@ -156,6 +164,8 @@ func NewGitOpenPilotWorktreeManager(mode OpenPilotWorktreeMode, repoPath string,
 }
 
 func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo string, baseBranch string, branch string) (OpenPilotWorktreePlan, error) {
+	m.sourceMu.Lock()
+	defer m.sourceMu.Unlock()
 	mode := m.mode
 	if mode == "" {
 		mode = OpenPilotWorktreeDisabled
@@ -191,6 +201,14 @@ func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo
 		}
 		if err := m.validateRepoMatchesRequest(ctx, source, repo); err != nil {
 			return plan, err
+		}
+		baseRevision := baseBranch
+		if m.syncSource {
+			baseRevision, err = m.syncSourceBase(ctx, source, repo, baseBranch)
+			if err != nil {
+				return plan, err
+			}
+			plan.BaseSHA = baseRevision
 		}
 		plan.RepoPath = source
 		plan.PlannedWorktreePath = filepath.Join(root, safePathSegment(repo), safePathSegment(run.ID+"-"+branch))
@@ -237,7 +255,7 @@ func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo
 		if m.beforeAdd != nil {
 			m.beforeAdd()
 		}
-		if err := m.runGitWithFile(ctx, parentDirectory, "-C", source, "worktree", "add", "-b", branch, "/proc/self/fd/3/"+leaf, baseBranch); err != nil {
+		if err := m.runGitWithFile(ctx, parentDirectory, "-C", source, "worktree", "add", "-b", branch, "/proc/self/fd/3/"+leaf, baseRevision); err != nil {
 			return plan, fmt.Errorf("create git worktree: %w", err)
 		}
 		canonicalCreated, canonicalErr := canonicalExistingPath(plan.WorktreePath)
@@ -255,6 +273,49 @@ func (m *GitOpenPilotWorktreeManager) Prepare(ctx context.Context, run Run, repo
 	default:
 		return plan, fmt.Errorf("unsupported OPEN_PILOT_WORKTREE_MODE %q", mode)
 	}
+}
+
+func (m *GitOpenPilotWorktreeManager) syncSourceBase(ctx context.Context, source, repo, baseBranch string) (string, error) {
+	baseBranch = strings.TrimSpace(baseBranch)
+	if baseBranch == "" {
+		return "", errors.New("Open Pilot base branch is required")
+	}
+	baseRef := "refs/heads/" + baseBranch
+	if _, err := m.runGitOutput(ctx, "check-ref-format", baseRef); err != nil {
+		return "", errors.New("Open Pilot base branch is invalid")
+	}
+	remote, err := m.runGitOutput(ctx, "-C", source, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return "", errors.New("OPEN_PILOT_REPO_PATH origin is missing or unreadable")
+	}
+	remote = strings.TrimSpace(remote)
+	allowLocal := strings.EqualFold(strings.TrimSpace(os.Getenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE")), "true")
+	baseURL := strings.TrimSpace(os.Getenv("GITEA_BASE_URL"))
+	if !allowLocal && baseURL == "" {
+		return "", errors.New("GITEA_BASE_URL is required for Open Pilot source synchronization")
+	}
+	if !gitworktree.OriginMatches(remote, baseURL, repo, allowLocal) {
+		return "", errors.New("Open Pilot source origin does not match the requested repository")
+	}
+	credentialEnv, cleanup, err := openPilotGitCredentialEnv()
+	if err != nil {
+		return "", fmt.Errorf("prepare Open Pilot source credentials: %w", err)
+	}
+	defer cleanup()
+	trackingRef := "refs/switchyard/open-pilot/base/" + baseBranch
+	refspec := baseRef + ":" + trackingRef
+	if _, err := m.runGitRemoteOutput(ctx, source, remote, allowLocal, credentialEnv, "fetch", "--no-tags", "--no-recurse-submodules", remote, refspec); err != nil {
+		return "", fmt.Errorf("refresh Open Pilot base from origin: %w", err)
+	}
+	baseSHA, err := m.runGitOutput(ctx, "-C", source, "rev-parse", "--verify", trackingRef+"^{commit}")
+	if err != nil || !openPilotFullGitSHA(strings.TrimSpace(baseSHA)) {
+		return "", errors.New("refreshed Open Pilot base did not resolve to a full commit SHA")
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	if _, err := m.runGitOutput(ctx, "-C", source, "merge-base", "--is-ancestor", baseRef, baseSHA); err != nil {
+		return "", errors.New("local Open Pilot base diverges from the refreshed origin base")
+	}
+	return baseSHA, nil
 }
 
 func (m *GitOpenPilotWorktreeManager) Cleanup(ctx context.Context, plan OpenPilotWorktreePlan, durableHandoff bool) (OpenPilotWorktreeCleanupPlan, error) {
@@ -427,6 +488,28 @@ func (m *GitOpenPilotWorktreeManager) runGitWithFile(ctx context.Context, file *
 	return errors.New(message)
 }
 
+func (m *GitOpenPilotWorktreeManager) runGitRemoteOutput(ctx context.Context, source, origin string, allowLocal bool, env []string, args ...string) (string, error) {
+	timeout := m.timeout
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	commandArgs := append(gitworktree.SafeRemoteCommandArgs(origin, allowLocal), "-C", source)
+	commandArgs = append(commandArgs, args...)
+	cmd := exec.CommandContext(runCtx, "git", commandArgs...)
+	cmd.Env = gitworktree.SanitizedEnvironment(env)
+	output, err := cmd.CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		if message == "" {
+			message = err.Error()
+		}
+		return "", errors.New(message)
+	}
+	return string(output), nil
+}
+
 func openDirectoryWithoutSymlinks(path string) (int, error) {
 	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -454,6 +537,10 @@ func (m *GitOpenPilotWorktreeManager) validateRepoMatchesRequest(ctx context.Con
 	requested, ok := exactOpenPilotRepoSlug(repo)
 	if !ok {
 		return fmt.Errorf("requested repo %q must be exact owner/repo", repo)
+	}
+	allowLocal := strings.EqualFold(strings.TrimSpace(os.Getenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE")), "true")
+	if gitworktree.OriginMatches(remote, "", requested, allowLocal) {
+		return nil
 	}
 	remoteRepo, ok := openPilotRepoSlugFromRemote(remote)
 	if !ok {

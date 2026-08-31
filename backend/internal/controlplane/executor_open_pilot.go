@@ -813,6 +813,7 @@ func (o openPilotExecutor) persistOpenPilotIssueState(run Run, phase OpenPilotPh
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.repo", branchPlan.Repo)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.repo_path", branchPlan.RepoPath)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.base_branch", branchPlan.BaseBranch)
+		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.base_sha", branchPlan.BaseSHA)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.branch", branchPlan.Branch)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.mode", branchPlan.Mode)
 		setOpenPilotResumeInput(saved.ResumeInputs, "resume.open-pilot.branch-plan.planned_worktree_path", branchPlan.PlannedWorktreePath)
@@ -3063,6 +3064,7 @@ func openPilotWorktreePlanFromResume(inputs map[string]string) OpenPilotWorktree
 		Repo:                inputs[prefix+"repo"],
 		RepoPath:            inputs[prefix+"repo_path"],
 		BaseBranch:          inputs[prefix+"base_branch"],
+		BaseSHA:             inputs[prefix+"base_sha"],
 		Branch:              firstNonEmpty(inputs[prefix+"branch"], inputs["resume.open-pilot.branch-plan.correlation.branch"]),
 		Mode:                inputs[prefix+"mode"],
 		PlannedWorktreePath: inputs[prefix+"planned_worktree_path"],
@@ -3282,7 +3284,7 @@ func identityGitStatus(ctx context.Context, identity gitworktree.Identity) (stri
 }
 
 func (e *EnvWorkflowExecutors) openPilotWorktreeAheadCountValidated(ctx context.Context, plan OpenPilotWorktreePlan, identity gitworktree.Identity) (int, error) {
-	baseBranch := strings.TrimSpace(plan.BaseBranch)
+	baseBranch := strings.TrimSpace(firstNonEmpty(plan.BaseSHA, plan.BaseBranch))
 	if baseBranch == "" {
 		baseBranch = e.openPilotBaseBranch
 	}

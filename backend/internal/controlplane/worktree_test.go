@@ -110,6 +110,56 @@ func TestAllowWorktreeCanonicalizesPaths(t *testing.T) {
 	}
 }
 
+func TestAllowWorktreeRefreshesStaleBaseWithoutMovingSourceBranch(t *testing.T) {
+	repo, remote, initialSHA := initWorktreeSyncTestRepo(t)
+	remoteSHA := advanceWorktreeSyncTestRemote(t, remote, "PROOF.md", "fresh remote content\n", false)
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
+	manager := NewGitOpenPilotWorktreeManager(OpenPilotWorktreeAllow, repo, t.TempDir())
+	manager.syncSource = true
+
+	plan, err := manager.Prepare(t.Context(), Run{ID: "fresh-base"}, "owner/repo", "main", "fresh-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.BaseSHA != remoteSHA {
+		t.Fatalf("BaseSHA = %q, want %q", plan.BaseSHA, remoteSHA)
+	}
+	if got := strings.TrimSpace(runGitOutput(t, plan.WorktreePath, "rev-parse", "HEAD")); got != remoteSHA {
+		t.Fatalf("worktree HEAD = %q, want %q", got, remoteSHA)
+	}
+	if contents, err := os.ReadFile(filepath.Join(plan.WorktreePath, "PROOF.md")); err != nil || string(contents) != "fresh remote content\n" {
+		t.Fatalf("refreshed worktree file = %q, %v", contents, err)
+	}
+	if got := strings.TrimSpace(runGitOutput(t, repo, "rev-parse", "main")); got != initialSHA {
+		t.Fatalf("source main moved to %q, want %q", got, initialSHA)
+	}
+}
+
+func TestAllowWorktreeRejectsNonFastForwardRemoteBaseRewrite(t *testing.T) {
+	repo, remote, _ := initWorktreeSyncTestRepo(t)
+	_ = advanceWorktreeSyncTestRemote(t, remote, "first.txt", "first remote advance\n", false)
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
+	manager := NewGitOpenPilotWorktreeManager(OpenPilotWorktreeAllow, repo, t.TempDir())
+	manager.syncSource = true
+	first, err := manager.Prepare(t.Context(), Run{ID: "first-fetch"}, "owner/repo", "main", "first-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runWorktreeTestGit(t, repo, "worktree", "remove", first.WorktreePath)
+	_ = advanceWorktreeSyncTestRemote(t, remote, "rewritten.txt", "rewritten remote history\n", true)
+
+	secondRoot := filepath.Join(t.TempDir(), "not-created")
+	second := NewGitOpenPilotWorktreeManager(OpenPilotWorktreeAllow, repo, secondRoot)
+	second.syncSource = true
+	_, err = second.Prepare(t.Context(), Run{ID: "rewrite"}, "owner/repo", "main", "rewrite-branch")
+	if err == nil || !strings.Contains(err.Error(), "refresh Open Pilot base from origin") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, statErr := os.Stat(secondRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree root created after rejected rewrite: %v", statErr)
+	}
+}
+
 func TestAllowWorktreeRejectsSymlinkedDestinationEscape(t *testing.T) {
 	repo := initWorktreeTestRepo(t)
 	root := t.TempDir()
@@ -476,6 +526,46 @@ func initWorktreeTestRepo(t *testing.T) string {
 	dir := initWorktreeTestRepoWithoutOrigin(t)
 	runWorktreeTestGit(t, dir, "remote", "add", "origin", "https://git.example.test/owner/repo.git")
 	return dir
+}
+
+func initWorktreeSyncTestRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+	repo := initWorktreeTestRepoWithoutOrigin(t)
+	remote := filepath.Join(t.TempDir(), "owner", "repo.git")
+	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runWorktreeTestGit(t, repo, "init", "--bare", remote)
+	runWorktreeTestGit(t, repo, "remote", "add", "origin", "file://"+remote)
+	runWorktreeTestGit(t, repo, "push", "-u", "origin", "main")
+	return repo, remote, strings.TrimSpace(runGitOutput(t, repo, "rev-parse", "main"))
+}
+
+func advanceWorktreeSyncTestRemote(t *testing.T, remote, name, contents string, rewrite bool) string {
+	t.Helper()
+	updater := t.TempDir()
+	if rewrite {
+		runWorktreeTestGit(t, updater, "init")
+		runWorktreeTestGit(t, updater, "config", "user.email", "switchyard@example.test")
+		runWorktreeTestGit(t, updater, "config", "user.name", "Switchyard Test")
+		runWorktreeTestGit(t, updater, "branch", "-M", "main")
+		runWorktreeTestGit(t, updater, "remote", "add", "origin", "file://"+remote)
+	} else {
+		runWorktreeTestGit(t, updater, "clone", "file://"+remote, ".")
+		runWorktreeTestGit(t, updater, "config", "user.email", "switchyard@example.test")
+		runWorktreeTestGit(t, updater, "config", "user.name", "Switchyard Test")
+	}
+	if err := os.WriteFile(filepath.Join(updater, name), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runWorktreeTestGit(t, updater, "add", name)
+	runWorktreeTestGit(t, updater, "commit", "-m", "advance remote")
+	pushArgs := []string{"push", "origin", "main"}
+	if rewrite {
+		pushArgs = []string{"push", "--force", "origin", "main"}
+	}
+	runWorktreeTestGit(t, updater, pushArgs...)
+	return strings.TrimSpace(runGitOutput(t, updater, "rev-parse", "HEAD"))
 }
 
 func initWorktreeTestRepoWithoutOrigin(t *testing.T) string {

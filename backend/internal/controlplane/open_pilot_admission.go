@@ -114,6 +114,9 @@ func openPilotMountedOrigin() (string, string, error) {
 		return "", "", errors.New("configured Open Pilot source origin is missing or unreadable")
 	}
 	slug, ok := openPilotRepoSlugFromRemote(strings.TrimSpace(string(origin)))
+	if !ok && strings.EqualFold(strings.TrimSpace(os.Getenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE")), "true") {
+		slug, ok = exactOpenPilotRepoSlug(strings.TrimSpace(os.Getenv("OPEN_PILOT_SINGLETON_REPOSITORY")))
+	}
 	if !ok {
 		return "", "", errors.New("configured Open Pilot source origin is not an exact repository slug")
 	}

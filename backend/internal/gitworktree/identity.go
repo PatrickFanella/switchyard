@@ -39,28 +39,34 @@ func (i Identity) Close() error {
 }
 
 func (i Identity) Command(ctx context.Context, extraEnv []string, args ...string) *exec.Cmd {
-	overrides := SafeCommandArgs(i.AllowLocalRemote)
-	if i.OriginURL != "" {
-		origin := i.OriginURL
-		overrides = append(overrides,
-			"-c", "credential.helper=",
-			"-c", "credential."+origin+".helper=",
-			"-c", "core.askPass=",
-			"-c", "core.hooksPath=/dev/null",
-			"-c", "core.sshCommand=",
-			"-c", "http.extraHeader=",
-			"-c", "http."+origin+".extraHeader=",
-			"-c", "http.proxy=",
-			"-c", "http."+origin+".proxy=",
-			"-c", "url."+origin+".insteadOf="+origin,
-			"-c", "url."+origin+".pushInsteadOf="+origin,
-		)
-	}
+	overrides := SafeRemoteCommandArgs(i.OriginURL, i.AllowLocalRemote)
 	args = append(overrides, args...)
 	command := exec.CommandContext(ctx, "git", args...)
 	command.ExtraFiles = []*os.File{i.Worktree}
 	command.Env = i.Environment(extraEnv)
 	return command
+}
+
+// SafeRemoteCommandArgs pins an already validated remote URL while disabling
+// repository-local credential, proxy, transport, and URL rewrite settings.
+func SafeRemoteCommandArgs(origin string, allowLocalRemote bool) []string {
+	overrides := SafeCommandArgs(allowLocalRemote)
+	if origin == "" {
+		return overrides
+	}
+	return append(overrides,
+		"-c", "credential.helper=",
+		"-c", "credential."+origin+".helper=",
+		"-c", "core.askPass=",
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.sshCommand=",
+		"-c", "http.extraHeader=",
+		"-c", "http."+origin+".extraHeader=",
+		"-c", "http.proxy=",
+		"-c", "http."+origin+".proxy=",
+		"-c", "url."+origin+".insteadOf="+origin,
+		"-c", "url."+origin+".pushInsteadOf="+origin,
+	)
 }
 
 // SafeCommandArgs disables local configuration that can execute commands,
@@ -209,13 +215,19 @@ func ValidateOpened(ctx context.Context, directory *os.File, expected Expected) 
 	originURL := ""
 	if expected.RequireOrigin {
 		origin, originErr := gitOutput(ctx, "--git-dir="+common, "config", "--get", "remote.origin.url")
-		if originErr != nil || (!matchingOrigin(origin, expected.OriginBaseURL, expected.Repo) && !(expected.AllowLocalOrigin && localOrigin(origin))) {
+		if originErr != nil || !OriginMatches(origin, expected.OriginBaseURL, expected.Repo, expected.AllowLocalOrigin) {
 			return Identity{}, errors.New("source origin does not match requested repository")
 		}
 		originURL = strings.TrimSpace(origin)
 	}
 	valid = true
 	return Identity{GitDir: gitdir, CommonDir: common, OriginURL: originURL, Worktree: held, AllowLocalRemote: expected.AllowLocalOrigin}, nil
+}
+
+// OriginMatches permits only the exact configured HTTPS repository, or an
+// explicit local test remote when that narrower exception is enabled.
+func OriginMatches(origin, baseURL, repo string, allowLocal bool) bool {
+	return matchingOrigin(origin, baseURL, repo) || (allowLocal && localOrigin(origin))
 }
 
 func localOrigin(origin string) bool {

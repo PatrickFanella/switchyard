@@ -266,6 +266,7 @@ func TestRunnerRejectsOpenPilotMismatchedRepoPathOrigin(t *testing.T) {
 	repoPath := initTestGitRepo(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	runGitForTest(t, repoPath, "remote", "set-url", "origin", "https://git.example.test/OWNER/OTHER.git")
+	t.Setenv("OPEN_PILOT_SINGLETON_REPOSITORY", "OWNER/OTHER")
 	var ocqCalls int32
 	ocq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&ocqCalls, 1)
@@ -1331,7 +1332,15 @@ func initTestGitRepo(t *testing.T) string {
 	runGitForTest(t, dir, "add", "README.md")
 	runGitForTest(t, dir, "commit", "-m", "initial")
 	runGitForTest(t, dir, "branch", "-M", "main")
-	runGitForTest(t, dir, "remote", "add", "origin", "https://git.example.test/OWNER/REPO.git")
+	remotePath := filepath.Join(t.TempDir(), "OWNER", "REPO.git")
+	if err := os.MkdirAll(filepath.Dir(remotePath), 0o755); err != nil {
+		t.Fatalf("create local remote parent: %v", err)
+	}
+	runGitForTest(t, dir, "init", "--bare", remotePath)
+	runGitForTest(t, dir, "remote", "add", "origin", "file://"+remotePath)
+	runGitForTest(t, dir, "push", "-u", "origin", "main")
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
+	t.Setenv("OPEN_PILOT_SINGLETON_REPOSITORY", "OWNER/REPO")
 	return dir
 }
 
