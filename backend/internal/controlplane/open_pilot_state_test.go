@@ -139,6 +139,27 @@ func TestSafeOpenPilotEarlyResumeDerivesCursorAndRejectsCallerCursor(t *testing.
 	}
 }
 
+func TestSafeOpenPilotResumeUsesStoredAgentCursorAfterReviewChanges(t *testing.T) {
+	state := OpenPilotIssueState{
+		RunID: "review-run", Phase: OpenPilotPhasePaused, LastStepName: "open-pilot.ai-review",
+		Branch: "branch", Base: "main", WorktreePath: "/worktree", FailingGate: "ai_review",
+		GateStatus: OpenPilotGateStatus{"ai_review": "changes_requested"},
+		ResumeInputs: map[string]string{
+			"retry_from_step": "open-pilot.agent-work", "retry_from_step_position": "4",
+			"ai_review.feedback": "add the missing marker", "resume.open-pilot.prompt": "prompt",
+			"resume.open-pilot.branch-plan.executed": "true", "resume.open-pilot.branch-plan.branch": "branch",
+			"resume.open-pilot.branch-plan.worktree_path": "/worktree",
+		},
+	}
+	inputs, err := safeOpenPilotResumeInputs(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputs["retry_from_step"] != "open-pilot.agent-work" || inputs["retry_from_step_position"] != "4" {
+		t.Fatalf("review repair cursor = %+v", inputs)
+	}
+}
+
 func TestMemoryLifecycleResumeRejectsNullDurableAffinity(t *testing.T) {
 	store := NewStore(nil)
 	if err := SeedDefaults(store); err != nil {

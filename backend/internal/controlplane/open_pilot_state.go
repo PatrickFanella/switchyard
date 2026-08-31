@@ -356,9 +356,13 @@ func safeOpenPilotResumeInputs(state OpenPilotIssueState, pipelines ...*Pipeline
 	case OpenPilotPhaseAIReviewed:
 		step = "open-pilot.ci-checks"
 	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
-		switch state.LastStepName {
+		candidate := state.LastStepName
+		if openPilotShouldUseStoredRepairCursor(state) {
+			candidate = state.ResumeInputs["retry_from_step"]
+		}
+		switch candidate {
 		case "open-pilot.agent-work", "open-pilot.verify-command", "open-pilot.commit-changes", "open-pilot.push-branch", "open-pilot.pr-plan", "open-pilot.ai-review", "open-pilot.ci-checks":
-			step = state.LastStepName
+			step = candidate
 		}
 	}
 	position := openPilotResumeStepPosition(step, pipelines...)
