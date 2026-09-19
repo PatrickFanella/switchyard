@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,13 +22,36 @@ import (
 )
 
 type llamaLineCompatChatRequest struct {
-	Model      string         `json:"model"`
-	Messages   []ModelMessage `json:"messages"`
-	Prompt     string         `json:"prompt"`
-	Stream     bool           `json:"stream"`
-	Tools      []any          `json:"tools"`
-	ToolChoice any            `json:"tool_choice"`
-	Options    map[string]any `json:"options"`
+	Model          string         `json:"model"`
+	Messages       []ModelMessage `json:"messages"`
+	Prompt         string         `json:"prompt"`
+	Stream         bool           `json:"stream"`
+	Tools          []any          `json:"tools"`
+	ToolChoice     any            `json:"tool_choice"`
+	Options        map[string]any `json:"options"`
+	ResponseFormat *struct {
+		Type string `json:"type"`
+	} `json:"response_format"`
+	MaxTokens   int      `json:"max_tokens"`
+	Temperature *float64 `json:"temperature"`
+}
+
+func (r llamaLineCompatChatRequest) modelRequest(model, requestID string, preAttempt PreAttemptCallback) ModelRequest {
+	options := make(map[string]any, len(r.Options)+2)
+	for key, value := range r.Options {
+		options[key] = value
+	}
+	if r.MaxTokens > 0 {
+		options["num_predict"] = r.MaxTokens
+	}
+	if r.Temperature != nil {
+		options["temperature"] = *r.Temperature
+	}
+	var format any
+	if r.ResponseFormat != nil && r.ResponseFormat.Type == "json_object" {
+		format = "json"
+	}
+	return ModelRequest{Model: model, Messages: r.Messages, Format: format, Tools: r.Tools, ToolChoice: r.ToolChoice, Options: options, RequestID: requestID, PreAttempt: preAttempt}
 }
 
 func (a *API) llamaLineCompatStatus(w http.ResponseWriter, r *http.Request) {
@@ -136,10 +160,10 @@ func (a *API) llamaLineCompatStreamChatCompletions(w http.ResponseWriter, r *htt
 
 	var streamed strings.Builder
 	var correlation map[string]string
-	response, err := a.compatBroker.runtime.Stream(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+	response, err := a.compatBroker.runtime.Stream(ctx, input.modelRequest(model, requestID, func(decision BackendDecision) error {
 		_, mergeErr := a.compatBroker.runtime.MergeCorrelation(ctx, requestID, decision.CorrelationIDs())
 		return mergeErr
-	}}, func(event ModelStreamEvent) error {
+	}), func(event ModelStreamEvent) error {
 		return a.compatBroker.runtime.Emit(ctx, requestID, event, func(committed ModelStreamEvent) error {
 			if committed.CorrelationIDs != nil {
 				correlation = committed.CorrelationIDs
@@ -324,10 +348,10 @@ func (a *API) llamaLineCompatGenerateModel(w http.ResponseWriter, r *http.Reques
 	}()
 	setCompatRequestHeaders(w.Header(), requestID, map[string]string{})
 	setDeprecatedBackendHeaders(w.Header(), a.compatBroker.runtime.ExecutionDecision(model))
-	response, err := a.compatBroker.runtime.Generate(ctx, ModelRequest{Model: model, Messages: input.Messages, Tools: input.Tools, ToolChoice: input.ToolChoice, Options: input.Options, RequestID: requestID, PreAttempt: func(decision BackendDecision) error {
+	response, err := a.compatBroker.runtime.Generate(ctx, input.modelRequest(model, requestID, func(decision BackendDecision) error {
 		_, mergeErr := a.compatBroker.runtime.MergeCorrelation(ctx, requestID, decision.CorrelationIDs())
 		return mergeErr
-	}})
+	}))
 	if err != nil {
 		spanErr = err
 		finish(ModelBrokerRequestFailed, `{}`, err.Error(), mergeStringMaps(response.CorrelationIDs, map[string]string{"llama_line_request_id": requestID}))
@@ -370,10 +394,17 @@ func validateModelRequestSize(model string, messages []ModelMessage) error {
 		return fmt.Errorf("model identifier exceeds 256 bytes")
 	}
 	total := 0
+	imageBytes := 0
 	for _, message := range messages {
 		total += len(message.Role) + len(message.Content)
+		for _, image := range message.Images {
+			imageBytes += base64.StdEncoding.DecodedLen(len(image))
+		}
 		if total > maxPrompt {
 			return fmt.Errorf("prompt exceeds configured %d-byte limit", maxPrompt)
+		}
+		if imageBytes > 8<<20 {
+			return fmt.Errorf("image payload exceeds configured %d-byte limit", 8<<20)
 		}
 	}
 	return nil

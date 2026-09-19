@@ -38,6 +38,7 @@ paths:
     post:
       security: []
       summary: OpenAI-compatible chat completion
+      description: Native Ollama vision routes accept OpenAI content-part arrays with inline base64 data:image image_url values; remote image URLs are rejected.
       responses: {"200": {description: Completion or SSE stream}, "202": {description: Async request accepted}}
   /v1/completions:
     post:

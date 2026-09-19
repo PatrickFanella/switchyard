@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,16 +22,96 @@ import (
 )
 
 type ModelMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content,omitempty"`
-	Name       string `json:"name,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolCalls  []any  `json:"tool_calls,omitempty"`
+	Role       string   `json:"role"`
+	Content    string   `json:"content,omitempty"`
+	Name       string   `json:"name,omitempty"`
+	ToolCallID string   `json:"tool_call_id,omitempty"`
+	ToolCalls  []any    `json:"tool_calls,omitempty"`
+	Images     []string `json:"images,omitempty"`
+}
+
+type openAIMessageContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+}
+
+// UnmarshalJSON accepts both the ordinary string content used by Ollama and
+// the OpenAI multimodal content-part array used by vision clients. Image data
+// is normalized to Ollama's base64-only images field before dispatch.
+func (m *ModelMessage) UnmarshalJSON(data []byte) error {
+	type wireMessage struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		Name       string          `json:"name,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+		ToolCalls  []any           `json:"tool_calls,omitempty"`
+		Images     []string        `json:"images,omitempty"`
+	}
+	var wire wireMessage
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*m = ModelMessage{Role: wire.Role, Name: wire.Name, ToolCallID: wire.ToolCallID, ToolCalls: wire.ToolCalls, Images: wire.Images}
+	if len(wire.Content) == 0 || string(wire.Content) == "null" {
+		return nil
+	}
+	if wire.Content[0] == '"' {
+		return json.Unmarshal(wire.Content, &m.Content)
+	}
+	var parts []openAIMessageContentPart
+	if err := json.Unmarshal(wire.Content, &parts); err != nil {
+		return fmt.Errorf("message content must be a string or content-part array: %w", err)
+	}
+	var textParts []string
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			if text := strings.TrimSpace(part.Text); text != "" {
+				textParts = append(textParts, text)
+			}
+		case "image_url":
+			if part.ImageURL == nil {
+				return errors.New("image_url content part is missing image_url")
+			}
+			image, err := decodeImageDataURL(part.ImageURL.URL)
+			if err != nil {
+				return err
+			}
+			m.Images = append(m.Images, image)
+		default:
+			return fmt.Errorf("unsupported message content part type %q", part.Type)
+		}
+	}
+	m.Content = strings.Join(textParts, "\n")
+	return nil
+}
+
+func decodeImageDataURL(value string) (string, error) {
+	const marker = ";base64,"
+	if !strings.HasPrefix(value, "data:image/") {
+		return "", errors.New("image_url must use an inline data:image URL")
+	}
+	index := strings.Index(value, marker)
+	if index < 0 {
+		return "", errors.New("image_url must use base64 encoding")
+	}
+	encoded := value[index+len(marker):]
+	if encoded == "" {
+		return "", errors.New("image_url contains no image data")
+	}
+	if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {
+		return "", fmt.Errorf("image_url contains invalid base64 data: %w", err)
+	}
+	return encoded, nil
 }
 
 type ModelRequest struct {
 	Model      string         `json:"model"`
 	Messages   []ModelMessage `json:"messages"`
+	Format     any            `json:"format,omitempty"`
 	Tools      []any          `json:"tools,omitempty"`
 	ToolChoice any            `json:"tool_choice,omitempty"`
 	Options    map[string]any `json:"options,omitempty"`
@@ -304,8 +385,11 @@ func (e *EnvModelBroker) shouldGenerateViaOllama(model string) bool {
 	return resolveModelBrokerBackend(model, strings.TrimSpace(e.ollamaBaseURL) != "").Backend == "ollama"
 }
 
-func modelRequestBody(model string, messages []ModelMessage, stream bool, tools []any, toolChoice any, options map[string]any) map[string]any {
+func modelRequestBody(model string, messages []ModelMessage, stream bool, format any, tools []any, toolChoice any, options map[string]any) map[string]any {
 	body := map[string]any{"model": model, "stream": stream, "messages": messages}
+	if format != nil {
+		body["format"] = format
+	}
 	if len(tools) > 0 {
 		body["tools"] = tools
 	}
@@ -324,7 +408,7 @@ func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request Model
 	if err != nil {
 		return ModelResponse{}, err
 	}
-	body, err := json.Marshal(modelRequestBody(request.Model, request.Messages, false, request.Tools, request.ToolChoice, request.Options))
+	body, err := json.Marshal(modelRequestBody(request.Model, request.Messages, false, request.Format, request.Tools, request.ToolChoice, request.Options))
 	if err != nil {
 		return ModelResponse{}, err
 	}
@@ -389,7 +473,7 @@ func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelReq
 	if err != nil {
 		return ModelResponse{}, err
 	}
-	body, err := json.Marshal(modelRequestBody(ollamaModelName(request.Model), request.Messages, false, request.Tools, request.ToolChoice, request.Options))
+	body, err := json.Marshal(modelRequestBody(ollamaModelName(request.Model), request.Messages, false, request.Format, request.Tools, request.ToolChoice, request.Options))
 	if err != nil {
 		return ModelResponse{}, err
 	}
@@ -440,7 +524,7 @@ func (e *EnvModelBroker) streamViaOllama(ctx context.Context, request ModelReque
 	if err != nil {
 		return ModelResponse{}, err
 	}
-	body, err := json.Marshal(modelRequestBody(ollamaModelName(request.Model), request.Messages, true, request.Tools, request.ToolChoice, request.Options))
+	body, err := json.Marshal(modelRequestBody(ollamaModelName(request.Model), request.Messages, true, request.Format, request.Tools, request.ToolChoice, request.Options))
 	if err != nil {
 		return ModelResponse{}, err
 	}
@@ -519,7 +603,7 @@ func (e *EnvModelBroker) streamViaLlamaLine(ctx context.Context, request ModelRe
 	if err != nil {
 		return ModelResponse{}, err
 	}
-	body, err := json.Marshal(modelRequestBody(request.Model, request.Messages, true, request.Tools, request.ToolChoice, request.Options))
+	body, err := json.Marshal(modelRequestBody(request.Model, request.Messages, true, request.Format, request.Tools, request.ToolChoice, request.Options))
 	if err != nil {
 		return ModelResponse{}, err
 	}
