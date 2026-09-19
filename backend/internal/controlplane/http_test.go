@@ -879,6 +879,88 @@ func TestAPILlamaLineCompatChatCompletionsUsesNativeBroker(t *testing.T) {
 	}
 }
 
+func TestAPILlamaLineCompatChatCompletionsForwardsInlineImagesToOllama(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected ollama path %s", r.URL.Path)
+		}
+		var input struct {
+			Model    string         `json:"model"`
+			Format   string         `json:"format"`
+			Options  map[string]any `json:"options"`
+			Messages []struct {
+				Role    string   `json:"role"`
+				Content string   `json:"content"`
+				Images  []string `json:"images"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatalf("decode ollama request: %v", err)
+		}
+		if input.Model != "gemma4:latest" || len(input.Messages) != 1 {
+			t.Fatalf("input = %+v", input)
+		}
+		if input.Format != "json" || input.Options["num_predict"] != float64(128) || input.Options["temperature"] != 0.2 {
+			t.Fatalf("format/options = %q/%+v", input.Format, input.Options)
+		}
+		message := input.Messages[0]
+		if message.Role != "user" || message.Content != "Classify this thumbnail." || len(message.Images) != 1 || message.Images[0] != "aGVsbG8=" {
+			t.Fatalf("message = %+v", message)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]string{"role": "assistant", "content": `{"tags":[]}`},
+			"done":    true,
+		})
+	}))
+	t.Cleanup(ollama.Close)
+	t.Setenv("OLLAMA_BASE_URL", ollama.URL)
+
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	payload := `{"model":"ollama/gemma4:latest","messages":[{"role":"user","content":[{"type":"text","text":"Classify this thumbnail."},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,aGVsbG8=","detail":"low"}}]}],"response_format":{"type":"json_object"},"max_tokens":128,"temperature":0.2}`
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("post multimodal compat chat: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Choices) != 1 || body.Choices[0].Message.Content != `{"tags":[]}` {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestAPILlamaLineCompatChatCompletionsRejectsRemoteImageURLs(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	payload := `{"model":"ollama/gemma4:latest","messages":[{"role":"user","content":[{"type":"text","text":"Classify this thumbnail."},{"type":"image_url","image_url":{"url":"https://example.com/image.jpg"}}]}]}`
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("post remote-image compat chat: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %s, want 400", resp.Status)
+	}
+}
+
 func TestAPILlamaLineCompatGenerateRoutesOllamaModelToOllama(t *testing.T) {
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/chat" {
