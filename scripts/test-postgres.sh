@@ -36,14 +36,32 @@ else
   database_host=127.0.0.1
   database_port="$(docker port "$name" 5432/tcp | sed 's/.*://')"
 fi
-for _ in $(seq 1 120); do
+postgres_ready=false
+for _ in $(seq 1 240); do
 	if docker logs "$name" 2>&1 | grep -F 'PostgreSQL init process complete' >/dev/null; then
+		postgres_ready=true
 		break
 	fi
 	sleep 0.25
 done
-docker logs "$name" 2>&1 | grep -F 'PostgreSQL init process complete' >/dev/null
-docker exec "$name" pg_isready --username switchyard_test --dbname switchyard_test >/dev/null
+if [[ "$postgres_ready" != true ]]; then
+	docker logs "$name" >&2
+	echo "isolated PostgreSQL fixture did not become ready within 60 seconds" >&2
+	exit 1
+fi
+postgres_accepting=false
+for _ in $(seq 1 240); do
+	if docker exec "$name" pg_isready --username switchyard_test --dbname switchyard_test >/dev/null 2>&1; then
+		postgres_accepting=true
+		break
+	fi
+	sleep 0.25
+done
+if [[ "$postgres_accepting" != true ]]; then
+	docker logs "$name" >&2
+	echo "isolated PostgreSQL fixture did not accept connections within 60 seconds after initialization" >&2
+	exit 1
+fi
 
 export SWITCHYARD_TEST_DATABASE_URL="host=$database_host port=$database_port user=switchyard_test password=$password dbname=switchyard_test sslmode=disable"
 export SWITCHYARD_TEST_POSTGRES_ISOLATED=1
