@@ -11,12 +11,13 @@ import (
 )
 
 type OpenPilotAssigner struct {
-	store  Store
-	runner *Runner
-	issues GiteaIssueReader
-	repos  []string
-	labels []string
-	now    func() time.Time
+	store    Store
+	runner   *Runner
+	issues   GiteaIssueReader
+	repos    []string
+	labels   []string
+	assignee string
+	now      func() time.Time
 }
 
 func NewEnvOpenPilotAssigner(store Store, runner *Runner, issues GiteaIssueReader) *OpenPilotAssigner {
@@ -24,7 +25,7 @@ func NewEnvOpenPilotAssigner(store Store, runner *Runner, issues GiteaIssueReade
 	for index := range repos {
 		repos[index] = strings.ToLower(strings.TrimSpace(repos[index]))
 	}
-	return &OpenPilotAssigner{store: store, runner: runner, issues: issues, repos: repos, labels: splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")), now: time.Now}
+	return &OpenPilotAssigner{store: store, runner: runner, issues: issues, repos: repos, labels: splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")), assignee: strings.TrimSpace(os.Getenv("OPEN_PILOT_ASSIGNEE")), now: time.Now}
 }
 
 func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
@@ -36,7 +37,7 @@ func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
 		if a.runner.openPilotGateError != nil {
 			return assigned, a.runner.openPilotGateError
 		}
-		target, err := a.runner.openPilotGate.Resolve(repo, "1")
+		target, err := a.runner.openPilotGate.ResolvePollRepository(repo)
 		if err != nil {
 			return assigned, err
 		}
@@ -45,13 +46,28 @@ func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
 		if err != nil {
 			return assigned, err
 		}
+		if a.assignee != "" {
+			assignedIssues, err := a.issues.ListAssignedIssues(ctx, repo, a.assignee)
+			if err != nil {
+				return assigned, err
+			}
+			listed = append(listed, assignedIssues...)
+		}
+		seen := map[int]bool{}
 		for _, candidate := range listed {
+			if seen[candidate.Number] {
+				continue
+			}
+			seen[candidate.Number] = true
 			issueNumber := strconv.Itoa(candidate.Number)
+			if _, err := a.runner.openPilotGate.Resolve(repo, issueNumber); err != nil {
+				continue
+			}
 			issue, fetchErr := a.issues.FetchIssue(ctx, repo, issueNumber)
 			if fetchErr != nil {
 				return assigned, fetchErr
 			}
-			if issue.State != "open" || issue.ID < 1 || !hasAllLabels(issue.Labels, a.labels) {
+			if issue.State != "open" || issue.ID < 1 || !openPilotIssueEligible(issue, a.labels, a.assignee) {
 				continue
 			}
 			inputs := map[string]string{"repo": repo, "issue": issueNumber, "issue_id": strconv.Itoa(issue.ID), "issue_verified_at": a.now().UTC().Format(time.RFC3339Nano), "issue_verified_labels": strings.Join(issue.Labels, ",")}
@@ -70,6 +86,23 @@ func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
 		}
 	}
 	return assigned, nil
+}
+
+// Assignment is an opt-in alternative to the existing label-based queue.
+func openPilotIssueEligible(issue GiteaIssue, labels []string, assignee string) bool {
+	return hasAllLabels(issue.Labels, labels) || openPilotIssueAssignedTo(issue, assignee)
+}
+
+func openPilotIssueAssignedTo(issue GiteaIssue, assignee string) bool {
+	if strings.TrimSpace(assignee) == "" {
+		return false
+	}
+	for _, user := range issue.Assignees {
+		if strings.EqualFold(strings.TrimSpace(user.Login), strings.TrimSpace(assignee)) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAllLabels(actual, required []string) bool {

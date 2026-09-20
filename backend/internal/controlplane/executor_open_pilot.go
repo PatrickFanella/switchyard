@@ -125,6 +125,10 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 			_, _ = store.FinishRunStep(validate.ID, StepFailed, "", err.Error(), nil)
 			return WorkflowExecution{}, err
 		}
+		if err := o.env.assignOpenPilotIssue(ctx, repo, *fetchedIssue); err != nil {
+			_, _ = store.FinishRunStep(validate.ID, StepFailed, "", err.Error(), nil)
+			return WorkflowExecution{}, err
+		}
 	}
 	if issueData != nil {
 		if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))}); err != nil {
@@ -1198,6 +1202,14 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		}
 		if fetchedIssue != nil {
 			if err := o.env.validateOpenPilotIssue(repo, issue, *fetchedIssue); err != nil {
+				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
+					return out, errors.Join(err, persistErr)
+				}
+				return out, err
+			}
+		}
+		if fetchedIssue != nil {
+			if err := o.env.assignOpenPilotIssue(ctx, repo, *fetchedIssue); err != nil {
 				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
 					return out, errors.Join(err, persistErr)
 				}
@@ -3359,7 +3371,7 @@ func (e *EnvWorkflowExecutors) validateOpenPilotIssue(repo, issueNumber string, 
 			missing = append(missing, required)
 		}
 	}
-	if len(missing) > 0 {
+	if len(missing) > 0 && !openPilotIssueAssignedTo(issue, e.openPilotAssignee) {
 		return fmt.Errorf("open-pilot issue missing required labels: %s", strings.Join(missing, ", "))
 	}
 	if e.requireIssueSpec {
@@ -3598,4 +3610,25 @@ func (e *EnvWorkflowExecutors) executeOpenPilot(ctx context.Context, run Run) (W
 		message = "Open Pilot accepted issue " + issue
 	}
 	return WorkflowExecution{Summary: "Dispatched Open Pilot issue " + issue, Events: []WorkflowExecutionEvent{{Type: "workflow.dispatch", Message: strings.Join(append([]string{parts[0]}, args...), " ")}, {Type: "open-pilot.accepted", Message: message}}}, nil
+}
+
+// Self-assignment is a workflow write after validation, covered by the existing
+// Gitea write mode. Failed writes fail the step and can be retried durably.
+func (e *EnvWorkflowExecutors) assignOpenPilotIssue(ctx context.Context, repo string, issue GiteaIssue) error {
+	if e.openPilotAssignee == "" || e.openPilotWriteMode != "allow" || openPilotIssueAssignedTo(issue, e.openPilotAssignee) {
+		return nil
+	}
+	writer, ok := e.issueFetcher.(interface {
+		AssignIssue(context.Context, string, GiteaIssue, string) error
+	})
+	if !ok {
+		return errors.New("open-pilot issue assignment writer is not configured")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateAttemptStore(openPilotStoreFromContext(ctx, e.store)); err != nil {
+		return err
+	}
+	return writer.AssignIssue(ctx, repo, issue, e.openPilotAssignee)
 }

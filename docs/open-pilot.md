@@ -85,9 +85,39 @@ expired proof is also treated as closed by admission and claims. Promotion to
 singleton binary rollback, close the gate and require the reported active,
 resumable, and cancellable registry-bound counts all to be zero.
 
-## Required labels
+## Queue an issue by assignment
 
-Open Pilot only runs after both labels are present:
+Set `OPEN_PILOT_ASSIGNEE=open-pilot` in the runtime configuration to enable
+assignment-based pickup. Then assign a scoped issue to the Gitea `open-pilot`
+account in a repository allowed by `OPEN_PILOT_POLL_REPOS`. The enabled
+`gitea-open-pilot-poll` trigger picks it up on its next scheduled poll; assignment
+is not an immediate webhook dispatch. In bounded proof mode, polling discovers the admitted repositories and queues
+only the exact proof issue targets. An empty `OPEN_PILOT_ASSIGNEE` (the default)
+keeps label-only pickup.
+
+When a label-queued issue starts, Open Pilot assigns `OPEN_PILOT_ASSIGNEE` to it
+after validation and before agent execution, preserving existing assignees. This
+requires `OPEN_PILOT_GITEA_WRITE_MODE=allow`; disabled/dry-run modes do not change
+assignees. Assignment failure fails the validation step and is visible in the
+run rather than silently proceeding. Gitea replaces the assignee list on edit,
+so avoid simultaneous human assignee edits during pickup.
+
+Assignment is an alternative to the queue labels below. Both paths re-fetch the
+issue, require it to be open, and share the same atomic claim so one issue is not
+queued twice. Execution rechecks eligibility; removing the bot assignment before
+execution prevents an assignment-only issue from starting. An issue with all queue
+labels remains eligible through the label path. To stop an already running task,
+use Switchyard cancellation rather than relying on unassignment.
+
+Issue specification, repository allowlists, command allowlists, verification,
+review, CI, and merge policy still apply. Assignment does not enable Git writes
+or autonomous merges: the deployed lifecycle modes and repository policy must
+already permit them. Enable `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require
+acceptance criteria and test instructions.
+
+## Queue an issue by labels
+
+The existing label-based path requires both labels:
 
 - `ready-for-agent`
 - `agent:queued`

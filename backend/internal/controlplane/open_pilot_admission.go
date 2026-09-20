@@ -297,3 +297,31 @@ func reservedOpenPilotAffinityInput(key string) bool {
 	}
 	return false
 }
+
+// ResolvePollRepository validates discovery against a real proof target rather
+// than assuming issue 1 is admitted. Actual candidate admission remains separate.
+func (g *OpenPilotAdmissionGate) ResolvePollRepository(repo string) (OpenPilotTarget, error) {
+	if g == nil || g.registry == nil {
+		return OpenPilotTarget{}, ErrInvalid
+	}
+	probeIssue := "1"
+	if g.mode == "durable" && g.rollout != nil {
+		status, err := g.rollout.OpenPilotRolloutStatus()
+		if err != nil {
+			return OpenPilotTarget{}, err
+		}
+		if status.Mode == "proof" {
+			target, err := g.registry.ResolveTarget(repo, "1")
+			if err != nil {
+				return OpenPilotTarget{}, err
+			}
+			for _, proof := range status.ProofTargets {
+				if proof.RepositoryID == target.RepositoryID && proof.ExecutorGeneration == target.ExecutorGeneration {
+					probeIssue = proof.Issue
+					break
+				}
+			}
+		}
+	}
+	return g.Resolve(repo, probeIssue)
+}
