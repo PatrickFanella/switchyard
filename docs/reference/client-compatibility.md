@@ -25,7 +25,7 @@ Ollama-routed `/api/chat` requests preserve `tools`, `tool_choice`, `options`, t
 
 | Endpoint | Response mode | Notes |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | JSON or SSE when `stream: true` | Emits OpenAI-compatible chunks plus Switchyard/OCQ correlation headers. |
+| `POST /v1/chat/completions` | JSON or SSE when `stream: true` | Emits OpenAI-compatible chunks plus Switchyard/OCQ correlation headers. Native Ollama vision routes accept OpenAI content-part arrays when every `image_url` is an inline base64 `data:image/...` URL; remote image URLs are rejected. |
 | `POST /v1/completions` | JSON | Completion compatibility. |
 | `POST /v1/embeddings` | JSON | Embedding compatibility. |
 | `GET /v1/models` | JSON | Model list compatibility. |
