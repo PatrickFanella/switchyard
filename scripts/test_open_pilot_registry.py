@@ -28,6 +28,27 @@ class OpenPilotRegistryTest(unittest.TestCase):
         self.uid = os.getuid()
         self.gid = os.getgid()
 
+    def test_prepared_verifier_image_is_pinned_and_remains_isolated(self):
+        from open_pilot_registry import _verifier_service
+        repository = self.repository("prepared", "owner/prepared")
+        repository["verifier_image"] = "sha256:" + "a" * 64
+        service = _verifier_service(repository)
+        self.assertEqual(service["image"], repository["verifier_image"])
+        self.assertNotIn("build", service)
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["networks"], ["open-pilot-verification-prepared"])
+        self.assertTrue(service["init"])
+        self.assertTrue(all(mount["read_only"] for mount in service["volumes"]))
+
+    def test_prepared_verifier_rejects_mutable_image_reference(self):
+        repository = self.repository("mutable", "owner/mutable")
+        repository["verifier_image"] = "switchyard-verifier:latest"
+        with self.assertRaisesRegex(ValueError, "immutable local image ID"):
+            load_operator_registry(self.write_registry([repository]))
+        repository["verifier_image"] = "sha256:" + "a" * 64
+        registry = load_operator_registry(self.write_registry([repository]))
+        self.assertEqual(registry["repositories"][0]["verifier_image"], repository["verifier_image"])
+
     def tearDown(self) -> None:
         self.temporary.cleanup()
 

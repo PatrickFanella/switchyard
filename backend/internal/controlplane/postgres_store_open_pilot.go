@@ -891,6 +891,15 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 	if prior.Status == RunQueued || prior.Status == RunRunning {
 		return rollback(ErrInvalid)
 	}
+	if state.Phase == OpenPilotPhaseRequested {
+		var hasSteps bool
+		if err := tx.QueryRowContext(ctx, `select exists(select 1 from run_steps where run_id=$1)`, prior.ID).Scan(&hasSteps); err != nil {
+			return rollback(err)
+		}
+		if prior.Status != RunCanceled || hasSteps {
+			return rollback(ErrInvalid)
+		}
+	}
 	if err := validateOpenPilotRunStateTarget(prior, state, *input.OpenPilotTarget); err != nil {
 		return rollback(err)
 	}

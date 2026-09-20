@@ -164,3 +164,47 @@ docker compose config --quiet
 Open Pilot PR review expects the PR verification command to pass. If the deployed Open Pilot instance publishes commit statuses, merge gates should require the Open Pilot-owned status context before merging.
 
 Gitea 1.27 atomically checks the tested head with `head_commit_id`, but the merge API has no base-commit compare-and-swap. Switchyard immediately preflights the full persisted base and head identity before every autonomous merge attempt. A Gitea request or preflight error leaves the durable state at `merge_ready` for a bounded run retry; identity mismatches still fail closed. Configure Gitea permissions and repository policy to prevent concurrent base retargeting between Switchyard's preflight and merge request. Do not disable or relax the identity checks.
+
+
+## Prepared offline verification
+
+`scripts/prepare_verifier.py` builds an operator-owned verification image for a
+committed source revision. The initial profile supports `backend/go.mod` and
+`backend/go.sum` plus `web/package.json` and `web/pnpm-lock.yaml`, Go 1.26.6,
+Node 24, pnpm 10.33.0, and `make verify`. Unsupported workspace or npm
+configuration is rejected. Dependency lifecycle scripts are disabled during
+network-enabled preparation. Repository checks execute only in the isolated
+verifier, with dependencies installed offline.
+
+Build the base verifier from the intended Switchyard runtime source, then run:
+
+```bash
+./deploy/docker-local build --target verifier -t switchyard-verifier:candidate backend
+python3 scripts/prepare_verifier.py --source /absolute/repository \
+  --revision FULL_COMMIT_SHA --verifier-image switchyard-verifier:candidate \
+  --tag switchyard-verifier:prepared --record /absolute/preparation-record.json
+```
+
+The record contains the immutable image ID, source revision, input hashes, and
+profile. Set the repository's optional `verifier_image` registry field to that
+`sha256:` image ID and regenerate the installed topology. An image tag is not
+accepted for this field. Preparation and runtime deployment are separate steps.
+Set a bounded `OPEN_PILOT_COMMAND_TIMEOUT` appropriate for a cold full build
+(the initial Switchyard profile is qualified with `10m`).
+The operator must rebuild preparation after source revision or dependency input
+changes; stale or newly introduced inputs fail before any repository command.
+
+A container init process reaps orphaned test processes throughout each attempt. The prepared verifier retains a read-only root and source mounts, internal-only
+network, no capabilities, and no Docker socket. It uses bounded 2 GiB temporary
+and cache filesystems, 4 GiB memory, four CPUs, and the existing process and
+command-time limits. Go parallelism is limited to two, with one concurrent package build; Vitest workers and the libuv thread pool are each limited to two to stay within the process budget. Package-manager writable state is copied per attempt; Go
+modules remain read-only. Git-aware checks use a disposable index and snapshot commit, without copying
+source repository configuration, hooks, credentials, or object storage. This
+temporary commit supports archive tests; it is never published or used as source
+revision evidence.
+The source worktree manifest is checked again after verification.
+
+A canceled Open Pilot run still in `requested` can be resumed through the normal
+lifecycle endpoint only when the prior run has no steps. Both store implementations
+check this under their normal claim locks. The new run starts at issue validation,
+retains prior history, and does not reuse evidence from later lifecycle phases.

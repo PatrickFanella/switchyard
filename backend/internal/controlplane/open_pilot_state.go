@@ -337,6 +337,9 @@ func safeOpenPilotResumeInputs(state OpenPilotIssueState, pipelines ...*Pipeline
 	}
 	step := ""
 	switch state.Phase {
+	case OpenPilotPhaseRequested:
+		// The store additionally requires a canceled prior run with no steps.
+		step = "open-pilot.validate-issue"
 	case OpenPilotPhaseBranchPrepared:
 		step = "open-pilot.agent-work"
 	case OpenPilotPhaseAgentCompleted:
@@ -393,6 +396,12 @@ func openPilotResumeStepPosition(step string, pipelines ...*Pipeline) string {
 }
 
 func validateOpenPilotResumeEvidence(state OpenPilotIssueState, step string) error {
+	if step == "open-pilot.validate-issue" {
+		if state.Phase != OpenPilotPhaseRequested || state.Branch != "" || state.WorktreePath != "" || state.LastStepName != "" {
+			return ErrInvalid
+		}
+		return nil
+	}
 	inputs := state.ResumeInputs
 	require := func(values ...string) bool {
 		for _, value := range values {

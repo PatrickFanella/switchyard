@@ -47,6 +47,7 @@ const (
 )
 
 type verifierConfig struct {
+	bundle        string
 	worktreeRoot  string
 	gitCommonDir  string
 	outputBytes   int
@@ -91,6 +92,7 @@ func verifierConfigFromEnv() (verifierConfig, error) {
 		return verifierConfig{}, err
 	}
 	return verifierConfig{
+		bundle:        os.Getenv("SWITCHYARD_VERIFIER_BUNDLE"),
 		worktreeRoot:  os.Getenv("OPEN_PILOT_WORKTREE_ROOT"),
 		gitCommonDir:  os.Getenv("OPEN_PILOT_GIT_COMMON_DIR"),
 		outputBytes:   outputBytes,
@@ -215,7 +217,13 @@ func verifyWithConfig(config verifierConfig, w http.ResponseWriter, r *http.Requ
 		}
 		command = exec.CommandContext(ctx, request.Command[0], request.Command[1:]...)
 		command.Dir = snapshot
-		command.Env = nonGitEnvironment(snapshot)
+		environment, cleanupPrepared, prepareErr := prepareVerification(ctx, config.bundle, snapshot, identity, request.Command)
+		if prepareErr != nil {
+			writeResponse(w, http.StatusUnprocessableEntity, verifyResponse{Error: prepareErr.Error()})
+			return
+		}
+		defer cleanupPrepared()
+		command.Env = environment
 	}
 	output := &cappedWriter{limit: config.outputBytes}
 	command.Stdout = output
@@ -461,7 +469,8 @@ func processIDs(procRoot string, self int) ([]int, error) {
 				continue
 			}
 			pid, parseErr := strconv.Atoi(entry.Name())
-			if parseErr == nil && pid > 0 && pid != self {
+			// PID 1 is the container init when present; keep it alive to reap orphans.
+			if parseErr == nil && pid > 1 && pid != self {
 				pids = append(pids, pid)
 			}
 		}

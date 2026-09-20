@@ -527,3 +527,16 @@ func TestOpenWorkdirRejectsSymlinkInRootPath(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestProcessCleanupPreservesInitAndVerifier(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"1", "7", "23", "self"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pids, err := processIDs(root, 7)
+	if err != nil || len(pids) != 1 || pids[0] != 23 {
+		t.Fatalf("cleanup must target escaped children only: %v, %v", pids, err)
+	}
+}

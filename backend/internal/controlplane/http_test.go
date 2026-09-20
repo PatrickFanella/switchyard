@@ -3337,3 +3337,40 @@ func TestAPIAdaptersProbesChangemakerWhenConfigured(t *testing.T) {
 		t.Fatalf("posts = %+v", body.Changemaker.Posts)
 	}
 }
+
+func TestAPIOpenPilotResumeCanceledBeforeExecution(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetAsyncDispatch(true)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+	target := controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "991", ExecutorGeneration: "legacy"}
+	_, prior, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "991", controlplane.CreateRunInput{WorkflowID: "open-pilot", OpenPilotTarget: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FinishRun(prior.ID, controlplane.RunCanceled, "canceled before execution"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/open-pilot/state/resume?repo=owner/repo&issue=991", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, b)
+	}
+	var body struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Run.Inputs["retry_from_step"] != "open-pilot.validate-issue" {
+		t.Fatalf("cursor=%v", body.Run.Inputs)
+	}
+}

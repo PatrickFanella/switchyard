@@ -75,8 +75,10 @@ def load_operator_registry(path: Path) -> dict[str, Any]:
     ids: set[str] = set()
     names: set[str] = set()
     for index, repository in enumerate(repositories):
-        if not isinstance(repository, dict) or set(repository) != REPOSITORY_KEYS:
+        if not isinstance(repository, dict) or not REPOSITORY_KEYS.issubset(repository) or set(repository) - REPOSITORY_KEYS - {"verifier_image"}:
             raise ValueError(f"operator repository {index} has unknown or missing fields")
+        if "verifier_image" in repository and (not isinstance(repository["verifier_image"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", repository["verifier_image"])):
+            raise ValueError("verifier_image must be an immutable local image ID")
         identifier = repository["id"]
         generation = repository["executor_generation"]
         slug = repository["slug"]
@@ -294,7 +296,7 @@ def _opencode_service(repository: Mapping[str, Any]) -> dict[str, Any]:
 def _verifier_service(repository: Mapping[str, Any]) -> dict[str, Any]:
     identifier = repository["id"]
     root = f"/open-pilot/repositories/{identifier}"
-    return {
+    service = {
         "build": {"context": "./backend", "target": "verifier"}, "restart": "unless-stopped",
         "user": "${OPENCODE_RUNTIME_UID:-1000}:${OPENCODE_RUNTIME_GID:-1000}", "command": ["/app/verifier"],
         "environment": {"OPEN_PILOT_WORKTREE_ROOT": f"{root}/worktrees", "OPEN_PILOT_GIT_COMMON_DIR": f"{root}/source/.git", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "TMPDIR": "/cache", "SWITCHYARD_VERIFIER_CONCURRENCY": "1"},
@@ -308,6 +310,15 @@ def _verifier_service(repository: Mapping[str, Any]) -> dict[str, Any]:
         "networks": [f"open-pilot-verification-{identifier}"],
         "healthcheck": {"test": ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"], "interval": "10s", "timeout": "5s", "retries": 5},
     }
+
+    if repository.get("verifier_image"):
+        service.pop("build")
+        service["image"] = repository["verifier_image"]
+        service["init"] = True
+        service["mem_limit"] = "4g"
+        service["cpus"] = 4
+        service["tmpfs"] = ["/tmp:rw,exec,nosuid,size=2g,mode=1777", "/cache:rw,exec,nosuid,size=2g,mode=1777"]
+    return service
 
 
 def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fingerprint: str) -> dict[str, Any]:

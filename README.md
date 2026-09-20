@@ -293,6 +293,8 @@ Bootstrap labels after creating or moving the repository:
 open-pilot labels bootstrap PatrickFanella/switchyard
 ```
 
+Open Pilot supports operator-prepared, revision-bound offline Go/Node verification images; see [prepared verification](docs/open-pilot.md#prepared-offline-verification).
+
 ## License
 
 GPL-3.0-only. See `LICENSE`.

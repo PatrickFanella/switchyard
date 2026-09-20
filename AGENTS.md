@@ -57,3 +57,5 @@ Before working on any task, read `codemap.md` to understand:
 - Data flow and integration points between modules
 
 For deep work on a specific folder, also read that folder's `codemap.md`.
+
+Prepared verifier images are operator-built outside the restricted execution boundary. Keep dependency inputs and source revisions bound to immutable image IDs; preserve offline verification and never mount the Docker socket into a verifier. See `docs/open-pilot.md`.
