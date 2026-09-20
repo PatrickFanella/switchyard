@@ -887,6 +887,7 @@ func TestAPILlamaLineCompatChatCompletionsForwardsInlineImagesToOllama(t *testin
 		var input struct {
 			Model    string         `json:"model"`
 			Format   string         `json:"format"`
+			Think    *bool          `json:"think"`
 			Options  map[string]any `json:"options"`
 			Messages []struct {
 				Role    string   `json:"role"`
@@ -902,6 +903,9 @@ func TestAPILlamaLineCompatChatCompletionsForwardsInlineImagesToOllama(t *testin
 		}
 		if input.Format != "json" || input.Options["num_predict"] != float64(128) || input.Options["temperature"] != 0.2 {
 			t.Fatalf("format/options = %q/%+v", input.Format, input.Options)
+		}
+		if input.Think == nil || *input.Think {
+			t.Fatalf("think = %v, want false", input.Think)
 		}
 		message := input.Messages[0]
 		if message.Role != "user" || message.Content != "Classify this thumbnail." || len(message.Images) != 1 || message.Images[0] != "aGVsbG8=" {

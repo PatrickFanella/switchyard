@@ -402,6 +402,17 @@ func modelRequestBody(model string, messages []ModelMessage, stream bool, format
 	return body
 }
 
+func ollamaRequestBody(model string, messages []ModelMessage, stream bool, format any, tools []any, toolChoice any, options map[string]any) map[string]any {
+	body := modelRequestBody(model, messages, stream, format, tools, toolChoice, options)
+	if format != nil {
+		// Structured callers need the bounded output budget for the JSON body.
+		// Thinking-capable Ollama models otherwise may spend the entire budget in
+		// message.thinking and return an empty message.content.
+		body["think"] = false
+	}
+	return body
+}
+
 func (e *EnvModelBroker) generateViaLlamaLine(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 	baseURL := e.llamaLineBaseURL
 	endpoint, err := url.JoinPath(baseURL, "/v1/chat/completions")
@@ -473,7 +484,7 @@ func (e *EnvModelBroker) generateViaOllama(ctx context.Context, request ModelReq
 	if err != nil {
 		return ModelResponse{}, err
 	}
-	body, err := json.Marshal(modelRequestBody(ollamaModelName(request.Model), request.Messages, false, request.Format, request.Tools, request.ToolChoice, request.Options))
+	body, err := json.Marshal(ollamaRequestBody(ollamaModelName(request.Model), request.Messages, false, request.Format, request.Tools, request.ToolChoice, request.Options))
 	if err != nil {
 		return ModelResponse{}, err
 	}
@@ -524,7 +535,7 @@ func (e *EnvModelBroker) streamViaOllama(ctx context.Context, request ModelReque
 	if err != nil {
 		return ModelResponse{}, err
 	}
-	body, err := json.Marshal(modelRequestBody(ollamaModelName(request.Model), request.Messages, true, request.Format, request.Tools, request.ToolChoice, request.Options))
+	body, err := json.Marshal(ollamaRequestBody(ollamaModelName(request.Model), request.Messages, true, request.Format, request.Tools, request.ToolChoice, request.Options))
 	if err != nil {
 		return ModelResponse{}, err
 	}
