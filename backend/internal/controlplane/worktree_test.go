@@ -535,7 +535,7 @@ func initWorktreeSyncTestRepo(t *testing.T) (string, string, string) {
 	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runWorktreeTestGit(t, repo, "init", "--bare", remote)
+	runWorktreeTestGit(t, repo, "init", "--bare", "--initial-branch=main", remote)
 	runWorktreeTestGit(t, repo, "remote", "add", "origin", "file://"+remote)
 	runWorktreeTestGit(t, repo, "push", "-u", "origin", "main")
 	return repo, remote, strings.TrimSpace(runGitOutput(t, repo, "rev-parse", "main"))
