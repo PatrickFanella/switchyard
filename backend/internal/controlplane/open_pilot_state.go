@@ -359,6 +359,10 @@ func safeOpenPilotResumeInputs(state OpenPilotIssueState, pipelines ...*Pipeline
 	case OpenPilotPhaseAIReviewed:
 		step = "open-pilot.ci-checks"
 	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
+		if openPilotPausedBeforeBranch(state) {
+			step = "open-pilot.validate-issue"
+			break
+		}
 		candidate := state.LastStepName
 		if openPilotShouldUseStoredRepairCursor(state) {
 			candidate = state.ResumeInputs["retry_from_step"]
@@ -397,7 +401,7 @@ func openPilotResumeStepPosition(step string, pipelines ...*Pipeline) string {
 
 func validateOpenPilotResumeEvidence(state OpenPilotIssueState, step string) error {
 	if step == "open-pilot.validate-issue" {
-		if state.Phase != OpenPilotPhaseRequested || state.Branch != "" || state.WorktreePath != "" || state.LastStepName != "" {
+		if state.Branch != "" || state.WorktreePath != "" || (state.Phase != OpenPilotPhaseRequested || state.LastStepName != "") && !openPilotPausedBeforeBranch(state) {
 			return ErrInvalid
 		}
 		return nil
@@ -589,4 +593,36 @@ func populateOpenPilotCanonicalShadow(state *OpenPilotIssueState) {
 			state.CanonicalIssue = issue
 		}
 	}
+}
+
+// A paused branch-plan step halts in recovery preflight, before worktree creation.
+func openPilotPausedBeforeBranch(state OpenPilotIssueState) bool {
+	return state.Phase == OpenPilotPhasePaused && state.LastStepName == "open-pilot.branch-plan" && state.Branch == "" && state.WorktreePath == ""
+}
+
+func validateOpenPilotPreBranchResumeRun(state OpenPilotIssueState, prior Run, steps []RunStep) error {
+	if state.Phase == OpenPilotPhaseRequested {
+		if prior.Status != RunCanceled || len(steps) != 0 {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if !openPilotPausedBeforeBranch(state) || prior.Status != RunPaused || len(steps) != 2 {
+		return ErrInvalid
+	}
+	validated, paused := false, false
+	for _, step := range steps {
+		switch {
+		case step.Name == "open-pilot.validate-issue" && step.Status == StepSucceeded:
+			validated = true
+		case step.Name == "open-pilot.branch-plan" && step.Status == StepPaused:
+			paused = true
+		default:
+			return ErrInvalid
+		}
+	}
+	if !validated || !paused {
+		return ErrInvalid
+	}
+	return nil
 }

@@ -208,3 +208,9 @@ A canceled Open Pilot run still in `requested` can be resumed through the normal
 lifecycle endpoint only when the prior run has no steps. Both store implementations
 check this under their normal claim locks. The new run starts at issue validation,
 retains prior history, and does not reuse evidence from later lifecycle phases.
+
+Pre-branch recovery also permits a run paused by branch-preparation preflight
+after successful issue validation, provided no branch/worktree identity exists
+and those are its only two steps. It restarts with fresh issue validation. A
+failed or completed branch step does not qualify; existing worktree recovery
+continues to require the durable branch and repository identity.

@@ -113,7 +113,7 @@ class RestoreDrillInstallerTest(unittest.TestCase):
         }]}))
         self.registry.chmod(0o600)
         if uid == 0:
-            for path in (self.root, self.bin, self.backup, self.evidence, self.metrics, source, source / ".git", worktrees, marker, config, data):
+            for path in (self.root, self.bin, self.backup, self.evidence, self.metrics, source, source / ".git", worktrees, marker, config, data, self.registry, password):
                 os.chown(path, self.runtime_uid, self.runtime_gid)
 
     def private(self, name):

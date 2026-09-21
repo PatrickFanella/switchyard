@@ -1086,6 +1086,15 @@ func (o openPilotExecutor) revalidateOpenPilotRecoveredStep(ctx context.Context,
 		return fmt.Errorf("revalidate durable Open Pilot affinity: %w", err)
 	}
 	plan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
+	// A pre-execution resume revalidates the issue before its first branch exists.
+	// All later steps and already-prepared branches still require durable identity.
+	if stepID == "branch-plan" && run.Inputs["retry_from_step"] == "open-pilot.validate-issue" && saved.Phase == OpenPilotPhaseValidated && saved.LastStepName == "open-pilot.validate-issue" && saved.Branch == "" && saved.WorktreePath == "" && plan.Branch == "" && plan.WorktreePath == "" {
+		issue, ok := state["open-pilot.fetched-issue"].(*GiteaIssue)
+		if !ok || issue == nil {
+			return errors.New("fresh issue validation is required before initial branch preparation")
+		}
+		return o.env.validateOpenPilotIssue(saved.Repo, saved.Issue, *issue)
+	}
 	if plan.Branch == "" {
 		plan = openPilotWorktreePlanFromResume(saved.ResumeInputs)
 	}

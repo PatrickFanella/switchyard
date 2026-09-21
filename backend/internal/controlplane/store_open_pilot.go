@@ -816,14 +816,15 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 	if !ok || prior.Status == RunQueued || prior.Status == RunRunning {
 		return OpenPilotIssueState{}, Run{}, ErrInvalid
 	}
-	if state.Phase == OpenPilotPhaseRequested {
-		if prior.Status != RunCanceled {
-			return OpenPilotIssueState{}, Run{}, ErrInvalid
-		}
+	if state.Phase == OpenPilotPhaseRequested || openPilotPausedBeforeBranch(state) {
+		var priorSteps []RunStep
 		for _, step := range s.steps {
 			if step.RunID == prior.ID {
-				return OpenPilotIssueState{}, Run{}, ErrInvalid
+				priorSteps = append(priorSteps, step)
 			}
+		}
+		if err := validateOpenPilotPreBranchResumeRun(state, prior, priorSteps); err != nil {
+			return OpenPilotIssueState{}, Run{}, err
 		}
 	}
 	if err := validateOpenPilotRunStateTarget(prior, state, *input.OpenPilotTarget); err != nil {
