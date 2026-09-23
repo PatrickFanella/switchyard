@@ -106,3 +106,52 @@ func TestOpenPilotAIReviewStepSendsAndRetainsCommittedPatch(t *testing.T) {
 		t.Fatalf("review patch artifact missing: %+v", out.Artifacts)
 	}
 }
+
+func TestCIRepairAgentReceivesOriginalTaskAndCommittedPatch(t *testing.T) {
+	plan, pr := reviewDiffFixture(t, "history\n\nmisplaced fixture\n\nlast historical entry\n")
+	pr.ID, pr.Number, pr.State, pr.HTMLURL = 1, 1, "open", "https://git/owner/repo/pulls/1"
+	pr.Head.Ref, pr.Base.Ref = plan.Branch, plan.BaseBranch
+	pr.Head.Repo, pr.Base.Repo = pullRequestRepoIdentity(plan.Repo), pullRequestRepoIdentity(plan.Repo)
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	env := newOpenPilotAIReviewTestEnv(store)
+	env.giteaReader = &scriptedCIGiteaReader{findPR: pr, findFound: true}
+	agent := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "correction completed"}}
+	env.openCodeExecutor = agent
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": plan.Repo, "issue": "1", openPilotCIRepairOriginalPromptKey: "Append the fixture after the last historical entry", openPilotCIRepairFeedbackKey: "A new acknowledgement is required"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: plan.Repo, Issue: "1", RunID: run.ID, Branch: plan.Branch, Base: plan.BaseBranch, WorktreePath: plan.WorktreePath, ResumeInputs: map[string]string{"resume.open-pilot.commit-changes.sha": pr.Head.SHA}}, OpenPilotPhaseBranchPrepared)
+	prompt := openPilotRestoredAgentPrompt("obsolete instructions", run.Inputs)
+	state := map[string]any{"open-pilot.branch-plan": plan, "open-pilot.pull-request": pr, "open-pilot.prompt": prompt}
+	_, err = (openPilotExecutor{env: env}).ExecutePipelineStep(t.Context(), run, PipelineStep{ID: "agent-work", Name: "open-pilot.agent-work"}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.requests) != 1 {
+		t.Fatalf("requests=%v", agent.requests)
+	}
+	for _, want := range []string{"Append the fixture after the last historical entry", "A new acknowledgement is required", "Switchyard will run verification, commit, and push", pr.Head.SHA, pr.Base.SHA, "+misplaced fixture", "+last historical entry"} {
+		if !strings.Contains(agent.requests[0].Prompt, want) {
+			t.Fatalf("missing %q in prompt", want)
+		}
+	}
+	if state["open-pilot.prompt"] != agent.requests[0].Prompt {
+		t.Fatal("actual repair prompt was not retained")
+	}
+	// Recovery can inspect a committed patch without discarding partial edits;
+	// final AI review must still reject dirty worktrees.
+	if err := os.WriteFile(filepath.Join(plan.WorktreePath, "PROOF.md"), []byte("partial correction\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := openPilotCommittedDiff(t.Context(), plan, pr, false)
+	if err != nil || strings.Contains(patch, "partial correction") {
+		t.Fatalf("committed repair patch=%q error=%v", patch, err)
+	}
+	if _, err := openPilotCommittedReviewDiff(t.Context(), plan, pr); err == nil {
+		t.Fatal("review accepted uncommitted edits")
+	}
+}

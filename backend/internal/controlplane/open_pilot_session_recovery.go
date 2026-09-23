@@ -12,7 +12,11 @@ const openPilotSessionRecoverySessionKey = "resume.open-pilot.session-recovery.p
 // Session replacement is an explicit operator action, fenced to a terminal run.
 // Ordinary resume and executor retries retain fail-closed stale-session behavior.
 func validateOpenPilotFreshSessionState(state OpenPilotIssueState, expectedRunID string) error {
-	if expectedRunID == "" || state.RunID != expectedRunID || state.Phase != OpenPilotPhasePaused || state.LastStepName != "open-pilot.agent-work" {
+	if expectedRunID == "" || state.RunID != expectedRunID || (state.Phase != OpenPilotPhasePaused && state.Phase != OpenPilotPhaseFailed) {
+		return ErrConflict
+	}
+	inputs, err := safeOpenPilotResumeInputs(state)
+	if err != nil || inputs["retry_from_step"] != "open-pilot.agent-work" {
 		return ErrConflict
 	}
 	if !openPilotFullGitSHA(state.ResumeInputs["resume.open-pilot.commit-changes.sha"]) || openPilotResumeSessionID(state.ResumeInputs) == "" {
@@ -32,7 +36,7 @@ func applyOpenPilotFreshSessionResume(state OpenPilotIssueState, prior Run, expe
 	if err := validateOpenPilotFreshSessionState(state, expectedRunID); err != nil {
 		return err
 	}
-	if prior.ID != expectedRunID || prior.Status != RunPaused || inputs["retry_from_step"] != "open-pilot.agent-work" {
+	if prior.ID != expectedRunID || (prior.Status != RunPaused && prior.Status != RunFailed && prior.Status != RunCanceled) || inputs["retry_from_step"] != "open-pilot.agent-work" {
 		return ErrConflict
 	}
 	oldSession := openPilotResumeSessionID(state.ResumeInputs)
