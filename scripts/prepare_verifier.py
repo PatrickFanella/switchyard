@@ -47,7 +47,7 @@ def main():
             manager = json.loads(package.read_text()).get("packageManager", "pnpm@10.33.0")
             if manager.split("+")[0] != "pnpm@10.33.0":
                 p.error("this preparation profile requires pnpm@10.33.0")
-        manifest = {"version": 1, "base_sha": revision, "files": files, "commands": [["make", "verify"]], "verifier_base": base, "profile": "go1.26.6-node24-pnpm10.33.0-v1"}
+        manifest = {"version": 2, "base_sha": revision, "files": files, "commands": [["make", "verify"]], "verifier_base": base, "profile": "go1.26.6-node24-pnpm10.33.0-v2"}
         (root / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
         (root / "Dockerfile").write_bytes((ROOT / "services/verifier/Dockerfile").read_bytes())
         subprocess.run([docker, "build", "--build-arg", "VERIFIER_BASE=" + base_tag, "-t", args.tag, str(root)], check=True)

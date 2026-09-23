@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -537,5 +538,70 @@ func TestEnvOpenCodeExecutorFailClosedMayReplaceBeforeMessageBoundary(t *testing
 	})
 	if err != nil || response.SessionID != "replacement" || creates.Load() != 2 {
 		t.Fatalf("SendPrompt() response=%+v creates=%d error=%v", response, creates.Load(), err)
+	}
+}
+
+func TestNativeProviderTerminalErrorsAreBoundedAndSanitized(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		canceled bool
+		attempts int
+	}{
+		{"authentication", 401, false, 1}, {"forbidden", 403, false, 1}, {"transient", 503, false, 2}, {"aborted", 0, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var posts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/session":
+					fmt.Fprint(w, `{"id":"provider-session"}`)
+				case strings.HasSuffix(r.URL.Path, "/abort"):
+					fmt.Fprint(w, `true`)
+				case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
+					posts.Add(1)
+					fmt.Fprint(w, `{}`)
+				case strings.HasSuffix(r.URL.Path, "/message"):
+					// Each prompt reads the previous message once before posting.
+					id := posts.Load()
+					name := "APIError"
+					if tc.canceled {
+						name = "MessageAbortedError"
+					}
+					fmt.Fprintf(w, `[{"info":{"id":"message-%d","role":"assistant","error":{"name":%q,"data":{"statusCode":%d,"isRetryable":true,"message":"SECRET_PROVIDER_CREDENTIAL","responseBody":"SECRET_PROVIDER_BODY"}}}}]`, id, name, tc.status)
+				default:
+					http.Error(w, "unexpected", 404)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("OPENCODE_SERVER_URL", server.URL)
+			t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+			t.Setenv("MODEL_BROKER_BACKEND", "opencode")
+			t.Setenv("MODEL_BROKER_RETRY_ATTEMPTS", "2")
+			t.Setenv("MODEL_BROKER_RETRY_BACKOFF", "0s")
+			t.Setenv("OPENCODE_MESSAGE_TIMEOUT", "1s")
+			response, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "openai/gpt-test", Messages: []controlplane.ModelMessage{{Role: "user", Content: "work"}}})
+			if err == nil || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error=%v", err)
+			}
+			if strings.Contains(err.Error(), "SECRET") {
+				t.Fatalf("provider payload leaked: %v", err)
+			}
+			if posts.Load() != int32(tc.attempts) {
+				t.Fatalf("posts=%d want=%d error=%v", posts.Load(), tc.attempts, err)
+			}
+			if tc.canceled {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error=%v", err)
+				}
+				return
+			}
+			if response.CorrelationIDs["opencode_session_id"] != "provider-session" || response.CorrelationIDs["provider_status"] != fmt.Sprint(tc.status) {
+				t.Fatalf("correlation=%v", response.CorrelationIDs)
+			}
+			if tc.status == 401 && !strings.Contains(err.Error(), "refresh the managed provider sign-in") {
+				t.Fatalf("missing recovery: %v", err)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -188,4 +189,44 @@ func TestPostgresDurableOpenPilotProofClaimFenceAndFailureClosure(t *testing.T) 
 	if err != nil || status.Mode != "disabled" || status.ClosedReason == "" {
 		t.Fatalf("failed proof status=%+v error=%v", status, err)
 	}
+}
+
+func testDisableOpenPilotEmptyTargets(t *testing.T, store Store) {
+	t.Helper()
+	for _, targets := range [][]OpenPilotProofTarget{nil, {}} {
+		got, err := store.ConfigureOpenPilotRollout(ConfigureOpenPilotRolloutInput{Mode: "disabled", RegistryFingerprint: fmt.Sprintf("%064x", 1), ProofTargets: targets})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Mode != "disabled" {
+			t.Fatalf("mode=%s", got.Mode)
+		}
+		got, err = store.OpenPilotRolloutStatus()
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(got.ProofTargets)
+		if err != nil || string(encoded) != "[]" {
+			t.Fatalf("targets=%s error=%v", encoded, err)
+		}
+	}
+}
+func TestDisableOpenPilotAcceptsEmptyTargets(t *testing.T) {
+	testDisableOpenPilotEmptyTargets(t, NewStore(time.Now))
+}
+func TestPostgresDisableOpenPilotAcceptsEmptyTargets(t *testing.T) {
+	databaseURL := os.Getenv("SWITCHYARD_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set SWITCHYARD_TEST_DATABASE_URL")
+	}
+	db, err := OpenPostgres(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	defer db.ExecContext(context.Background(), `update open_pilot_rollout_control set mode='legacy',registry_fingerprint='',proof_targets='[]'::jsonb,expires_at=null,closed_reason='',generation=generation+1,updated_at=clock_timestamp() where singleton`)
+	testDisableOpenPilotEmptyTargets(t, NewPostgresStore(db, time.Now))
 }

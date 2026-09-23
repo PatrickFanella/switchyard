@@ -169,7 +169,7 @@ Gitea 1.27 atomically checks the tested head with `head_commit_id`, but the merg
 ## Prepared offline verification
 
 `scripts/prepare_verifier.py` builds an operator-owned verification image for a
-committed source revision. The initial profile supports `backend/go.mod` and
+committed source revision. The version 2 profile supports `backend/go.mod` and
 `backend/go.sum` plus `web/package.json` and `web/pnpm-lock.yaml`, Go 1.26.6,
 Node 24, pnpm 10.33.0, and `make verify`. Unsupported workspace or npm
 configuration is rejected. Dependency lifecycle scripts are disabled during
@@ -191,8 +191,12 @@ profile. Set the repository's optional `verifier_image` registry field to that
 accepted for this field. Preparation and runtime deployment are separate steps.
 Set a bounded `OPEN_PILOT_COMMAND_TIMEOUT` appropriate for a cold full build
 (the initial Switchyard profile is qualified with `10m`).
-The operator must rebuild preparation after source revision or dependency input
-changes; stale or newly introduced inputs fail before any repository command.
+Version 2 images may be reused across source revisions when all eleven dependency
+inputs (including absent configuration files) match the preparation record. The
+preparation revision remains provenance; the current worktree identity and content
+manifest bind each command and result to its actual source. Version 1 images retain
+their exact preparation-revision restriction. Rebuild preparation after dependency
+input changes; stale or newly introduced inputs fail before any repository command.
 
 A container init process reaps orphaned test processes throughout each attempt. The prepared verifier retains a read-only root and source mounts, internal-only
 network, no capabilities, and no Docker socket. It uses bounded 2 GiB temporary
@@ -214,3 +218,19 @@ after successful issue validation, provided no branch/worktree identity exists
 and those are its only two steps. It restarts with fresh issue validation. A
 failed or completed branch step does not qualify; existing worktree recovery
 continues to require the durable branch and repository identity.
+
+## Bot identity and provider recovery
+
+Use a token issued to the `open-pilot` Gitea account with `write:repository`,
+`write:issue`, and `read:user` scopes. Set `GITEA_TOKEN` in the private runtime
+configuration and `GITEA_GIT_USERNAME=open-pilot`; API writes and HTTPS Git pushes
+then use the same account. Set `OPEN_PILOT_GIT_AUTHOR_NAME` and
+`OPEN_PILOT_GIT_AUTHOR_EMAIL` to the bot's name and account email for commit
+attribution. Do not put credentials in issue bodies, Git remotes, or tracked files.
+
+Native OpenCode terminal provider errors stop the request immediately and retain
+session/request correlation without provider response bodies. Authentication
+failures are not retried automatically. The workflow pauses for operator recovery:
+refresh the managed provider sign-in, verify it, and resume the affected issue.
+Transient provider errors retain the bounded broker retry policy; cancellation
+remains cancellation.

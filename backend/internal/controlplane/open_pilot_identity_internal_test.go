@@ -108,6 +108,8 @@ func TestRecoveredPushRejectsCleanMovedWorktreeHEAD(t *testing.T) {
 }
 
 func TestCommitReconcilesCrashAfterGitCommitWithoutDuplicate(t *testing.T) {
+	t.Setenv("OPEN_PILOT_GIT_AUTHOR_NAME", "open-pilot")
+	t.Setenv("OPEN_PILOT_GIT_AUTHOR_EMAIL", "bot@example.test")
 	_, _, plan := preparedCleanupWorktree(t)
 	if err := os.WriteFile(filepath.Join(plan.WorktreePath, "crash-reconcile.txt"), []byte("change\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -129,6 +131,9 @@ func TestCommitReconcilesCrashAfterGitCommitWithoutDuplicate(t *testing.T) {
 	second, err := env.openPilotCommitChanges(t.Context(), run, plan, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(worktreeTestGitOutput(t, plan.WorktreePath, "log", "-1", "--format=%an <%ae>|%cn <%ce>")); got != "open-pilot <bot@example.test>|open-pilot <bot@example.test>" {
+		t.Fatalf("commit identity = %q", got)
 	}
 	if !first.Executed || second.SHA != first.SHA {
 		t.Fatalf("first = %+v, second = %+v", first, second)

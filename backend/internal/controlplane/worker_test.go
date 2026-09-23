@@ -156,3 +156,47 @@ func TestWorkerPoolRecoversExpiredLeasesOnStart(t *testing.T) {
 		t.Fatalf("run = %+v", detail.Run)
 	}
 }
+
+type permanentExecutorError struct{}
+
+func (permanentExecutorError) Error() string   { return "refresh provider credentials" }
+func (permanentExecutorError) Retryable() bool { return false }
+func TestWorkerPoolPausesPermanentExecutorFailure(t *testing.T) {
+	t.Setenv("SWITCHYARD_RUN_RETRY_BACKOFF", "1ms")
+	store := controlplane.NewStore(time.Now)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{"devlog": controlplane.WorkflowExecutorFunc(func(context.Context, controlplane.Run) (controlplane.WorkflowExecution, error) {
+		attempts.Add(1)
+		return controlplane.WorkflowExecution{}, permanentExecutorError{}
+	})})
+	run, err := runner.Enqueue(controlplane.CreateRunInput{WorkflowID: "devlog", MaxAttempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pool := controlplane.NewWorkerPool(store, runner, 1, time.Minute, time.Millisecond, time.Now)
+	pool.Start(ctx)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		detail, err := store.RunDetail(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.Run.Status == controlplane.RunPaused {
+			cancel()
+			if err := pool.Wait(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if attempts.Load() != 1 || detail.Run.AttemptCount != 1 || detail.Run.LeaseExpiresAt != nil {
+				t.Fatalf("attempts=%d run=%+v", attempts.Load(), detail.Run)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("permanent executor error did not pause")
+}

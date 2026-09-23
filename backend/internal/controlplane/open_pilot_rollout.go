@@ -75,7 +75,7 @@ func validateOpenPilotRolloutInput(input ConfigureOpenPilotRolloutInput, now tim
 }
 
 func cloneOpenPilotProofTargets(targets []OpenPilotProofTarget) []OpenPilotProofTarget {
-	out := append([]OpenPilotProofTarget(nil), targets...)
+	out := append(make([]OpenPilotProofTarget, 0, len(targets)), targets...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].RepositoryID != out[j].RepositoryID {
 			return out[i].RepositoryID < out[j].RepositoryID

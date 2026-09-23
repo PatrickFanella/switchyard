@@ -43,19 +43,7 @@ func prepareVerification(ctx context.Context, bundle, snapshot string, identity 
 	if err != nil {
 		return nil, noop, err
 	}
-	if m.Version != 1 || m.Profile != "go1.26.6-node24-pnpm10.33.0-v1" || len(m.Files) != 11 || strings.TrimSpace(string(head)) != m.BaseSHA {
-		return nil, noop, fmt.Errorf("prepared verification source revision mismatch")
-	}
-	allowed := false
-	for _, c := range m.Commands {
-		if reflect.DeepEqual(c, argv) {
-			allowed = true
-		}
-	}
-	if !allowed {
-		return nil, noop, fmt.Errorf("command is not supported by prepared verification profile")
-	}
-	if err = validatePreparedFiles(snapshot, m.Files); err != nil {
+	if err = validatePreparedManifest(m, strings.TrimSpace(string(head)), snapshot, argv); err != nil {
 		return nil, noop, err
 	}
 	cache, err := os.MkdirTemp("/cache", "verification-")
@@ -86,6 +74,52 @@ func prepareVerification(ctx context.Context, bundle, snapshot string, identity 
 		}
 	}
 	return env, cleanup, nil
+}
+
+// Version 1 images retain their exact-base restriction. Version 2 binds reusable
+// dependencies to every supported input while the verifier's snapshot manifest
+// binds the command and result to the exact current source bytes.
+func validatePreparedManifest(m preparedManifest, head, snapshot string, argv []string) error {
+	if len(m.BaseSHA) != 40 || len(head) != 40 {
+		return fmt.Errorf("invalid prepared verification source revision")
+	}
+	if _, err := hex.DecodeString(m.BaseSHA); err != nil {
+		return fmt.Errorf("invalid prepared verification source revision")
+	}
+	if _, err := hex.DecodeString(head); err != nil {
+		return fmt.Errorf("invalid verification source revision")
+	}
+	switch m.Version {
+	case 1:
+		if m.Profile != "go1.26.6-node24-pnpm10.33.0-v1" || head != m.BaseSHA {
+			return fmt.Errorf("prepared verification source revision mismatch")
+		}
+	case 2:
+		if m.Profile != "go1.26.6-node24-pnpm10.33.0-v2" {
+			return fmt.Errorf("unsupported prepared verification profile")
+		}
+	default:
+		return fmt.Errorf("unsupported prepared verification manifest version")
+	}
+	inputs := []string{"backend/go.mod", "backend/go.sum", "web/package.json", "web/pnpm-lock.yaml", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "web/.npmrc", "go.work", "go.work.sum"}
+	if len(m.Files) != len(inputs) {
+		return fmt.Errorf("incomplete prepared dependency inputs")
+	}
+	for _, name := range inputs {
+		if _, ok := m.Files[name]; !ok {
+			return fmt.Errorf("missing prepared dependency contract for %s", name)
+		}
+	}
+	allowed := false
+	for _, c := range m.Commands {
+		if reflect.DeepEqual(c, argv) {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("command is not supported by prepared verification profile")
+	}
+	return validatePreparedFiles(snapshot, m.Files)
 }
 
 func validatePreparedFiles(snapshot string, files map[string]*string) error {

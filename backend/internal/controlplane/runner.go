@@ -683,6 +683,12 @@ func runStatusForError(err error) RunStatus {
 	if errors.Is(err, context.Canceled) {
 		return RunCanceled
 	}
+	// Explicitly permanent executor failures need operator intervention. Persist
+	// the pause so worker restarts cannot blindly retry invalid credentials.
+	var classified interface{ Retryable() bool }
+	if errors.As(err, &classified) && !classified.Retryable() {
+		return RunPaused
+	}
 	return RunFailed
 }
 

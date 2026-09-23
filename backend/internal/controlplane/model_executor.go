@@ -228,6 +228,10 @@ func modelBrokerRetryableError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	var providerErr openCodeProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.retryable
+	}
 	var httpErr modelBrokerHTTPError
 	if errors.As(err, &httpErr) {
 		return modelBrokerRetryableStatus(httpErr.StatusCode)
