@@ -294,6 +294,8 @@ type CreateRunInput struct {
 	PipelineSnapshot           *Pipeline         `json:"-"`
 	OpenPilotTarget            *OpenPilotTarget  `json:"-"`
 	OpenPilotFreshSessionRunID string            `json:"-"`
+	OpenPilotFeedbackRunID     string            `json:"-"`
+	OpenPilotFeedback          string            `json:"-"`
 }
 
 type WebhookAuthKey struct {

@@ -3,6 +3,8 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -146,6 +148,21 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "state lacks safe durable evidence for Open Pilot lifecycle resume")
 		return
 	}
+	var correction struct {
+		ExpectedRunID string `json:"expected_run_id"`
+		Feedback      string `json:"feedback"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&correction); err != nil && !errors.Is(err, io.EOF) {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	correction.Feedback = strings.TrimSpace(correction.Feedback)
+	if err := validateOpenPilotOperatorFeedback(state, correction.ExpectedRunID, correction.Feedback, inputs); err != nil {
+		writeControlError(w, err)
+		return
+	}
 	removeOpenPilotCIRepairInputs(inputs)
 	freshSessionRunID := r.URL.Query().Get("fresh_session_for_run")
 	if freshSessionRunID != "" {
@@ -158,7 +175,7 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	prepared, err := a.runner.prepareOpenPilotStateRunInput(state, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs, OpenPilotFreshSessionRunID: freshSessionRunID})
+	prepared, err := a.runner.prepareOpenPilotStateRunInput(state, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs, OpenPilotFreshSessionRunID: freshSessionRunID, OpenPilotFeedbackRunID: correction.ExpectedRunID, OpenPilotFeedback: correction.Feedback})
 	if err != nil {
 		writeControlError(w, err)
 		return
