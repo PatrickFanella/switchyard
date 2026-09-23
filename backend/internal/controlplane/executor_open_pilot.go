@@ -1306,6 +1306,11 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return PipelineStepExecution{Summary: message, Halt: true}, nil
 			}
 		}
+		if run.Inputs[openPilotSessionRecoveryRunKey] != "" && openPilotAgentSessionID(run.Inputs, state) == "" {
+			if err := validateOpenPilotFreshSessionWorktree(ctx, branchPlan, run.Inputs); err != nil {
+				return PipelineStepExecution{}, err
+			}
+		}
 		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath, FailClosedOnStaleSession: true}
 		request.PreAttempt = preAttemptFromContext(ctx)
 		request.OnCorrelation = runStepCorrelationFromContext(ctx)

@@ -60,6 +60,17 @@ message POST never causes an automatic repost. The executor may replace only a
 session created during the current call that disappeared before the first
 message attempt, where no prior worktree mutation could have occurred.
 
+Strict sidecars keep sessions in memory, so a container recreation can leave a
+paused run with a missing session. After inspecting that run, an operator may
+POST the lifecycle resume endpoint with `fresh_session_for_run=<paused-run-id>`
+in addition to `repo` and `issue`. This explicit recovery requires a paused
+agent-work step, a recorded session and full commit SHA, and a clean managed
+worktree at that exact commit. The store atomically fences the expected prior
+run, retains its history, and records the replaced session in the new run.
+The executor repeats the worktree check before creating the new session.
+Dirty or moved worktrees require inspection; ordinary resume never resets a
+session automatically.
+
 `make open-pilot-topology-smoke` uses a unique Compose project to build two
 production-shaped OpenCode/verifier pairs and real managed Git worktrees. It
 proves each OpenCode runtime can write only its repository worktree, each

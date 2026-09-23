@@ -844,6 +844,9 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 			inputs[name] = value
 		}
 	}
+	if err := applyOpenPilotFreshSessionResume(state, prior, input.OpenPilotFreshSessionRunID, inputs); err != nil {
+		return OpenPilotIssueState{}, Run{}, err
+	}
 	stripOpenPilotCIRepairInputs(inputs)
 	inputs["repo"], inputs["issue"] = input.OpenPilotTarget.RepositorySlug, input.OpenPilotTarget.Issue
 	setOpenPilotAffinityInputs(inputs, *input.OpenPilotTarget)
