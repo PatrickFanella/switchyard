@@ -17,12 +17,13 @@ import (
 )
 
 type OpenCodeRequest struct {
-	Model     string
-	Agent     string
-	Prompt    string
-	SessionID string
-	RequestID string
-	WorkDir   string
+	Model        string
+	Agent        string
+	Prompt       string
+	SessionID    string
+	RequestID    string
+	WorkDir      string
+	OutputSchema map[string]any
 	// FailClosedOnStaleSession prevents reposting after a correlated session is
 	// lost or after any message request may have crossed the mutation boundary.
 	FailClosedOnStaleSession bool
@@ -118,6 +119,9 @@ func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRe
 }
 
 func (e *EnvOpenCodeExecutor) sendPromptViaOCQ(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
+	if request.OutputSchema != nil {
+		return OpenCodeResponse{}, errors.New("structured model adapter output requires the native OpenCode executor")
+	}
 	if e.baseURL == "" {
 		return OpenCodeResponse{CorrelationIDs: map[string]string{"ocq_request_id": request.RequestID}}, fmt.Errorf("OCQ_BASE_URL is not configured")
 	}
@@ -332,6 +336,9 @@ func (e *EnvOpenCodeExecutor) openCodeSessionIdle(ctx context.Context, sessionID
 		}
 		return "", false, openCodeProviderError{status: status, retryable: retryable}
 	}
+	if len(message.Structured) > 0 && string(message.Structured) != "null" {
+		return string(message.Structured), true, nil
+	}
 	if message.Finish != "stop" {
 		return "", false, nil
 	}
@@ -371,7 +378,8 @@ func (e openCodeProviderError) Error() string {
 }
 
 type openCodeSessionMessage struct {
-	Error *openCodeMessageError
+	Structured json.RawMessage
+	Error      *openCodeMessageError
 
 	ID     string
 	Role   string
@@ -422,10 +430,11 @@ func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, session
 	}
 	var messages []struct {
 		Info struct {
-			ID     string                `json:"id"`
-			Role   string                `json:"role"`
-			Finish string                `json:"finish"`
-			Error  *openCodeMessageError `json:"error"`
+			ID         string                `json:"id"`
+			Role       string                `json:"role"`
+			Finish     string                `json:"finish"`
+			Error      *openCodeMessageError `json:"error"`
+			Structured json.RawMessage       `json:"structured"`
 		} `json:"info"`
 		Parts []struct {
 			Type string `json:"type"`
@@ -439,7 +448,7 @@ func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, session
 		return openCodeSessionMessage{}, nil
 	}
 	message := messages[len(messages)-1]
-	return openCodeSessionMessage{ID: message.Info.ID, Role: message.Info.Role, Finish: message.Info.Finish, Parts: message.Parts, Error: message.Info.Error}, nil
+	return openCodeSessionMessage{ID: message.Info.ID, Role: message.Info.Role, Finish: message.Info.Finish, Parts: message.Parts, Error: message.Info.Error, Structured: message.Info.Structured}, nil
 }
 
 func nativeOpenCodeCorrelation(sessionID, requestID string) map[string]string {
@@ -526,6 +535,13 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 	}
 	if request.Agent != "" {
 		body["agent"] = request.Agent
+	}
+	if request.OutputSchema != nil {
+		body["format"] = map[string]any{"type": "json_schema", "schema": request.OutputSchema, "retryCount": 1}
+		// This native tool only returns the final object. It does not grant
+		// filesystem, shell, network, or delegation capabilities to the adapter.
+		body["tools"] = map[string]bool{"StructuredOutput": true}
+		body["system"] = "Use the native StructuredOutput final-response tool to return the required JSON object. StructuredOutput only reports the response; it is the one permitted exception to the adapter ban on using tools. Do not call any other tool."
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

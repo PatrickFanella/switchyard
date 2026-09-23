@@ -257,3 +257,13 @@ When resuming a rejected review, the agent receives the stored task and current
 review feedback. The correction starts a new durable commit intent; the prior
 run retains its original intent, and commit-step recovery still reuses its
 persisted intent.
+
+The native model adapter requests OpenCode JSON-schema output for tool-call
+responses and reads the validated `structured` field, including native
+`tool-calls` completion. Only the StructuredOutput reporting tool is enabled in
+the adapter; filesystem and execution tools remain denied. Formatting failure
+pauses the caller instead of treating prose as a valid tool-call envelope.
+The compatibility OCQ executor cannot provide this structured-output contract.
+
+The managed OpenCode image includes pinned ripgrep, so file discovery and search
+work on the restricted network without a first-use binary download.
