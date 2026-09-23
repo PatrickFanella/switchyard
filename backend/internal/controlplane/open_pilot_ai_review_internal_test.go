@@ -391,7 +391,9 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 		"resume.open-pilot.branch-plan.base_branch":   "main",
 		"resume.open-pilot.branch-plan.worktree_path": "/tmp/worktree",
 		"resume.open-pilot.branch-plan.executed":      "true",
-		"resume.open-pilot.prompt":                    "Original task: preserve the existing content",
+		"resume.open-pilot.prompt":                    "Obsolete repair instructions: run verification, commit, and push",
+		openPilotCIRepairOriginalPromptKey:            "Original task: preserve the existing content",
+		openPilotCIRepairFeedbackKey:                  "append a new acknowledgement even if an older one exists",
 		"ai_review.feedback":                          "Please tighten validation and add tests",
 	}, OpenPilotGateStatus{"ai_review": "changes_requested", "local_verify": "passed"}))
 	ocq := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "agent output"}}
@@ -416,6 +418,9 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 	}
 	if !strings.Contains(ocq.requests[0].Prompt, "Original task: preserve the existing content") {
 		t.Fatal("stored task prompt was lost")
+	}
+	if strings.Contains(ocq.requests[0].Prompt, "Obsolete repair instructions") || !strings.Contains(ocq.requests[0].Prompt, "Switchyard will run verification, commit, and push") || !strings.Contains(ocq.requests[0].Prompt, "append a new acknowledgement") {
+		t.Fatalf("repair context or executor boundary lost: %s", ocq.requests[0].Prompt)
 	}
 	if ocq.requests[0].WorkDir != "/tmp/worktree" {
 		t.Fatalf("workdir = %q", ocq.requests[0].WorkDir)

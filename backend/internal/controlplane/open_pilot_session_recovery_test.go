@@ -179,3 +179,28 @@ func TestFreshSessionHTTPResumesCleanCommittedWorktree(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 }
+
+func TestFreshSessionCanRecoverTerminalFailedRepairAtSafeAgentCursor(t *testing.T) {
+	store := NewStore(nil)
+	state, prior := sessionRecoveryState(t, store, "owner/failed-repair")
+	state.Phase = OpenPilotPhaseFailed
+	state.LastStepName = "open-pilot.commit-changes"
+	state.ResumeInputs["ai_review.feedback"] = "fix the misplaced task additions"
+	state.ResumeInputs["retry_from_step"] = "open-pilot.agent-work"
+	prior.Status = RunCanceled
+	inputs, err := safeOpenPilotResumeInputs(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyOpenPilotFreshSessionResume(state, prior, prior.ID, inputs); err != nil {
+		t.Fatal(err)
+	}
+	if openPilotResumeSessionID(inputs) != "" {
+		t.Fatal("old session retained")
+	}
+	delete(state.ResumeInputs, "ai_review.feedback")
+	state.ResumeInputs["retry_from_step"] = "open-pilot.commit-changes"
+	if err := validateOpenPilotFreshSessionState(state, prior.ID); err == nil {
+		t.Fatal("commit cursor permitted a new agent session")
+	}
+}

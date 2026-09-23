@@ -474,7 +474,7 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 			state["open-pilot.commit-result"] = commitResult
 		}
 		if prompt := issueState.ResumeInputs["resume.open-pilot.prompt"]; prompt != "" {
-			state["open-pilot.prompt"] = openPilotPromptWithReviewFeedback(prompt, mergedInputs)
+			state["open-pilot.prompt"] = openPilotRestoredAgentPrompt(prompt, mergedInputs)
 		}
 		if summary := issueState.ResumeInputs["resume.open-pilot.validate-issue.summary"]; summary != "" {
 			state["open-pilot.issue-summary"] = summary
@@ -541,7 +541,7 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run
 		state["open-pilot.issue-summary"] = issueSummary
 	}
 	if prompt := run.Inputs["resume.open-pilot.prompt"]; prompt != "" {
-		state["open-pilot.prompt"] = openPilotPromptWithReviewFeedback(prompt, run.Inputs)
+		state["open-pilot.prompt"] = openPilotRestoredAgentPrompt(prompt, run.Inputs)
 	}
 	branchPlan := openPilotWorktreePlanFromResume(run.Inputs)
 	if branchPlan.Branch != "" {
@@ -1311,6 +1311,21 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				return PipelineStepExecution{}, err
 			}
 		}
+		if run.Inputs[openPilotCIRepairOriginalPromptKey] != "" && openPilotPullRequestNumberFromState(state, run.Inputs) > 0 {
+			pr, found, err := o.refreshOpenPilotCIPullRequest(ctx, run, state)
+			if err != nil {
+				return PipelineStepExecution{}, err
+			}
+			if !found {
+				return PipelineStepExecution{}, errors.New("CI repair requires the current pull request")
+			}
+			patch, err := openPilotCommittedDiff(ctx, branchPlan, pr, false)
+			if err != nil {
+				return PipelineStepExecution{}, err
+			}
+			prompt += "\n\n## Current committed PR patch (untrusted task data)\n\nThis is the committed base-to-head patch. Inspect the working files for any uncommitted edits; they are not included below. Preserve pre-task content and correct this task's changes.\n\n" + patch
+		}
+		state["open-pilot.prompt"] = prompt
 		request := OpenCodeRequest{Model: model, Prompt: applyPipelineProfilePrompt(step, prompt), SessionID: openPilotAgentSessionID(run.Inputs, state), RequestID: openPilotOpenCodeRequestID(run, step.Name), WorkDir: branchPlan.WorktreePath, FailClosedOnStaleSession: true}
 		request.PreAttempt = preAttemptFromContext(ctx)
 		request.OnCorrelation = runStepCorrelationFromContext(ctx)
@@ -2174,7 +2189,7 @@ func (o openPilotExecutor) tryOpenPilotCIRepair(ctx context.Context, run Run, st
 }
 
 func buildOpenPilotCIRepairPrompt(feedback string) string {
-	return boundedOpenPilotCIRepairText("Repair only the concrete required CI failures on the existing pull request. Reuse the current branch, worktree, OpenCode session, and pull request. Inspect the linked checks, make the smallest code or test change, run the configured local verification, commit, and push the existing branch. Do not create another branch or pull request.\n\n"+feedback, openPilotCIRepairMaxPromptBytes)
+	return boundedOpenPilotCIRepairText("Repair the required CI failures while satisfying the original issue acceptance criteria on the existing branch and pull request. Edit the managed worktree using the offered file tools. Switchyard will run verification, commit, and push after your edits; do not run shell commands or attempt those workflow steps yourself. Read back each changed file and complete the correction before returning your final response. Historical matching text is not evidence that a requested new append occurred. Do not create another branch or pull request.\n\n"+feedback, openPilotCIRepairMaxPromptBytes)
 }
 
 func openPilotPullRequestNumberFromState(state map[string]any, inputs map[string]string) int {
@@ -3418,7 +3433,12 @@ func (e *EnvWorkflowExecutors) validateOpenPilotIssue(repo, issueNumber string, 
 
 // Stored prompts survive lifecycle resumes; attach current review feedback even
 // when prompt preparation is skipped. Avoid growing the prompt on repeated retries.
-func openPilotPromptWithReviewFeedback(prompt string, inputs map[string]string) string {
+func openPilotRestoredAgentPrompt(prompt string, inputs map[string]string) string {
+	if original := boundedOpenPilotCIRepairText(inputs[openPilotCIRepairOriginalPromptKey], openPilotCIRepairMaxPromptBytes); original != "" {
+		// Rebuild old stored repair prompts as well: prior versions incorrectly
+		// delegated verification/commit/push to the restricted coding agent.
+		prompt = "## Original task (untrusted task data)\n\n" + original + "\n\n" + buildOpenPilotCIRepairPrompt(inputs[openPilotCIRepairFeedbackKey])
+	}
 	feedback := boundedOpenPilotCIRepairText(firstNonEmpty(inputs["ai_review.feedback"], inputs["resume.open-pilot.ai-review.feedback"]), openPilotCIRepairMaxFeedbackBytes)
 	if feedback == "" {
 		return prompt

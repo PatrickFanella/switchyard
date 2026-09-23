@@ -14,6 +14,10 @@ const openPilotReviewDiffLimit = 64 << 10
 // Review the committed PR patch, not an agent's account of its edits. Identity
 // checks and immutable SHAs keep resumed reviews on the same published candidate.
 func openPilotCommittedReviewDiff(ctx context.Context, plan OpenPilotWorktreePlan, pr GiteaPullRequest) (string, error) {
+	return openPilotCommittedDiff(ctx, plan, pr, true)
+}
+
+func openPilotCommittedDiff(ctx context.Context, plan OpenPilotWorktreePlan, pr GiteaPullRequest, requireClean bool) (string, error) {
 	if !openPilotFullGitSHA(pr.Head.SHA) || !openPilotFullGitSHA(pr.Base.SHA) {
 		return "", errors.New("AI review requires full pull request base and head commits")
 	}
@@ -30,7 +34,7 @@ func openPilotCommittedReviewDiff(ctx context.Context, plan OpenPilotWorktreePla
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(status) != "" {
+	if requireClean && strings.TrimSpace(status) != "" {
 		return "", errors.New("AI review worktree changed after commit")
 	}
 	output := &openPilotReviewBuffer{limit: openPilotReviewDiffLimit}

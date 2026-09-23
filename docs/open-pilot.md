@@ -62,11 +62,12 @@ message attempt, where no prior worktree mutation could have occurred.
 
 Strict sidecars keep sessions in memory, so a container recreation can leave a
 paused run with a missing session. After inspecting that run, an operator may
-POST the lifecycle resume endpoint with `fresh_session_for_run=<paused-run-id>`
-in addition to `repo` and `issue`. This explicit recovery requires a paused
-agent-work step, a recorded session and full commit SHA, and a clean managed
-worktree at that exact commit. The store atomically fences the expected prior
-run, retains its history, and records the replaced session in the new run.
+POST the lifecycle resume endpoint with `fresh_session_for_run=<terminal-run-id>`
+in addition to `repo` and `issue`. This explicit recovery requires a paused or failed
+issue whose safe resume cursor is agent work, a recorded session and full commit
+SHA, and a clean managed
+worktree at that exact commit. The store atomically fences the expected terminal prior
+run (paused, failed, or canceled), retains its history, and records the replaced session in the new run.
 The executor repeats the worktree check before creating the new session.
 Dirty or moved worktrees require inspection; ordinary resume never resets a
 session automatically.
@@ -267,3 +268,11 @@ The compatibility OCQ executor cannot provide this structured-output contract.
 
 The managed OpenCode image includes pinned ripgrep, so file discovery and search
 work on the restricted network without a first-use binary download.
+
+CI-repair execution receives the original issue task, bounded check/review
+feedback, and the current committed PR patch with full base/head SHAs. Stored
+repair prompts are rebuilt to keep their executor contract current. The agent
+edits and reads back files; Switchyard owns verification, commit, and push.
+The patch context describes committed changes only, so a resumed agent must
+also inspect working files for partial edits. Final review still requires a
+clean worktree matching the published head.
