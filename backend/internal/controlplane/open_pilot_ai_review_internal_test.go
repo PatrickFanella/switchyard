@@ -394,6 +394,7 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 		"resume.open-pilot.prompt":                    "Obsolete repair instructions: run verification, commit, and push",
 		openPilotCIRepairOriginalPromptKey:            "Original task: preserve the existing content",
 		openPilotCIRepairFeedbackKey:                  "append a new acknowledgement even if an older one exists",
+		openPilotOperatorFeedbackKey:                  "Preserve the original final line and append after it.",
 		"ai_review.feedback":                          "Please tighten validation and add tests",
 	}, OpenPilotGateStatus{"ai_review": "changes_requested", "local_verify": "passed"}))
 	ocq := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "agent output"}}
@@ -421,6 +422,9 @@ func TestOpenPilotResumePromptIncludesAiReviewFeedback(t *testing.T) {
 	}
 	if strings.Contains(ocq.requests[0].Prompt, "Obsolete repair instructions") || !strings.Contains(ocq.requests[0].Prompt, "Switchyard will run verification, commit, and push") || !strings.Contains(ocq.requests[0].Prompt, "append a new acknowledgement") {
 		t.Fatalf("repair context or executor boundary lost: %s", ocq.requests[0].Prompt)
+	}
+	if !strings.Contains(ocq.requests[0].Prompt, "Preserve the original final line") {
+		t.Fatal("operator correction missing from actual request")
 	}
 	if ocq.requests[0].WorkDir != "/tmp/worktree" {
 		t.Fatalf("workdir = %q", ocq.requests[0].WorkDir)

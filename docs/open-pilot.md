@@ -276,3 +276,12 @@ edits and reads back files; Switchyard owns verification, commit, and push.
 The patch context describes committed changes only, so a resumed agent must
 also inspect working files for partial edits. Final review still requires a
 clean worktree matching the published head.
+
+An authenticated operator can add a correction when resuming a paused or failed
+issue at its safe agent-work cursor. POST the lifecycle resume endpoint with
+`{"expected_run_id":"<terminal-run-id>","feedback":"<correction>"}`.
+Feedback is limited to 8192 bytes, retained in the new run, and fenced against
+the prior run inside the store transaction. It cannot choose a later cursor,
+replace a session, or bypass verification, review, CI, or merge policy. Combine
+it with the explicit session-recovery query only when that separate recovery
+is needed. Empty request bodies preserve ordinary resume behavior.
