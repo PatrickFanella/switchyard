@@ -234,3 +234,10 @@ failures are not retried automatically. The workflow pauses for operator recover
 refresh the managed provider sign-in, verify it, and resume the affected issue.
 Transient provider errors retain the bounded broker retry policy; cancellation
 remains cancellation.
+
+AI review of an executed worktree includes the actual committed pull-request patch
+and its full base/head SHAs, in both the reviewer input and the retained review
+artifact. It verifies that the clean worktree HEAD matches the published candidate.
+Agent summaries and file statistics do not substitute for the patch. Automatic
+review pauses for patches over 64 KiB, binary changes, or unavailable source
+identity; these require operator review instead of approval from incomplete input.
