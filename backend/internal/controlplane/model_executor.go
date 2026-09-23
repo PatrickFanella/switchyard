@@ -767,6 +767,7 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 	executor.client = e.client
 	prompt := modelMessagesToPrompt(request.Messages)
 	agent := ""
+	var outputSchema map[string]any
 	if len(request.Tools) > 0 {
 		var promptErr error
 		prompt, promptErr = modelAdapterPrompt(request)
@@ -774,6 +775,7 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 			return ModelResponse{}, promptErr
 		}
 		agent = "switchyard-model-adapter"
+		outputSchema = modelAdapterOutputSchema()
 	}
 	requestID := firstNonEmpty(strings.TrimSpace(request.RequestID), "model-broker-"+shortRandomID())
 	preAttempt := request.PreAttempt
@@ -781,7 +783,7 @@ func (e *EnvModelBroker) generateViaOpenCode(ctx context.Context, request ModelR
 		decision := resolveModelExecutionRoute(request.Model, strings.TrimSpace(e.ollamaBaseURL) != "")
 		preAttempt = func(BackendDecision) error { return request.PreAttempt(decision) }
 	}
-	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: modelBrokerOpenCodeModel(request.Model), Agent: agent, Prompt: prompt, RequestID: requestID, WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"), PreAttempt: preAttempt})
+	response, err := executor.SendPrompt(ctx, OpenCodeRequest{Model: modelBrokerOpenCodeModel(request.Model), Agent: agent, Prompt: prompt, OutputSchema: outputSchema, RequestID: requestID, WorkDir: firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"), PreAttempt: preAttempt})
 	if err != nil {
 		return ModelResponse{CorrelationIDs: response.CorrelationIDs}, err
 	}
@@ -821,6 +823,25 @@ type modelAdapterEnvelope struct {
 	} `json:"tool_calls"`
 }
 
+func modelAdapterOutputSchema() map[string]any {
+	return map[string]any{
+		"type": "object", "additionalProperties": false,
+		"required": []string{"content", "tool_calls"},
+		"properties": map[string]any{
+			"content": map[string]any{"type": "string"},
+			"tool_calls": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"id", "name", "arguments"},
+				"properties": map[string]any{
+					"id":        map[string]any{"type": "string"},
+					"name":      map[string]any{"type": "string"},
+					"arguments": map[string]any{"type": "object"},
+				},
+			}},
+		},
+	}
+}
+
 func modelAdapterPrompt(request ModelRequest) (string, error) {
 	payload, err := json.Marshal(map[string]any{
 		"messages":    request.Messages,
@@ -830,7 +851,7 @@ func modelAdapterPrompt(request ModelRequest) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode model adapter request: %w", err)
 	}
-	return "Return one JSON object matching the managed adapter envelope. Do not use your own tools. A response without tool_calls ends the caller agent turn: if an edit or correction remains, return the needed tool_calls instead of announcing future work. Adapter input:\n" + string(payload), nil
+	return "Use the native StructuredOutput final-response tool to return one JSON object matching the managed adapter envelope. Do not use any other tools. A response without tool_calls ends the caller agent turn: if an edit or correction remains, return the needed tool_calls instead of announcing future work. Adapter input:\n" + string(payload), nil
 }
 
 func decodeModelAdapterResponse(raw string) (string, []any, error) {
