@@ -241,3 +241,8 @@ artifact. It verifies that the clean worktree HEAD matches the published candida
 Agent summaries and file statistics do not substitute for the patch. Automatic
 review pauses for patches over 64 KiB, binary changes, or unavailable source
 identity; these require operator review instead of approval from incomplete input.
+
+When resuming a rejected review, the agent receives the stored task and current
+review feedback. The correction starts a new durable commit intent; the prior
+run retains its original intent, and commit-step recovery still reuses its
+persisted intent.

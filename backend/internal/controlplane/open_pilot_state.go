@@ -380,6 +380,13 @@ func safeOpenPilotResumeInputs(state OpenPilotIssueState, pipelines ...*Pipeline
 		return nil, err
 	}
 	inputs := mergeOpenPilotResumeStateInputs(state)
+	if step == "open-pilot.agent-work" && state.LastStepName == "open-pilot.ai-review" && openPilotShouldUseStoredRepairCursor(state) {
+		// Review repair creates a new commit. Keep the old intent on the prior
+		// run, while ordinary commit-step recovery must retain its intent.
+		for _, field := range []string{"parent", "tree", "message", "status_before", "diffstat", "name_status"} {
+			delete(inputs, openPilotCommitIntentPrefix+field)
+		}
+	}
 	delete(inputs, "retry_from_step")
 	delete(inputs, "retry_from_step_position")
 	inputs["retry_from_step"] = step

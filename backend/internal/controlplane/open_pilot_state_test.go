@@ -151,6 +151,7 @@ func TestSafeOpenPilotResumeUsesStoredAgentCursorAfterReviewChanges(t *testing.T
 			"resume.open-pilot.branch-plan.worktree_path": "/worktree",
 		},
 	}
+	state.ResumeInputs[openPilotCommitIntentPrefix+"tree"] = "prior-tree"
 	inputs, err := safeOpenPilotResumeInputs(state)
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +159,20 @@ func TestSafeOpenPilotResumeUsesStoredAgentCursorAfterReviewChanges(t *testing.T
 	if inputs["retry_from_step"] != "open-pilot.agent-work" || inputs["retry_from_step_position"] != "4" {
 		t.Fatalf("review repair cursor = %+v", inputs)
 	}
+	if _, ok := inputs[openPilotCommitIntentPrefix+"tree"]; ok {
+		t.Fatal("review repair inherited the prior commit intent")
+	}
+	if state.ResumeInputs[openPilotCommitIntentPrefix+"tree"] != "prior-tree" {
+		t.Fatal("prior intent audit evidence was mutated")
+	}
+	state.LastStepName = "open-pilot.commit-changes"
+	state.ResumeInputs["retry_from_step"] = "open-pilot.commit-changes"
+	state.ResumeInputs["resume.open-pilot.agent-work.response"] = "completed correction"
+	inputs, err = safeOpenPilotResumeInputs(state)
+	if err != nil || inputs[openPilotCommitIntentPrefix+"tree"] != "prior-tree" {
+		t.Fatalf("commit recovery lost durable intent: %v %v", inputs, err)
+	}
+
 }
 
 func TestMemoryLifecycleResumeRejectsNullDurableAffinity(t *testing.T) {

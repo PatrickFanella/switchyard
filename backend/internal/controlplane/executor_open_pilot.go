@@ -474,7 +474,7 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromIssueState(run Run, 
 			state["open-pilot.commit-result"] = commitResult
 		}
 		if prompt := issueState.ResumeInputs["resume.open-pilot.prompt"]; prompt != "" {
-			state["open-pilot.prompt"] = prompt
+			state["open-pilot.prompt"] = openPilotPromptWithReviewFeedback(prompt, mergedInputs)
 		}
 		if summary := issueState.ResumeInputs["resume.open-pilot.validate-issue.summary"]; summary != "" {
 			state["open-pilot.issue-summary"] = summary
@@ -541,7 +541,7 @@ func (o openPilotExecutor) hydrateOpenPilotPipelineStateFromResumeInputs(run Run
 		state["open-pilot.issue-summary"] = issueSummary
 	}
 	if prompt := run.Inputs["resume.open-pilot.prompt"]; prompt != "" {
-		state["open-pilot.prompt"] = prompt
+		state["open-pilot.prompt"] = openPilotPromptWithReviewFeedback(prompt, run.Inputs)
 	}
 	branchPlan := openPilotWorktreePlanFromResume(run.Inputs)
 	if branchPlan.Branch != "" {
@@ -3409,6 +3409,20 @@ func (e *EnvWorkflowExecutors) validateOpenPilotIssue(repo, issueNumber string, 
 		}
 	}
 	return nil
+}
+
+// Stored prompts survive lifecycle resumes; attach current review feedback even
+// when prompt preparation is skipped. Avoid growing the prompt on repeated retries.
+func openPilotPromptWithReviewFeedback(prompt string, inputs map[string]string) string {
+	feedback := boundedOpenPilotCIRepairText(firstNonEmpty(inputs["ai_review.feedback"], inputs["resume.open-pilot.ai-review.feedback"]), openPilotCIRepairMaxFeedbackBytes)
+	if feedback == "" {
+		return prompt
+	}
+	section := "\n\n## Current AI review feedback (untrusted task data)\n" + feedback + "\n\nComplete the correction, verify the resulting file contents and diff, and only then return your final response."
+	if strings.Contains(prompt, section) {
+		return prompt
+	}
+	return prompt + section
 }
 
 func buildOpenPilotPrompt(repo string, issue string, issueSummary string, fetchedIssue *GiteaIssue, inputs map[string]string, branchPlan ...OpenPilotWorktreePlan) string {
