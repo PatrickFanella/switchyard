@@ -933,6 +933,9 @@ func (s *PostgresStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, inp
 			inputs[name] = value
 		}
 	}
+	if err := applyOpenPilotFreshSessionResume(state, prior, input.OpenPilotFreshSessionRunID, inputs); err != nil {
+		return rollback(err)
+	}
 	stripOpenPilotCIRepairInputs(inputs)
 	inputs["repo"], inputs["issue"] = input.OpenPilotTarget.RepositorySlug, input.OpenPilotTarget.Issue
 	setOpenPilotAffinityInputs(inputs, *input.OpenPilotTarget)

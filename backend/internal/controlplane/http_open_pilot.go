@@ -147,7 +147,18 @@ func (a *API) resumeOpenPilotState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removeOpenPilotCIRepairInputs(inputs)
-	prepared, err := a.runner.prepareOpenPilotStateRunInput(state, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs})
+	freshSessionRunID := r.URL.Query().Get("fresh_session_for_run")
+	if freshSessionRunID != "" {
+		if err := validateOpenPilotFreshSessionState(state, freshSessionRunID); err != nil {
+			writeControlError(w, err)
+			return
+		}
+		if err := validateOpenPilotFreshSessionWorktree(r.Context(), openPilotWorktreePlanFromResume(inputs), inputs); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	prepared, err := a.runner.prepareOpenPilotStateRunInput(state, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: inputs, OpenPilotFreshSessionRunID: freshSessionRunID})
 	if err != nil {
 		writeControlError(w, err)
 		return
