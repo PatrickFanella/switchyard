@@ -9,6 +9,13 @@ qualification record.
 - Authoritative branch target: `main`
 - Current deployed release: `v0.1.2`
 - Current deployed revision: `7d90c065c05bfa93eb380ff071036d61c1f965e2`
+- The two pointers above name the last release with a revision-matched
+  qualification record; `make docs-check` binds them to that record. They are
+  not a claim about which revision currently runs. Tags `v0.2.0` through
+  `v0.2.4` (2026-08-25 to 2026-08-27) and later `main` revisions have been
+  deployed without a qualification record. On 2026-09-23 the Kvant stack was
+  observed running `ca44597f2926fc24e77936d365a365908fb8f5a8`. Qualifying a
+  current candidate and publishing its record is Gitea issue #14.
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
 - Required production configuration gate: `make production-config-check` with the deployed environment exported
@@ -40,13 +47,19 @@ implementation and test paths bind each status claim to repository evidence.
 
 ## Active release blockers
 
-Do not increase unattended Open Pilot autonomy until all of the following are
-proven for one immutable revision:
+Do not increase unattended Open Pilot autonomy until the following is proven
+for one immutable revision:
 
-1. Gitea issue #18 requires human completion and target evidence.
-2. Gitea issue #19 requires human completion and target evidence for the approved host-managed Tailscale path.
+1. Gitea issue #14: run the documented production qualification for the exact
+   current candidate and publish a release record naming the candidate and
+   deployed SHAs. Its former blockers are closed: #13 (release evidence
+   validator), #16 (alert owner and acknowledgement drill), #18 (encrypted
+   Almaz-to-Kvant path) and #19 (encrypted proxy smoke). #18 and #19 were
+   closed on 2026-08-24 with production smoke evidence on revision
+   `9521e5439870e5661a4fa197e30ae8febc66aa24`; that evidence applies to that
+   revision only.
 
-Issue #17 adds static enforcement for the production configuration contract. It does not prove either blocker or the deployed target path.
+Issue #17 adds static enforcement for the production configuration contract. It does not prove the deployed target path for any later revision.
 
 Production configuration validation also enforces strict OpenCode mode, a
 non-default password, a dedicated externally located workspace with matching
