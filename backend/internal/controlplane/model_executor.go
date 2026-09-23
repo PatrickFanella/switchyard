@@ -830,7 +830,7 @@ func modelAdapterPrompt(request ModelRequest) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode model adapter request: %w", err)
 	}
-	return "Return one JSON object matching the managed adapter envelope. Do not use your own tools. Adapter input:\n" + string(payload), nil
+	return "Return one JSON object matching the managed adapter envelope. Do not use your own tools. A response without tool_calls ends the caller agent turn: if an edit or correction remains, return the needed tool_calls instead of announcing future work. Adapter input:\n" + string(payload), nil
 }
 
 func decodeModelAdapterResponse(raw string) (string, []any, error) {
