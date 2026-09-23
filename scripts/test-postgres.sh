@@ -65,5 +65,6 @@ fi
 
 export SWITCHYARD_TEST_DATABASE_URL="host=$database_host port=$database_port user=switchyard_test password=$password dbname=switchyard_test sslmode=disable"
 export SWITCHYARD_TEST_POSTGRES_ISOLATED=1
+test_pattern="${SWITCHYARD_TEST_PATTERN:-TestPostgres.*|Test.*(Migration|Affinity|Adopt|LockOrder|StaleAttempt).*|TestStoreLifecycleContract/postgres}"
 cd backend
-go test ./internal/controlplane -v -run 'TestPostgresStore.*Integration|TestArtifactAndCompatibilityMigrationsPreserveFloorsAndOldReadersIntegration|TestStoreLifecycleContract/postgres' -count=1
+go test ./internal/controlplane -v -run "$test_pattern" -count=1

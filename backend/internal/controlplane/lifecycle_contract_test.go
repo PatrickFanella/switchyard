@@ -68,7 +68,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if claimed.ID != run.ID || claimed.Status != controlplane.RunRunning || claimed.AttemptCount != 1 {
 					t.Fatalf("first claim = %+v", claimed)
 				}
-				if _, err := store.FinishClaimedRun(run.ID, "worker-one", controlplane.RunFailed, "transient failure"); err != nil {
+				if _, err := store.FinishClaimedRun(run.ID, "worker-one", claimed.AttemptCount, controlplane.RunFailed, "transient failure"); err != nil {
 					t.Fatalf("FinishClaimedRun(failed) error = %v", err)
 				}
 
@@ -92,7 +92,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if claimed.AttemptCount != 2 || claimed.ClaimedBy != "worker-two" {
 					t.Fatalf("second claim = %+v", claimed)
 				}
-				finished, err := store.FinishClaimedRun(run.ID, "worker-two", controlplane.RunSucceeded, "completed")
+				finished, err := store.FinishClaimedRun(run.ID, "worker-two", claimed.AttemptCount, controlplane.RunSucceeded, "completed")
 				if err != nil {
 					t.Fatalf("FinishClaimedRun(succeeded) error = %v", err)
 				}
@@ -224,7 +224,8 @@ func TestStoreLifecycleContract(t *testing.T) {
 				now := time.Unix(2_750, 0).UTC()
 				store := factory.new(t, &now)
 				run := lifecycleContractRun(t, store, 1)
-				if _, err := store.ClaimNextRun("panic-worker", time.Minute); err != nil {
+				claimed, err := store.ClaimNextRun("panic-worker", time.Minute)
+				if err != nil {
 					t.Fatal(err)
 				}
 				step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "panic-owned", Executor: "model", CorrelationIDs: map[string]string{controlplane.CorrelationDeprecatedBackend: "llama-line"}})
@@ -234,7 +235,7 @@ func TestStoreLifecycleContract(t *testing.T) {
 				if _, err := store.StartRunStep(step.ID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := store.FinishClaimedRun(run.ID, "panic-worker", controlplane.RunFailed, "worker panic: boom"); err != nil {
+				if _, err := store.FinishClaimedRun(run.ID, "panic-worker", claimed.AttemptCount, controlplane.RunFailed, "worker panic: boom"); err != nil {
 					t.Fatal(err)
 				}
 				detail, err := store.RunDetail(run.ID)
@@ -243,6 +244,38 @@ func TestStoreLifecycleContract(t *testing.T) {
 				}
 				if len(detail.Steps) != 1 || detail.Steps[0].Status != controlplane.StepFailed || detail.Steps[0].Error != "worker panic: boom" || detail.Steps[0].CorrelationIDs[controlplane.CorrelationDeprecatedBackend] != "llama-line" {
 					t.Fatalf("terminal panic steps = %+v", detail.Steps)
+				}
+			})
+
+			t.Run("stale_attempt_cannot_finish_reclaimed_run_with_same_worker", func(t *testing.T) {
+				now := time.Now().UTC()
+				store := factory.new(t, &now)
+				run := lifecycleContractRun(t, store, 2)
+				first, err := store.ClaimNextRun("same-worker", 20*time.Millisecond)
+				if err != nil {
+					t.Fatal(err)
+				}
+				now = first.LeaseExpiresAt.Add(time.Second)
+				time.Sleep(30 * time.Millisecond)
+				if _, err := store.FinishClaimedRun(run.ID, "same-worker", first.AttemptCount, controlplane.RunSucceeded, "stale finish"); err == nil {
+					t.Fatal("expired lease finished run")
+				}
+				if requeued, failed, err := store.RecoverLeasedRuns(now); err != nil || requeued != 1 || failed != 0 {
+					t.Fatalf("RecoverLeasedRuns() = %d, %d, %v", requeued, failed, err)
+				}
+				second, err := store.ClaimNextRun("same-worker", time.Minute)
+				if err != nil || second.AttemptCount != first.AttemptCount+1 {
+					t.Fatalf("second claim = %+v, %v", second, err)
+				}
+				if _, err := store.FinishClaimedRun(run.ID, "same-worker", first.AttemptCount, controlplane.RunSucceeded, "stale finish"); err == nil {
+					t.Fatal("stale attempt finished reclaimed run")
+				}
+				detail, err := store.RunDetail(run.ID)
+				if err != nil || detail.Run.Status != controlplane.RunRunning || detail.Run.AttemptCount != second.AttemptCount {
+					t.Fatalf("reclaimed run = %+v, %v", detail.Run, err)
+				}
+				if _, err := store.FinishClaimedRun(run.ID, "same-worker", second.AttemptCount, controlplane.RunSucceeded, "current finish"); err != nil {
+					t.Fatal(err)
 				}
 			})
 
@@ -366,6 +399,7 @@ func newPostgresLifecycleStore(t *testing.T, now *time.Time) controlplane.Store 
 	if databaseURL == "" {
 		t.Skip("set SWITCHYARD_TEST_DATABASE_URL to run Postgres lifecycle store contract")
 	}
+	*now = time.Now().UTC().Truncate(time.Microsecond)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 	db, err := controlplane.OpenPostgres(ctx, databaseURL)
@@ -407,6 +441,11 @@ func newPostgresLifecycleStore(t *testing.T, now *time.Time) controlplane.Store 
 	}
 	if err := controlplane.Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
+	}
+	if os.Getenv("SWITCHYARD_TEST_POSTGRES_ISOLATED") == "1" {
+		if _, err := db.ExecContext(ctx, `delete from runs`); err != nil {
+			t.Fatalf("reset isolated PostgreSQL runs: %v", err)
+		}
 	}
 	store := controlplane.NewPostgresStore(db, func() time.Time { return *now })
 	workflowID := lifecycleWorkflowID(t)

@@ -24,6 +24,7 @@ type API struct {
 	ownedModelService     *ModelService
 	compatBroker          *llamaLineCompatTracker
 	openCode              OpenCodeExecutorStatusProvider
+	openPilotRepositories OpenPilotRepositoryStatusProvider
 	canceler              CancelDispatcher
 	scheduler             *Scheduler
 	workerPool            *WorkerPool
@@ -49,7 +50,7 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), canceler: NewEnvCancelDispatcher()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), canceler: NewEnvCancelDispatcherWithStore(store)}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
@@ -384,9 +385,29 @@ func (a *API) modelBrokerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) openCodeExecutorStatus(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"opencode_executor": a.openCode.Status(ctx)})
+	var openCodeStatus OpenCodeExecutorStatus
+	var repositoryStatus OpenPilotRepositoryStatus
+	var probes sync.WaitGroup
+	probes.Add(1)
+	go func() {
+		defer probes.Done()
+		openCodeStatus = a.openCode.Status(ctx)
+	}()
+	if a.openPilotRepositories != nil {
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			repositoryStatus = a.openPilotRepositories.Status(ctx)
+		}()
+	}
+	probes.Wait()
+	payload := map[string]any{"opencode_executor": openCodeStatus}
+	if a.openPilotRepositories != nil {
+		payload["open_pilot_repositories"] = repositoryStatus
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (a *API) schedulerStatus(w http.ResponseWriter, r *http.Request) {
@@ -553,6 +574,8 @@ func writeControlError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}

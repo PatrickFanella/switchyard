@@ -14,17 +14,22 @@ import (
 	"time"
 )
 
+type GiteaIssueAssignee struct {
+	Login string `json:"login"`
+}
+
 // GiteaIssue models the issue payload used by the control plane.
 type GiteaIssue struct {
-	ID         int      `json:"id"`
-	Number     int      `json:"number"`
-	Repository string   `json:"-"`
-	Title      string   `json:"title"`
-	Body       string   `json:"body"`
-	State      string   `json:"state"`
-	URL        string   `json:"url"`
-	HTMLURL    string   `json:"html_url"`
-	Labels     []string `json:"labels"`
+	ID         int                  `json:"id"`
+	Number     int                  `json:"number"`
+	Repository string               `json:"-"`
+	Title      string               `json:"title"`
+	Body       string               `json:"body"`
+	State      string               `json:"state"`
+	URL        string               `json:"url"`
+	HTMLURL    string               `json:"html_url"`
+	Labels     []string             `json:"labels"`
+	Assignees  []GiteaIssueAssignee `json:"assignees,omitempty"`
 }
 
 // IssueFetcher fetches issues from Gitea.
@@ -35,6 +40,7 @@ type IssueFetcher interface {
 type GiteaIssueReader interface {
 	IssueFetcher
 	ListIssues(ctx context.Context, repo string, labels []string) ([]GiteaIssue, error)
+	ListAssignedIssues(ctx context.Context, repo, assignee string) ([]GiteaIssue, error)
 }
 
 // GiteaPullRequestRef models a repository or pull request reference.
@@ -109,6 +115,17 @@ type GiteaMergeResult struct {
 type GiteaPullRequestReader interface {
 	FindPullRequestByHead(ctx context.Context, repo string, head string) (GiteaPullRequest, bool, error)
 	PullRequestChecks(ctx context.Context, repo string, pr GiteaPullRequest) (GiteaCheckSummary, error)
+}
+
+// GiteaCIJobLogReader retrieves the bounded log tail referenced by a Gitea
+// Actions commit status. It is intentionally separate from
+// GiteaPullRequestReader so test and compatibility readers can omit it.
+type GiteaCIJobLogReader interface {
+	FetchActionsJobLog(ctx context.Context, repo string, targetURL string) (string, error)
+}
+
+type GiteaPullRequestGetter interface {
+	GetPullRequest(ctx context.Context, repo string, number int) (GiteaPullRequest, error)
 }
 
 // GiteaPullRequestMerger merges pull requests and closes issues in Gitea.
@@ -202,14 +219,15 @@ func (c *EnvGiteaClient) FetchIssue(ctx context.Context, repo string, issue stri
 		return GiteaIssue{}, fmt.Errorf("gitea issue fetch failed: %s", resp.Status)
 	}
 	var raw struct {
-		ID      int    `json:"id"`
-		Number  int    `json:"number"`
-		Title   string `json:"title"`
-		Body    string `json:"body"`
-		State   string `json:"state"`
-		URL     string `json:"url"`
-		HTMLURL string `json:"html_url"`
-		Labels  []struct {
+		ID        int                  `json:"id"`
+		Number    int                  `json:"number"`
+		Title     string               `json:"title"`
+		Body      string               `json:"body"`
+		State     string               `json:"state"`
+		URL       string               `json:"url"`
+		HTMLURL   string               `json:"html_url"`
+		Assignees []GiteaIssueAssignee `json:"assignees"`
+		Labels    []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 		Repository struct {
@@ -225,10 +243,21 @@ func (c *EnvGiteaClient) FetchIssue(ctx context.Context, repo string, issue stri
 			labels = append(labels, label.Name)
 		}
 	}
-	return GiteaIssue{ID: raw.ID, Number: raw.Number, Repository: raw.Repository.FullName, Title: raw.Title, Body: raw.Body, State: raw.State, URL: raw.URL, HTMLURL: raw.HTMLURL, Labels: labels}, nil
+	return GiteaIssue{ID: raw.ID, Number: raw.Number, Repository: raw.Repository.FullName, Title: raw.Title, Body: raw.Body, State: raw.State, URL: raw.URL, HTMLURL: raw.HTMLURL, Labels: labels, Assignees: raw.Assignees}, nil
 }
 
 func (c *EnvGiteaClient) ListIssues(ctx context.Context, repo string, labels []string) ([]GiteaIssue, error) {
+	return c.listIssues(ctx, repo, labels, "")
+}
+
+func (c *EnvGiteaClient) ListAssignedIssues(ctx context.Context, repo, assignee string) ([]GiteaIssue, error) {
+	if strings.TrimSpace(assignee) == "" {
+		return nil, fmt.Errorf("issue assignee is required")
+	}
+	return c.listIssues(ctx, repo, nil, strings.TrimSpace(assignee))
+}
+
+func (c *EnvGiteaClient) listIssues(ctx context.Context, repo string, labels []string, assignee string) ([]GiteaIssue, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("GITEA_BASE_URL is not configured")
 	}
@@ -251,19 +280,23 @@ func (c *EnvGiteaClient) ListIssues(ctx context.Context, repo string, labels []s
 		values.Set("type", "issues")
 		values.Set("limit", "50")
 		values.Set("page", strconv.Itoa(page))
+		if assignee != "" {
+			values.Set("assigned_by", assignee)
+		}
 		if len(labels) > 0 {
 			values.Set("labels", strings.Join(labels, ","))
 		}
 		query.RawQuery = values.Encode()
 		var raw []struct {
-			ID      int    `json:"id"`
-			Number  int    `json:"number"`
-			Title   string `json:"title"`
-			Body    string `json:"body"`
-			State   string `json:"state"`
-			URL     string `json:"url"`
-			HTMLURL string `json:"html_url"`
-			Labels  []struct {
+			ID        int                  `json:"id"`
+			Number    int                  `json:"number"`
+			Title     string               `json:"title"`
+			Body      string               `json:"body"`
+			State     string               `json:"state"`
+			URL       string               `json:"url"`
+			HTMLURL   string               `json:"html_url"`
+			Assignees []GiteaIssueAssignee `json:"assignees"`
+			Labels    []struct {
 				Name string `json:"name"`
 			} `json:"labels"`
 			PullRequest *json.RawMessage `json:"pull_request"`
@@ -288,7 +321,7 @@ func (c *EnvGiteaClient) ListIssues(ctx context.Context, repo string, labels []s
 					itemLabels = append(itemLabels, label.Name)
 				}
 			}
-			result = append(result, GiteaIssue{ID: item.ID, Number: item.Number, Title: item.Title, Body: item.Body, State: item.State, URL: item.URL, HTMLURL: item.HTMLURL, Labels: itemLabels})
+			result = append(result, GiteaIssue{ID: item.ID, Number: item.Number, Title: item.Title, Body: item.Body, State: item.State, URL: item.URL, HTMLURL: item.HTMLURL, Labels: itemLabels, Assignees: item.Assignees})
 		}
 		if len(raw) < 50 {
 			break
@@ -407,6 +440,126 @@ func (c *EnvGiteaClient) PullRequestChecks(ctx context.Context, repo string, pr 
 	checks := append([]GiteaCheckRun{}, raw.Checks...)
 	checks = append(checks, raw.CheckRuns...)
 	return GiteaCheckSummary{State: raw.State, SHA: raw.SHA, TotalCount: raw.TotalCount, Statuses: raw.Statuses, Checks: checks}, nil
+}
+
+const (
+	giteaActionsJobLogMaxRead = 16 << 20
+	giteaActionsJobLogMaxTail = 16 << 10
+)
+
+// FetchActionsJobLog follows only a same-repository Gitea Actions job target,
+// translates it to the authenticated API endpoint, and returns a bounded tail.
+// Redirects are rejected so the Gitea token cannot be forwarded elsewhere.
+func (c *EnvGiteaClient) FetchActionsJobLog(ctx context.Context, repo string, targetURL string) (string, error) {
+	if c.baseURL == "" {
+		return "", fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	owner, name, err := c.repoParts(repo)
+	if err != nil {
+		return "", err
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("GITEA_BASE_URL is invalid")
+	}
+	target, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil {
+		return "", fmt.Errorf("invalid Gitea Actions target URL")
+	}
+	if target.Host != "" && !target.IsAbs() {
+		return "", fmt.Errorf("Gitea Actions target URL must not be scheme-relative")
+	}
+	if target.IsAbs() && (!strings.EqualFold(target.Scheme, base.Scheme) || !strings.EqualFold(target.Host, base.Host)) {
+		return "", fmt.Errorf("Gitea Actions target URL must use the configured Gitea origin")
+	}
+	parts := strings.Split(strings.Trim(target.Path, "/"), "/")
+	if len(parts) != 7 || !strings.EqualFold(parts[0], owner) || !strings.EqualFold(parts[1], name) || parts[2] != "actions" || parts[3] != "runs" || parts[5] != "jobs" {
+		return "", fmt.Errorf("Gitea Actions target URL does not identify a job in %s", repo)
+	}
+	if _, err := strconv.ParseUint(parts[4], 10, 64); err != nil {
+		return "", fmt.Errorf("Gitea Actions run id is invalid")
+	}
+	jobID, err := strconv.ParseUint(parts[6], 10, 64)
+	if err != nil || jobID == 0 {
+		return "", fmt.Errorf("Gitea Actions job id is invalid")
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "actions", "jobs", strconv.FormatUint(jobID, 10), "logs")
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	c.setAuth(req)
+	client := *c.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", fmt.Errorf("gitea actions job log fetch failed: %s", resp.Status)
+	}
+	tail := boundedTailBuffer{max: giteaActionsJobLogMaxTail}
+	read, err := io.Copy(&tail, io.LimitReader(resp.Body, giteaActionsJobLogMaxRead+1))
+	if err != nil {
+		return "", err
+	}
+	if read > giteaActionsJobLogMaxRead {
+		return "", fmt.Errorf("gitea actions job log exceeds the read limit")
+	}
+	return string(tail.buf), nil
+}
+
+type boundedTailBuffer struct {
+	buf []byte
+	max int
+}
+
+func (b *boundedTailBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if b.max <= 0 {
+		return written, nil
+	}
+	if len(p) >= b.max {
+		b.buf = append(b.buf[:0], p[len(p)-b.max:]...)
+		return written, nil
+	}
+	if overflow := len(b.buf) + len(p) - b.max; overflow > 0 {
+		copy(b.buf, b.buf[overflow:])
+		b.buf = b.buf[:len(b.buf)-overflow]
+	}
+	b.buf = append(b.buf, p...)
+	return written, nil
+}
+
+func (c *EnvGiteaClient) GetPullRequest(ctx context.Context, repo string, number int) (GiteaPullRequest, error) {
+	if c.baseURL == "" {
+		return GiteaPullRequest{}, fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	owner, name, err := c.repoParts(repo)
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	if number < 1 {
+		return GiteaPullRequest{}, fmt.Errorf("pull request number is required")
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "pulls", strconv.Itoa(number))
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	var pr GiteaPullRequest
+	resp, err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &pr)
+	if err != nil {
+		return GiteaPullRequest{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return GiteaPullRequest{}, fmt.Errorf("gitea pull request fetch failed: %s", resp.Status)
+	}
+	return pr, nil
 }
 
 // MergePullRequest merges the specified pull request.
@@ -594,4 +747,52 @@ func (c *EnvGiteaClient) CreatePullRequest(ctx context.Context, input GiteaPullR
 		return GiteaPullRequest{}, err
 	}
 	return raw, nil
+}
+
+// AssignIssue adds the bot to the freshly fetched assignee list. Gitea's edit API
+// replaces the list, so retain every existing assignee in the request.
+func (c *EnvGiteaClient) AssignIssue(ctx context.Context, repo string, issue GiteaIssue, assignee string) error {
+	if strings.TrimSpace(c.baseURL) == "" {
+		return fmt.Errorf("GITEA_BASE_URL is not configured")
+	}
+	if issue.Number < 1 || strings.TrimSpace(assignee) == "" {
+		return fmt.Errorf("issue number and assignee are required")
+	}
+	if openPilotIssueAssignedTo(issue, assignee) {
+		return nil
+	}
+	owner, name, err := c.repoParts(repo)
+	if err != nil {
+		return err
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "issues", strconv.Itoa(issue.Number))
+	if err != nil {
+		return err
+	}
+	logins := make([]string, 0, len(issue.Assignees)+1)
+	for _, user := range issue.Assignees {
+		if user.Login != "" {
+			logins = append(logins, user.Login)
+		}
+	}
+	logins = append(logins, strings.TrimSpace(assignee))
+	var updated struct {
+		Assignees []GiteaIssueAssignee `json:"assignees"`
+	}
+	payload, err := json.Marshal(map[string]any{"assignees": logins})
+	if err != nil {
+		return err
+	}
+	resp, err := c.doJSON(ctx, http.MethodPatch, endpoint, payload, &updated)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("gitea issue assignment failed: %s", resp.Status)
+	}
+	if !openPilotIssueAssignedTo(GiteaIssue{Assignees: updated.Assignees}, assignee) {
+		return fmt.Errorf("gitea issue assignment was not applied")
+	}
+	return nil
 }

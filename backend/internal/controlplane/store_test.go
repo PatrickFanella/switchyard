@@ -287,15 +287,19 @@ func TestStoreExtendsRunLease(t *testing.T) {
 		t.Fatalf("ClaimNextRun() error = %v", err)
 	}
 	now = now.Add(30 * time.Second)
-	extended, err := store.ExtendRunLease(run.ID, "worker-1", 2*time.Minute)
+	extended, err := store.ExtendRunLease(run.ID, "worker-1", claimed.AttemptCount, 2*time.Minute)
 	if err != nil {
 		t.Fatalf("ExtendRunLease() error = %v", err)
 	}
 	if !extended.LeaseExpiresAt.After(*claimed.LeaseExpiresAt) || extended.ClaimedBy != "worker-1" {
 		t.Fatalf("extended = %+v claimed = %+v", extended, claimed)
 	}
-	if _, err := store.ExtendRunLease(run.ID, "worker-2", time.Minute); err == nil {
+	if _, err := store.ExtendRunLease(run.ID, "worker-2", claimed.AttemptCount, time.Minute); err == nil {
 		t.Fatal("ExtendRunLease() succeeded for wrong worker")
+	}
+	now = extended.LeaseExpiresAt.Add(time.Second)
+	if _, err := store.ExtendRunLease(run.ID, "worker-1", claimed.AttemptCount, time.Minute); err == nil {
+		t.Fatal("ExtendRunLease() revived an expired lease")
 	}
 }
 
@@ -308,13 +312,14 @@ func TestStoreFinishClaimedRunRequiresOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	if _, err := store.ClaimNextRun("worker-1", time.Minute); err != nil {
+	claimed, err := store.ClaimNextRun("worker-1", time.Minute)
+	if err != nil {
 		t.Fatalf("ClaimNextRun() error = %v", err)
 	}
-	if _, err := store.FinishClaimedRun(run.ID, "worker-2", controlplane.RunSucceeded, "done"); err == nil {
+	if _, err := store.FinishClaimedRun(run.ID, "worker-2", claimed.AttemptCount, controlplane.RunSucceeded, "done"); err == nil {
 		t.Fatal("FinishClaimedRun() succeeded for wrong worker")
 	}
-	finished, err := store.FinishClaimedRun(run.ID, "worker-1", controlplane.RunSucceeded, "done")
+	finished, err := store.FinishClaimedRun(run.ID, "worker-1", claimed.AttemptCount, controlplane.RunSucceeded, "done")
 	if err != nil {
 		t.Fatalf("FinishClaimedRun() error = %v", err)
 	}

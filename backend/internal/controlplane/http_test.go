@@ -512,7 +512,7 @@ func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Post(srv.URL+"/api/workflows/open-pilot/run", "application/json", bytes.NewBufferString(`{"repo":" OWNER/REPO ","issue":" 123 ","test_command":" make verify ","base_branch":" release "}`))
+	resp, err := http.Post(srv.URL+"/api/workflows/open-pilot/run", "application/json", bytes.NewBufferString(`{"repo":"OWNER/REPO","issue":"123","test_command":" make verify ","base_branch":" release "}`))
 	if err != nil {
 		t.Fatalf("POST workflow error = %v", err)
 	}
@@ -526,7 +526,7 @@ func TestAPIRunsOpenPilotWorkflow(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode run: %v", err)
 	}
-	if body.Run.WorkflowID != "open-pilot" || body.Run.Inputs["repo"] != "OWNER/REPO" || body.Run.Inputs["issue"] != "123" || body.Run.Inputs["test_command"] != "make verify" || body.Run.Inputs["base_branch"] != "release" {
+	if body.Run.WorkflowID != "open-pilot" || body.Run.Inputs["repo"] != "owner/repo" || body.Run.Inputs["issue"] != "123" || body.Run.Inputs["test_command"] != "make verify" || body.Run.Inputs["base_branch"] != "release" {
 		t.Fatalf("run = %+v", body.Run)
 	}
 }
@@ -1160,10 +1160,13 @@ func TestAPILlamaLineCompatStreamingUsesNativeSSEChunksAndStatusEvents(t *testin
 		t.Fatalf("stream headers = mode:%q status:%q", resp.Header.Get("X-OCQ-Streaming-Mode"), resp.Header.Get("X-OCQ-Status"))
 	}
 	body := mustReadBody(t, resp.Body)
-	for _, want := range []string{"event: status", `"status":"queued"`, `"status":"running"`, `"status":"completed"`, `"object":"chat.completion.chunk"`, `"content":"stream "`, `"content":"answer"`, "data: [DONE]"} {
+	for _, want := range []string{`"object":"chat.completion.chunk"`, `"content":"stream "`, `"content":"answer"`, "data: [DONE]"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream body missing %q: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "event: status") || strings.Contains(body, `"status":"queued"`) {
+		t.Fatalf("OpenAI-compatible stream contains nonstandard lifecycle events: %s", body)
 	}
 }
 
@@ -1952,7 +1955,8 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	api.SetAsyncDispatch(true)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
-	prior, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "123"}})
+	target := controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "123", ExecutorGeneration: "legacy"}
+	_, prior, err := store.ClaimAndCreateOpenPilotInitialRun("OWNER/REPO", "123", controlplane.CreateRunInput{WorkflowID: "open-pilot", OpenPilotTarget: &target})
 	if err != nil {
 		t.Fatalf("CreateRun prior error = %v", err)
 	}
@@ -2079,7 +2083,7 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if err := json.NewDecoder(resumeResp.Body).Decode(&resumeBody); err != nil {
 		t.Fatalf("decode resume: %v", err)
 	}
-	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "OWNER/REPO" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "9" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
+	if resumeBody.Run.WorkflowID != "open-pilot" || resumeBody.Run.Inputs["repo"] != "owner/repo" || resumeBody.Run.Inputs["issue"] != "123" || resumeBody.Run.Inputs["retry_from_step"] != "open-pilot.ai-review" || resumeBody.Run.Inputs["retry_from_step_position"] != "9" || resumeBody.Run.Inputs["resume.open-pilot.prompt"] != "prompt" {
 		t.Fatalf("resume body = %+v", resumeBody)
 	}
 	if resumeBody.Run.Inputs["resume.open-pilot.ci-repair.count"] != "1" || resumeBody.Run.Inputs["resume.open-pilot.ci-repair.feedback"] != "verify failed" || resumeBody.Run.Inputs["resume.open-pilot.ci-repair.original_prompt"] != "original task" {
@@ -2167,7 +2171,8 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("failed verify resume status = %d, want 400", resp.StatusCode)
 	}
-	priorAI, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "129"}})
+	aiTarget := controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "129", ExecutorGeneration: "legacy"}
+	_, priorAI, err := store.ClaimAndCreateOpenPilotInitialRun("OWNER/REPO", "129", controlplane.CreateRunInput{WorkflowID: "open-pilot", OpenPilotTarget: &aiTarget})
 	if err != nil {
 		t.Fatalf("CreateRun prior AI error = %v", err)
 	}
@@ -2239,6 +2244,101 @@ func TestAPIOpenPilotStateVisibilityAndResume(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing repo status = %d", resp.StatusCode)
+	}
+}
+
+func TestAPIOpenPilotLifecycleResolvesCanonicalLegacyIdentity(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetAsyncDispatch(true)
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	seed := func(repo, issue string, phase controlplane.OpenPilotPhase, runID string) controlplane.OpenPilotIssueState {
+		t.Helper()
+		state, err := store.UpsertOpenPilotIssueState(controlplane.OpenPilotIssueState{Repo: repo, Issue: issue, Phase: controlplane.OpenPilotPhaseRequested, RunID: runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if phase != controlplane.OpenPilotPhaseRequested {
+			state, err = store.TransitionOpenPilotIssueState(repo, issue, phase)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state
+	}
+
+	visible := seed("OWNER/REPO", "00130", controlplane.OpenPilotPhaseRequested, "")
+	resp, err := http.Get(srv.URL + "/api/open-pilot/state?repo=owner/repo&issue=130")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("canonical lookup status = %d", resp.StatusCode)
+	}
+	var body struct {
+		State controlplane.OpenPilotIssueState `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.State.ID != visible.ID {
+		t.Fatalf("canonical lookup = %+v, %v", body.State, err)
+	}
+
+	active, err := store.CreateRun(controlplane.CreateRunInput{WorkflowID: "open-pilot", Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "00131"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed("OWNER/REPO", "00131", controlplane.OpenPilotPhaseRequested, active.ID)
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/pause?repo=owner/repo&issue=131", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("canonical pause status = %d", resp.StatusCode)
+	}
+	if detail, err := store.RunDetail(active.ID); err != nil || detail.Run.Status != controlplane.RunCanceled {
+		t.Fatalf("paused run = %+v, %v", detail.Run, err)
+	}
+
+	resumeTarget := controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "132", ExecutorGeneration: "legacy"}
+	_, prior, err := store.ClaimAndCreateOpenPilotInitialRun("OWNER/REPO", "00132", controlplane.CreateRunInput{WorkflowID: "open-pilot", OpenPilotTarget: &resumeTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishRun(prior.ID, controlplane.RunFailed, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	resumable := seed("OWNER/REPO", "00132", controlplane.OpenPilotPhasePaused, prior.ID)
+	resumable.LastStepName = "open-pilot.ai-review"
+	resumable.PullRequestID = 32
+	resumable.PullRequestNum = 32
+	resumable.PullRequestURL = "https://git.example.test/OWNER/REPO/pulls/32"
+	if _, err := store.UpsertOpenPilotIssueState(resumable); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.Post(srv.URL+"/api/open-pilot/state/resume?repo=owner/repo&issue=132", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("canonical resume status = %d", resp.StatusCode)
+	}
+
+	seed("OWNER/REPO", "00133", controlplane.OpenPilotPhaseRequested, "")
+	seed("owner/repo", "0133", controlplane.OpenPilotPhaseRequested, "")
+	resp, err = http.Get(srv.URL + "/api/open-pilot/state?repo=owner/repo&issue=133")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("ambiguous lookup status = %d", resp.StatusCode)
 	}
 }
 
@@ -2318,17 +2418,8 @@ func TestAPIRetryAndCancelRun(t *testing.T) {
 		t.Fatalf("POST retry error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("retry status = %d", resp.StatusCode)
-	}
-	var body struct {
-		Run controlplane.Run `json:"run"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode retry: %v", err)
-	}
-	if body.Run.ID == run.ID || body.Run.TriggerID != run.TriggerID || body.Run.Status != controlplane.RunFailed || !strings.Contains(body.Run.Summary, "not registered") {
-		t.Fatalf("retry run = %+v original = %+v", body.Run, run)
 	}
 }
 
@@ -3244,5 +3335,42 @@ func TestAPIAdaptersProbesChangemakerWhenConfigured(t *testing.T) {
 	}
 	if len(body.Changemaker.Posts) != 1 || body.Changemaker.Posts[0].Title != "Field report" {
 		t.Fatalf("posts = %+v", body.Changemaker.Posts)
+	}
+}
+
+func TestAPIOpenPilotResumeCanceledBeforeExecution(t *testing.T) {
+	store := controlplane.NewStore(nil)
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	api := controlplane.NewAPI(store, controlplane.NewRunner(store, controlplane.MapExecutorRegistry{}))
+	api.SetAsyncDispatch(true)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+	target := controlplane.OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "991", ExecutorGeneration: "legacy"}
+	_, prior, err := store.ClaimAndCreateOpenPilotInitialRun("owner/repo", "991", controlplane.CreateRunInput{WorkflowID: "open-pilot", OpenPilotTarget: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FinishRun(prior.ID, controlplane.RunCanceled, "canceled before execution"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/open-pilot/state/resume?repo=owner/repo&issue=991", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, b)
+	}
+	var body struct {
+		Run controlplane.Run `json:"run"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Run.Inputs["retry_from_step"] != "open-pilot.validate-issue" {
+		t.Fatalf("cursor=%v", body.Run.Inputs)
 	}
 }

@@ -246,7 +246,7 @@ table inet switchyard_web_gate {
         guard = "--require-matching-output __NFT_RULES__"
         self.assertEqual(switchyard.count(guard), 2)
         self.assertEqual(switchyard.count("__UFW_HELPER__ verify-gate --env-file __ENV_FILE__"), 2)
-        self.assertEqual(switchyard.count("docker-compose.yml stop web"), 2)
+        self.assertEqual(switchyard.count("-- stop web"), 2)
         self.assertNotIn("systemctl reload switchyard-web-gate.service", switchyard)
 
 

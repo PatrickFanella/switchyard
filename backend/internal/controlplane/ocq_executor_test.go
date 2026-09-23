@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -92,7 +94,7 @@ func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 	t.Setenv("OPENCODE_SERVER_URL", server.URL)
 	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
 
-	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Prompt: "do native work", RequestID: "req-native", WorkDir: "/tmp/worktree"})
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{Model: "openai/gpt-test", Agent: "switchyard-model-adapter", Prompt: "do native work", RequestID: "req-native", WorkDir: "/tmp/worktree"})
 	if err != nil {
 		t.Fatalf("SendPrompt() error = %v", err)
 	}
@@ -104,6 +106,9 @@ func TestEnvOpenCodeExecutorSendsPromptDirectlyToOpenCode(t *testing.T) {
 	}
 	if messageBody["model"] == nil || len(messageBody["parts"].([]any)) != 1 {
 		t.Fatalf("message body = %+v", messageBody)
+	}
+	if messageBody["agent"] != "switchyard-model-adapter" {
+		t.Fatalf("message agent = %v", messageBody["agent"])
 	}
 }
 
@@ -464,5 +469,139 @@ func TestEnvOpenCodeExecutorDoesNotReplaceStaleNativeSessionTwice(t *testing.T) 
 	}
 	if response.SessionID != "also-stale" || response.CorrelationIDs["opencode_session_id"] != "also-stale" {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestEnvOpenCodeExecutorFailClosedDoesNotReplaceCorrelatedStaleSession(t *testing.T) {
+	var creates, posts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session/stale/message" && r.Method == http.MethodGet:
+			http.Error(w, "session not found", http.StatusNotFound)
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			creates.Add(1)
+			_, _ = w.Write([]byte(`{"id":"replacement"}`))
+		case r.Method == http.MethodPost:
+			posts.Add(1)
+		default:
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{
+		Prompt: "do not repost", SessionID: "stale", FailClosedOnStaleSession: true,
+	})
+	if err == nil || response.SessionID != "stale" {
+		t.Fatalf("SendPrompt() response=%+v error=%v", response, err)
+	}
+	if creates.Load() != 0 || posts.Load() != 0 {
+		t.Fatalf("fail-closed stale session created=%d posted=%d", creates.Load(), posts.Load())
+	}
+}
+
+func TestEnvOpenCodeExecutorFailClosedMayReplaceBeforeMessageBoundary(t *testing.T) {
+	var creates atomic.Int32
+	var posted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := "first"
+			if creates.Add(1) == 2 {
+				id = "replacement"
+			}
+			_, _ = fmt.Fprintf(w, `{"id":%q}`, id)
+		case r.URL.Path == "/session/first/message" && r.Method == http.MethodGet:
+			http.Error(w, "session not found", http.StatusNotFound)
+		case r.URL.Path == "/session/replacement/message" && r.Method == http.MethodGet:
+			if posted.Load() {
+				_, _ = w.Write([]byte(`[{"info":{"id":"done","role":"assistant","finish":"stop"},"parts":[{"type":"text","text":"done"}]}]`))
+			} else {
+				_, _ = w.Write([]byte(`[]`))
+			}
+		case r.URL.Path == "/session/replacement/message" && r.Method == http.MethodPost:
+			posted.Store(true)
+			_, _ = w.Write([]byte(`{"parts":[{"type":"text","text":"queued"}]}`))
+		default:
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENCODE_SERVER_URL", server.URL)
+	t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+	t.Setenv("OPENCODE_SESSION_STATUS_POLL_INTERVAL", "1ms")
+
+	response, err := controlplane.NewEnvOpenCodeExecutor().SendPrompt(t.Context(), controlplane.OpenCodeRequest{
+		Prompt: "safe replacement", FailClosedOnStaleSession: true,
+	})
+	if err != nil || response.SessionID != "replacement" || creates.Load() != 2 {
+		t.Fatalf("SendPrompt() response=%+v creates=%d error=%v", response, creates.Load(), err)
+	}
+}
+
+func TestNativeProviderTerminalErrorsAreBoundedAndSanitized(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		canceled bool
+		attempts int
+	}{
+		{"authentication", 401, false, 1}, {"forbidden", 403, false, 1}, {"transient", 503, false, 2}, {"aborted", 0, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var posts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/session":
+					fmt.Fprint(w, `{"id":"provider-session"}`)
+				case strings.HasSuffix(r.URL.Path, "/abort"):
+					fmt.Fprint(w, `true`)
+				case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
+					posts.Add(1)
+					fmt.Fprint(w, `{}`)
+				case strings.HasSuffix(r.URL.Path, "/message"):
+					// Each prompt reads the previous message once before posting.
+					id := posts.Load()
+					name := "APIError"
+					if tc.canceled {
+						name = "MessageAbortedError"
+					}
+					fmt.Fprintf(w, `[{"info":{"id":"message-%d","role":"assistant","error":{"name":%q,"data":{"statusCode":%d,"isRetryable":true,"message":"SECRET_PROVIDER_CREDENTIAL","responseBody":"SECRET_PROVIDER_BODY"}}}}]`, id, name, tc.status)
+				default:
+					http.Error(w, "unexpected", 404)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("OPENCODE_SERVER_URL", server.URL)
+			t.Setenv("OPENCODE_EXECUTOR_BACKEND", "native")
+			t.Setenv("MODEL_BROKER_BACKEND", "opencode")
+			t.Setenv("MODEL_BROKER_RETRY_ATTEMPTS", "2")
+			t.Setenv("MODEL_BROKER_RETRY_BACKOFF", "0s")
+			t.Setenv("OPENCODE_MESSAGE_TIMEOUT", "1s")
+			response, err := controlplane.NewEnvModelBroker().Generate(t.Context(), controlplane.ModelRequest{Model: "openai/gpt-test", Messages: []controlplane.ModelMessage{{Role: "user", Content: "work"}}})
+			if err == nil || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error=%v", err)
+			}
+			if strings.Contains(err.Error(), "SECRET") {
+				t.Fatalf("provider payload leaked: %v", err)
+			}
+			if posts.Load() != int32(tc.attempts) {
+				t.Fatalf("posts=%d want=%d error=%v", posts.Load(), tc.attempts, err)
+			}
+			if tc.canceled {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error=%v", err)
+				}
+				return
+			}
+			if response.CorrelationIDs["opencode_session_id"] != "provider-session" || response.CorrelationIDs["provider_status"] != fmt.Sprint(tc.status) {
+				t.Fatalf("correlation=%v", response.CorrelationIDs)
+			}
+			if tc.status == 401 && !strings.Contains(err.Error(), "refresh the managed provider sign-in") {
+				t.Fatalf("missing recovery: %v", err)
+			}
+		})
 	}
 }

@@ -5,17 +5,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrInvalid        = errors.New("invalid input")
-	ErrQueueFull      = errors.New("queue capacity exceeded")
-	ErrAlreadyClaimed = errors.New("open-pilot issue already claimed")
-	ErrConflict       = errors.New("state conflict")
+	ErrNotFound        = errors.New("not found")
+	ErrInvalid         = errors.New("invalid input")
+	ErrQueueFull       = errors.New("queue capacity exceeded")
+	ErrAlreadyClaimed  = errors.New("open-pilot issue already claimed")
+	ErrConflict        = errors.New("state conflict")
+	ErrStaleRunAttempt = fmt.Errorf("stale run attempt: %w", ErrConflict)
 )
 
 type Store interface {
@@ -30,17 +32,22 @@ type Store interface {
 	UpsertWorkflow(Workflow) error
 	UpsertTrigger(Trigger) error
 	OpenPilotIssueState(string, string) (OpenPilotIssueState, error)
+	OpenPilotIssueStateForTarget(OpenPilotTarget) (OpenPilotIssueState, error)
 	UpsertOpenPilotIssueState(OpenPilotIssueState) (OpenPilotIssueState, error)
 	TransitionOpenPilotIssueState(string, string, OpenPilotPhase) (OpenPilotIssueState, error)
-	ClaimOpenPilotIssueStateForResume(string, string, map[string]string) (OpenPilotIssueState, error)
 	ClaimAndCreateOpenPilotResumeRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
 	ClaimAndCreateOpenPilotInitialRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
+	BindOpenPilotIssueStateAffinity(string, string, OpenPilotTarget) (OpenPilotIssueState, error)
+	AdoptOpenPilotRunAffinity(string, string, int, *OpenPilotAdmissionGate) (Run, OpenPilotIssueState, error)
 	HandleOpenPilotCIFailure(OpenPilotCIRepairRequest) (OpenPilotCIRepairResult, error)
-	ReconcileOpenPilotCIRepairTerminal(string) (bool, error)
-	ReconcileOpenPilotCIRepairTerminals(int) (int, error)
-	ReconcileOpenPilotMergeTerminal(string) (bool, error)
-	ReconcileOpenPilotMergeTerminals(int) (int, error)
+	ReconcileOpenPilotCIRepairTerminal(string, ...*OpenPilotAdmissionGate) (bool, error)
+	ReconcileOpenPilotCIRepairTerminals(int, ...*OpenPilotAdmissionGate) (int, error)
+	ReconcileOpenPilotMergeTerminal(string, ...*OpenPilotAdmissionGate) (bool, error)
+	ReconcileOpenPilotMergeTerminals(int, ...*OpenPilotAdmissionGate) (int, error)
 	ListOpenPilotIssueStates() []OpenPilotIssueState
+	ListOpenPilotIssueStatesForAudit(int) ([]OpenPilotIssueState, error)
+	OpenPilotRolloutStatus() (OpenPilotRolloutStatus, error)
+	ConfigureOpenPilotRollout(ConfigureOpenPilotRolloutInput) (OpenPilotRolloutStatus, error)
 	ListWorkflows() []Workflow
 	ListTriggers() []Trigger
 	Trigger(string) (Trigger, bool)
@@ -54,11 +61,11 @@ type Store interface {
 	CreateRunContext(context.Context, CreateRunInput) (Run, error)
 	StartRun(string) (Run, error)
 	ClaimNextRun(string, time.Duration) (Run, error)
-	ExtendRunLease(string, string, time.Duration) (Run, error)
-	RecoverLeasedRuns(time.Time) (int, int, error)
+	ExtendRunLease(string, string, int, time.Duration) (Run, error)
+	RecoverLeasedRuns(time.Time, ...*OpenPilotAdmissionGate) (int, int, error)
 	RequeueFailedRun(string, time.Time, string) (Run, error)
 	FinishRun(string, RunStatus, string) (Run, error)
-	FinishClaimedRun(string, string, RunStatus, string) (Run, error)
+	FinishClaimedRun(string, string, int, RunStatus, string) (Run, error)
 	CreateRunStep(CreateRunStepInput) (RunStep, error)
 	StartRunStep(string) (RunStep, error)
 	UpdateRunStep(string, UpdateRunStepInput) (RunStep, error)
@@ -104,6 +111,7 @@ type Store interface {
 // caller-prepared values accepted by the atomic CI repair handoff. The store
 // derives the child identity, cursor, and pipeline from locked durable state.
 type OpenPilotCIRepairRequest struct {
+	Target               OpenPilotTarget
 	Repo                 string
 	Issue                string
 	ParentRunID          string
@@ -135,6 +143,8 @@ type MemoryStore struct {
 	workflows                  map[string]Workflow
 	triggers                   map[string]Trigger
 	openPilotIssueStates       map[string]OpenPilotIssueState
+	openPilotReservations      map[string][]string
+	openPilotRollout           OpenPilotRolloutStatus
 	runs                       map[string]Run
 	steps                      map[string]RunStep
 	events                     map[string][]RunEvent
@@ -161,11 +171,15 @@ func NewStore(now func() time.Time) *MemoryStore {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: now().UTC(), webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
+	created := now().UTC()
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, openPilotRollout: OpenPilotRolloutStatus{Mode: "legacy", ProofTargets: []OpenPilotProofTarget{}, UpdatedAt: created}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: created, webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
 }
 
-func (s *MemoryStore) Ready(context.Context) error       { return nil }
-func (s *MemoryStore) WithContext(context.Context) Store { return s }
+func (s *MemoryStore) Ready(context.Context) error { return nil }
+func (s *MemoryStore) WithContext(ctx context.Context) Store {
+	fence, present, err := runAttemptFenceFromContext(ctx)
+	return &memoryStoreContext{MemoryStore: s, fence: fence, fencePresent: present, fenceErr: err}
+}
 
 func newID(prefix string) string {
 	var b [8]byte

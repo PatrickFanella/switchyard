@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -72,6 +73,11 @@ func (p *WorkerPool) Status() WorkerPoolStatus {
 
 func (p *WorkerPool) Start(ctx context.Context) {
 	p.mu.Lock()
+	if err := p.AdmissionError(); err != nil {
+		p.lastErr = err.Error()
+		p.mu.Unlock()
+		return
+	}
 	if p.running {
 		p.mu.Unlock()
 		return
@@ -156,16 +162,42 @@ func (p *WorkerPool) CancelActive() {
 }
 
 func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
+	if err := p.AdmissionError(); err != nil {
+		p.recordError(err)
+		return
+	}
 	p.mu.Lock()
 	p.active++
 	p.mu.Unlock()
 	execCtx, cancelExecution := context.WithTimeout(ctx, runExecutionTimeout())
 	defer cancelExecution()
-	stopHeartbeat := p.startHeartbeat(execCtx, workerID, run.ID, cancelExecution)
+	attemptCtx := withRunAttemptFence(execCtx, RunAttemptFence{RunID: run.ID, WorkerID: workerID, Attempt: run.AttemptCount})
+	attemptStore := p.store.WithContext(attemptCtx)
+	stopHeartbeat := p.startHeartbeat(execCtx, workerID, run.ID, run.AttemptCount, cancelExecution)
 	defer stopHeartbeat()
+	if run.WorkflowID == string(WorkflowOpenPilot) {
+		var err error
+		run, _, err = attemptStore.AdoptOpenPilotRunAffinity(run.ID, workerID, run.AttemptCount, p.runner.openPilotGate)
+		if err != nil {
+			p.mu.Lock()
+			p.active--
+			p.failedRuns++
+			p.mu.Unlock()
+			p.recordError(err)
+			return
+		}
+	}
+	if _, err := p.store.WithContext(execCtx).ExtendRunLease(run.ID, workerID, run.AttemptCount, p.lease); err != nil {
+		p.mu.Lock()
+		p.active--
+		p.failedRuns++
+		p.mu.Unlock()
+		p.recordError(err)
+		return
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			finished, finishErr := p.store.FinishClaimedRun(run.ID, workerID, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
+			finished, finishErr := attemptStore.FinishClaimedRun(run.ID, workerID, run.AttemptCount, RunFailed, fmt.Sprintf("worker panic: %v", recovered))
 			if finishErr == nil && finished.AttemptCount < finished.MaxAttempts {
 				backoff := runRetryBackoff(finished.AttemptCount)
 				if _, retryErr := p.store.RequeueFailedRun(finished.ID, p.now().UTC().Add(backoff), fmt.Sprintf("Retry %d/%d scheduled after worker panic", finished.AttemptCount+1, finished.MaxAttempts)); retryErr == nil {
@@ -190,7 +222,7 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 		p.active--
 		p.mu.Unlock()
 	}()
-	finished, err := p.runner.ExecuteClaimedRun(execCtx, run, workerID)
+	finished, err := p.runner.ExecuteClaimedRun(attemptCtx, run, workerID)
 	if err == nil && (finished.Status == RunFailed || finished.Status == RunTimedOut) && finished.AttemptCount < finished.MaxAttempts {
 		backoff := runRetryBackoff(finished.AttemptCount)
 		if _, retryErr := p.store.RequeueFailedRun(finished.ID, p.now().UTC().Add(backoff), fmt.Sprintf("Retry %d/%d scheduled after %s", finished.AttemptCount+1, finished.MaxAttempts, backoff)); retryErr == nil {
@@ -243,7 +275,7 @@ func runRetryBackoff(attempt int) time.Duration {
 	return backoff
 }
 
-func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID string, cancelExecution context.CancelFunc) func() {
+func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID string, attempt int, cancelExecution context.CancelFunc) func() {
 	interval := p.lease / 2
 	if interval < time.Second {
 		interval = time.Second
@@ -259,7 +291,7 @@ func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID 
 			case <-heartbeatCtx.Done():
 				return
 			case <-ticker.C:
-				if _, err := p.store.ExtendRunLease(runID, workerID, p.lease); err != nil {
+				if _, err := p.store.WithContext(heartbeatCtx).ExtendRunLease(runID, workerID, attempt, p.lease); err != nil {
 					p.recordError(err)
 					cancelExecution()
 					return
@@ -277,13 +309,21 @@ func (p *WorkerPool) startHeartbeat(ctx context.Context, workerID string, runID 
 }
 
 func (p *WorkerPool) recoverLeases() {
-	requeued, failed, err := p.store.RecoverLeasedRuns(p.now())
+	if err := p.AdmissionError(); err != nil {
+		p.recordError(err)
+		return
+	}
+	requeued, failed, err := p.store.RecoverLeasedRuns(p.now(), p.runner.openPilotGate)
 	if err == nil {
-		if _, reconcileErr := p.store.ReconcileOpenPilotCIRepairTerminals(100); reconcileErr != nil {
+		if p.runner.openPilotGateError != nil {
+			p.recordError(p.runner.openPilotGateError)
+		} else if _, reconcileErr := p.store.ReconcileOpenPilotCIRepairTerminals(100, p.runner.openPilotGate); reconcileErr != nil {
 			p.recordError(reconcileErr)
 		}
-		if _, reconcileErr := p.store.ReconcileOpenPilotMergeTerminals(100); reconcileErr != nil {
-			p.recordError(reconcileErr)
+		if p.runner.openPilotGateError == nil {
+			if _, reconcileErr := p.store.ReconcileOpenPilotMergeTerminals(100, p.runner.openPilotGate); reconcileErr != nil {
+				p.recordError(reconcileErr)
+			}
 		}
 	}
 	p.mu.Lock()
@@ -297,11 +337,22 @@ func (p *WorkerPool) recoverLeases() {
 	}
 }
 
+func (p *WorkerPool) AdmissionError() error {
+	if p.runner == nil {
+		return errors.New("worker runner is not configured")
+	}
+	return p.runner.openPilotGateError
+}
+
 func (p *WorkerPool) reconcileTerminalOpenPilotState(runID string) {
-	if _, err := p.store.ReconcileOpenPilotCIRepairTerminal(runID); err != nil && err != ErrNotFound {
+	if p.runner.openPilotGateError != nil {
+		p.recordError(p.runner.openPilotGateError)
+		return
+	}
+	if _, err := p.store.ReconcileOpenPilotCIRepairTerminal(runID, p.runner.openPilotGate); err != nil && err != ErrNotFound {
 		p.recordError(err)
 	}
-	if _, err := p.store.ReconcileOpenPilotMergeTerminal(runID); err != nil && err != ErrNotFound {
+	if _, err := p.store.ReconcileOpenPilotMergeTerminal(runID, p.runner.openPilotGate); err != nil && err != ErrNotFound {
 		p.recordError(err)
 	}
 }

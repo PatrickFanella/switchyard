@@ -177,6 +177,40 @@ func TestOpenPilotAIReviewUsesBoundedRefreshedIssueAndCIRepairContext(t *testing
 	}
 }
 
+func TestOpenPilotAIReviewPrefersCurrentRepairAttemptEvidence(t *testing.T) {
+	inputs := map[string]string{
+		"repo": "OWNER/REPO", "issue": "123",
+		"resume.open-pilot.agent-work.summary":       "stale initial agent summary",
+		"resume.open-pilot.agent-work.response":      "stale initial agent response",
+		"resume.open-pilot.verify-command.summary":   "stale initial verification",
+		"resume.open-pilot.commit-changes.sha":       strings.Repeat("a", 40),
+		"resume.open-pilot.commit-changes.subject":   "stale initial commit",
+		"resume.open-pilot.commit-changes.diffstat":  "stale.txt | 1 +",
+		"resume.open-pilot.pr-plan.pull_request_url": "https://git.example/OWNER/REPO/pulls/7",
+		openPilotCIRepairCountKey:                    "1",
+		openPilotCIRepairFeedbackKey:                 "append the repair marker",
+	}
+	state := map[string]any{
+		"open-pilot.agent-summary":  "current repair agent summary",
+		"open-pilot.response":       "current repair agent response",
+		"open-pilot.verify-summary": "current repair verification",
+		"open-pilot.commit-result": OpenPilotCommitResult{
+			SHA: strings.Repeat("b", 40), Subject: "current repair commit", DiffStat: "PROOF.md | 1 +",
+		},
+	}
+	prompt := buildOpenPilotAIReviewPrompt("OWNER/REPO", "123", inputs, state)
+	for _, want := range []string{"current repair agent summary", "current repair agent response", "current repair verification", strings.Repeat("b", 40), "current repair commit", "PROOF.md | 1 +"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing current evidence %q: %q", want, prompt)
+		}
+	}
+	for _, stale := range []string{"stale initial agent summary", "stale initial agent response", "stale initial verification", strings.Repeat("a", 40), "stale initial commit", "stale.txt | 1 +"} {
+		if strings.Contains(prompt, stale) {
+			t.Fatalf("prompt retained stale evidence %q: %q", stale, prompt)
+		}
+	}
+}
+
 func TestOpenPilotAIReviewIssueRefreshFailureUsesValidationPolicy(t *testing.T) {
 	for _, test := range []struct {
 		name      string

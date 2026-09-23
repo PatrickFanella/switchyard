@@ -63,6 +63,7 @@ type EnvWorkflowExecutors struct {
 	devlogAllowedModels          map[string]bool
 	openPilotAllowedModels       map[string]bool
 	openPilotLabels              []string
+	openPilotAssignee            string
 	openPilotCICheckMode         string
 	openPilotCIAutoRepairMode    string
 	openPilotMergeMode           string
@@ -83,11 +84,15 @@ type EnvWorkflowExecutors struct {
 	openCodeExecutor             OpenCodeExecutor
 	issueFetcher                 IssueFetcher
 	giteaReader                  GiteaPullRequestReader
+	giteaPullRequestGetter       GiteaPullRequestGetter
 	giteaMerger                  GiteaPullRequestMerger
 	giteaWriter                  GiteaWriter
 	commandRunner                CommandRunner
 	worktreeManager              OpenPilotWorktreeManager
 	client                       *http.Client
+	openPilotGate                *OpenPilotAdmissionGate
+	openPilotGateError           error
+	openPilotBundles             map[string]openPilotExecutionBundle
 }
 
 func NewEnvWorkflowExecutors(store ...Store) *EnvWorkflowExecutors {
@@ -145,6 +150,10 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		}
 	}
 	giteaClient := NewEnvGiteaClient()
+	openPilotGate, openPilotGateError := NewEnvOpenPilotAdmissionGate()
+	if openPilotGate != nil {
+		openPilotGate.rollout = configuredStore
+	}
 	env := &EnvWorkflowExecutors{
 		store:                        configuredStore,
 		openPilotCommand:             strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
@@ -152,6 +161,7 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		openPilotModel:               firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"),
 		devlogAllowedModels:          setFromCSV(firstNonEmpty(os.Getenv("DEVLOG_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("DEVLOG_MODEL"), "gpt-5.4"))),
 		openPilotAllowedModels:       setFromCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_ALLOWED_MODELS"), firstNonEmpty(os.Getenv("OPEN_PILOT_MODEL"), "gpt-5.4"))),
+		openPilotAssignee:            strings.TrimSpace(os.Getenv("OPEN_PILOT_ASSIGNEE")),
 		openPilotLabels:              splitCSV(firstNonEmpty(os.Getenv("OPEN_PILOT_REQUIRED_LABELS"), "ready-for-agent,agent:queued")),
 		openPilotCICheckMode:         ciCheckMode,
 		openPilotCIAutoRepairMode:    ciAutoRepairMode,
@@ -173,11 +183,17 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		openCodeExecutor:             NewEnvOpenCodeExecutor(),
 		issueFetcher:                 giteaClient,
 		giteaReader:                  giteaClient,
+		giteaPullRequestGetter:       giteaClient,
 		giteaMerger:                  giteaClient,
 		giteaWriter:                  giteaClient,
 		commandRunner:                NewEnvCommandRunner(),
 		worktreeManager:              NewEnvOpenPilotWorktreeManager(),
 		client:                       &http.Client{Timeout: 10 * time.Second},
+		openPilotGate:                openPilotGate,
+		openPilotGateError:           openPilotGateError,
+	}
+	if openPilotGateError == nil {
+		env.openPilotBundles, env.openPilotGateError = newOpenPilotExecutionBundles(openPilotGate)
 	}
 	if env.modelExecutor == nil {
 		env.modelExecutor = NewEnvModelBroker()

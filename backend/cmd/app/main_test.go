@@ -29,3 +29,19 @@ func TestRunRejectsInvalidReverseProxyTokenBeforeStartup(t *testing.T) {
 		t.Fatal("startup error leaked proxy token")
 	}
 }
+
+func TestRunRejectsWorkerAdmissionFailureBeforeStartup(t *testing.T) {
+	t.Setenv("SWITCHYARD_WORKER_ENABLED", "true")
+	t.Setenv("SWITCHYARD_SCHEDULER_ENABLED", "false")
+	t.Setenv("SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST", "/does/not/exist/switchyard-manifest.json")
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "configure worker admission") {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestWorkerDisabledSkipsAdmissionFailure(t *testing.T) {
+	if err := workerAdmissionError(nil); err != nil {
+		t.Fatalf("workerAdmissionError(nil) = %v", err)
+	}
+}

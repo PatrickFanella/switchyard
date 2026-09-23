@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+env_file=""
+file_set=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file) env_file=${2:?missing env file}; shift 2 ;;
+    --file-set) file_set=${2:?missing Compose file set}; shift 2 ;;
+    --) shift; break ;;
+    *) echo "unknown switchyard-compose argument" >&2; exit 64 ;;
+  esac
+done
+[[ -n "$env_file" && -n "$file_set" && $# -gt 0 ]] || {
+  echo "usage: switchyard-compose --env-file PATH --file-set PATH -- COMPOSE_ARGS..." >&2
+  exit 64
+}
+mapfile -t compose_files < <(
+  python3 "$repo_root/scripts/resolve_open_pilot_compose_file_set.py" \
+    --file-set "$file_set" --expected-base "$repo_root/docker-compose.yml"
+)
+[[ ${#compose_files[@]} -eq 2 ]] || {
+  echo "Open Pilot Compose file set did not resolve exactly two files" >&2
+  exit 78
+}
+exec "$repo_root/deploy/docker-local" compose --env-file "$env_file" \
+  -f "${compose_files[0]}" -f "${compose_files[1]}" "$@"

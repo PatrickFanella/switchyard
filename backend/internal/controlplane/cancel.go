@@ -3,6 +3,7 @@ package controlplane
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -34,10 +35,23 @@ type EnvCancelDispatcher struct {
 	llamaLineAdminKey string
 	openPilotCommand  string
 	client            *http.Client
+	openPilotGate     *OpenPilotAdmissionGate
+	openPilotRoutes   map[string]openPilotCancelRoute
+	openPilotRouteErr error
+}
+
+type openPilotCancelRoute struct {
+	baseURL  string
+	username string
+	password string
 }
 
 func NewEnvCancelDispatcher() *EnvCancelDispatcher {
-	return &EnvCancelDispatcher{
+	return NewEnvCancelDispatcherWithStore(nil)
+}
+
+func NewEnvCancelDispatcherWithStore(store Store) *EnvCancelDispatcher {
+	dispatcher := &EnvCancelDispatcher{
 		ocqBaseURL:        strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey:     os.Getenv("OCQ_GATEWAY_KEY"),
 		openCodeBaseURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
@@ -48,6 +62,24 @@ func NewEnvCancelDispatcher() *EnvCancelDispatcher {
 		openPilotCommand:  strings.TrimSpace(os.Getenv("OPEN_PILOT_COMMAND")),
 		client:            &http.Client{Timeout: 5 * time.Second},
 	}
+	dispatcher.openPilotGate, dispatcher.openPilotRouteErr = NewEnvOpenPilotAdmissionGate()
+	if dispatcher.openPilotGate != nil {
+		dispatcher.openPilotGate.rollout = store
+	}
+	if dispatcher.openPilotRouteErr == nil {
+		var bundles map[string]openPilotExecutionBundle
+		bundles, dispatcher.openPilotRouteErr = newOpenPilotExecutionBundles(dispatcher.openPilotGate)
+		dispatcher.openPilotRoutes = make(map[string]openPilotCancelRoute, len(bundles))
+		for key, bundle := range bundles {
+			executor, ok := bundle.openCodeExecutor.(*EnvOpenCodeExecutor)
+			if !ok {
+				dispatcher.openPilotRouteErr = errors.New("Open Pilot cancellation route has an invalid executor")
+				break
+			}
+			dispatcher.openPilotRoutes[key] = openPilotCancelRoute{baseURL: executor.baseURL, username: executor.username, password: executor.password}
+		}
+	}
+	return dispatcher
 }
 
 func (d *EnvCancelDispatcher) Cancel(ctx context.Context, run Run) CancelResult {
@@ -71,7 +103,12 @@ func (d *EnvCancelDispatcher) CancelRunDetail(ctx context.Context, detail RunDet
 		result.Events = append(result.Events, d.dropLlamaLineRequest(ctx, requestID)...)
 	}
 	if sessionID := correlation["opencode_session_id"]; sessionID != "" {
-		result.Events = append(result.Events, d.abortOpenCodeSession(ctx, sessionID)...)
+		route, routeErr := d.openCodeRouteForRun(run)
+		if routeErr != nil {
+			result.Events = append(result.Events, WorkflowExecutionEvent{Type: "opencode.abort.failed", Message: routeErr.Error()})
+		} else {
+			result.Events = append(result.Events, d.abortOpenCodeSession(ctx, sessionID, route)...)
+		}
 	}
 	if len(result.Events) == 0 {
 		result.Events = append(result.Events, WorkflowExecutionEvent{Type: "cancel.noop", Message: "No upstream cancellation adapter matched this run"})
@@ -79,11 +116,30 @@ func (d *EnvCancelDispatcher) CancelRunDetail(ctx context.Context, detail RunDet
 	return result
 }
 
-func (d *EnvCancelDispatcher) abortOpenCodeSession(ctx context.Context, sessionID string) []WorkflowExecutionEvent {
-	if d.openCodeBaseURL == "" {
+func (d *EnvCancelDispatcher) openCodeRouteForRun(run Run) (openPilotCancelRoute, error) {
+	fallback := openPilotCancelRoute{baseURL: d.openCodeBaseURL, username: d.openCodeUsername, password: d.openCodePassword}
+	if run.WorkflowID != string(WorkflowOpenPilot) || len(d.openPilotRoutes) == 0 {
+		return fallback, nil
+	}
+	if d.openPilotRouteErr != nil || d.openPilotGate == nil {
+		return openPilotCancelRoute{}, errors.New("Open Pilot repository cancellation routing is unavailable")
+	}
+	target, err := d.openPilotGate.Resolve(run.Inputs["repo"], run.Inputs["issue"])
+	if err != nil || run.Inputs[openPilotRepositoryIDInputKey] != target.RepositoryID || run.Inputs[openPilotExecutorGenerationInputKey] != target.ExecutorGeneration {
+		return openPilotCancelRoute{}, errors.New("Open Pilot cancellation affinity is invalid")
+	}
+	route, ok := d.openPilotRoutes[openPilotExecutionBundleKey(target.RepositoryID, target.ExecutorGeneration)]
+	if !ok {
+		return openPilotCancelRoute{}, errors.New("Open Pilot cancellation route is missing")
+	}
+	return route, nil
+}
+
+func (d *EnvCancelDispatcher) abortOpenCodeSession(ctx context.Context, sessionID string, route openPilotCancelRoute) []WorkflowExecutionEvent {
+	if route.baseURL == "" {
 		return []WorkflowExecutionEvent{{Type: "opencode.abort.skipped", Message: "OPENCODE_SERVER_URL is not configured"}}
 	}
-	endpoint, err := url.JoinPath(d.openCodeBaseURL, "/session/", sessionID, "/abort")
+	endpoint, err := url.JoinPath(route.baseURL, "/session/", sessionID, "/abort")
 	if err != nil {
 		return []WorkflowExecutionEvent{{Type: "opencode.abort.failed", Message: err.Error()}}
 	}
@@ -92,8 +148,8 @@ func (d *EnvCancelDispatcher) abortOpenCodeSession(ctx context.Context, sessionI
 		return []WorkflowExecutionEvent{{Type: "opencode.abort.failed", Message: err.Error()}}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if d.openCodeUsername != "" || d.openCodePassword != "" {
-		req.SetBasicAuth(firstNonEmpty(d.openCodeUsername, "switchyard"), d.openCodePassword)
+	if route.username != "" || route.password != "" {
+		req.SetBasicAuth(firstNonEmpty(route.username, "switchyard"), route.password)
 	}
 	if d.ocqGatewayKey != "" && req.Header.Get("Authorization") == "" {
 		req.Header.Set("Authorization", "Bearer "+d.ocqGatewayKey)

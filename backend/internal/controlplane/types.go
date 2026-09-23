@@ -292,6 +292,7 @@ type CreateRunInput struct {
 	Inputs           map[string]string `json:"inputs,omitempty"`
 	MaxAttempts      int               `json:"max_attempts,omitempty"`
 	PipelineSnapshot *Pipeline         `json:"-"`
+	OpenPilotTarget  *OpenPilotTarget  `json:"-"`
 }
 
 type WebhookAuthKey struct {

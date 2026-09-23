@@ -17,12 +17,16 @@ import (
 )
 
 type OpenCodeRequest struct {
-	Model      string
-	Prompt     string
-	SessionID  string
-	RequestID  string
-	WorkDir    string
-	PreAttempt PreAttemptCallback
+	Model     string
+	Agent     string
+	Prompt    string
+	SessionID string
+	RequestID string
+	WorkDir   string
+	// FailClosedOnStaleSession prevents reposting after a correlated session is
+	// lost or after any message request may have crossed the mutation boundary.
+	FailClosedOnStaleSession bool
+	PreAttempt               PreAttemptCallback
 	// OnCorrelation is called as soon as an upstream session identity exists,
 	// before a potentially long-running message request starts.
 	OnCorrelation func(map[string]string) error
@@ -44,11 +48,12 @@ type OCQResponse = OpenCodeResponse
 type OCQExecutor = OpenCodeExecutor
 
 type EnvOpenCodeExecutor struct {
-	baseURL    string
-	gatewayKey string
-	username   string
-	password   string
-	client     *http.Client
+	baseURL       string
+	gatewayKey    string
+	username      string
+	password      string
+	client        *http.Client
+	forceOpenCode bool
 }
 
 type EnvOCQExecutor = EnvOpenCodeExecutor
@@ -103,7 +108,7 @@ func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRe
 	decision := resolveOpenCodeExecutorBackend()
 	var response OpenCodeResponse
 	var err error
-	if decision.Backend == "ocq" {
+	if decision.Backend == "ocq" && !e.forceOpenCode {
 		response, err = e.sendPromptViaOCQ(ctx, request)
 	} else {
 		response, err = e.sendPromptViaOpenCode(ctx, request)
@@ -216,10 +221,13 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 	messageCtx, cancel := context.WithTimeout(ctx, openCodeMessageTimeout())
 	defer cancel()
 	replaced := false
+	originalSessionProvided := request.SessionID != ""
+	messageAttempted := false
 	for {
 		priorMessageID, err := e.openCodeLatestMessageID(messageCtx, sessionID)
 		if err == nil {
 			preAttemptPending := request.PreAttempt != nil
+			messageAttempted = true
 			_, err = e.postOpenCodeMessage(messageCtx, sessionID, request)
 			if preAttemptPending {
 				request.PreAttempt = nil
@@ -232,7 +240,8 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		if err == nil {
 			return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
 		}
-		if isStaleOpenCodeSession(err) && !replaced {
+		mayReplaceStale := !request.FailClosedOnStaleSession || (!originalSessionProvided && !messageAttempted)
+		if isStaleOpenCodeSession(err) && !replaced && mayReplaceStale {
 			createCtx, createCancel := context.WithTimeout(messageCtx, openCodeSessionCreateTimeout())
 			preAttemptPending := request.PreAttempt != nil
 			replacementID, createErr := e.createOpenCodeSession(createCtx, directory, request.PreAttempt)
@@ -251,6 +260,14 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 				return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, correlationErr
 			}
 			continue
+		}
+		var providerErr openCodeProviderError
+		if errors.As(err, &providerErr) {
+			correlation["provider_status"] = strconv.Itoa(providerErr.status)
+			correlation["execution_retryable"] = strconv.FormatBool(providerErr.retryable)
+			if correlationErr := publishCorrelation(); correlationErr != nil {
+				return OpenCodeResponse{SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, errors.Join(err, correlationErr)
+			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "deadline") {
 			e.abortOpenCodeSession(context.Background(), sessionID)
@@ -298,7 +315,24 @@ func (e *EnvOpenCodeExecutor) openCodeSessionIdle(ctx context.Context, sessionID
 	if err != nil {
 		return "", false, err
 	}
-	if message.ID == priorMessageID || message.Role != "assistant" || message.Finish != "stop" {
+	if message.ID == priorMessageID || message.Role != "assistant" {
+		return "", false, nil
+	}
+	if message.Error != nil {
+		if message.Error.Name == "MessageAbortedError" {
+			return "", false, context.Canceled
+		}
+		status := message.Error.Data.StatusCode
+		if status < 100 || status > 599 {
+			status = 0
+		}
+		retryable := modelBrokerRetryableStatus(status)
+		if message.Error.Data.IsRetryable != nil {
+			retryable = retryable && *message.Error.Data.IsRetryable
+		}
+		return "", false, openCodeProviderError{status: status, retryable: retryable}
+	}
+	if message.Finish != "stop" {
 		return "", false, nil
 	}
 	var content strings.Builder
@@ -310,7 +344,35 @@ func (e *EnvOpenCodeExecutor) openCodeSessionIdle(ctx context.Context, sessionID
 	return strings.TrimSpace(content.String()), true, nil
 }
 
+type openCodeMessageError struct {
+	Name string `json:"name"`
+	Data struct {
+		StatusCode  int   `json:"statusCode"`
+		IsRetryable *bool `json:"isRetryable"`
+	} `json:"data"`
+}
+
+// Provider text, bodies and headers may contain credentials; never retain them.
+type openCodeProviderError struct {
+	status    int
+	retryable bool
+}
+
+func (e openCodeProviderError) Retryable() bool { return e.retryable }
+
+func (e openCodeProviderError) Error() string {
+	if e.status == http.StatusUnauthorized || e.status == http.StatusForbidden {
+		return fmt.Sprintf("OpenCode provider authentication failed (HTTP %d); refresh the managed provider sign-in before retrying", e.status)
+	}
+	if e.status != 0 {
+		return fmt.Sprintf("OpenCode provider request failed (HTTP %d)", e.status)
+	}
+	return "OpenCode provider reported a terminal error; inspect the correlated session"
+}
+
 type openCodeSessionMessage struct {
+	Error *openCodeMessageError
+
 	ID     string
 	Role   string
 	Finish string
@@ -360,9 +422,10 @@ func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, session
 	}
 	var messages []struct {
 		Info struct {
-			ID     string `json:"id"`
-			Role   string `json:"role"`
-			Finish string `json:"finish"`
+			ID     string                `json:"id"`
+			Role   string                `json:"role"`
+			Finish string                `json:"finish"`
+			Error  *openCodeMessageError `json:"error"`
 		} `json:"info"`
 		Parts []struct {
 			Type string `json:"type"`
@@ -376,7 +439,7 @@ func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, session
 		return openCodeSessionMessage{}, nil
 	}
 	message := messages[len(messages)-1]
-	return openCodeSessionMessage{ID: message.Info.ID, Role: message.Info.Role, Finish: message.Info.Finish, Parts: message.Parts}, nil
+	return openCodeSessionMessage{ID: message.Info.ID, Role: message.Info.Role, Finish: message.Info.Finish, Parts: message.Parts, Error: message.Info.Error}, nil
 }
 
 func nativeOpenCodeCorrelation(sessionID, requestID string) map[string]string {
@@ -460,6 +523,9 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 	body := map[string]any{"parts": []map[string]string{{"type": "text", "text": request.Prompt}}}
 	if request.Model != "" {
 		body["model"] = openCodeModelPayload(request.Model)
+	}
+	if request.Agent != "" {
+		body["agent"] = request.Agent
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

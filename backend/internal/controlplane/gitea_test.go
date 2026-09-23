@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
@@ -18,7 +19,7 @@ func TestEnvGiteaClientFetchesIssue(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"id":10,"number":123,"repository":{"full_name":"OWNER/REPO"},"title":"Fix switchyard","body":"Acceptance criteria","state":"open","html_url":"https://git/OWNER/REPO/issues/123","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}]}`))
+		_, _ = w.Write([]byte(`{"id":10,"number":123,"repository":{"full_name":"OWNER/REPO"},"title":"Fix switchyard","body":"Acceptance criteria","state":"open","html_url":"https://git/OWNER/REPO/issues/123","labels":[{"name":"ready-for-agent"},{"name":"agent:queued"}],"assignees":[{"login":"someone-else"},{"login":"open-pilot"}]}`))
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("GITEA_BASE_URL", server.URL)
@@ -28,7 +29,7 @@ func TestEnvGiteaClientFetchesIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchIssue() error = %v", err)
 	}
-	if issue.Number != 123 || issue.Repository != "OWNER/REPO" || issue.Title != "Fix switchyard" || len(issue.Labels) != 2 || issue.Labels[0] != "ready-for-agent" {
+	if len(issue.Assignees) != 2 || issue.Assignees[1].Login != "open-pilot" || issue.Number != 123 || issue.Repository != "OWNER/REPO" || issue.Title != "Fix switchyard" || len(issue.Labels) != 2 || issue.Labels[0] != "ready-for-agent" {
 		t.Fatalf("issue = %+v", issue)
 	}
 }
@@ -187,6 +188,40 @@ func TestEnvGiteaClientPullRequestChecks(t *testing.T) {
 	}
 	if summary.State != "success" || summary.SHA != "abc123" || len(summary.Statuses) != 1 || summary.Statuses[0].Status != "success" || len(summary.Checks) != 1 {
 		t.Fatalf("summary = %+v", summary)
+	}
+}
+
+func TestEnvGiteaClientFetchActionsJobLog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/actions/jobs/10933/logs" || r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "token gitea-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte("setup\nOpen Pilot repair proof: append the required line\nexitcode '1': failure\n"))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	t.Setenv("GITEA_TOKEN", "gitea-token")
+
+	client := controlplane.NewEnvGiteaClient()
+	log, err := client.FetchActionsJobLog(t.Context(), "OWNER/REPO", "/OWNER/REPO/actions/runs/5635/jobs/10933")
+	if err != nil {
+		t.Fatalf("FetchActionsJobLog() error = %v", err)
+	}
+	if !strings.Contains(log, "Open Pilot repair proof") {
+		t.Fatalf("log = %q", log)
+	}
+	for _, target := range []string{
+		"/OTHER/REPO/actions/runs/5635/jobs/10933",
+		"https://other.example/OWNER/REPO/actions/runs/5635/jobs/10933",
+		"//other.example/OWNER/REPO/actions/runs/5635/jobs/10933",
+		"/OWNER/REPO/actions/runs/not-a-run/jobs/10933",
+	} {
+		if _, err := client.FetchActionsJobLog(t.Context(), "OWNER/REPO", target); err == nil {
+			t.Fatalf("target %q unexpectedly accepted", target)
+		}
 	}
 }
 
@@ -394,5 +429,61 @@ func TestEnvGiteaClientClosesIssue(t *testing.T) {
 	}
 	if issue.State != "closed" || issue.Number != 123 {
 		t.Fatalf("issue = %+v", issue)
+	}
+}
+
+func TestEnvGiteaClientListsAssignedIssuesWithoutLabelFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.URL.Path != "/api/v1/repos/OWNER/REPO/issues" || q.Get("assigned_by") != "open-pilot" || q.Has("labels") || q.Get("type") != "issues" || q.Get("state") != "open" {
+			t.Errorf("unexpected query: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`[{"id":10,"number":7,"state":"open","assignees":[{"login":"open-pilot"}]},{"id":11,"number":8,"state":"open","pull_request":{},"assignees":[{"login":"open-pilot"}]}]`))
+	}))
+	defer server.Close()
+	t.Setenv("GITEA_BASE_URL", server.URL)
+	issues, err := controlplane.NewEnvGiteaClient().ListAssignedIssues(t.Context(), "OWNER/REPO", "open-pilot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || len(issues[0].Assignees) != 1 || issues[0].Assignees[0].Login != "open-pilot" {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestEnvGiteaClientAssignsIssuePreservingExistingAssignees(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		response string
+		wantErr  bool
+	}{
+		{"success", 200, `{"assignees":[{"login":"human"},{"login":"open-pilot"}]}`, false},
+		{"forbidden", 403, `{}`, true},
+		{"write not applied", 200, `{"assignees":[{"login":"human"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/repos/OWNER/REPO/issues/7" {
+					t.Errorf("request=%s %s", r.Method, r.URL.Path)
+				}
+				var payload map[string][]string
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				if len(payload) != 1 || !reflect.DeepEqual(payload["assignees"], []string{"human", "open-pilot"}) {
+					t.Errorf("payload=%v", payload)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+			t.Setenv("GITEA_BASE_URL", server.URL)
+			issue := controlplane.GiteaIssue{Number: 7, Assignees: []controlplane.GiteaIssueAssignee{{Login: "human"}}}
+			err := controlplane.NewEnvGiteaClient().AssignIssue(t.Context(), "OWNER/REPO", issue, "open-pilot")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }

@@ -173,6 +173,9 @@ func run() error {
 			poll = parsed
 		}
 		workersPool = controlplane.NewWorkerPool(store, runner, workers, lease, poll, nil)
+		if err := workerAdmissionError(workersPool); err != nil {
+			return fmt.Errorf("configure worker admission: %w", err)
+		}
 		workerCount, workerLease, workerPoll = workers, lease, poll
 		api.SetWorkerPool(workersPool)
 		api.SetAsyncDispatch(true)
@@ -361,6 +364,13 @@ func run() error {
 		}
 		return shutdownErr
 	}
+}
+
+func workerAdmissionError(pool *controlplane.WorkerPool) error {
+	if pool == nil {
+		return nil
+	}
+	return pool.AdmissionError()
 }
 
 func envEnabledByDefault(name string) bool {

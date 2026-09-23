@@ -23,6 +23,9 @@ if [ "$runtime_uid" -eq 0 ] || [ "$runtime_gid" -eq 0 ]; then
   exit 64
 fi
 
+. /usr/local/libexec/switchyard-opencode-password
+load_opencode_password
+
 if [ "$runtime_config_home" != "/home/opencode/.config" ] || \
    [ "$runtime_data_home" != "/home/opencode/.local/share" ] || \
    [ "$runtime_cache_home" != "/home/opencode/.cache" ] || \

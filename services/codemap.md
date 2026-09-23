@@ -12,3 +12,4 @@ Docker Compose starts the service, installs Switchyard defaults, and exposes it 
 ## Integration
 - Built by `docker-compose.yml` and release Make targets.
 - Called through `backend/internal/controlplane`'s `OpenCodeExecutor` contract.
+- Generated per-repository OpenCode services load private password files inside the container; the rendered Compose model contains only password-file paths, never secret bytes.

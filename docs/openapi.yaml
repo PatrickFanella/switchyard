@@ -880,6 +880,27 @@ paths:
       summary: List Open Pilot issue states
       responses:
         "200": { $ref: "#/components/responses/OpenPilotStatesResponse" }
+  /api/open-pilot/repository-audit:
+    get:
+      summary: Report bounded Open Pilot repository affinity and canonical identity readiness
+      responses:
+        "200": { description: Secret-free singleton admission audit report }
+  /api/open-pilot/rollout:
+    get:
+      summary: Report durable Open Pilot rollout and singleton rollback readiness
+      responses:
+        "200": { description: Rollout and rollback evidence }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      summary: Atomically close, start bounded proof, or promote the durable Open Pilot rollout gate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConfigureOpenPilotRollout" }
+      responses:
+        "200": { description: Updated rollout and rollback evidence }
+        default: { $ref: "#/components/responses/Error" }
   /api/open-pilot/state:
     get:
       summary: Get Open Pilot issue state
@@ -1334,12 +1355,40 @@ components:
     OpenPilotGateStatus:
       type: object
       additionalProperties: { type: string }
+    OpenPilotProofTarget:
+      type: object
+      additionalProperties: false
+      properties:
+        repository_id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        executor_generation: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        repository_slug: { type: string }
+        issue: { type: string, pattern: "^[1-9][0-9]*$" }
+      required: [repository_id, executor_generation, repository_slug, issue]
+    ConfigureOpenPilotRollout:
+      type: object
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [disabled, proof, allow] }
+        registry_fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+        proof_targets:
+          type: array
+          maxItems: 2
+          items: { $ref: "#/components/schemas/OpenPilotProofTarget" }
+        expires_at: { type: string, format: date-time }
+        reason: { type: string, maxLength: 512 }
+      required: [mode, registry_fingerprint]
     OpenPilotIssueState:
       type: object
       properties:
         id: { type: string }
         repo: { type: string }
         issue: { type: string }
+        repository_id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        executor_generation: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        canonical_repo: { type: string }
+        canonical_issue: { type: string }
+        legacy_repo: { type: string }
+        legacy_issue: { type: string }
         phase: { type: string }
         run_id: { type: string }
         last_step_name: { type: string }

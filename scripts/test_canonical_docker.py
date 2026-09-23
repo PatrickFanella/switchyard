@@ -78,7 +78,10 @@ class CanonicalDockerTest(unittest.TestCase):
     def test_all_production_paths_use_the_boundary(self):
         boundary = "deploy/docker-local"
         main = (ROOT / "deploy/switchyard.service").read_text()
-        self.assertEqual(main.count(boundary), 5)
+        self.assertNotIn(boundary, main)
+        self.assertEqual(main.count("deploy/switchyard-compose"), 5)
+        compose_wrapper = (ROOT / "deploy/switchyard-compose").read_text()
+        self.assertIn('exec "$repo_root/deploy/docker-local" compose', compose_wrapper)
         for path in ("scripts/backup-postgres.sh", "scripts/restore-postgres-drill.sh"):
             text = (ROOT / path).read_text()
             self.assertIn('docker() { "$root/deploy/docker-local" "$@"; }', text)
@@ -87,7 +90,8 @@ class CanonicalDockerTest(unittest.TestCase):
             self.assertIn('docker_local="$repo_root/deploy/docker-local"', text)
             self.assertNotRegex(text, r"(?m)(^|[^_])docker compose")
             compose_calls = [line for line in text.splitlines() if '"$docker_local" compose' in line]
-            self.assertTrue(compose_calls)
+            if path.endswith("install-web-gate.sh"):
+                self.assertTrue(compose_calls)
             for call in compose_calls:
                 if "compose version" not in call:
                     self.assertIn('--env-file "$env_file"', call, path)
@@ -105,11 +109,11 @@ class CanonicalDockerTest(unittest.TestCase):
 
     def test_service_compose_calls_pin_file_and_env(self):
         unit = (ROOT / "deploy/switchyard.service").read_text()
-        calls = [line for line in unit.splitlines() if "docker-local compose" in line]
+        calls = [line for line in unit.splitlines() if "switchyard-compose" in line]
         self.assertEqual(len(calls), 5)
         for call in calls:
             self.assertIn("--env-file __ENV_FILE__", call)
-            self.assertIn("-f __REPO_ROOT__/docker-compose.yml", call)
+            self.assertIn("--file-set __COMPOSE_FILE_SET__", call)
 
     def test_backup_uses_external_env_and_canonical_file(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -270,12 +270,8 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if detail.Run.WorkflowID == string(WorkflowOpenPilot) {
-		if repo, issue := detail.Run.Inputs["repo"], detail.Run.Inputs["issue"]; repo != "" && issue != "" {
-			if state, stateErr := a.store.OpenPilotIssueState(repo, issue); stateErr == nil && isOpenPilotResumablePhase(state.Phase) {
-				writeError(w, http.StatusConflict, "use the Open Pilot lifecycle resume action for this issue")
-				return
-			}
-		}
+		writeError(w, http.StatusConflict, "use the Open Pilot lifecycle resume action for this issue")
+		return
 	}
 	run, err := a.dispatchRun(r.Context(), CreateRunInput{WorkflowID: detail.Run.WorkflowID, TriggerID: detail.Run.TriggerID, Inputs: detail.Run.Inputs, PipelineSnapshot: detail.Run.PipelineSnapshot})
 	if err != nil {

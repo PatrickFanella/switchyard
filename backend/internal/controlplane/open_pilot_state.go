@@ -2,11 +2,15 @@ package controlplane
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const openPilotDefaultMaxRepairAttempts = 2
+
+var openPilotIssueStateIDPattern = regexp.MustCompile(`^opi-[a-z0-9.]{1,64}$`)
 
 type OpenPilotPhase string
 
@@ -34,6 +38,12 @@ type OpenPilotIssueState struct {
 	ID                    string              `json:"id"`
 	Repo                  string              `json:"repo"`
 	Issue                 string              `json:"issue"`
+	RepositoryID          string              `json:"repository_id,omitempty"`
+	ExecutorGeneration    string              `json:"executor_generation,omitempty"`
+	CanonicalRepo         string              `json:"canonical_repo,omitempty"`
+	CanonicalIssue        string              `json:"canonical_issue,omitempty"`
+	LegacyRepo            string              `json:"legacy_repo,omitempty"`
+	LegacyIssue           string              `json:"legacy_issue,omitempty"`
 	Phase                 OpenPilotPhase      `json:"phase"`
 	RunID                 string              `json:"run_id,omitempty"`
 	LastStepName          string              `json:"last_step_name,omitempty"`
@@ -129,6 +139,9 @@ func ValidateOpenPilotTransition(from, to OpenPilotPhase) error {
 		return nil
 	}
 	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePushed {
+		return nil
+	}
+	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhaseCommitted {
 		return nil
 	}
 	if from == OpenPilotPhaseAgentCompleted && to == OpenPilotPhasePRCreated {
@@ -318,24 +331,53 @@ func openPilotResumeClaimPhase(current OpenPilotPhase, inputs map[string]string)
 	}
 }
 
-func safeOpenPilotResumeInputs(state OpenPilotIssueState) (map[string]string, error) {
-	if state.PullRequestID < 1 || state.PullRequestNum < 1 || strings.TrimSpace(state.PullRequestURL) == "" || strings.TrimSpace(state.RunID) == "" {
+func safeOpenPilotResumeInputs(state OpenPilotIssueState, pipelines ...*Pipeline) (map[string]string, error) {
+	if strings.TrimSpace(state.RunID) == "" {
 		return nil, ErrInvalid
 	}
 	step := ""
 	switch state.Phase {
+	case OpenPilotPhaseRequested:
+		// The store additionally requires a canceled prior run with no steps.
+		step = "open-pilot.validate-issue"
+	case OpenPilotPhaseBranchPrepared:
+		step = "open-pilot.agent-work"
+	case OpenPilotPhaseAgentCompleted:
+		if strings.TrimSpace(state.ResumeInputs["test_command"]) != "" {
+			step = "open-pilot.verify-command"
+		} else {
+			step = "open-pilot.commit-changes"
+		}
+	case OpenPilotPhaseVerified:
+		step = "open-pilot.commit-changes"
+	case OpenPilotPhaseCommitted:
+		step = "open-pilot.push-branch"
+	case OpenPilotPhasePushed:
+		step = "open-pilot.pr-plan"
 	case OpenPilotPhasePRCreated:
 		step = "open-pilot.ai-review"
 	case OpenPilotPhaseAIReviewed:
 		step = "open-pilot.ci-checks"
 	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
-		if state.LastStepName == "open-pilot.ai-review" || state.LastStepName == "open-pilot.ci-checks" {
-			step = state.LastStepName
+		if openPilotPausedBeforeBranch(state) {
+			step = "open-pilot.validate-issue"
+			break
+		}
+		candidate := state.LastStepName
+		if openPilotShouldUseStoredRepairCursor(state) {
+			candidate = state.ResumeInputs["retry_from_step"]
+		}
+		switch candidate {
+		case "open-pilot.agent-work", "open-pilot.verify-command", "open-pilot.commit-changes", "open-pilot.push-branch", "open-pilot.pr-plan", "open-pilot.ai-review", "open-pilot.ci-checks":
+			step = candidate
 		}
 	}
-	position := openPilotStepPosition(step)
+	position := openPilotResumeStepPosition(step, pipelines...)
 	if step == "" || position == "" {
 		return nil, ErrInvalid
+	}
+	if err := validateOpenPilotResumeEvidence(state, step); err != nil {
+		return nil, err
 	}
 	inputs := mergeOpenPilotResumeStateInputs(state)
 	delete(inputs, "retry_from_step")
@@ -343,6 +385,71 @@ func safeOpenPilotResumeInputs(state OpenPilotIssueState) (map[string]string, er
 	inputs["retry_from_step"] = step
 	inputs["retry_from_step_position"] = position
 	return inputs, nil
+}
+
+func openPilotResumeStepPosition(step string, pipelines ...*Pipeline) string {
+	if len(pipelines) > 0 && pipelines[0] != nil {
+		for _, candidate := range pipelines[0].Steps {
+			if candidate.Name == step {
+				return strconv.Itoa(candidate.Position)
+			}
+		}
+		return ""
+	}
+	return openPilotStepPosition(step)
+}
+
+func validateOpenPilotResumeEvidence(state OpenPilotIssueState, step string) error {
+	if step == "open-pilot.validate-issue" {
+		if state.Branch != "" || state.WorktreePath != "" || (state.Phase != OpenPilotPhaseRequested || state.LastStepName != "") && !openPilotPausedBeforeBranch(state) {
+			return ErrInvalid
+		}
+		return nil
+	}
+	inputs := state.ResumeInputs
+	require := func(values ...string) bool {
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				return false
+			}
+		}
+		return true
+	}
+	if step == "open-pilot.ai-review" || step == "open-pilot.ci-checks" {
+		if state.PullRequestID < 1 || state.PullRequestNum < 1 || !require(state.PullRequestURL) {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if !require(state.Branch, state.Base, state.WorktreePath, inputs["resume.open-pilot.prompt"]) || inputs["resume.open-pilot.branch-plan.executed"] != "true" || inputs["resume.open-pilot.branch-plan.branch"] != state.Branch || inputs["resume.open-pilot.branch-plan.worktree_path"] != state.WorktreePath {
+		return ErrInvalid
+	}
+	switch step {
+	case "open-pilot.agent-work":
+		return nil
+	case "open-pilot.verify-command":
+		if !require(inputs["resume.open-pilot.agent-work.response"], inputs["test_command"]) {
+			return ErrInvalid
+		}
+	case "open-pilot.commit-changes":
+		if !require(inputs["resume.open-pilot.agent-work.response"]) {
+			return ErrInvalid
+		}
+		if strings.TrimSpace(inputs["test_command"]) != "" && (!require(inputs["resume.open-pilot.verify-command.manifest"]) || state.GateStatus["local_verify"] != "passed") {
+			return ErrInvalid
+		}
+	case "open-pilot.push-branch":
+		if inputs["resume.open-pilot.commit-changes.executed"] != "true" || !require(inputs["resume.open-pilot.commit-changes.sha"]) {
+			return ErrInvalid
+		}
+	case "open-pilot.pr-plan":
+		if !require(inputs["resume.open-pilot.push-branch.remote"]) || inputs["resume.open-pilot.push-branch.branch"] != state.Branch || inputs["resume.open-pilot.push-branch.worktree_path"] != state.WorktreePath || (inputs["resume.open-pilot.push-branch.executed"] != "true" && inputs["resume.open-pilot.push-branch.remote_head_exists"] != "true") {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
 }
 
 func gateStatusForOpenPilotStep(stepName string, gateStatus map[string]string) string {
@@ -410,14 +517,57 @@ func validateOpenPilotIssueStateForUpsert(input OpenPilotIssueState, existing *O
 		return OpenPilotIssueState{}, ErrInvalid
 	}
 	state := cloneOpenPilotIssueState(input)
+	if (state.RepositoryID == "") != (state.ExecutorGeneration == "") {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
+	if state.RepositoryID != "" && (!openPilotRepositoryIDPattern.MatchString(state.RepositoryID) || !openPilotRepositoryIDPattern.MatchString(state.ExecutorGeneration)) {
+		return OpenPilotIssueState{}, ErrInvalid
+	}
 	if err := normalizeOpenPilotRepairCounts(&state); err != nil {
 		return OpenPilotIssueState{}, err
 	}
 	if existing == nil {
+		if state.ID != "" && !openPilotIssueStateIDPattern.MatchString(state.ID) {
+			return OpenPilotIssueState{}, ErrInvalid
+		}
+		if state.RepositoryID != "" || state.ExecutorGeneration != "" || state.CanonicalRepo != "" || state.CanonicalIssue != "" || state.LegacyRepo != "" || state.LegacyIssue != "" {
+			return OpenPilotIssueState{}, ErrInvalid
+		}
+		if state.LegacyRepo == "" {
+			state.LegacyRepo = state.Repo
+		}
+		if state.LegacyIssue == "" {
+			state.LegacyIssue = state.Issue
+		}
+		populateOpenPilotCanonicalShadow(&state)
 		if state.Phase != OpenPilotPhaseRequested && state.Phase != OpenPilotPhaseValidated {
 			return OpenPilotIssueState{}, ErrInvalid
 		}
 		return state, nil
+	}
+	for _, identity := range [][2]string{{state.RepositoryID, existing.RepositoryID}, {state.ExecutorGeneration, existing.ExecutorGeneration}, {state.CanonicalRepo, existing.CanonicalRepo}, {state.CanonicalIssue, existing.CanonicalIssue}, {state.LegacyRepo, existing.LegacyRepo}, {state.LegacyIssue, existing.LegacyIssue}} {
+		if identity[0] != "" && identity[0] != identity[1] {
+			return OpenPilotIssueState{}, ErrConflict
+		}
+		if identity[1] == "" && identity[0] != "" {
+			return OpenPilotIssueState{}, ErrConflict
+		}
+	}
+	if state.RepositoryID == "" && state.ExecutorGeneration == "" {
+		state.RepositoryID = existing.RepositoryID
+		state.ExecutorGeneration = existing.ExecutorGeneration
+	}
+	if state.CanonicalRepo == "" {
+		state.CanonicalRepo = existing.CanonicalRepo
+	}
+	if state.CanonicalIssue == "" {
+		state.CanonicalIssue = existing.CanonicalIssue
+	}
+	if state.LegacyRepo == "" {
+		state.LegacyRepo = existing.LegacyRepo
+	}
+	if state.LegacyIssue == "" {
+		state.LegacyIssue = existing.LegacyIssue
 	}
 	if existing.Phase != "" && !isOpenPilotKnownPhase(existing.Phase) {
 		return OpenPilotIssueState{}, ErrInvalid
@@ -430,4 +580,49 @@ func validateOpenPilotIssueStateForUpsert(input OpenPilotIssueState, existing *O
 	state.ID = existing.ID
 	state.CreatedAt = existing.CreatedAt
 	return state, nil
+}
+
+func populateOpenPilotCanonicalShadow(state *OpenPilotIssueState) {
+	if state.CanonicalRepo == "" {
+		if slug, err := ParseOpenPilotRepositorySlug(state.Repo); err == nil {
+			state.CanonicalRepo = strings.ToLower(slug)
+		}
+	}
+	if state.CanonicalIssue == "" {
+		if issue, err := ParseOpenPilotIssue(state.Issue); err == nil {
+			state.CanonicalIssue = issue
+		}
+	}
+}
+
+// A paused branch-plan step halts in recovery preflight, before worktree creation.
+func openPilotPausedBeforeBranch(state OpenPilotIssueState) bool {
+	return state.Phase == OpenPilotPhasePaused && state.LastStepName == "open-pilot.branch-plan" && state.Branch == "" && state.WorktreePath == ""
+}
+
+func validateOpenPilotPreBranchResumeRun(state OpenPilotIssueState, prior Run, steps []RunStep) error {
+	if state.Phase == OpenPilotPhaseRequested {
+		if prior.Status != RunCanceled || len(steps) != 0 {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if !openPilotPausedBeforeBranch(state) || prior.Status != RunPaused || len(steps) != 2 {
+		return ErrInvalid
+	}
+	validated, paused := false, false
+	for _, step := range steps {
+		switch {
+		case step.Name == "open-pilot.validate-issue" && step.Status == StepSucceeded:
+			validated = true
+		case step.Name == "open-pilot.branch-plan" && step.Status == StepPaused:
+			paused = true
+		default:
+			return ErrInvalid
+		}
+	}
+	if !validated || !paused {
+		return ErrInvalid
+	}
+	return nil
 }

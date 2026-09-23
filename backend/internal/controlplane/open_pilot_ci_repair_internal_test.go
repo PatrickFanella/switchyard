@@ -15,6 +15,16 @@ type ciRepairHandoffExecutor struct {
 	store Store
 }
 
+type staticCIJobLogReader struct {
+	target string
+	log    string
+}
+
+func (r *staticCIJobLogReader) FetchActionsJobLog(_ context.Context, _ string, target string) (string, error) {
+	r.target = target
+	return r.log, nil
+}
+
 func (e ciRepairHandoffExecutor) Execute(context.Context, Run) (WorkflowExecution, error) {
 	return WorkflowExecution{}, nil
 }
@@ -81,6 +91,18 @@ func TestBuildOpenPilotCIRepairFeedbackIncludesAllTerminalFailures(t *testing.T)
 	}
 }
 
+func TestAugmentOpenPilotCIRepairFeedbackIncludesRedactedDiagnosticLines(t *testing.T) {
+	reader := &staticCIJobLogReader{log: "ordinary setup\nOpen Pilot repair proof: append 'CI repair acknowledged.' to PROOF.md\ntoken=super-secret\nexitcode '1': failure\n"}
+	snapshot := GiteaCheckSummary{SHA: "head", Statuses: []GiteaCommitStatus{{Context: "verify", Status: "failure", TargetURL: "/OWNER/REPO/actions/runs/2/jobs/3"}}}
+	feedback := augmentOpenPilotCIRepairFeedback(t.Context(), reader, "OWNER/REPO", []string{"verify"}, snapshot, "verify failed")
+	if reader.target != snapshot.Statuses[0].TargetURL || !strings.Contains(feedback, "CI repair acknowledged.") || !strings.Contains(feedback, "exitcode '1': failure") {
+		t.Fatalf("feedback = %q, target = %q", feedback, reader.target)
+	}
+	if strings.Contains(feedback, "ordinary setup") || strings.Contains(feedback, "super-secret") {
+		t.Fatalf("feedback included noise or secret: %q", feedback)
+	}
+}
+
 func TestValidateCreateRunInputRejectsCIRepairKeys(t *testing.T) {
 	for _, key := range []string{openPilotCIRepairCountKey, openPilotCIRepairFeedbackKey, openPilotCIRepairOriginalPromptKey} {
 		err := validateCreateRunInput(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "1", key: "injected"}})
@@ -105,18 +127,35 @@ func TestValidateOpenPilotCIPullRequestIdentityRejectsMismatch(t *testing.T) {
 		Name     string `json:"name,omitempty"`
 		FullName string `json:"full_name,omitempty"`
 	}{Name: "REPO", FullName: "OWNER/REPO"}
+	expectedSHA := strings.Repeat("a", 40)
 	persisted := GiteaPullRequest{ID: 9, Number: 4, HTMLURL: "https://git.example/OWNER/REPO/pulls/4"}
-	fresh := GiteaPullRequest{ID: 9, Number: 4, State: "open", HTMLURL: persisted.HTMLURL, Head: GiteaPullRequestRef{Ref: "open-pilot/issue-1", SHA: "head", Repo: &repo}}
-	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", persisted, fresh); err != nil {
+	fresh := GiteaPullRequest{ID: 9, Number: 4, State: "open", HTMLURL: persisted.HTMLURL, Head: GiteaPullRequestRef{Ref: "open-pilot/issue-1", SHA: expectedSHA, Repo: &repo}, Base: GiteaPullRequestRef{Ref: "main", Repo: &repo}}
+	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", "main", expectedSHA, persisted, fresh); err != nil {
 		t.Fatalf("valid identity error = %v", err)
 	}
 	fresh.Number = 5
-	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", persisted, fresh); err == nil {
+	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", "main", expectedSHA, persisted, fresh); err == nil {
 		t.Fatal("expected pull request number mismatch")
 	}
 	fresh.Number, fresh.State = 4, ""
-	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", persisted, fresh); err == nil {
+	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", "main", expectedSHA, persisted, fresh); err == nil {
 		t.Fatal("expected missing open state rejection")
+	}
+	fresh.State, fresh.Base.Ref = "open", "release"
+	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", "main", expectedSHA, persisted, fresh); err == nil {
+		t.Fatal("expected wrong base branch rejection")
+	}
+	fresh.Base.Ref = "main"
+	otherRepo := repo
+	otherRepo.FullName = "OTHER/REPO"
+	fresh.Base.Repo = &otherRepo
+	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", "main", expectedSHA, persisted, fresh); err == nil {
+		t.Fatal("expected wrong base repository rejection")
+	}
+	fresh.Base.Repo = &repo
+	fresh.Head.SHA = strings.Repeat("b", 40)
+	if err := validateOpenPilotCIPullRequestIdentity("OWNER/REPO", "open-pilot/issue-1", "main", expectedSHA, persisted, fresh); err == nil {
+		t.Fatal("expected persisted commit SHA mismatch rejection")
 	}
 }
 
@@ -129,6 +168,7 @@ func TestOpenPilotCIRepairRevalidatesPRAndWorktreeBeforeOpenCode(t *testing.T) {
 		{name: "exact identity", wantPrompt: true},
 		{name: "remote head changed", change: "remote"},
 		{name: "local head changed", change: "local"},
+		{name: "base branch changed", change: "base"},
 		{name: "dirty tracked worktree", change: "dirty"},
 		{name: "untracked worktree", change: "untracked"},
 	} {
@@ -156,6 +196,9 @@ func TestOpenPilotCIRepairRevalidatesPRAndWorktreeBeforeOpenCode(t *testing.T) {
 				}
 			}
 			pr := ciRepairTestPullRequest("owner/repo", plan.Branch, remoteSHA)
+			if test.change == "base" {
+				pr.Base.Ref = "release"
+			}
 			reader := &scriptedCIGiteaReader{findPR: pr, findFound: true}
 			openCode := &captureOpenCodeExecutor{response: OpenCodeResponse{Content: "repaired"}}
 			env := newOpenPilotAIReviewTestEnv(nil)
@@ -165,6 +208,7 @@ func TestOpenPilotCIRepairRevalidatesPRAndWorktreeBeforeOpenCode(t *testing.T) {
 				"repo": "owner/repo", "issue": "1", openPilotCIRepairParentRunIDKey: "parent",
 				openPilotCIRepairRepoKey: "owner/repo", openPilotCIRepairPRIDKey: "90", openPilotCIRepairPRNumberKey: "9",
 				openPilotCIRepairHeadBranchKey: plan.Branch, openPilotCIRepairFailedHeadSHAKey: markerSHA,
+				openPilotCIRepairBaseRepoKey: "owner/repo", openPilotCIRepairBaseBranchKey: plan.BaseBranch,
 			}}
 			result, err := (openPilotExecutor{env: env}).ExecutePipelineStep(t.Context(), run, PipelineStep{ID: "agent-work", Name: "open-pilot.agent-work"}, map[string]any{"open-pilot.prompt": "repair", "open-pilot.branch-plan": plan})
 			if err != nil {
@@ -188,7 +232,7 @@ func ciRepairTestPullRequest(repo, branch, sha string) GiteaPullRequest {
 		Name     string `json:"name,omitempty"`
 		FullName string `json:"full_name,omitempty"`
 	}{Name: "repo", FullName: repo}
-	return GiteaPullRequest{ID: 90, Number: 9, State: "open", HTMLURL: "https://git.example/owner/repo/pulls/9", Head: GiteaPullRequestRef{Ref: branch, SHA: sha, Repo: refRepo}}
+	return GiteaPullRequest{ID: 90, Number: 9, State: "open", HTMLURL: "https://git.example/owner/repo/pulls/9", Head: GiteaPullRequestRef{Ref: branch, SHA: sha, Repo: refRepo}, Base: GiteaPullRequestRef{Ref: "main", Repo: refRepo}}
 }
 
 func TestMemoryStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
@@ -285,6 +329,46 @@ func TestMemoryStoreRejectsExpiredCIRepairLease(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreRejectsStaleCIRepairAffinityBeforeMutation(t *testing.T) {
+	store, claimed, _ := seedOpenPilotCIRepairParent(t)
+	request := testOpenPilotCIRepairRequest(claimed, "worker-1", "failed")
+	request.Target.ExecutorGeneration = "stale-generation"
+	before := len(store.ListRuns())
+	if _, err := store.HandleOpenPilotCIFailure(request); !errors.Is(err, ErrConflict) {
+		t.Fatalf("HandleOpenPilotCIFailure() error = %v", err)
+	}
+	detail, err := store.RunDetail(claimed.ID)
+	if err != nil || detail.Run.Status != RunRunning || len(store.ListRuns()) != before {
+		t.Fatalf("parent=%+v runs=%d err=%v", detail.Run, len(store.ListRuns()), err)
+	}
+}
+
+func TestMemoryStoreRejectsStaleCIRepairReplayAffinity(t *testing.T) {
+	store, claimed, _ := seedOpenPilotCIRepairParent(t)
+	request := testOpenPilotCIRepairRequest(claimed, "worker-1", "failed")
+	first, err := store.HandleOpenPilotCIFailure(request)
+	if err != nil || first.ChildRun == nil {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	request.Target.ExecutorGeneration = "stale-generation"
+	if _, err := store.HandleOpenPilotCIFailure(request); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale replay error = %v", err)
+	}
+}
+
+func TestMemoryStoreRejectsForeignWorkflowCIRepairParent(t *testing.T) {
+	store, claimed, _ := seedOpenPilotCIRepairParent(t)
+	store.mu.Lock()
+	parent := store.runs[claimed.ID]
+	parent.WorkflowID = "generic"
+	store.runs[claimed.ID] = parent
+	store.mu.Unlock()
+	request := testOpenPilotCIRepairRequest(claimed, "worker-1", "failed")
+	if _, err := store.HandleOpenPilotCIFailure(request); !errors.Is(err, ErrConflict) {
+		t.Fatalf("foreign workflow error = %v", err)
+	}
+}
+
 func TestMemoryExternalResumeStripsCIRepairControlInputs(t *testing.T) {
 	store, claimed, _ := seedOpenPilotCIRepairParent(t)
 	first, err := store.HandleOpenPilotCIFailure(testOpenPilotCIRepairRequest(claimed, "worker-1", "failed"))
@@ -303,7 +387,7 @@ func TestMemoryExternalResumeStripsCIRepairControlInputs(t *testing.T) {
 	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
 		t.Fatal(err)
 	}
-	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{openPilotCIRepairCountKey: "0", openPilotCIRepairFeedbackKey: "forged", openPilotCIRepairOriginalPromptKey: "forged"}})
+	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun("OWNER/REPO", "1", trustedOpenPilotInput("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{openPilotCIRepairCountKey: "0", openPilotCIRepairFeedbackKey: "forged", openPilotCIRepairOriginalPromptKey: "forged"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +434,30 @@ func TestMemoryStoreSerializesDuplicateCIRepairHandoff(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreCIRepairStartsFreshCommitIntent(t *testing.T) {
+	store, parent, _ := seedOpenPilotCIRepairParent(t)
+	state, err := store.OpenPilotIssueState("OWNER/REPO", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"parent", "tree", "message", "status_before", "diffstat", "name_status"} {
+		state.ResumeInputs[openPilotCommitIntentPrefix+field] = "prior-" + field
+	}
+	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	handoff, err := store.HandleOpenPilotCIFailure(testOpenPilotCIRepairRequest(parent, "worker-1", "verify failed"))
+	if err != nil || handoff.ChildRun == nil {
+		t.Fatalf("handoff = %+v, %v", handoff, err)
+	}
+	for _, field := range []string{"parent", "tree", "message", "status_before", "diffstat", "name_status"} {
+		if value := handoff.ChildRun.Inputs[openPilotCommitIntentPrefix+field]; value != "" {
+			t.Fatalf("repair child retained prior commit intent %s=%q", field, value)
+		}
+	}
+}
+
 func TestRunnerReturnsTerminalParentAfterCIRepairHandoff(t *testing.T) {
 	store, claimed, _ := seedOpenPilotCIRepairParent(t)
 	claimed.Inputs["retry_from_step"] = "open-pilot.ci-checks"
@@ -386,6 +494,10 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewPostgresStore(db, func() time.Time { return time.Unix(200, 0) })
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	resetIsolatedPostgresRuns(t, db)
 	repo := "OWNER/CI-REPAIR-" + newID("test")
 	issue := "1"
 	t.Cleanup(func() {
@@ -393,7 +505,7 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 		_, _ = db.ExecContext(context.Background(), `delete from runs where inputs->>'repo'=$1`, repo)
 	})
 	pipeline := Pipeline{ID: "snapshot", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "agent-work", Position: 5, Name: "open-pilot.agent-work", Executor: "opencode"}, {ID: "ci-checks", Position: 9, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
-	state, parent, err := store.ClaimAndCreateOpenPilotInitialRun(repo, issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 3, PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": repo, "issue": issue, "resume.open-pilot.prompt": "original", "opencode_session_id": "session"}})
+	state, parent, err := store.ClaimAndCreateOpenPilotInitialRun(repo, issue, trustedOpenPilotInput(repo, issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 3, PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": repo, "issue": issue, "resume.open-pilot.prompt": "original", "opencode_session_id": "session"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +525,7 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 	if _, err := store.StartRunStep(step.ID); err != nil {
 		t.Fatal(err)
 	}
-	request := OpenPilotCIRepairRequest{Repo: repo, Issue: issue, ParentRunID: parent.ID, ExpectedWorkerID: "pg-worker", ExpectedAttemptCount: 1, PullRequestID: 1, PullRequestNumber: 1, HeadBranch: state.Branch, FailedHeadSHA: "failed-head", Feedback: "verify failed", ChildRun: CreateRunInput{MaxAttempts: 9, Inputs: map[string]string{"resume.open-pilot.prompt": "repair"}}}
+	request := OpenPilotCIRepairRequest{Target: *trustedOpenPilotInput(repo, issue, CreateRunInput{}).OpenPilotTarget, Repo: repo, Issue: issue, ParentRunID: parent.ID, ExpectedWorkerID: "pg-worker", ExpectedAttemptCount: 1, PullRequestID: 1, PullRequestNumber: 1, HeadBranch: state.Branch, FailedHeadSHA: "failed-head", Feedback: "verify failed", ChildRun: CreateRunInput{MaxAttempts: 9, Inputs: map[string]string{"resume.open-pilot.prompt": "repair"}}}
 	result, err := store.HandleOpenPilotCIFailure(request)
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +579,7 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 	if _, err := store.UpsertOpenPilotIssueState(resumable); err != nil {
 		t.Fatal(err)
 	}
-	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun(repo, issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{openPilotCIRepairCountKey: "0", openPilotCIRepairFeedbackKey: "forged", openPilotCIRepairOriginalPromptKey: "forged"}})
+	_, resumed, err := store.ClaimAndCreateOpenPilotResumeRun(repo, issue, trustedOpenPilotInput(repo, issue, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 2, Inputs: map[string]string{openPilotCIRepairCountKey: "0", openPilotCIRepairFeedbackKey: "forged", openPilotCIRepairOriginalPromptKey: "forged"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,11 +591,11 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 			t.Fatalf("postgres external resume retained protected input %q", key)
 		}
 	}
-	reconcileState, reconcileRun, err := store.ClaimAndCreateOpenPilotInitialRun(repo, "2", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": repo, "issue": "2"}})
+	reconcileState, reconcileRun, err := store.ClaimAndCreateOpenPilotInitialRun(repo, "2", trustedOpenPilotInput(repo, "2", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": repo, "issue": "2"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `update runs set status=$2,summary='repair child failed',inputs=inputs || jsonb_build_object($3,$4) where id=$1`, reconcileRun.ID, RunFailed, openPilotCIRepairParentRunIDKey, "parent"); err != nil {
+	if _, err := db.ExecContext(ctx, `update runs set status=$2,summary='repair child failed',inputs=inputs || jsonb_build_object($3::text,$4::text) where id=$1`, reconcileRun.ID, RunFailed, openPilotCIRepairParentRunIDKey, "parent"); err != nil {
 		t.Fatal(err)
 	}
 	reconcileState.Phase, reconcileState.RunID = OpenPilotPhaseValidated, reconcileRun.ID
@@ -495,7 +607,7 @@ func TestPostgresStoreHandlesOpenPilotCIFailureAtomically(t *testing.T) {
 	if _, err := store.UpsertOpenPilotIssueState(reconcileState); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := store.ReconcileOpenPilotCIRepairTerminals(100); err != nil || count != 1 {
+	if count, err := store.ReconcileOpenPilotCIRepairTerminals(100, openPilotAdmissionGateForTarget(t, *trustedOpenPilotInput(repo, "2", CreateRunInput{}).OpenPilotTarget)); err != nil || count != 1 {
 		t.Fatalf("postgres reconciled = %d, %v", count, err)
 	}
 	if reconciled, err := store.OpenPilotIssueState(repo, "2"); err != nil || reconciled.Phase != OpenPilotPhaseFailed || reconciled.RecommendedNextAction != "manual_review" {
@@ -525,7 +637,7 @@ func TestPostgresStoreRejectsExpiredCIRepairLease(t *testing.T) {
 		_, _ = db.ExecContext(context.Background(), `delete from runs where inputs->>'repo'=$1`, repo)
 	})
 	pipeline := Pipeline{ID: "snapshot", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "agent-work", Position: 5, Name: "open-pilot.agent-work"}}}
-	state, parent, err := store.ClaimAndCreateOpenPilotInitialRun(repo, "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": repo, "issue": "1"}})
+	state, parent, err := store.ClaimAndCreateOpenPilotInitialRun(repo, "1", trustedOpenPilotInput(repo, "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": repo, "issue": "1"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +648,7 @@ func TestPostgresStoreRejectsExpiredCIRepairLease(t *testing.T) {
 	if _, err := store.UpsertOpenPilotIssueState(state); err != nil {
 		t.Fatal(err)
 	}
-	request := OpenPilotCIRepairRequest{Repo: repo, Issue: "1", ParentRunID: parent.ID, ExpectedWorkerID: "worker", ExpectedAttemptCount: 1, PullRequestID: 1, PullRequestNumber: 1, HeadBranch: "branch", FailedHeadSHA: "sha", Feedback: "failed"}
+	request := OpenPilotCIRepairRequest{Target: *trustedOpenPilotInput(repo, "1", CreateRunInput{}).OpenPilotTarget, Repo: repo, Issue: "1", ParentRunID: parent.ID, ExpectedWorkerID: "worker", ExpectedAttemptCount: 1, PullRequestID: 1, PullRequestNumber: 1, HeadBranch: "branch", FailedHeadSHA: "sha", Feedback: "failed"}
 	if _, err := store.HandleOpenPilotCIFailure(request); !errors.Is(err, ErrConflict) {
 		t.Fatalf("error = %v", err)
 	}
@@ -559,7 +671,7 @@ func seedOpenPilotCIRepairParent(t *testing.T) (*MemoryStore, Run, Pipeline) {
 		t.Fatal(err)
 	}
 	pipeline := Pipeline{ID: "snapshot", WorkflowID: string(WorkflowOpenPilot), Steps: []PipelineStep{{ID: "agent-work", Position: 7, Name: "open-pilot.agent-work", Executor: "opencode"}, {ID: "ci-checks", Position: 12, Name: "open-pilot.ci-checks", Executor: "gitea"}}}
-	state, run, err := store.ClaimAndCreateOpenPilotInitialRun("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 3, PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "1", "resume.open-pilot.prompt": "original issue prompt", "opencode_session_id": "session-1"}})
+	state, run, err := store.ClaimAndCreateOpenPilotInitialRun("OWNER/REPO", "1", trustedOpenPilotInput("OWNER/REPO", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), MaxAttempts: 3, PipelineSnapshot: &pipeline, Inputs: map[string]string{"repo": "OWNER/REPO", "issue": "1", "resume.open-pilot.prompt": "original issue prompt", "opencode_session_id": "session-1"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +713,8 @@ func seedOpenPilotCIRepairParent(t *testing.T) (*MemoryStore, Run, Pipeline) {
 
 func testOpenPilotCIRepairRequest(run Run, worker, feedback string) OpenPilotCIRepairRequest {
 	return OpenPilotCIRepairRequest{
-		Repo: "OWNER/REPO", Issue: "1", ParentRunID: run.ID, ExpectedWorkerID: worker, ExpectedAttemptCount: run.AttemptCount,
+		Target: OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: strings.ToLower(run.Inputs["repo"]), Issue: run.Inputs["issue"], ExecutorGeneration: "legacy"},
+		Repo:   "OWNER/REPO", Issue: "1", ParentRunID: run.ID, ExpectedWorkerID: worker, ExpectedAttemptCount: run.AttemptCount,
 		PullRequestID: 90, PullRequestNumber: 9, HeadBranch: "open-pilot/issue-1", FailedHeadSHA: "failed-head", Feedback: feedback,
 	}
 }

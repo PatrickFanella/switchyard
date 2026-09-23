@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -72,4 +73,83 @@ func TestPushPlanIdentitySerializationAndResumeFallback(t *testing.T) {
 	if resumed.Repo != plan.Repo || resumed.RepoPath != plan.RepoPath {
 		t.Fatalf("resumed = %#v", resumed)
 	}
+}
+
+func TestRecoveredPushRejectsCleanMovedWorktreeHEAD(t *testing.T) {
+	repo, _, plan := preparedCleanupWorktree(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runWorktreeTestGit(t, t.TempDir(), "init", "--bare", remote)
+	runWorktreeTestGit(t, repo, "remote", "set-url", "origin", remote)
+	runWorktreeTestGit(t, plan.WorktreePath, "commit", "--allow-empty", "-m", "persisted commit")
+	persistedSHA := strings.TrimSpace(worktreeTestGitOutput(t, plan.WorktreePath, "rev-parse", "HEAD"))
+	runWorktreeTestGit(t, plan.WorktreePath, "commit", "--allow-empty", "-m", "moved head")
+
+	t.Setenv("OPEN_PILOT_ALLOW_LOCAL_GIT_REMOTE", "true")
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	target := OpenPilotTarget{RepositoryID: "legacy", RepositorySlug: "owner/repo", Issue: "1", ExecutorGeneration: "legacy"}
+	run, err := store.CreateRun(trustedOpenPilotInput("owner/repo", "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": "owner/repo", "issue": "1"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: "owner/repo", Issue: "1", RunID: run.ID, Branch: plan.Branch, Base: plan.BaseBranch, WorktreePath: plan.WorktreePath, ResumeInputs: map[string]string{"resume.open-pilot.commit-changes.sha": persistedSHA}}, OpenPilotPhaseCommitted)
+	if _, err := store.BindOpenPilotIssueStateAffinity("owner/repo", "1", target); err != nil {
+		t.Fatal(err)
+	}
+	run.AttemptCount = 2
+	state := map[string]any{"open-pilot.branch-plan": plan, "open-pilot.commit-result": OpenPilotCommitResult{SHA: persistedSHA, Executed: true}}
+	env := &EnvWorkflowExecutors{store: store, openPilotGate: openPilotAdmissionGateForTarget(t, target), openPilotGitPushMode: "allow"}
+	_, err = (openPilotExecutor{env: env}).ExecutePipelineStep(t.Context(), run, PipelineStep{ID: "push-branch", Name: "open-pilot.push-branch"}, state)
+	if err == nil || !strings.Contains(err.Error(), "HEAD changed after the persisted Open Pilot commit") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCommitReconcilesCrashAfterGitCommitWithoutDuplicate(t *testing.T) {
+	t.Setenv("OPEN_PILOT_GIT_AUTHOR_NAME", "open-pilot")
+	t.Setenv("OPEN_PILOT_GIT_AUTHOR_EMAIL", "bot@example.test")
+	_, _, plan := preparedCleanupWorktree(t)
+	if err := os.WriteFile(filepath.Join(plan.WorktreePath, "crash-reconcile.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(nil)
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": plan.Repo, "issue": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedOpenPilotStateAtPhase(t, store, OpenPilotIssueState{Repo: plan.Repo, Issue: "1", RunID: run.ID}, OpenPilotPhaseVerified)
+	env := &EnvWorkflowExecutors{store: store, openPilotAutoCommitMode: "allow"}
+	first, err := env.openPilotCommitChanges(t.Context(), run, plan, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := env.openPilotCommitChanges(t.Context(), run, plan, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(worktreeTestGitOutput(t, plan.WorktreePath, "log", "-1", "--format=%an <%ae>|%cn <%ce>")); got != "open-pilot <bot@example.test>|open-pilot <bot@example.test>" {
+		t.Fatalf("commit identity = %q", got)
+	}
+	if !first.Executed || second.SHA != first.SHA {
+		t.Fatalf("first = %+v, second = %+v", first, second)
+	}
+	if count := strings.TrimSpace(worktreeTestGitOutput(t, plan.WorktreePath, "rev-list", "--count", "HEAD")); count != "2" {
+		t.Fatalf("commit count = %s", count)
+	}
+}
+
+func worktreeTestGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
