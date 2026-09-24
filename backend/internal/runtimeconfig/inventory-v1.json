@@ -116,6 +116,7 @@
     {"key": "OPEN_PILOT_EXECUTOR_GENERATION", "component": "open-pilot", "kind": "mode", "sensitivity": "public", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Executor generation bound to admitted runs."},
     {"key": "OPEN_PILOT_SINGLETON_REPOSITORY", "component": "open-pilot", "kind": "string", "sensitivity": "public", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "owner/repo admitted by legacy-singleton mode."},
     {"key": "DEVLOG_MODEL", "component": "devlog", "kind": "string", "sensitivity": "public", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Default Devlog model."},
+    {"key": "DEVLOG_ALLOWED_REPOS", "component": "devlog", "kind": "list", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "owner/repo slugs Devlog may read for repository evidence in addition to the Open Pilot repository registry."},
     {"key": "GITEA_BASE_URL", "component": "gitea", "kind": "url", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API origin."},
     {"key": "GITEA_TOKEN", "component": "gitea", "kind": "secret", "sensitivity": "secret", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API token for Open Pilot writes."}
   ]

@@ -465,6 +465,83 @@ export type EvidenceSearchResponse = {
   retention: { window: string; floor: string; searched_at: string };
 };
 
+// Native executor session view (`GET /api/executor-sessions`). Built from
+// run-step correlation records and executor status, not the adapter snapshot.
+export type ExecutorAvailability = {
+  key: string;
+  scope: 'default' | 'repository';
+  repository_id?: string;
+  executor_generation?: string;
+  repository_slug?: string;
+  backend: 'native' | 'ocq';
+  compatibility: boolean;
+  status: string;
+  available: boolean;
+  checked_at: string;
+};
+
+export type ExecutorSessionRun = {
+  run_id: string;
+  workflow_id: string;
+  run_status: string;
+  step_id: string;
+  step_name: string;
+  step_position: number;
+  step_status: string;
+  active: boolean;
+  cancelable: boolean;
+  observed_at: string;
+  lease_expires_at?: string;
+};
+
+export type ExecutorSessionRequest = {
+  kind: 'executor_request' | 'model_request';
+  key: string;
+  value: string;
+  run_id: string;
+};
+
+export type ExecutorSessionStatus = 'active' | 'stale' | 'ended' | 'historical_compatibility';
+
+export type ExecutorSession = {
+  session_id: string;
+  correlation_key: string;
+  origin: 'native' | 'compatibility';
+  executor_key: string;
+  executor_status: string;
+  repository: { repository_id?: string; executor_generation?: string; repo?: string };
+  status: ExecutorSessionStatus;
+  status_reason: string;
+  active: boolean;
+  presence: 'present' | 'missing' | 'unknown' | 'not_checked';
+  presence_reason: string;
+  executor_activity?: 'busy' | 'idle';
+  first_observed_at: string;
+  last_observed_at: string;
+  last_observed_source: 'run_step' | 'executor';
+  runs: ExecutorSessionRun[];
+  runs_truncated: boolean;
+  requests: ExecutorSessionRequest[];
+  requests_truncated: boolean;
+};
+
+export type ExecutorSessionsResponse = {
+  generated_at: string;
+  retention: { window: string; floor: string; searched_at: string };
+  limit: number;
+  session_id?: string;
+  repository?: string;
+  scanned_steps: number;
+  scan_limit: number;
+  truncated: boolean;
+  executor_availability: 'available' | 'partial' | 'unavailable' | 'not_configured';
+  executors: ExecutorAvailability[];
+  warnings: string[];
+  counts: { total: number; active: number; stale: number; ended: number; historical_compatibility: number };
+  sessions: ExecutorSession[];
+  abort: { direct_abort: boolean; route: string; admin_required: boolean; note: string };
+};
+
 // Sanitized external bases published by the control plane for correlation
 // links. Absent values mean the destination is not configured.
 export type CorrelationTargets = {

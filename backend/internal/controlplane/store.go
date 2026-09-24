@@ -115,6 +115,7 @@ type Store interface {
 	PruneRetention(time.Time) (RetentionResult, error)
 	ArtifactReport(context.Context, ArtifactReportInput) (ArtifactReport, error)
 	SearchEvidence(context.Context, EvidenceSearchInput) (EvidenceSearchPage, error)
+	ListExecutorSessionSteps(context.Context, ExecutorSessionStepsInput) (ExecutorSessionStepPage, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
 }
 
