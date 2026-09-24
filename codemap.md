@@ -17,7 +17,7 @@ Switchyard is one cohesive automation runtime for durable workflows, agent execu
 - `.gitea/workflows/verify-production.yml`: scheduled/manual production qualification on contract-checked runners.
 - `.gitea/workflows/qualify-retirement-release.yml`: opt-in post-deployment producer for durable four-file retirement qualification artifacts.
 - `.gitea/workflows/prove-production-deployment.yml`: opt-in production-runner smoke proof for one annotated deployed release.
-- `docs/development-readiness-report-2026-07-19.md`: release-candidate readiness verdict, local gate evidence, and promotion prerequisites.
+- `docs/development-readiness-report-2026-07-19.md`: historical readiness verdict for commit 41813c9; current status lives in `docs/status.md` and `docs/releases/`.
 
 ## Responsibility
 Provide a Go automation control plane, React operator UI, durable PostgreSQL state, a native model broker/compatibility ingress, and a managed OpenCode executor in a minimal deployable stack.
