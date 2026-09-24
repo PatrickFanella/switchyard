@@ -373,4 +373,53 @@ describe('App', () => {
     expect(window.location.hash).toBe('#/runs/run-1');
     await unmount(root);
   });
+
+  it('refreshes a running run live, keeps the evidence filter, and stops when the run finishes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.location.hash = '#/runs/run-1';
+      let detailLoads = 0;
+      let finished = false;
+      const fetch = mockDashboardFetch((url, init) => {
+        if ((init.method ?? 'GET') === 'GET' && url.pathname === '/api/runs/run-1') {
+          detailLoads += 1;
+          if (finished) return jsonResponse({ run: { id: 'run-1', workflow_id: 'open-pilot', trigger_id: 'trigger-1', status: 'succeeded', inputs: { repo: 'OWNER/REPO', issue: '123' }, created_at: '2026-06-17T00:00:00.000Z', finished_at: '2026-06-17T00:05:00.000Z', summary: 'Open Pilot run 1' }, steps: [], events: [], artifacts: [] });
+        }
+        return undefined;
+      });
+      const { container, root } = await renderApp('Run cockpit');
+      const indicator = () => container.querySelector('[data-live-status]') as HTMLElement | null;
+      expect(indicator()?.dataset.liveStatus).toBe('live');
+      expect(container.textContent).toContain('Live: every 3s');
+      expect(container.textContent).toContain('Updated ');
+      const initialLoads = detailLoads;
+
+      const searchInput = container.querySelector('input[placeholder*="artifact"]') as HTMLInputElement;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(searchInput, 'trace.json');
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_100); });
+      expect(detailLoads).toBe(initialLoads + 1);
+      expect(fetch.mock.calls.some(([url]) => new URL(String(url), 'http://switchyard.test').pathname === '/api/runs')).toBe(true);
+      expect((container.querySelector('input[placeholder*="artifact"]') as HTMLInputElement).value).toBe('trace.json');
+      expect(container.textContent).toContain('trace.json');
+      expect(container.textContent).not.toContain('bundle.zip attached');
+
+      finished = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_100); });
+      expect(detailLoads).toBe(initialLoads + 2);
+      await waitFor(() => expectText(container, 'succeeded'), container);
+      expect(indicator()?.dataset.liveStatus).toBe('idle');
+      expect(container.textContent).toContain('run finished');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(detailLoads).toBe(initialLoads + 2);
+      expect(window.location.hash).toBe('#/runs/run-1');
+      await unmount(root);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

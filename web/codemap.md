@@ -8,7 +8,7 @@ Implements the React operator dashboard for monitoring, dispatching, and control
 - Components use a reusable HUD vocabulary and responsive shell; stateful API orchestration is isolated in hooks.
 - `pnpm-workspace.yaml` owns dependency overrides and the explicit build-script allowlist while the frozen lockfile remains local to this package.
 - Production output is served by templated nginx; it allows only the observed original Tailscale proxy `/32`, overwrites forwarding headers, clears client-supplied `X-Forwarded-User`, and proxies `/api/*` with Caddy's `Remote-User` identity plus the configured hop token. Host nft and exact UFW forward rules enforce the same peer before and after DNAT.
-- The Vitest suite uses strict typed dashboard fixtures and covers 19 operator and hash-navigation cases.
+- The Vitest suite uses strict typed dashboard fixtures and covers operator, hash-navigation, and fake-timer live-refresh cases (32 tests across App, hash navigation, and `useLiveRefresh`).
 
 ## Flow
 1. `src/main.tsx` mounts `App` and global styles.

@@ -226,6 +226,11 @@ export async function cancelModelBrokerRequest(requestID: string) {
   return fetchJSON<{ canceled?: boolean }>(`/admin/queue/${encodeURIComponent(requestID)}`, { method: 'DELETE' });
 }
 
+export async function loadRuns() {
+  const data = await fetchJSON<DashboardResponse<Run>>('/api/runs');
+  return arrayOrEmpty(data.runs as Run[] | null | undefined);
+}
+
 export async function loadRunDetail(runID: string) {
   return normalizeRunDetail(await fetchJSON<RunDetail>(`/api/runs/${runID}`));
 }
