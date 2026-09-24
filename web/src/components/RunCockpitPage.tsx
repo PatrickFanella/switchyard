@@ -7,6 +7,7 @@ import type { LiveRefreshState } from '../hooks/useLiveRefresh';
 import { ArtifactPreview } from './ArtifactPreview';
 import { ChangemakerReviewPanel } from './ChangemakerReviewPanel';
 import { DevlogReviewPanel } from './DevlogReviewPanel';
+import { RunPolicyEvidence } from './RunPolicyEvidence';
 import { collectCorrelations, summarizeRunFailure } from '../correlation';
 import { CorrelationLinks, EvidenceAnchor, EvidenceFocusNotice, RunFailureSummaryPanel, RunUnavailableNotice, useCorrelationTargets, useEvidenceFocus } from './CorrelationLinks';
 
@@ -265,6 +266,7 @@ export function RunCockpitPage({
 
       <EvidenceFocusNotice state={evidenceFocus} />
       {failureSummary ? <RunFailureSummaryPanel summary={failureSummary} /> : null}
+      <RunPolicyEvidence policy={selectedRunDetail.policy} />
 
       <HudSection kicker="Open Pilot lifecycle" title="Open Pilot lifecycle" note="Repository issue state, lifecycle gates, and repair loop details live here for Open Pilot runs.">
         {openPilot ? (

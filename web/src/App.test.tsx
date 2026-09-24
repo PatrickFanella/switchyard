@@ -98,8 +98,9 @@ describe('App', () => {
       agentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await waitFor(() => expectText(container, 'Open Pilot Executor'), container);
+    await waitFor(() => expectText(container, 'opencode, command, git, gitea'), container);
     expect(container.textContent).toContain('Implement the smallest safe change.');
-    expect(container.textContent).toContain('Allowed executors: opencode, command, git, gitea');
+    expect(container.textContent).toContain('static default');
 
     await unmount(root);
   });

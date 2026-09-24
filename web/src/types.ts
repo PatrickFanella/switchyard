@@ -141,6 +141,49 @@ export type RunDetail = {
   steps: RunStep[];
   events: RunEvent[];
   artifacts: Artifact[];
+  // Resolved profile and model policy; absent for runs without a pipeline snapshot.
+  policy?: RunModelPolicy;
+};
+
+/** Where a step's model came from (see docs/reference/agent-profiles.md). */
+export type RunModelSource = 'workflow' | 'override' | 'profile-default' | 'executor-default' | 'none' | 'unrecorded';
+
+export type RunModelPolicyStep = {
+  step_id: string;
+  step_name: string;
+  position: number;
+  executor: string;
+  profile_id?: string;
+  profile_name?: string;
+  profile_version: number;
+  profile_source?: 'static' | 'persisted';
+  profile_captured?: 'run-snapshot' | 'registry';
+  profile_contract_sha256?: string;
+  profile_default_model?: string;
+  profile_allowed_models?: string[];
+  workflow_model?: string;
+  accepts_override: boolean;
+  override_restricted: boolean;
+  allowed_overrides?: string[];
+  inherited_model?: string;
+  inherited_model_source: RunModelSource;
+  model?: string;
+  model_source: RunModelSource;
+  recorded: boolean;
+  error?: string;
+};
+
+export type RunModelPolicy = {
+  workflow_id: string;
+  pipeline_id?: string;
+  pipeline_version?: string;
+  override?: string;
+  override_status: 'none' | 'accepted' | 'rejected';
+  rejections?: string[];
+  accepts_override: boolean;
+  override_restricted: boolean;
+  allowed_overrides?: string[];
+  steps: RunModelPolicyStep[];
 };
 
 export type OpenPilotIssueState = {
@@ -336,6 +379,16 @@ export type AgentProfile = {
   status?: 'static' | 'draft' | 'active' | 'superseded';
   source?: 'static' | 'persisted';
   prompt_contract_sha256?: string;
+  provenance?: AgentProfileProvenance;
+};
+
+export type AgentProfileProvenance = {
+  origin: 'static-default' | 'operator' | 'rollback';
+  actor?: string;
+  note?: string;
+  derived_from_version?: number;
+  rolled_back_from_version?: number;
+  static_contract_sha256?: string;
 };
 
 export type OperatorSummaryAlert = {

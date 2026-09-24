@@ -10,6 +10,7 @@ import type {
 import { formatTime, statusClasses, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong, HudSection } from './hud';
 import { formatOpenPilotGateStatus, workflowName } from '../api';
 import { canResumeOpenPilot } from './runCockpit';
+import { RunModelOverrideDispatch } from './RunModelOverrideDispatch';
 
 type OverviewDashboardProps = {
   dashboard: DashboardState;
@@ -401,6 +402,13 @@ export function OverviewDashboard({
           </div>
 
           <div className="space-y-4">
+            <RunModelOverrideDispatch
+              triggers={dashboard.triggers}
+              onDispatched={(runID) => {
+                onSelectRun(runID);
+                onRefresh();
+              }}
+            />
             <HudPanelStrong className="p-4">
               <HudLabel className="text-[hsl(var(--faint))]">Run posture</HudLabel>
               <div className="mt-4 space-y-3">

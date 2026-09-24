@@ -1398,6 +1398,36 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Workflow" }
                 required: [workflows]
+  /api/workflows/{workflowId}/model-policy:
+    get:
+      summary: Preview the profile and model policy of a new run
+      description: >-
+        Control listener only; read or admin role. Resolves the policy a new run of the
+        workflow would capture now (effective profile versions, inherited models and their
+        sources, and the allowed run-level `model` overrides) without creating a run. When
+        `model` is supplied the override is evaluated with the same rules `POST /api/runs`
+        applies, and rejection reasons are returned in `rejections`.
+      parameters:
+        - name: workflowId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: model
+          in: query
+          description: Optional run-level model override to evaluate.
+          schema: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: Policy preview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/RunModelPolicy" }
+                required: [policy]
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/triggers:
     get:
       summary: List triggers
@@ -1647,6 +1677,11 @@ paths:
                 required: [runs]
     post:
       summary: Create and dispatch a run
+      description: >-
+        A non-empty `inputs.model` is a run-level model override. For workflows with a
+        pipeline it is checked against the run's profile snapshot and the workflow model
+        allowlist before the run is created; a rejected override returns 400 with
+        `invalid input: model override "<model>" rejected: <reasons>` and creates nothing.
       requestBody:
         required: true
         content:
@@ -3070,7 +3105,55 @@ components:
         steps: { type: array, items: { $ref: "#/components/schemas/RunStep" } }
         events: { type: array, items: { $ref: "#/components/schemas/RunEvent" } }
         artifacts: { type: array, items: { $ref: "#/components/schemas/Artifact" } }
+        policy: { $ref: "#/components/schemas/RunModelPolicy" }
       required: [run, steps, events, artifacts]
+    RunModelPolicy:
+      type: object
+      description: >-
+        Resolved profile and model policy of a run (from its immutable pipeline snapshot and
+        recorded steps) or of a prospective run. Omitted from run detail for runs without a
+        pipeline snapshot.
+      properties:
+        workflow_id: { type: string }
+        pipeline_id: { type: string }
+        pipeline_version: { type: string }
+        override: { type: string, description: The run-level `model` input, when set. }
+        override_status: { type: string, enum: [none, accepted, rejected] }
+        rejections: { type: array, items: { type: string } }
+        accepts_override: { type: boolean }
+        override_restricted: { type: boolean, description: True when at least one step that accepts an override limits it to `allowed_overrides`. }
+        allowed_overrides: { type: array, items: { type: string } }
+        steps: { type: array, items: { $ref: "#/components/schemas/RunModelPolicyStep" } }
+      required: [workflow_id, override_status, accepts_override, override_restricted, steps]
+    RunModelPolicyStep:
+      type: object
+      properties:
+        step_id: { type: string }
+        step_name: { type: string }
+        position: { type: integer }
+        executor: { type: string }
+        profile_id: { type: string }
+        profile_name: { type: string }
+        profile_version: { type: integer, minimum: 0 }
+        profile_source: { type: string, enum: [static, persisted] }
+        profile_captured: { type: string, enum: [run-snapshot, registry] }
+        profile_contract_sha256: { type: string }
+        profile_default_model: { type: string }
+        profile_allowed_models: { type: array, items: { type: string } }
+        workflow_model: { type: string, description: "The model the workflow step declares, including the ${model} placeholder." }
+        accepts_override: { type: boolean }
+        override_restricted: { type: boolean }
+        allowed_overrides: { type: array, items: { type: string } }
+        inherited_model: { type: string }
+        inherited_model_source: { $ref: "#/components/schemas/RunModelSource" }
+        model: { type: string }
+        model_source: { $ref: "#/components/schemas/RunModelSource" }
+        recorded: { type: boolean, description: True when the values come from the executed run step. }
+        error: { type: string }
+      required: [step_id, step_name, position, executor, profile_version, accepts_override, override_restricted, inherited_model_source, model_source, recorded]
+    RunModelSource:
+      type: string
+      enum: [workflow, override, profile-default, executor-default, none, unrecorded]
     CreateRunInput:
       type: object
       properties:

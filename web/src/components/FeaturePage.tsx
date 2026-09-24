@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { AdapterPayload, AgentProfile, ViewID } from '../types';
 import { ConfigPage } from './ConfigPage';
 import { EvidenceSearchPage } from './EvidenceSearchPage';
+import { ProfilesPage } from './ProfilesPage';
 import { SessionsPage } from './SessionsPage';
 import {
   formatTime,
@@ -139,27 +140,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
   }
 
   if (view === 'agents') {
-    return (
-      <HudSection kicker="Native profiles" title="Agent profiles" note="Control-plane profile contracts, default models, and allowed executors. These are read-only policy records, not adapter-reported agents.">
-        {agentProfiles.length === 0 ? <HudEmptyState>No agent profiles have been returned by the control plane.</HudEmptyState> : null}
-        <div className="grid gap-4 lg:grid-cols-2">
-          {agentProfiles.map((profile) => (
-            <FeatureCard key={profile.id}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <HudLabel className="text-[hsl(var(--faint))]">{profile.role}</HudLabel>
-                  <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{profile.name}</h3>
-                </div>
-                <span className="hud-chip border-[hsl(var(--confirm))] bg-[hsl(var(--confirm-soft))] px-2.5 py-1 text-[0.62rem] text-[hsl(var(--confirm))]">native</span>
-              </div>
-              <HudField className="mt-4" label="Default model" value={profile.default_model || 'not configured'} />
-              <p className="mt-4 text-sm leading-6 text-[hsl(var(--muted))]">{profile.prompt_contract || 'No prompt contract recorded.'}</p>
-              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Allowed executors: {profile.allowed_executors.join(', ') || 'none'}</p>
-            </FeatureCard>
-          ))}
-        </div>
-      </HudSection>
-    );
+    return <ProfilesPage />;
   }
 
   return (
