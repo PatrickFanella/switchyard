@@ -7,6 +7,7 @@ Contains the dashboard application shell, API client, shared domain types, style
 - `types.ts` mirrors backend JSON contracts and supplies empty/default states.
 - `api.ts` centralizes fetch, normalization, formatting, and mutations.
 - `App.tsx` selects pages while hooks own URL and asynchronous state.
+- `correlation.ts` defines typed correlation destinations (run, step, request, session, executor request, Gitea issue/PR/commit/CI, trace, span), the external-link allowlist derived from `/api/operator-safety` `correlation_targets`, run evidence deep links (`#/runs/<run>/<steps|artifacts|events>/<id>`), and the run failure summary. `correlation.test.ts` covers allowlist rejection and destination mapping.
 - `test-utils.tsx` provides strict typed fetch fixtures and DOM helpers for the dashboard suite; `App.test.tsx` navigates operator mutations, selection/error states, and hash routes; `components/ArtifactPreview.test.tsx` covers inline artifact decoding, sanitized rendering, and fallbacks.
 
 ## Flow

@@ -448,6 +448,21 @@ export type EvidenceSearchResponse = {
   retention: { window: string; floor: string; searched_at: string };
 };
 
+// Sanitized external bases published by the control plane for correlation
+// links. Absent values mean the destination is not configured.
+export type CorrelationTargets = {
+  gitea_base_url?: string;
+  trace_ui_base_url?: string;
+};
+
+export type OperatorSafetyStatus = {
+  public_url?: string;
+  reverse_proxy_auth: boolean;
+  open_pilot_autonomy_mode: string;
+  correlation_targets?: CorrelationTargets;
+  warnings: string[];
+};
+
 export type ViewID = 'overview' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {

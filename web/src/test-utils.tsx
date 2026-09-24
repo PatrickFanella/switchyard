@@ -47,6 +47,7 @@ export function mockDashboardFetch(handler?: FetchHandler) {
     else if (method === 'GET' && url.pathname === '/api/workers') payload = { enabled: false, running: false, workers: 0, active: 0 };
     else if (method === 'GET' && url.pathname === '/api/operator-summary') payload = operatorSummary;
     else if (method === 'GET' && url.pathname === '/api/agent-profiles') payload = agentProfiles;
+    else if (method === 'GET' && url.pathname === '/api/operator-safety') payload = { reverse_proxy_auth: false, open_pilot_autonomy_mode: 'manual', correlation_targets: {}, warnings: [] };
     else if (method === 'GET' && url.pathname === '/api/open-pilot/state' && url.searchParams.get('repo') === 'OWNER/REPO' && url.searchParams.get('issue') === '123') payload = openPilotState;
     else if (method === 'GET' && url.pathname === '/api/history/req-ok') payload = historyRequest;
     else if (method === 'GET' && url.pathname === '/api/history') payload = { requests: [historyRequest, { id: 'req-fail', status: 'failed', model: 'qwen3.5:latest', path: '/api/chat', client: 'test', error: 'upstream unavailable', created_at: '2026-06-17T00:00:00.000Z', updated_at: '2026-06-17T00:00:01.000Z' }] };

@@ -5,10 +5,13 @@ import { formatTime, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong
 import { LiveRefreshIndicator } from './LiveRefreshIndicator';
 import type { LiveRefreshState } from '../hooks/useLiveRefresh';
 import { ArtifactPreview } from './ArtifactPreview';
+import { collectCorrelations, summarizeRunFailure } from '../correlation';
+import { CorrelationLinks, EvidenceAnchor, EvidenceFocusNotice, RunFailureSummaryPanel, RunUnavailableNotice, useCorrelationTargets, useEvidenceFocus } from './CorrelationLinks';
 
 type RunCockpitPageProps = {
   selectedRunID: string;
   selectedRunDetail: RunDetail | null;
+  selectedRunMissing?: boolean;
   openPilotState: OpenPilotStateResponse | null;
   runActionID: string;
   onRetryRun: (runID: string) => void;
@@ -19,14 +22,6 @@ type RunCockpitPageProps = {
   onRefresh: () => void;
   liveRefresh?: LiveRefreshState;
 };
-
-const tracePriority = new Map([
-  ['trace_id', 0],
-  ['span_id', 1],
-  ['llama_line_request_id', 2],
-  ['ocq_request_id', 3],
-  ['model_broker_request_id', 4],
-]);
 
 function runActionLabel(detail: RunDetail, state: OpenPilotStateResponse | null) {
   return detail.run.workflow_id === 'open-pilot' && canResumeOpenPilot(state) ? 'Resume Open Pilot' : 'Retry run';
@@ -113,6 +108,7 @@ function StepCard({ step, onStepAction, runID, runActionID }: { step: RunStep; o
 export function RunCockpitPage({
   selectedRunID,
   selectedRunDetail,
+  selectedRunMissing = false,
   openPilotState,
   runActionID,
   onRetryRun,
@@ -137,31 +133,17 @@ export function RunCockpitPage({
   );
   const filteredArtifacts = useMemo(() => filterEvidence(artifacts, evidenceQuery, ['name', 'kind', 'uri']), [artifacts, evidenceQuery]);
   const filteredEvents = useMemo(() => filterEvidence(events, evidenceQuery, ['type', 'message']), [evidenceQuery, events]);
-  const correlations = useMemo(() => {
-    const items = steps.flatMap((step) =>
-      Object.entries(step.correlation_ids ?? {}).map(([key, value]) => ({
-        key,
-        value,
-        stepName: step.name,
-        position: step.position,
-      })),
-    );
-
-    return items.sort((left, right) => {
-      const leftPriority = tracePriority.get(left.key) ?? 99;
-      const rightPriority = tracePriority.get(right.key) ?? 99;
-
-      if (leftPriority !== rightPriority) {
-        return leftPriority - rightPriority;
-      }
-
-      if (left.position !== right.position) {
-        return left.position - right.position;
-      }
-
-      return left.key.localeCompare(right.key);
-    });
-  }, [steps]);
+  const correlationTargets = useCorrelationTargets();
+  const correlations = useMemo(
+    () => (selectedRunDetail ? collectCorrelations(selectedRunDetail, openPilotState, correlationTargets.targets) : []),
+    [correlationTargets.targets, openPilotState, selectedRunDetail],
+  );
+  const failureSummary = useMemo(
+    () => (selectedRunDetail ? summarizeRunFailure(selectedRunDetail, openPilotState, correlations) : null),
+    [correlations, openPilotState, selectedRunDetail],
+  );
+  const evidenceRenderKey = useMemo(() => ({}), [filteredSteps, filteredArtifacts, filteredEvents]);
+  const evidenceFocus = useEvidenceFocus(selectedRunDetail?.run.id ?? '', evidenceRenderKey);
   const recordedProfiles = useMemo(
     () => Array.from(new Set(steps.map((step) => step.profile).filter((profile): profile is string => Boolean(profile)))).sort(),
     [steps],
@@ -182,7 +164,7 @@ export function RunCockpitPage({
   if (!selectedRunDetail) {
     return (
       <HudSection kicker="Run cockpit" title="Run cockpit" note="Deep run inspection, Open Pilot lifecycle gates, evidence, and operator actions.">
-        <HudEmptyState>Loading run detail or the run was not found.</HudEmptyState>
+        <RunUnavailableNotice missing={selectedRunMissing} runID={selectedRunID} />
       </HudSection>
     );
   }
@@ -278,6 +260,9 @@ export function RunCockpitPage({
           </HudPanelStrong>
         </div>
       </HudSection>
+
+      <EvidenceFocusNotice state={evidenceFocus} />
+      {failureSummary ? <RunFailureSummaryPanel summary={failureSummary} /> : null}
 
       <HudSection kicker="Open Pilot lifecycle" title="Open Pilot lifecycle" note="Repository issue state, lifecycle gates, and repair loop details live here for Open Pilot runs.">
         {openPilot ? (
@@ -375,7 +360,11 @@ export function RunCockpitPage({
           {filteredSteps.length === 0 ? (
             <HudEmptyState>No steps match the current filters.</HudEmptyState>
           ) : (
-            filteredSteps.map((step) => <StepCard key={step.id} onStepAction={onStepAction} runActionID={runActionID} runID={selectedRunDetail.run.id} step={step} />)
+            filteredSteps.map((step) => (
+              <EvidenceAnchor focus={evidenceFocus.focus} id={step.id} key={step.id} kind="steps">
+                <StepCard onStepAction={onStepAction} runActionID={runActionID} runID={selectedRunDetail.run.id} step={step} />
+              </EvidenceAnchor>
+            ))
           )}
         </div>
       </HudSection>
@@ -397,16 +386,18 @@ export function RunCockpitPage({
                 <HudEmptyState>No artifacts match the current search.</HudEmptyState>
               ) : (
                 filteredArtifacts.map((artifact) => (
-                  <HudPanel key={artifact.id} className="bg-[hsl(var(--panel-soft))] p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-[hsl(var(--ink))]">{artifactLabel(artifact)}</p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{artifact.kind}</p>
+                  <EvidenceAnchor focus={evidenceFocus.focus} id={artifact.id} key={artifact.id} kind="artifacts">
+                    <HudPanel className="bg-[hsl(var(--panel-soft))] p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-[hsl(var(--ink))]">{artifactLabel(artifact)}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{artifact.kind}</p>
+                        </div>
+                        <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{formatTime(artifact.created_at)}</span>
                       </div>
-                      <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{formatTime(artifact.created_at)}</span>
-                    </div>
-                    <ArtifactPreview artifact={artifact} />
-                  </HudPanel>
+                      <ArtifactPreview artifact={artifact} />
+                    </HudPanel>
+                  </EvidenceAnchor>
                 ))
               )}
             </div>
@@ -422,13 +413,15 @@ export function RunCockpitPage({
                 <HudEmptyState>No events match the current search.</HudEmptyState>
               ) : (
                 filteredEvents.map((event) => (
-                  <HudPanel key={event.id} className="border-[hsl(var(--pulse))] bg-[hsl(var(--panel-soft))] p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="hud-label text-[hsl(var(--pulse))]">{event.type}</p>
-                      <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{formatTime(event.created_at)}</span>
-                    </div>
-                    <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{event.message}</p>
-                  </HudPanel>
+                  <EvidenceAnchor focus={evidenceFocus.focus} id={event.id} key={event.id} kind="events">
+                    <HudPanel className="border-[hsl(var(--pulse))] bg-[hsl(var(--panel-soft))] p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="hud-label text-[hsl(var(--pulse))]">{event.type}</p>
+                        <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{formatTime(event.created_at)}</span>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{event.message}</p>
+                    </HudPanel>
+                  </EvidenceAnchor>
                 ))
               )}
             </div>
@@ -436,25 +429,8 @@ export function RunCockpitPage({
         </div>
       </HudSection>
 
-      <HudSection kicker="Correlation" title="Correlation + traces" note="Trace-first identifiers collected across all steps, ordered for quick handoff.">
-        {correlations.length === 0 ? (
-          <HudEmptyState>No correlation IDs recorded for this run.</HudEmptyState>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {correlations.map((item) => (
-              <HudPanel key={`${item.position}-${item.key}`} className="bg-[hsl(var(--panel-soft))] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{item.key}</div>
-                    <p className="mt-2 text-sm font-semibold text-[hsl(var(--ink))]">{item.stepName}</p>
-                  </div>
-                  <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Step {item.position}</span>
-                </div>
-                <p className="mt-3 break-all text-sm text-[hsl(var(--muted))]">{item.value}</p>
-              </HudPanel>
-            ))}
-          </div>
-        )}
+      <HudSection kicker="Correlation" title="Correlation + traces" note="Runs, steps, requests, sessions, Gitea issue/PR/CI, and traces. Only approved destinations are linked; every ID can be copied.">
+        <CorrelationLinks destinations={correlations} targets={correlationTargets} />
       </HudSection>
     </section>
   );

@@ -8,6 +8,7 @@ import {
   type DashboardState,
   type EvidenceScope,
   type EvidenceSearchResponse,
+  type OperatorSafetyStatus,
   type ModelBrokerHistoryResponse,
   type ModelBrokerRequestHistoryItem,
   type ModelBrokerObservability,
@@ -281,4 +282,9 @@ export async function searchEvidence({ query, scope, cursor = '', limit = 25 }: 
   if (cursor) params.set('cursor', cursor);
   const response = await fetchJSON<EvidenceSearchResponse>(`/api/evidence/search?${params.toString()}`);
   return { ...response, hits: arrayOrEmpty(response.hits), next_cursor: response.next_cursor ?? '' };
+}
+
+export async function loadCorrelationTargets() {
+  const status = await fetchJSON<OperatorSafetyStatus>('/api/operator-safety');
+  return status.correlation_targets ?? {};
 }
