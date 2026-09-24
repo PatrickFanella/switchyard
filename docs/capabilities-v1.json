@@ -26,6 +26,12 @@
       "tests": ["backend/internal/controlplane/ocq_executor_test.go", "scripts/test_compose_runtime_isolation.py"]
     },
     {
+      "name": "Prepared offline verification",
+      "state": "test-verified",
+      "implementation": ["backend/cmd/verifier/prepared.go", "backend/cmd/verifier/profiles.json", "scripts/prepare_verifier.py"],
+      "tests": ["backend/cmd/verifier/prepared_test.go", "backend/internal/controlplane/open_pilot_verifier_preparation_test.go", "scripts/test_prepare_verifier.py"]
+    },
+    {
       "name": "Open Pilot policy pipeline",
       "state": "implemented",
       "implementation": ["backend/internal/controlplane/executor_open_pilot.go"],
