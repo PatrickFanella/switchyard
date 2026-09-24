@@ -2,7 +2,7 @@
 
 Agent profiles are Switchyard-native policy for pipeline steps: the executors a step may use, the models it may select, a default model, and the prompt contract prepended to model requests. Blacktower-style personas live here; there is no separate application boundary.
 
-Source: `backend/internal/controlplane/profiles.go`, `store_profiles.go`, `postgres_store_profiles.go`, `http_agent_profiles.go`, migration `029_agent_profile_versions.sql`. Route contract: `docs/openapi.yaml`.
+Source: `backend/internal/controlplane/profiles.go`, `store_profiles.go`, `postgres_store_profiles.go`, `http_agent_profiles.go`, migration `030_agent_profile_versions.sql`. Route contract: `docs/openapi.yaml`.
 
 ## Identity and versions
 
@@ -58,7 +58,7 @@ Every save, activation, and rollback appends an entry with `action` (`draft-save
 
 ## Storage
 
-PostgreSQL tables from migration `029_agent_profile_versions.sql`:
+PostgreSQL tables from migration `030_agent_profile_versions.sql`:
 
 - `agent_profiles` — identity: `active_version`, `draft_version`, `latest_version`, `static_default`, timestamps.
 - `agent_profile_versions` — immutable bodies keyed by `(profile_id, version)`, a partial unique index guaranteeing at most one `active` row per profile, JSON `allowed_models`, `allowed_executors`, and `provenance`.

@@ -831,7 +831,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 }
 
 func TestAgentProfileMigrationDeclaresVersionedTables(t *testing.T) {
-	data, err := migrationFS.ReadFile("migrations/029_agent_profile_versions.sql")
+	data, err := migrationFS.ReadFile("migrations/030_agent_profile_versions.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
