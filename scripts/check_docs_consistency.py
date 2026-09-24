@@ -291,7 +291,15 @@ def validate_release_pointer_currency(root: Path) -> None:
     available = repository_tags(root)
     if available is None:
         return
-    newer_unqualified = {tag for tag in available if semver_key(tag) > pointer and tag not in records}
+    # The tag under qualification points at the checked-out commit; its record
+    # can only exist after qualification, so it is exempt until HEAD moves on.
+    candidate = subprocess.run(
+        ["git", "tag", "--points-at", "HEAD"], cwd=root, capture_output=True, text=True, check=False
+    )
+    candidates = {line.strip() for line in candidate.stdout.splitlines()} if candidate.returncode == 0 else set()
+    newer_unqualified = {
+        tag for tag in available if semver_key(tag) > pointer and tag not in records and tag not in candidates
+    }
     undeclared = sorted(newer_unqualified - declared, key=semver_key)
     if undeclared:
         raise ContractError(

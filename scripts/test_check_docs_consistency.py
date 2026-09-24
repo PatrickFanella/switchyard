@@ -70,6 +70,8 @@ class DocsConsistencyTest(unittest.TestCase):
             root = Path(directory)
             write_release_pointer(root, "v1.2.3")
             git_tag(root, "v1.2.3", "v1.3.0", "v1.3.1")
+            env = {**__import__("os").environ, **GIT_IDENTITY}
+            subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "later"], cwd=root, check=True, env=env)
             with self.assertRaisesRegex(checks.ContractError, "not declared: v1.3.0, v1.3.1"):
                 checks.validate_release_pointer_currency(root)
 
@@ -129,6 +131,19 @@ class DocsConsistencyTest(unittest.TestCase):
             write_release_pointer(origin, "v1.2.3", "- Release tags without a qualification record: `v1.3.0`, `v9.9.9`\n")
             with self.assertRaisesRegex(checks.ContractError, "do not exist: v9.9.9"):
                 checks.validate_release_pointer_currency(origin)
+
+    def test_release_pointer_exempts_the_candidate_tag_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {**__import__("os").environ, **GIT_IDENTITY}
+            write_release_pointer(root, "v1.2.3")
+            git_tag(root, "v1.2.3")
+            subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "candidate"], cwd=root, check=True, env=env)
+            subprocess.run(["git", "tag", "v1.3.0"], cwd=root, check=True, env=env)
+            checks.validate_release_pointer_currency(root)
+            subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "later"], cwd=root, check=True, env=env)
+            with self.assertRaisesRegex(checks.ContractError, "not declared: v1.3.0"):
+                checks.validate_release_pointer_currency(root)
 
     def test_semver_prerelease_sorts_below_final_release(self) -> None:
         self.assertLess(checks.semver_key("v1.3.0-rc.1"), checks.semver_key("v1.3.0"))
