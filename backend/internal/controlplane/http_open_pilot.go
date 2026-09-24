@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (a *API) openPilotStates(w http.ResponseWriter, r *http.Request) {
@@ -511,4 +512,41 @@ func openPilotNextAction(state OpenPilotIssueState) string {
 	default:
 		return "Continue"
 	}
+}
+
+// openPilotReadiness is the bounded control-only readiness preflight. It
+// always answers 200 with structured reason codes for configuration and
+// prerequisite failures; only a malformed query is rejected.
+func (a *API) openPilotReadiness(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	repo := strings.TrimSpace(query.Get("repo"))
+	issue := strings.TrimSpace(query.Get("issue"))
+	testCommand := strings.TrimSpace(query.Get("test_command"))
+	if issue != "" && repo == "" {
+		writeError(w, http.StatusBadRequest, "repo is required when issue is provided")
+		return
+	}
+	if len(repo) > 256 || len(issue) > 32 || len(testCommand) > maxOpenPilotReadinessCommandBytes {
+		writeError(w, http.StatusBadRequest, "repo, issue, or test_command exceeds its bounded length")
+		return
+	}
+	writeJSON(w, http.StatusOK, buildOpenPilotReadiness(a.openPilotReadinessInput(r.Context(), repo, issue, testCommand)))
+}
+
+// openPilotReadinessValidate dry-runs one operator registry or runtime manifest
+// document. It never clones, touches the filesystem, opens a network
+// connection, or changes admission state.
+func (a *API) openPilotReadinessValidate(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxOpenPilotManifestBytes+(4<<10)))
+	decoder.DisallowUnknownFields()
+	var input OpenPilotConfigurationDryRunInput
+	if err := decoder.Decode(&input); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	var gate *OpenPilotAdmissionGate
+	if a.runner != nil && a.runner.openPilotGateError == nil {
+		gate = a.runner.openPilotGate
+	}
+	writeJSON(w, http.StatusOK, dryRunOpenPilotConfiguration(input, gate, time.Now()))
 }
