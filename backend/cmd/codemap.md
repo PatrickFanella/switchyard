@@ -4,7 +4,7 @@
 Contains executable entry points for the Switchyard server, isolated verifier, and operator CLI.
 
 ## Design
-Entry points remain thin: server composition lives in `cmd/app`, verifier request execution in `cmd/verifier`, and CLI transport and presentation in `cmd/switchyard`; domain behavior stays in `internal/controlplane`. The verifier keeps direct Git fd-bound to a validated identity, runs other commands in bounded private snapshots, binds results to source manifests, and reaps escaped children between serialized requests.
+Entry points remain thin: server composition lives in `cmd/app`, verifier request execution in `cmd/verifier`, and CLI transport and presentation in `cmd/switchyard`; domain behavior stays in `internal/controlplane`. The verifier keeps direct Git fd-bound to a validated identity, runs other commands in bounded private snapshots, binds results to source manifests, and reaps escaped children between serialized requests. Prepared offline dependency bundles follow the embedded `cmd/verifier/profiles.json` contract (shared with `scripts/prepare_verifier.py`); `GET /prepared` reports the bound profile and supported commands.
 
 ## Flow
 1. A built binary receives environment configuration or command-line flags.

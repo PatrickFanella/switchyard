@@ -14,6 +14,7 @@ import (
 type WorkerPoolStatus struct {
 	Enabled       bool      `json:"enabled"`
 	Running       bool      `json:"running"`
+	Paused        bool      `json:"paused"`
 	Workers       int       `json:"workers"`
 	Active        int       `json:"active"`
 	Lease         string    `json:"lease"`
@@ -37,6 +38,7 @@ type WorkerPool struct {
 
 	mu            sync.RWMutex
 	running       bool
+	paused        bool
 	active        int
 	lastRecoverAt time.Time
 	recoveredRuns int
@@ -68,7 +70,7 @@ func NewWorkerPool(store Store, runner *Runner, workers int, lease time.Duration
 func (p *WorkerPool) Status() WorkerPoolStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return WorkerPoolStatus{Enabled: true, Running: p.running, Workers: p.workers, Active: p.active, Lease: p.lease.String(), PollInterval: p.pollInterval.String(), LastRecoverAt: p.lastRecoverAt, RecoveredRuns: p.recoveredRuns, FailedLeases: p.failedLeases, CompletedRuns: p.completedRuns, FailedRuns: p.failedRuns, LeaseRenewals: p.leaseRenewals, LastError: p.lastErr}
+	return WorkerPoolStatus{Enabled: true, Running: p.running, Paused: p.paused, Workers: p.workers, Active: p.active, Lease: p.lease.String(), PollInterval: p.pollInterval.String(), LastRecoverAt: p.lastRecoverAt, RecoveredRuns: p.recoveredRuns, FailedLeases: p.failedLeases, CompletedRuns: p.completedRuns, FailedRuns: p.failedRuns, LeaseRenewals: p.leaseRenewals, LastError: p.lastErr}
 }
 
 func (p *WorkerPool) Start(ctx context.Context) {
@@ -120,13 +122,15 @@ func (p *WorkerPool) loop(intakeCtx context.Context, executionCtx context.Contex
 			return
 		default:
 		}
-		claimed, err := p.store.ClaimNextRun(workerID, p.lease)
-		if err == nil {
-			p.execute(executionCtx, workerID, claimed)
-			continue
-		}
-		if err != ErrNotFound {
-			p.recordError(err)
+		if !p.Paused() {
+			claimed, err := p.store.ClaimNextRun(workerID, p.lease)
+			if err == nil {
+				p.execute(executionCtx, workerID, claimed)
+				continue
+			}
+			if err != ErrNotFound {
+				p.recordError(err)
+			}
 		}
 		select {
 		case <-intakeCtx.Done():
@@ -150,6 +154,22 @@ func (p *WorkerPool) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// SetPaused stops workers from claiming new runs without stopping the pool.
+// In-flight runs continue and expired leases are still recovered. The flag is
+// process-local and is not persisted.
+func (p *WorkerPool) SetPaused(paused bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.paused = paused
+}
+
+// Paused reports whether new run claims are currently suspended.
+func (p *WorkerPool) Paused() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.paused
 }
 
 func (p *WorkerPool) CancelActive() {

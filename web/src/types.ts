@@ -166,6 +166,7 @@ export type OpenPilotStateResponse = {
 export type SchedulerStatus = {
   enabled: boolean;
   running: boolean;
+  paused?: boolean;
   interval?: string;
   last_tick?: string;
   last_error?: string;
@@ -174,6 +175,7 @@ export type SchedulerStatus = {
 export type WorkerPoolStatus = {
   enabled: boolean;
   running: boolean;
+  paused?: boolean;
   workers?: number;
   active?: number;
   lease?: string;
@@ -561,3 +563,48 @@ export const defaultDashboardState: DashboardState = {
 };
 
 export const defaultWorkflowDefinitions: WorkflowDefinition[] = [];
+
+export type RuntimeConfigSource = 'environment' | 'default' | 'unset' | 'runtime' | 'unavailable' | 'not-observable';
+
+export type RuntimeConfigSetting = {
+  key: string;
+  component: string;
+  kind: string;
+  sensitivity: 'public' | 'internal' | 'secret';
+  mutability: 'file-managed' | 'runtime-mutable';
+  restart: 'api' | 'opencode' | 'compose' | 'none';
+  authorization: 'host-operator' | 'admin';
+  description: string;
+  source: RuntimeConfigSource;
+  effective?: string;
+  configured?: boolean;
+  default?: string;
+  compose_default?: string;
+  example_default?: string;
+  deployment_override?: string;
+  overridden?: boolean;
+  available?: boolean;
+  instructions: string;
+};
+
+export type RuntimeSettingChange = {
+  revision: number;
+  key: string;
+  previous: string;
+  value: string;
+  actor: string;
+  reason?: string;
+  at: string;
+};
+
+export type RuntimeConfigResponse = {
+  contract_version: number;
+  revision: number;
+  generated_at: string;
+  settings: RuntimeConfigSetting[];
+  changes: RuntimeSettingChange[];
+};
+
+export type RuntimeConfigChangeResult =
+  | { ok: true; setting: RuntimeConfigSetting; revision: number; change: RuntimeSettingChange }
+  | { ok: false; status: number; code?: string; message: string; revision?: number };

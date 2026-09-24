@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,37 +28,39 @@ const (
 
 // Stable readiness reason codes. Operators and the UI match on these values.
 const (
-	OpenPilotReasonGateUnavailable           = "gate_unavailable"
-	OpenPilotReasonBundlesUnavailable        = "execution_bundles_unavailable"
-	OpenPilotReasonActivationDisabled        = "activation_disabled"
-	OpenPilotReasonActivationIsolatedTest    = "activation_isolated_test"
-	OpenPilotReasonActivationLegacySingleton = "activation_legacy_singleton"
-	OpenPilotReasonRepositoryUnregistered    = "repository_unregistered"
-	OpenPilotReasonIssueInvalid              = "issue_invalid"
-	OpenPilotReasonRepositoryNotBound        = "repository_not_bound"
-	OpenPilotReasonRolloutStoreUnavailable   = "rollout_store_unavailable"
-	OpenPilotReasonRolloutNotConfigured      = "rollout_not_configured"
-	OpenPilotReasonRolloutFingerprintStale   = "rollout_fingerprint_stale"
-	OpenPilotReasonRolloutClosed             = "rollout_closed"
-	OpenPilotReasonRolloutProofExpired       = "rollout_proof_expired"
-	OpenPilotReasonRolloutProofExcluded      = "rollout_proof_target_excluded"
-	OpenPilotReasonRolloutProofBounded       = "rollout_proof_bounded"
-	OpenPilotReasonBundleMissing             = "execution_bundle_missing"
-	OpenPilotReasonExecutorStatusUnavailable = "executor_status_unavailable"
-	OpenPilotReasonOpenCodeUnreachable       = "opencode_unreachable"
-	OpenPilotReasonVerifierUnreachable       = "verifier_unreachable"
-	OpenPilotReasonCommandDenied             = "command_denied"
-	OpenPilotReasonCommandDryRun             = "command_dry_run"
-	OpenPilotReasonCommandPolicyUnknown      = "command_policy_unknown"
-	OpenPilotReasonCommandNotProvided        = "command_not_provided"
-	OpenPilotReasonIssueAffinityStale        = "issue_affinity_stale"
-	OpenPilotReasonIssueRunActive            = "issue_run_active"
-	OpenPilotReasonGiteaWriteDisabled        = "gitea_write_disabled"
-	OpenPilotReasonGitPushDisabled           = "git_push_disabled"
-	OpenPilotReasonAutoCommitDisabled        = "auto_commit_disabled"
-	OpenPilotReasonCIChecksDisabled          = "ci_checks_disabled"
-	OpenPilotReasonMergeDisabled             = "merge_disabled"
-	OpenPilotReasonCloseIssueDisabled        = "close_issue_disabled"
+	OpenPilotReasonGateUnavailable            = "gate_unavailable"
+	OpenPilotReasonBundlesUnavailable         = "execution_bundles_unavailable"
+	OpenPilotReasonActivationDisabled         = "activation_disabled"
+	OpenPilotReasonActivationIsolatedTest     = "activation_isolated_test"
+	OpenPilotReasonActivationLegacySingleton  = "activation_legacy_singleton"
+	OpenPilotReasonRepositoryUnregistered     = "repository_unregistered"
+	OpenPilotReasonIssueInvalid               = "issue_invalid"
+	OpenPilotReasonRepositoryNotBound         = "repository_not_bound"
+	OpenPilotReasonRolloutStoreUnavailable    = "rollout_store_unavailable"
+	OpenPilotReasonRolloutNotConfigured       = "rollout_not_configured"
+	OpenPilotReasonRolloutFingerprintStale    = "rollout_fingerprint_stale"
+	OpenPilotReasonRolloutClosed              = "rollout_closed"
+	OpenPilotReasonRolloutProofExpired        = "rollout_proof_expired"
+	OpenPilotReasonRolloutProofExcluded       = "rollout_proof_target_excluded"
+	OpenPilotReasonRolloutProofBounded        = "rollout_proof_bounded"
+	OpenPilotReasonBundleMissing              = "execution_bundle_missing"
+	OpenPilotReasonExecutorStatusUnavailable  = "executor_status_unavailable"
+	OpenPilotReasonOpenCodeUnreachable        = "opencode_unreachable"
+	OpenPilotReasonVerifierUnreachable        = "verifier_unreachable"
+	OpenPilotReasonCommandDenied              = "command_denied"
+	OpenPilotReasonCommandDryRun              = "command_dry_run"
+	OpenPilotReasonCommandPolicyUnknown       = "command_policy_unknown"
+	OpenPilotReasonCommandNotProvided         = "command_not_provided"
+	OpenPilotReasonVerifierUnprepared         = "verifier_unprepared"
+	OpenPilotReasonVerifierCommandUnsupported = "verifier_command_unsupported"
+	OpenPilotReasonIssueAffinityStale         = "issue_affinity_stale"
+	OpenPilotReasonIssueRunActive             = "issue_run_active"
+	OpenPilotReasonGiteaWriteDisabled         = "gitea_write_disabled"
+	OpenPilotReasonGitPushDisabled            = "git_push_disabled"
+	OpenPilotReasonAutoCommitDisabled         = "auto_commit_disabled"
+	OpenPilotReasonCIChecksDisabled           = "ci_checks_disabled"
+	OpenPilotReasonMergeDisabled              = "merge_disabled"
+	OpenPilotReasonCloseIssueDisabled         = "close_issue_disabled"
 
 	OpenPilotReasonDocumentDecodeFailed       = "document_decode_failed"
 	OpenPilotReasonDocumentContainsSecret     = "document_contains_secret"
@@ -316,6 +319,7 @@ func buildOpenPilotReadiness(input openPilotReadinessInput) OpenPilotReadinessRe
 	}
 
 	commandAllowed := openPilotReadinessCommandCheck(&report, input, bundles, target, targetResolved)
+	openPilotReadinessPreparationCheck(&report, input.TestCommand)
 	openPilotReadinessGateChecks(&report)
 
 	report.Ready = len(report.Blockers) == 0
@@ -532,6 +536,59 @@ func openPilotReadinessCommandCheck(report *OpenPilotReadinessReport, input open
 		report.add(OpenPilotReadinessCheck{Name: "test_command", Code: "command_allowed", Status: OpenPilotReadinessPass, Message: "the command passes the argv allowlist"})
 		return true
 	}
+}
+
+// openPilotReadinessPreparationCheck compares the proposed test command with the
+// exact argv commands each projected verifier's prepared bundle supports. The
+// verifier enforces the same contract; this reports the outcome before admission.
+func openPilotReadinessPreparationCheck(report *OpenPilotReadinessReport, testCommand string) {
+	command := strings.TrimSpace(testCommand)
+	if command == "" {
+		return
+	}
+	var reported []OpenPilotRepositoryExecutorStatus
+	for _, executor := range report.Executors {
+		if executor.VerifierPreparation != nil {
+			reported = append(reported, executor)
+		}
+	}
+	if len(reported) == 0 {
+		return
+	}
+	var unprepared, unsupported []string
+	for _, executor := range reported {
+		preparation := executor.VerifierPreparation
+		name := executor.RepositoryID + "/" + executor.ExecutorGeneration
+		switch {
+		case !preparation.Prepared:
+			unprepared = append(unprepared, name+" ("+firstNonEmpty(preparation.Error, "no prepared bundle")+")")
+		case !preparation.SupportsCommand(command):
+			unsupported = append(unsupported, name+" supports "+openPilotPreparedCommands(preparation.Commands))
+		}
+	}
+	switch {
+	case len(unsupported) > 0:
+		report.add(OpenPilotReadinessCheck{Name: "verifier_preparation", Code: OpenPilotReasonVerifierCommandUnsupported, Status: OpenPilotReadinessFail,
+			Message:     "the prepared verifier would reject this command: " + strings.Join(unsupported, "; "),
+			Remediation: "Use a command listed by the verifier's prepared profile, or extend backend/cmd/verifier/profiles.json and rebuild the image with scripts/prepare_verifier.py."})
+	case len(unprepared) > 0:
+		report.add(OpenPilotReadinessCheck{Name: "verifier_preparation", Code: OpenPilotReasonVerifierUnprepared, Status: OpenPilotReadinessWarn,
+			Message:     "the verifier has no usable prepared dependency bundle, so only dependency-free commands can pass on its isolated network: " + strings.Join(unprepared, "; "),
+			Remediation: "Build a prepared verifier image with scripts/prepare_verifier.py and set the repository's verifier_image registry field."})
+	default:
+		report.add(OpenPilotReadinessCheck{Name: "verifier_preparation", Code: "verifier_command_supported", Status: OpenPilotReadinessPass, Message: "the prepared verifier supports this exact command"})
+	}
+}
+
+func openPilotPreparedCommands(commands [][]string) string {
+	if len(commands) == 0 {
+		return "no commands"
+	}
+	parts := make([]string, 0, len(commands))
+	for _, command := range commands {
+		parts = append(parts, strconv.Quote(strings.Join(command, " ")))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func openPilotReadinessGateChecks(report *OpenPilotReadinessReport) {
