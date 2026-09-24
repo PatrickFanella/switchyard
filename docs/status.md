@@ -168,11 +168,11 @@ of what was observed; it is not live tracker state.
 | #49 | closed | 2026-09-23 | Multi-repo proof stub (duplicate set) |
 | #60 | open | 2026-09-23 | Roadmap: operator experience and workflow capability completion |
 | #61 | closed | 2026-09-23 | Reconcile production Open Pilot work, main, and pending assignment changes |
+| #62 | closed | 2026-09-24 | Decision: keep plugin and skill installation outside Switchyard (ADR 0005, deferred) |
 | #65 | closed | 2026-09-24 | Reconciliation of roadmap, status, release pointers, and proof issues |
-| #62 | open | 2026-09-24 | Decision: keep plugin and skill installation outside Switchyard (ADR 0005) |
 | #69 | closed | 2026-09-24 | Reproducible repository-specific verification environments |
-| #78 | open | 2026-09-24 | Decision: retain linear workflows or add bounded branching (ADR 0006) |
-| #79 | open | 2026-09-24 | Decision: bounded multi-agent orchestration beyond static roles (ADR 0007) |
+| #78 | closed | 2026-09-24 | Decision: retain linear workflows or add bounded branching (ADR 0006, deferred) |
+| #79 | closed | 2026-09-24 | Decision: bounded multi-agent orchestration beyond static roles (ADR 0007, deferred) |
 
 Production configuration validation also enforces strict OpenCode mode, a
 non-default password, a dedicated externally located workspace with matching
