@@ -98,7 +98,7 @@ func TestOpenPilotAIReviewStepSendsAndRetainsCommittedPatch(t *testing.T) {
 	}
 	found := false
 	for _, a := range out.Artifacts {
-		if a.Name == "open-pilot-ai-review.md" && strings.Contains(a.URI, "actual+committed+content") {
+		if a.Name == "open-pilot-ai-review.md" && strings.Contains(a.URI, "actual%20committed%20content") {
 			found = true
 		}
 	}

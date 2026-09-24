@@ -114,6 +114,13 @@ export type Artifact = {
   name: string;
   kind: string;
   uri: string;
+  // Inline artifact metadata recorded by the control plane. Optional so
+  // historical fixtures and legacy-inline rows without measurements still render.
+  storage_class?: 'inline-data-uri' | 'legacy-inline' | string;
+  content_type?: string;
+  byte_size?: number;
+  sha256?: string;
+  retention_until?: string | null;
   created_at: string;
 };
 
@@ -412,6 +419,33 @@ export type ModelBrokerObservability = {
   recent_errors: ModelBrokerObservabilityRequest[];
   latency_ms: { count: number; avg: number; max: number };
   checked_at: string;
+};
+
+export type EvidenceScope = 'all' | 'runs' | 'steps' | 'requests' | 'errors' | 'correlations';
+
+export const evidenceScopes: EvidenceScope[] = ['all', 'runs', 'steps', 'requests', 'errors', 'correlations'];
+
+export type EvidenceHit = {
+  kind: 'run' | 'step' | 'request';
+  id: string;
+  run_id?: string;
+  workflow_id?: string;
+  status: string;
+  title: string;
+  summary?: string;
+  error?: string;
+  correlation_ids?: Record<string, string>;
+  created_at: string;
+  finished_at?: string;
+};
+
+export type EvidenceSearchResponse = {
+  hits: EvidenceHit[];
+  next_cursor: string;
+  query: string;
+  scope: EvidenceScope;
+  limit: number;
+  retention: { window: string; floor: string; searched_at: string };
 };
 
 export type ViewID = 'overview' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';

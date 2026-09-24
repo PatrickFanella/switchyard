@@ -6,6 +6,8 @@ import {
   type AgentProfile,
   type DashboardResponse,
   type DashboardState,
+  type EvidenceScope,
+  type EvidenceSearchResponse,
   type ModelBrokerHistoryResponse,
   type ModelBrokerRequestHistoryItem,
   type ModelBrokerObservability,
@@ -269,4 +271,14 @@ export async function stepAction(runID: string, stepID: string, action: 'retry' 
 
 export async function resumeOpenPilotState(repo: string, issue: string) {
   return fetchJSON<{ run: Run }>(`/api/open-pilot/state/resume?repo=${encodeURIComponent(repo)}&issue=${encodeURIComponent(issue)}`, { method: 'POST' });
+}
+
+export type EvidenceSearchParams = { query: string; scope: EvidenceScope; cursor?: string; limit?: number };
+
+export async function searchEvidence({ query, scope, cursor = '', limit = 25 }: EvidenceSearchParams) {
+  const params = new URLSearchParams({ scope, limit: String(limit) });
+  if (query.trim()) params.set('q', query.trim());
+  if (cursor) params.set('cursor', cursor);
+  const response = await fetchJSON<EvidenceSearchResponse>(`/api/evidence/search?${params.toString()}`);
+  return { ...response, hits: arrayOrEmpty(response.hits), next_cursor: response.next_cursor ?? '' };
 }

@@ -33,6 +33,7 @@ type API struct {
 	retention             *RetentionManager
 	asyncDispatch         bool
 	compatibilityObserver *CompatibilityObserver
+	clock                 func() time.Time
 }
 
 type controlPlaneActorContextKey struct{}
