@@ -162,8 +162,14 @@ func TestSeedDefaultsCreatesChangemakerWorkflowTemplate(t *testing.T) {
 	if definition.Status != "active" || definition.InputShape.Type != "object" || definition.InputShape.Properties["topic"].Type != "string" || definition.InputShape.Properties["prompt"].Type != "string" {
 		t.Fatalf("definition = %+v", definition)
 	}
-	if len(definition.Pipeline.Steps) != 3 || definition.Pipeline.Steps[0].Executor != "internal" || definition.Pipeline.Steps[1].Executor != "model" || definition.Pipeline.Steps[2].Executor != "internal" {
+	if len(definition.Pipeline.Steps) != 4 || definition.Pipeline.Steps[0].Executor != "internal" || definition.Pipeline.Steps[1].Executor != "source" || definition.Pipeline.Steps[2].Executor != "model" || definition.Pipeline.Steps[3].Executor != "internal" {
 		t.Fatalf("definition pipeline = %+v", definition.Pipeline)
+	}
+	if definition.Version != 1 {
+		t.Fatalf("fresh seed version = %d, want 1", definition.Version)
+	}
+	if err := validateWorkflowDefinitionForActivation(definition); err != nil {
+		t.Fatalf("seeded definition fails activation validation: %v", err)
 	}
 
 	trigger, ok := store.Trigger("daily-changemaker-native")

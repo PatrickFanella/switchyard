@@ -198,6 +198,12 @@ func validateWorkflowDefinitionStructure(definition WorkflowDefinition, requireE
 			if requireExecutable && !strings.EqualFold(strings.TrimSpace(step.Inputs["allow_http"]), "true") {
 				return invalidDefinition("step %q: http executor needs allow_http set to \"true\"", id)
 			}
+		case "source":
+			// Source steps only read through a named adapter; they carry no
+			// agent profile and name a supported adapter even as drafts.
+			if strings.TrimSpace(step.Profile) != "" || strings.TrimSpace(step.Inputs["adapter"]) != SourceAdapterGiteaActivity {
+				return ErrInvalid
+			}
 		default:
 			return invalidDefinition("step %q: executor %q is not supported; use one of %s", id, step.Executor, strings.Join(supportedDefinitionExecutors, ", "))
 		}
