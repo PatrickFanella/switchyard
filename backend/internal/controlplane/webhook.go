@@ -211,8 +211,8 @@ func (d *WebhookDispatcher) loadTrigger(secretFD int, generation int64, config W
 	if !ok || trigger.Type != TriggerWebhook || !trigger.Enabled {
 		return ErrInvalid
 	}
-	definition, err := d.store.WorkflowDefinition(trigger.WorkflowID)
-	if err != nil || !isActiveWorkflowDefinition(definition) {
+	definition, err := d.store.ActiveWorkflowDefinition(trigger.WorkflowID)
+	if err != nil {
 		return ErrInvalid
 	}
 	shapeInputs, projectedTypes := cloneMap(trigger.Inputs), map[string]string{}

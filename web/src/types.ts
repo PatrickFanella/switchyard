@@ -52,6 +52,8 @@ export type WorkflowDefinition = {
   description: string;
   status: string;
   version?: number;
+  /** Version new runs use; absent when no version is active. Saving a draft never changes it. */
+  active_version?: number;
   owns?: string[];
   uses?: string[];
   input_shape?: JSONShape;

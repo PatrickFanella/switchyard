@@ -1117,8 +1117,16 @@ paths:
                 required: [workflow_definition]
         default: { $ref: "#/components/responses/Error" }
     put:
-      summary: Create or update a workflow definition draft
-      description: Returns 400 with a message naming the step and schema location when a step `output_shape` falls outside the supported output-contract subset (see `StepOutputShape` and docs/reference/step-outputs.md). Activation and rollback apply the same check.
+      summary: Save a new immutable draft version
+      description: >-
+        Appends the next immutable version as a draft. The active version, if
+        any, keeps serving new runs until a draft is activated. Returns 400 with
+        a message naming the step and schema location when a step
+        `output_shape` falls outside the supported output-contract subset (see
+        `StepOutputShape` and docs/reference/step-outputs.md); activation and
+        rollback apply the same check. With `expected_version`, returns 409 when
+        the precondition fails: 0 when the ID already exists, N when N is no
+        longer the latest version. Without it the save is unconditional.
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
       requestBody:
@@ -1136,24 +1144,61 @@ paths:
                 properties:
                   workflow_definition: { $ref: "#/components/schemas/WorkflowDefinition" }
                 required: [workflow_definition]
+        "409": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
   /api/workflow-definitions/{id}/versions:
     get:
       summary: List immutable workflow-definition versions
+      description: Newest first. `status` is `active` only for the version new runs use; every entry carries the definition's `active_version`.
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
       responses:
-        "200": { description: Version history }
+        "200":
+          description: Version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_definitions:
+                    type: array
+                    items: { $ref: "#/components/schemas/WorkflowDefinition" }
+                required: [workflow_definitions]
+        default: { $ref: "#/components/responses/Error" }
   /api/workflow-definitions/{id}/activate:
     post:
       summary: Validate and activate the latest draft version
+      description: >-
+        Activates the latest saved version after activation validation. An
+        optional body names the version the caller reviewed; if it is not the
+        latest version the request fails with 409 and nothing changes. A 400
+        leaves the active version unchanged. Activating the version that is
+        already active succeeds without changes. Runs created earlier keep their
+        pipeline snapshot. Admin role only.
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkflowDefinitionActivationRequest" }
       responses:
-        "200": { description: Activated workflow definition }
+        "200":
+          description: Activated workflow definition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowDefinitionTransitionResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/workflow-definitions/{id}/rollback:
     post:
       summary: Restore a historical snapshot as a new active version
+      description: >-
+        Appends a copy of `version` as the next version and makes it active;
+        existing versions are never changed. With `expected_version`, returns
+        409 unless it is still the latest version. Runs created earlier keep
+        their pipeline snapshot. Admin role only.
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
       requestBody:
@@ -1164,9 +1209,23 @@ paths:
               type: object
               properties:
                 version: { type: integer, minimum: 1 }
+                expected_version: { type: integer, minimum: 1, description: Latest version the caller reviewed. }
               required: [version]
       responses:
-        "200": { description: Rolled-back workflow definition }
+        "200":
+          description: Rolled-back workflow definition
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkflowDefinitionTransitionResponse"
+                  - type: object
+                    properties:
+                      rolled_back_from_version: { type: integer }
+                    required: [rolled_back_from_version]
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/open-pilot/states:
     get:
       summary: List Open Pilot issue states
@@ -2535,7 +2594,12 @@ components:
         id: { type: string }
         name: { type: string }
         description: { type: string }
-        status: { type: string }
+        status:
+          type: string
+          enum: [draft, active]
+          description: "`active` only for the version new runs use."
+        version: { type: integer, minimum: 1, description: Immutable version number; the latest version on list and get. }
+        active_version: { type: integer, minimum: 1, description: Version new runs use. Absent when no version is active. Saving a draft never changes it. }
         owns:
           type: array
           items: { type: string }
@@ -2547,6 +2611,16 @@ components:
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
       required: [id, name, status, version, pipeline]
+    WorkflowDefinitionActivationRequest:
+      type: object
+      properties:
+        version: { type: integer, minimum: 1, description: The version the caller reviewed; must be the latest version. Omit to activate the latest version. }
+    WorkflowDefinitionTransitionResponse:
+      type: object
+      properties:
+        workflow_definition: { $ref: "#/components/schemas/WorkflowDefinition" }
+        previous_active_version: { type: integer, minimum: 0, description: Version active before the change; 0 when none was active. }
+      required: [workflow_definition, previous_active_version]
     WorkflowDefinitionUpsertRequest:
       type: object
       description: Request body for creating an immutable draft version. The path ID is authoritative; activate through the dedicated action after validation.
@@ -2562,6 +2636,10 @@ components:
           items: { type: string }
         input_shape: { $ref: "#/components/schemas/JSONShape" }
         pipeline: { $ref: "#/components/schemas/PipelineDefinition" }
+        expected_version:
+          type: integer
+          minimum: 0
+          description: Optional save precondition. 0 creates only; N requires that N is still the latest version. Mismatches return 409.
       required: [name, pipeline]
     Trigger:
       type: object

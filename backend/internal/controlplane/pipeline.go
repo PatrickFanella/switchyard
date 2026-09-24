@@ -93,7 +93,7 @@ func NewStoreBackedPipelineRegistry(store Store, fallback PipelineRegistry) Stor
 
 func (r StoreBackedPipelineRegistry) PipelineForWorkflow(workflowID string) (Pipeline, bool) {
 	if r.store != nil {
-		if definition, err := r.store.WorkflowDefinition(workflowID); err == nil && isActiveWorkflowDefinition(definition) {
+		if definition, err := r.store.ActiveWorkflowDefinition(workflowID); err == nil {
 			return pipelineFromDefinition(definition), true
 		}
 	}
@@ -107,11 +107,8 @@ func (r StoreBackedPipelineRegistry) ListPipelines() []Pipeline {
 	seen := map[string]struct{}{}
 	out := make([]Pipeline, 0)
 	if r.store != nil {
-		if definitions, err := r.store.ListWorkflowDefinitions(); err == nil {
+		if definitions, err := activeWorkflowDefinitions(r.store); err == nil {
 			for _, definition := range definitions {
-				if !isActiveWorkflowDefinition(definition) {
-					continue
-				}
 				pipeline := pipelineFromDefinition(definition)
 				out = append(out, pipeline)
 				seen[pipeline.WorkflowID] = struct{}{}

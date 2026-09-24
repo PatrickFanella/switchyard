@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -52,10 +53,29 @@ func (a *API) workflowDefinitionVersions(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"workflow_definitions": versions})
 }
 
+// activateWorkflowDefinition activates the latest saved version. An optional
+// {"version": N} body names the version the caller reviewed; if a newer version
+// was saved since, the request fails with 409 instead of activating it.
 func (a *API) activateWorkflowDefinition(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
+	var input WorkflowDefinitionActivationInput
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &input); err != nil {
+			writeJSONDecodeError(w, err)
+			return
+		}
+	}
 	definition, err := a.store.WorkflowDefinition(id)
 	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	if err := checkWorkflowDefinitionActivationTarget(id, definition.Version, input.Version); err != nil {
 		writeControlError(w, err)
 		return
 	}
@@ -63,7 +83,8 @@ func (a *API) activateWorkflowDefinition(w http.ResponseWriter, r *http.Request)
 		writeControlError(w, err)
 		return
 	}
-	activated, err := a.store.ActivateWorkflowDefinition(id)
+	// Activate exactly the validated version; a concurrent save makes this 409.
+	activated, err := a.store.ActivateWorkflowDefinitionVersion(id, definition.Version)
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -72,7 +93,7 @@ func (a *API) activateWorkflowDefinition(w http.ResponseWriter, r *http.Request)
 		writeControlError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": activated})
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": activated, "previous_active_version": definition.ActiveVersion})
 }
 
 func (a *API) rollbackWorkflowDefinition(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +123,8 @@ func (a *API) rollbackWorkflowDefinition(w http.ResponseWriter, r *http.Request)
 		writeControlError(w, err)
 		return
 	}
-	rolledBack, err := a.store.RollbackWorkflowDefinition(id, input.Version)
+	previousActive := versions[0].ActiveVersion
+	rolledBack, err := a.store.RollbackWorkflowDefinitionVersion(id, input.Version, input.ExpectedVersion)
 	if err != nil {
 		writeControlError(w, err)
 		return
@@ -111,7 +133,7 @@ func (a *API) rollbackWorkflowDefinition(w http.ResponseWriter, r *http.Request)
 		writeControlError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": rolledBack, "rolled_back_from_version": input.Version})
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_definition": rolledBack, "rolled_back_from_version": input.Version, "previous_active_version": previousActive})
 }
 
 func workflowFromDefinition(definition WorkflowDefinition) Workflow {
@@ -139,8 +161,17 @@ func (a *API) updateWorkflowDefinition(w http.ResponseWriter, r *http.Request, i
 		writeControlError(w, err)
 		return
 	}
+	// expected_version is an optional save precondition: 0 creates only, N
+	// requires that N is still the latest version. It is not a definition field.
+	var precondition struct {
+		ExpectedVersion *int `json:"expected_version"`
+	}
+	if err := json.Unmarshal(body, &precondition); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
 	definition.Status = "draft"
-	saved, err := a.store.UpsertWorkflowDefinition(definition)
+	saved, err := a.store.SaveWorkflowDefinition(definition, precondition.ExpectedVersion)
 	if err != nil {
 		writeControlError(w, err)
 		return

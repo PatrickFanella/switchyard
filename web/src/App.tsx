@@ -24,7 +24,7 @@ const navigationGroups: { label: string; items: ViewID[] }[] = [
 const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: string }> = {
   overview: { eyebrow: 'Control plane', title: 'Operations overview', description: 'Monitor live work, dispatch workflows, and resolve exceptions.' },
   inbox: { eyebrow: 'Open Pilot', title: 'Issue inbox', description: 'Review intake candidates, eligibility, and lifecycle claims before dispatch.' },
-  workflows: { eyebrow: 'Workflow authoring', title: 'Workflow catalog', description: 'Browse workflow definitions and edit linear drafts. Saving a draft never activates it.' },
+  workflows: { eyebrow: 'Workflow authoring', title: 'Workflow catalog', description: 'Browse workflow definitions, edit linear drafts, and compare, activate, or roll back versions. Saving a draft never activates it.' },
   runs: { eyebrow: 'Execution', title: 'Run cockpit', description: 'Trace every step, artifact, event, and operator decision.' },
   queues: { eyebrow: 'Model broker', title: 'Request queues', description: 'Inspect queued and inflight model work across upstreams.' },
   observability: { eyebrow: 'Telemetry', title: 'Observability', description: 'Follow broker health, latency, errors, and trace correlation.' },

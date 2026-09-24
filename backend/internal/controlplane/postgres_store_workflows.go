@@ -1,17 +1,52 @@
 package controlplane
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
+const (
+	workflowDefinitionLatestColumns  = workflowDefinitionColumns + ", active_version"
+	workflowDefinitionVersionColumns = "v.id, v.name, v.description, v.status, v.version, v.owns, v.uses, v.input_shape, v.pipeline, v.created_at, v.updated_at, d.active_version"
+)
+
 func (s *PostgresStore) UpsertWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
+	return s.SaveWorkflowDefinition(definition, nil)
+}
+
+func (s *PostgresStore) SaveWorkflowDefinition(definition WorkflowDefinition, expectedVersion *int) (WorkflowDefinition, error) {
 	definition, err := normalizeWorkflowDefinition(definition, NewStoreBackedAgentProfileRegistry(s, DefaultAgentProfileRegistry()))
 	if err != nil {
 		return WorkflowDefinition{}, err
 	}
+	return s.appendWorkflowDefinitionVersion(definition, expectedVersion)
+}
+
+func (s *PostgresStore) appendWorkflowDefinitionVersion(definition WorkflowDefinition, expectedVersion *int) (WorkflowDefinition, error) {
+	ctx := s.operationContext()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	saved, err := s.appendWorkflowDefinitionVersionTx(ctx, tx, definition, expectedVersion)
+	if err != nil {
+		_ = tx.Rollback()
+		return WorkflowDefinition{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return saved, nil
+}
+
+// appendWorkflowDefinitionVersionTx stores a normalized definition as the next
+// immutable version under a row lock on the latest version. Status "active"
+// makes the new version active; a draft keeps the existing active version.
+func (s *PostgresStore) appendWorkflowDefinitionVersionTx(ctx context.Context, tx *sql.Tx, definition WorkflowDefinition, expectedVersion *int) (WorkflowDefinition, error) {
 	owns, err := json.Marshal(definition.Owns)
 	if err != nil {
 		return WorkflowDefinition{}, err
@@ -28,61 +63,78 @@ func (s *PostgresStore) UpsertWorkflowDefinition(definition WorkflowDefinition) 
 	if err != nil {
 		return WorkflowDefinition{}, err
 	}
-	ctx := s.operationContext()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return WorkflowDefinition{}, err
-	}
 	var currentVersion int
 	var createdAt time.Time
-	err = tx.QueryRowContext(ctx, `select version, created_at from workflow_definitions where id=$1 for update`, definition.ID).Scan(&currentVersion, &createdAt)
+	var currentActive sql.NullInt64
+	err = tx.QueryRowContext(ctx, `select version, created_at, active_version from workflow_definitions where id=$1 for update`, definition.ID).Scan(&currentVersion, &createdAt, &currentActive)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		_ = tx.Rollback()
 		return WorkflowDefinition{}, err
 	}
+	if err := checkWorkflowDefinitionExpectedVersion(definition.ID, currentVersion, expectedVersion); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	now := s.now().UTC()
+	activeVersion := int(currentActive.Int64)
 	definition.Version = currentVersion + 1
 	if currentVersion == 0 {
 		definition.Version = 1
-		createdAt = s.now().UTC()
+		createdAt = now
 	}
+	if isActiveWorkflowDefinition(definition) {
+		activeVersion = definition.Version
+	}
+	definition = withWorkflowDefinitionActiveVersion(definition, activeVersion)
 	definition.CreatedAt = createdAt
-	definition.UpdatedAt = s.now().UTC()
+	definition.UpdatedAt = now
+	var active any
+	if activeVersion != 0 {
+		active = activeVersion
+	}
+	// A create-only save must not overwrite a row created concurrently.
+	conflict := `on conflict(id) do update set name=excluded.name, description=excluded.description, status=excluded.status, version=excluded.version, owns=excluded.owns, uses=excluded.uses, input_shape=excluded.input_shape, pipeline=excluded.pipeline, updated_at=excluded.updated_at, active_version=excluded.active_version`
+	if expectedVersion != nil && *expectedVersion == 0 {
+		conflict = `on conflict(id) do nothing`
+	}
 	row := tx.QueryRowContext(ctx, `
-		insert into workflow_definitions(id, name, description, status, version, owns, uses, input_shape, pipeline, created_at, updated_at)
-		values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)
-		on conflict(id) do update set name=excluded.name, description=excluded.description, status=excluded.status, version=excluded.version, owns=excluded.owns, uses=excluded.uses, input_shape=excluded.input_shape, pipeline=excluded.pipeline, updated_at=excluded.updated_at
-		returning `+workflowDefinitionColumns,
-		definition.ID, definition.Name, definition.Description, definition.Status, definition.Version, string(owns), string(uses), string(inputShape), string(pipeline), definition.CreatedAt, definition.UpdatedAt)
-	saved, err := scanWorkflowDefinitionRow(row)
+		insert into workflow_definitions(id, name, description, status, version, owns, uses, input_shape, pipeline, created_at, updated_at, active_version)
+		values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11,$12)
+		`+conflict+`
+		returning `+workflowDefinitionLatestColumns,
+		definition.ID, definition.Name, definition.Description, definition.Status, definition.Version, string(owns), string(uses), string(inputShape), string(pipeline), definition.CreatedAt, definition.UpdatedAt, active)
+	saved, err := scanWorkflowDefinitionLatestRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkflowDefinition{}, fmt.Errorf("%w: workflow definition %q was created concurrently; expected_version 0 only creates a new definition", ErrConflict, definition.ID)
+	}
 	if err != nil {
-		_ = tx.Rollback()
 		return WorkflowDefinition{}, mapScanErr(err)
 	}
 	if _, err := tx.ExecContext(ctx, `insert into workflow_definition_versions(id, version, name, description, status, owns, uses, input_shape, pipeline, created_at, updated_at) values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)`, saved.ID, saved.Version, saved.Name, saved.Description, saved.Status, string(owns), string(uses), string(inputShape), string(pipeline), saved.CreatedAt, saved.UpdatedAt); err != nil {
-		_ = tx.Rollback()
-		return WorkflowDefinition{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return WorkflowDefinition{}, err
 	}
 	return saved, nil
 }
 
 func (s *PostgresStore) WorkflowDefinition(id string) (WorkflowDefinition, error) {
-	row := s.db.QueryRowContext(s.operationContext(), `select `+workflowDefinitionColumns+` from workflow_definitions where id=$1`, id)
-	definition, err := scanWorkflowDefinitionRow(row)
+	row := s.db.QueryRowContext(s.operationContext(), `select `+workflowDefinitionLatestColumns+` from workflow_definitions where id=$1`, id)
+	definition, err := scanWorkflowDefinitionLatestRow(row)
+	return definition, mapScanErr(err)
+}
+
+func (s *PostgresStore) ActiveWorkflowDefinition(id string) (WorkflowDefinition, error) {
+	row := s.db.QueryRowContext(s.operationContext(), `select `+workflowDefinitionVersionColumns+` from workflow_definitions d join workflow_definition_versions v on v.id=d.id and v.version=d.active_version where d.id=$1`, id)
+	definition, err := scanWorkflowDefinitionLatestRow(row)
 	return definition, mapScanErr(err)
 }
 
 func (s *PostgresStore) ListWorkflowDefinitions() ([]WorkflowDefinition, error) {
-	rows, err := s.db.QueryContext(s.operationContext(), `select `+workflowDefinitionColumns+` from workflow_definitions order by id`)
+	rows, err := s.db.QueryContext(s.operationContext(), `select `+workflowDefinitionLatestColumns+` from workflow_definitions order by id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]WorkflowDefinition, 0)
 	for rows.Next() {
-		definition, err := scanWorkflowDefinitionRow(rows)
+		definition, err := scanWorkflowDefinitionLatestRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -95,14 +147,14 @@ func (s *PostgresStore) ListWorkflowDefinitions() ([]WorkflowDefinition, error) 
 }
 
 func (s *PostgresStore) ListWorkflowDefinitionVersions(id string) ([]WorkflowDefinition, error) {
-	rows, err := s.db.QueryContext(s.operationContext(), `select `+workflowDefinitionColumns+` from workflow_definition_versions where id=$1 order by version desc`, id)
+	rows, err := s.db.QueryContext(s.operationContext(), `select `+workflowDefinitionVersionColumns+` from workflow_definition_versions v join workflow_definitions d on d.id=v.id where v.id=$1 order by v.version desc`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []WorkflowDefinition{}
 	for rows.Next() {
-		definition, err := scanWorkflowDefinitionRow(rows)
+		definition, err := scanWorkflowDefinitionLatestRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -115,20 +167,34 @@ func (s *PostgresStore) ListWorkflowDefinitionVersions(id string) ([]WorkflowDef
 }
 
 func (s *PostgresStore) ActivateWorkflowDefinition(id string) (WorkflowDefinition, error) {
+	return s.ActivateWorkflowDefinitionVersion(id, 0)
+}
+
+func (s *PostgresStore) ActivateWorkflowDefinitionVersion(id string, version int) (WorkflowDefinition, error) {
 	ctx := s.operationContext()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return WorkflowDefinition{}, err
 	}
-	row := tx.QueryRowContext(ctx, `update workflow_definitions set status='active', updated_at=now() where id=$1 returning `+workflowDefinitionColumns, id)
-	definition, err := scanWorkflowDefinitionRow(row)
+	definition, err := scanWorkflowDefinitionLatestRow(tx.QueryRowContext(ctx, `select `+workflowDefinitionLatestColumns+` from workflow_definitions where id=$1 for update`, id))
 	if err != nil {
 		_ = tx.Rollback()
 		return WorkflowDefinition{}, mapScanErr(err)
 	}
-	if _, err := tx.ExecContext(ctx, `update workflow_definition_versions set status='active', updated_at=$3 where id=$1 and version=$2`, id, definition.Version, definition.UpdatedAt); err != nil {
+	if err := checkWorkflowDefinitionActivationTarget(id, definition.Version, version); err != nil {
 		_ = tx.Rollback()
 		return WorkflowDefinition{}, err
+	}
+	if definition.ActiveVersion != definition.Version {
+		definition, err = scanWorkflowDefinitionLatestRow(tx.QueryRowContext(ctx, `update workflow_definitions set status='active', active_version=version, updated_at=$2 where id=$1 returning `+workflowDefinitionLatestColumns, id, s.now().UTC()))
+		if err != nil {
+			_ = tx.Rollback()
+			return WorkflowDefinition{}, mapScanErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, `update workflow_definition_versions set status='active', updated_at=$3 where id=$1 and version=$2`, id, definition.Version, definition.UpdatedAt); err != nil {
+			_ = tx.Rollback()
+			return WorkflowDefinition{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return WorkflowDefinition{}, err
@@ -137,6 +203,10 @@ func (s *PostgresStore) ActivateWorkflowDefinition(id string) (WorkflowDefinitio
 }
 
 func (s *PostgresStore) RollbackWorkflowDefinition(id string, version int) (WorkflowDefinition, error) {
+	return s.RollbackWorkflowDefinitionVersion(id, version, nil)
+}
+
+func (s *PostgresStore) RollbackWorkflowDefinitionVersion(id string, version int, expectedVersion *int) (WorkflowDefinition, error) {
 	if version < 1 {
 		return WorkflowDefinition{}, ErrInvalid
 	}
@@ -145,7 +215,11 @@ func (s *PostgresStore) RollbackWorkflowDefinition(id string, version int) (Work
 		return WorkflowDefinition{}, mapScanErr(err)
 	}
 	target.Status = "active"
-	return s.UpsertWorkflowDefinition(target)
+	target, err = normalizeWorkflowDefinition(target, NewStoreBackedAgentProfileRegistry(s, DefaultAgentProfileRegistry()))
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return s.appendWorkflowDefinitionVersion(target, expectedVersion)
 }
 
 func (s *PostgresStore) UpsertWorkflow(w Workflow) error {
@@ -204,10 +278,26 @@ func (s *PostgresStore) ListWorkflows() []Workflow {
 	return out
 }
 
+// scanWorkflowDefinitionLatestRow scans workflowDefinitionColumns followed by
+// the definition's active_version and derives the version's status from it.
+func scanWorkflowDefinitionLatestRow(row scanner) (WorkflowDefinition, error) {
+	var active sql.NullInt64
+	definition, err := scanWorkflowDefinitionValues(row, &active)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return withWorkflowDefinitionActiveVersion(definition, int(active.Int64)), nil
+}
+
 func scanWorkflowDefinitionRow(row scanner) (WorkflowDefinition, error) {
+	return scanWorkflowDefinitionValues(row)
+}
+
+func scanWorkflowDefinitionValues(row scanner, extra ...any) (WorkflowDefinition, error) {
 	var definition WorkflowDefinition
 	var ownsBytes, usesBytes, inputShapeBytes, pipelineBytes []byte
-	if err := row.Scan(&definition.ID, &definition.Name, &definition.Description, &definition.Status, &definition.Version, &ownsBytes, &usesBytes, &inputShapeBytes, &pipelineBytes, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
+	destinations := append([]any{&definition.ID, &definition.Name, &definition.Description, &definition.Status, &definition.Version, &ownsBytes, &usesBytes, &inputShapeBytes, &pipelineBytes, &definition.CreatedAt, &definition.UpdatedAt}, extra...)
+	if err := row.Scan(destinations...); err != nil {
 		return WorkflowDefinition{}, err
 	}
 	if err := json.Unmarshal(ownsBytes, &definition.Owns); err != nil {

@@ -178,7 +178,7 @@ func (s *PostgresStore) AdmitWebhookContext(ctx context.Context, input AdmitWebh
 	}
 	var definition WorkflowDefinition
 	var inputShapeBytes, pipelineBytes []byte
-	if err := tx.QueryRowContext(ctx, `select id,status,input_shape,pipeline from workflow_definitions where id=$1 and status='active' for share`, trigger.WorkflowID).Scan(&definition.ID, &definition.Status, &inputShapeBytes, &pipelineBytes); err != nil {
+	if err := tx.QueryRowContext(ctx, `select v.id,'active',v.input_shape,v.pipeline from workflow_definitions d join workflow_definition_versions v on v.id=d.id and v.version=d.active_version where d.id=$1 for share of d`, trigger.WorkflowID).Scan(&definition.ID, &definition.Status, &inputShapeBytes, &pipelineBytes); err != nil {
 		return WebhookAdmission{}, mapScanErr(err)
 	}
 	if err := json.Unmarshal(inputShapeBytes, &definition.InputShape); err != nil {
