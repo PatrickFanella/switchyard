@@ -421,6 +421,33 @@ export type ModelBrokerObservability = {
   checked_at: string;
 };
 
+export type EvidenceScope = 'all' | 'runs' | 'steps' | 'requests' | 'errors' | 'correlations';
+
+export const evidenceScopes: EvidenceScope[] = ['all', 'runs', 'steps', 'requests', 'errors', 'correlations'];
+
+export type EvidenceHit = {
+  kind: 'run' | 'step' | 'request';
+  id: string;
+  run_id?: string;
+  workflow_id?: string;
+  status: string;
+  title: string;
+  summary?: string;
+  error?: string;
+  correlation_ids?: Record<string, string>;
+  created_at: string;
+  finished_at?: string;
+};
+
+export type EvidenceSearchResponse = {
+  hits: EvidenceHit[];
+  next_cursor: string;
+  query: string;
+  scope: EvidenceScope;
+  limit: number;
+  retention: { window: string; floor: string; searched_at: string };
+};
+
 export type ViewID = 'overview' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {
