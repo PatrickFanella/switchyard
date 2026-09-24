@@ -87,7 +87,9 @@ type EnvWorkflowExecutors struct {
 	giteaPullRequestGetter       GiteaPullRequestGetter
 	giteaMerger                  GiteaPullRequestMerger
 	giteaWriter                  GiteaWriter
-	sourceActivityReader         GiteaRepositoryActivityReader
+	devlogEvidenceReader         GiteaRepositoryActivityReader
+	devlogAllowedRepos           string
+	sourceActivityReader         GiteaIssueActivityReader
 	commandRunner                CommandRunner
 	worktreeManager              OpenPilotWorktreeManager
 	client                       *http.Client
@@ -187,6 +189,8 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		giteaPullRequestGetter:       giteaClient,
 		giteaMerger:                  giteaClient,
 		giteaWriter:                  giteaClient,
+		devlogEvidenceReader:         giteaClient,
+		devlogAllowedRepos:           devlogAllowedReposFromEnv(),
 		sourceActivityReader:         giteaClient,
 		commandRunner:                NewEnvCommandRunner(),
 		worktreeManager:              NewEnvOpenPilotWorktreeManager(),

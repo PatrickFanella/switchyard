@@ -65,7 +65,9 @@ rendered body then becomes the artifact content instead of the rendered inputs.
 
 Outputs are published only when the step succeeds. Failed, canceled, timed-out,
 and paused steps publish nothing. First-party Open Pilot and Devlog pipelines
-keep their existing state handoff and do not use output references.
+keep their existing state handoff and do not use output references. In
+repository-evidence mode, Devlog's `collect-history` step publishes
+`evidence_*` outputs; see [Devlog repository evidence](devlog-evidence.md).
 
 ## Limits and redaction
 

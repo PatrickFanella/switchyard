@@ -562,22 +562,22 @@ func TestParseSourceCollectionRequestBounds(t *testing.T) {
 	}
 }
 
-type fakeActivityReader map[string][]GiteaActivityItem
+type fakeActivityReader map[string][]GiteaIssueActivity
 
-func (f fakeActivityReader) ListRepositoryActivity(_ context.Context, repo string, _, _ time.Time, _ int) ([]GiteaActivityItem, bool, error) {
+func (f fakeActivityReader) ListIssueActivity(_ context.Context, repo string, _, _ time.Time, _ int) ([]GiteaIssueActivity, bool, error) {
 	return f[repo], false, nil
 }
 
 func TestCollectSourceActivityCapsAndBudgetAreDeterministic(t *testing.T) {
 	t.Setenv(sourceRepositoriesAllowlistEnv, "acme/app")
 	start := changemakerFixtureNow.Add(-24 * time.Hour)
-	var items []GiteaActivityItem
+	var items []GiteaIssueActivity
 	for number := 1; number <= 6; number++ {
 		updated := start.Add(time.Duration(number) * time.Hour)
-		items = append(items, GiteaActivityItem{Number: number, Title: fmt.Sprintf("Item %d", number), Body: strings.Repeat("x", 400), State: "open", UpdatedAt: updated})
+		items = append(items, GiteaIssueActivity{Number: number, Title: fmt.Sprintf("Item %d", number), Body: strings.Repeat("x", 400), State: "open", UpdatedAt: updated})
 	}
 	// A duplicate of #2 with a later update replaces the earlier copy.
-	items = append(items, GiteaActivityItem{Number: 2, Title: "Item 2 edited", State: "closed", UpdatedAt: start.Add(20 * time.Hour)})
+	items = append(items, GiteaIssueActivity{Number: 2, Title: "Item 2 edited", State: "closed", UpdatedAt: start.Add(20 * time.Hour)})
 	request := SourceCollectionRequest{Adapter: SourceAdapterGiteaActivity, Sources: []string{"acme/app"}, WindowStart: start, WindowEnd: changemakerFixtureNow, MaxItems: 4, ExcerptChars: 100}
 	out, err := collectSourceActivity(context.Background(), "collect", request, fakeActivityReader{"acme/app": items}, "evidence.json")
 	if err != nil {

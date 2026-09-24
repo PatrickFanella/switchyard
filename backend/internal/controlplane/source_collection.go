@@ -139,7 +139,7 @@ type SourceEvidence struct {
 
 type sourceCandidate struct {
 	source string
-	item   GiteaActivityItem
+	item   GiteaIssueActivity
 }
 
 func (c sourceCandidate) ref() string {
@@ -252,7 +252,7 @@ func (g genericWorkflowExecutor) executeGenericSourceStep(ctx context.Context, r
 	if err != nil {
 		return PipelineStepExecution{}, err
 	}
-	var reader GiteaRepositoryActivityReader
+	var reader GiteaIssueActivityReader
 	if g.env != nil {
 		reader = g.env.sourceActivityReader
 	}
@@ -260,7 +260,7 @@ func (g genericWorkflowExecutor) executeGenericSourceStep(ctx context.Context, r
 	return collectSourceActivity(ctx, step.ID, request, reader, artifactName)
 }
 
-func collectSourceActivity(ctx context.Context, stepID string, request SourceCollectionRequest, reader GiteaRepositoryActivityReader, artifactName string) (PipelineStepExecution, error) {
+func collectSourceActivity(ctx context.Context, stepID string, request SourceCollectionRequest, reader GiteaIssueActivityReader, artifactName string) (PipelineStepExecution, error) {
 	evidence := SourceEvidence{
 		Schema:         sourceEvidenceSchema,
 		Adapter:        request.Adapter,
@@ -281,7 +281,7 @@ func collectSourceActivity(ctx context.Context, stepID string, request SourceCol
 			return PipelineStepExecution{}, err
 		}
 		record := sourceEvidenceSource{Source: source}
-		var items []GiteaActivityItem
+		var items []GiteaIssueActivity
 		var failure error
 		switch {
 		case !allowlist[source]:
@@ -289,7 +289,7 @@ func collectSourceActivity(ctx context.Context, stepID string, request SourceCol
 		case reader == nil:
 			failure = sourceCollectionFailure{reason: "no Gitea activity reader is configured", retryable: false}
 		default:
-			items, record.Truncated, failure = reader.ListRepositoryActivity(ctx, source, request.WindowStart, request.WindowEnd, sourceMaxPagesPerRepository)
+			items, record.Truncated, failure = reader.ListIssueActivity(ctx, source, request.WindowStart, request.WindowEnd, sourceMaxPagesPerRepository)
 		}
 		if failure != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(failure, ctxErr) {

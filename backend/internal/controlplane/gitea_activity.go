@@ -2,9 +2,7 @@ package controlplane
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,152 +10,177 @@ import (
 	"time"
 )
 
-// GiteaActivityItem is one issue or pull request returned by the read-only
-// repository activity listing used by source collection.
-type GiteaActivityItem struct {
-	Number        int
-	Title         string
-	Body          string
-	State         string
-	HTMLURL       string
-	Author        string
-	Labels        []string
-	IsPullRequest bool
-	Merged        bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	ClosedAt      *time.Time
+// GiteaActivityPageQuery selects one page of read-only repository activity.
+// Since and Until are forwarded where the Gitea endpoint supports them; the
+// caller still filters every item against its own window.
+type GiteaActivityPageQuery struct {
+	Page  int
+	Limit int
+	Since time.Time
+	Until time.Time
 }
 
-// GiteaRepositoryActivityReader lists issues and pull requests updated inside
-// a window. Implementations only issue GET requests.
+// GiteaCommitActivity is the commit metadata Devlog evidence needs.
+type GiteaCommitActivity struct {
+	SHA     string `json:"sha"`
+	HTMLURL string `json:"html_url"`
+	Commit  struct {
+		Message string `json:"message"`
+		Author  struct {
+			Name string    `json:"name"`
+			Date time.Time `json:"date"`
+		} `json:"author"`
+		Committer struct {
+			Date time.Time `json:"date"`
+		} `json:"committer"`
+	} `json:"commit"`
+	Author *struct {
+		Login string `json:"login"`
+	} `json:"author,omitempty"`
+}
+
+// GiteaPullRequestActivity extends the shared pull request payload with the
+// lifecycle timestamps needed to place a pull request in a time window.
+type GiteaPullRequestActivity struct {
+	GiteaPullRequest
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+	MergedAt  *time.Time `json:"merged_at,omitempty"`
+	User      *struct {
+		Login string `json:"login"`
+	} `json:"user,omitempty"`
+}
+
+// GiteaReleaseActivity is release metadata. TargetCommitish is often a branch
+// name, so exact commit identity comes from the matching tag.
+type GiteaReleaseActivity struct {
+	ID              int        `json:"id"`
+	TagName         string     `json:"tag_name"`
+	TargetCommitish string     `json:"target_commitish"`
+	Name            string     `json:"name"`
+	HTMLURL         string     `json:"html_url"`
+	Draft           bool       `json:"draft"`
+	Prerelease      bool       `json:"prerelease"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	PublishedAt     *time.Time `json:"published_at,omitempty"`
+}
+
+// GiteaTagActivity is tag metadata with the exact tagged commit.
+type GiteaTagActivity struct {
+	Name   string `json:"name"`
+	ID     string `json:"id"`
+	Commit struct {
+		SHA     string     `json:"sha"`
+		URL     string     `json:"url"`
+		Created *time.Time `json:"created,omitempty"`
+	} `json:"commit"`
+}
+
+// GiteaRepositoryActivityReader lists one page of repository activity at a
+// time so callers own pagination caps.
 type GiteaRepositoryActivityReader interface {
-	// ListRepositoryActivity returns items updated in [since, until]. It reads
-	// at most maxPages pages; truncated reports that another page may exist.
-	ListRepositoryActivity(ctx context.Context, repo string, since, until time.Time, maxPages int) (items []GiteaActivityItem, truncated bool, err error)
+	ListCommitActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaCommitActivity, error)
+	ListPullRequestActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaPullRequestActivity, error)
+	ListReleaseActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaReleaseActivity, error)
+	ListTagActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaTagActivity, error)
 }
 
-const (
-	giteaActivityPageSize     = 50
-	giteaActivityMaxPageBytes = 4 << 20
-)
+// GiteaAccess reports whether the Gitea origin and credential are configured,
+// without exposing either value.
+type GiteaAccess struct {
+	BaseURLConfigured bool
+	TokenConfigured   bool
+	// WebBaseURL is the sanitized Gitea origin (scheme, host, path) used to
+	// build browser links when a payload omits one. It never carries userinfo.
+	WebBaseURL string
+}
 
-// ListRepositoryActivity reads /repos/{owner}/{repo}/issues with state=all and
-// the since/before window. The response body of each page is size-bounded.
-func (c *EnvGiteaClient) ListRepositoryActivity(ctx context.Context, repo string, since, until time.Time, maxPages int) ([]GiteaActivityItem, bool, error) {
+// GiteaAccessReporter is implemented by readers that can report configuration.
+type GiteaAccessReporter interface {
+	GiteaAccess() GiteaAccess
+}
+
+// GiteaAccess reports configuration presence only.
+func (c *EnvGiteaClient) GiteaAccess() GiteaAccess {
+	access := GiteaAccess{BaseURLConfigured: strings.TrimSpace(c.baseURL) != "", TokenConfigured: strings.TrimSpace(c.token) != ""}
+	if base, ok := sanitizeCorrelationBaseURL(c.baseURL); ok {
+		access.WebBaseURL = base
+	}
+	return access
+}
+
+func (c *EnvGiteaClient) ListCommitActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaCommitActivity, error) {
+	values := url.Values{}
+	values.Set("stat", "false")
+	values.Set("verification", "false")
+	values.Set("files", "false")
+	if !query.Since.IsZero() {
+		values.Set("since", query.Since.UTC().Format(time.RFC3339))
+	}
+	if !query.Until.IsZero() {
+		values.Set("until", query.Until.UTC().Format(time.RFC3339))
+	}
+	var out []GiteaCommitActivity
+	err := c.getActivityPage(ctx, repo, "commits", values, query, &out)
+	return out, err
+}
+
+func (c *EnvGiteaClient) ListPullRequestActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaPullRequestActivity, error) {
+	values := url.Values{}
+	values.Set("state", "all")
+	values.Set("sort", "recentupdate")
+	var out []GiteaPullRequestActivity
+	err := c.getActivityPage(ctx, repo, "pulls", values, query, &out)
+	return out, err
+}
+
+func (c *EnvGiteaClient) ListReleaseActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaReleaseActivity, error) {
+	var out []GiteaReleaseActivity
+	err := c.getActivityPage(ctx, repo, "releases", url.Values{}, query, &out)
+	return out, err
+}
+
+func (c *EnvGiteaClient) ListTagActivity(ctx context.Context, repo string, query GiteaActivityPageQuery) ([]GiteaTagActivity, error) {
+	var out []GiteaTagActivity
+	err := c.getActivityPage(ctx, repo, "tags", url.Values{}, query, &out)
+	return out, err
+}
+
+func (c *EnvGiteaClient) getActivityPage(ctx context.Context, repo, resource string, values url.Values, query GiteaActivityPageQuery, out any) error {
 	if c.baseURL == "" {
-		return nil, false, sourceCollectionFailure{reason: "GITEA_BASE_URL is not configured", retryable: false}
+		return fmt.Errorf("GITEA_BASE_URL is not configured")
 	}
 	owner, name, err := c.repoParts(repo)
 	if err != nil {
-		return nil, false, sourceCollectionFailure{reason: err.Error(), retryable: false}
+		return err
 	}
-	if maxPages < 1 {
-		maxPages = 1
-	}
-	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, "issues")
+	endpoint, err := url.JoinPath(c.baseURL, "/api/v1/repos", owner, name, resource)
 	if err != nil {
-		return nil, false, err
+		return err
 	}
-	var items []GiteaActivityItem
-	for page := 1; page <= maxPages; page++ {
-		parsed, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, false, err
-		}
-		query := parsed.Query()
-		query.Set("state", "all")
-		query.Set("since", since.UTC().Format(time.RFC3339))
-		query.Set("before", until.UTC().Format(time.RFC3339))
-		query.Set("limit", strconv.Itoa(giteaActivityPageSize))
-		query.Set("page", strconv.Itoa(page))
-		parsed.RawQuery = query.Encode()
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-		if err != nil {
-			return nil, false, err
-		}
-		request.Header.Set("Accept", "application/json")
-		c.setAuth(request)
-		response, err := c.client.Do(request)
-		if err != nil {
-			return nil, false, sourceCollectionFailure{reason: "gitea activity request failed: " + RedactForLog(err.Error()), retryable: true}
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, giteaActivityMaxPageBytes+1))
-		response.Body.Close()
-		if readErr != nil {
-			return nil, false, sourceCollectionFailure{reason: "gitea activity response could not be read: " + readErr.Error(), retryable: true}
-		}
-		if response.StatusCode < 200 || response.StatusCode > 299 {
-			// 4xx other than rate limiting will not change on retry.
-			retryable := response.StatusCode >= 500 || response.StatusCode == http.StatusTooManyRequests
-			return nil, false, sourceCollectionFailure{reason: "gitea activity listing failed: " + response.Status, retryable: retryable}
-		}
-		if len(body) > giteaActivityMaxPageBytes {
-			return nil, false, sourceCollectionFailure{reason: "gitea activity page exceeds the response size limit", retryable: false}
-		}
-		var raw []struct {
-			Number    int    `json:"number"`
-			Title     string `json:"title"`
-			Body      string `json:"body"`
-			State     string `json:"state"`
-			HTMLURL   string `json:"html_url"`
-			CreatedAt string `json:"created_at"`
-			UpdatedAt string `json:"updated_at"`
-			ClosedAt  string `json:"closed_at"`
-			User      struct {
-				Login string `json:"login"`
-			} `json:"user"`
-			Labels []struct {
-				Name string `json:"name"`
-			} `json:"labels"`
-			PullRequest *struct {
-				Merged bool `json:"merged"`
-			} `json:"pull_request"`
-		}
-		if err := json.Unmarshal(body, &raw); err != nil {
-			return nil, false, sourceCollectionFailure{reason: "gitea activity response is not a JSON list: " + err.Error(), retryable: false}
-		}
-		for _, entry := range raw {
-			if entry.Number < 1 {
-				continue
-			}
-			item := GiteaActivityItem{Number: entry.Number, Title: entry.Title, Body: entry.Body, State: entry.State, HTMLURL: entry.HTMLURL, Author: entry.User.Login, IsPullRequest: entry.PullRequest != nil}
-			if entry.PullRequest != nil {
-				item.Merged = entry.PullRequest.Merged
-			}
-			for _, label := range entry.Labels {
-				if strings.TrimSpace(label.Name) != "" {
-					item.Labels = append(item.Labels, label.Name)
-				}
-			}
-			item.CreatedAt, _ = time.Parse(time.RFC3339, entry.CreatedAt)
-			item.UpdatedAt, _ = time.Parse(time.RFC3339, entry.UpdatedAt)
-			if closed, parseErr := time.Parse(time.RFC3339, entry.ClosedAt); parseErr == nil {
-				closed = closed.UTC()
-				item.ClosedAt = &closed
-			}
-			items = append(items, item)
-		}
-		if len(raw) < giteaActivityPageSize {
-			return items, false, nil
-		}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return err
 	}
-	return items, true, nil
-}
-
-// sourceCollectionFailure classifies a source failure for retry decisions.
-type sourceCollectionFailure struct {
-	reason    string
-	retryable bool
-}
-
-func (e sourceCollectionFailure) Error() string   { return e.reason }
-func (e sourceCollectionFailure) Retryable() bool { return e.retryable }
-
-func sourceFailureRetryable(err error) bool {
-	var classified interface{ Retryable() bool }
-	if errors.As(err, &classified) {
-		return classified.Retryable()
+	page := query.Page
+	if page < 1 {
+		page = 1
 	}
-	return true
+	limit := query.Limit
+	if limit < 1 || limit > 50 {
+		limit = 50
+	}
+	values.Set("page", strconv.Itoa(page))
+	values.Set("limit", strconv.Itoa(limit))
+	parsed.RawQuery = values.Encode()
+	resp, err := c.doJSON(ctx, http.MethodGet, parsed.String(), nil, out)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("gitea %s list failed: %s", resource, resp.Status)
+	}
+	return nil
 }

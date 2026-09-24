@@ -33,6 +33,11 @@ Access is opt-in twice:
 A requested repository that is not allowlisted is recorded as a failed source
 and is never requested from Gitea.
 
+Devlog repository evidence ([Devlog evidence](devlog-evidence.md)) reads the
+same Gitea client under its own allowlist, `DEVLOG_ALLOWED_REPOS` plus the Open
+Pilot registry. The two allowlists are independent: listing a repository for
+one workflow does not make it readable by the other.
+
 ## Step inputs
 
 | Input | Required | Meaning |
