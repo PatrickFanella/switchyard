@@ -32,7 +32,7 @@ Two reading rules follow from the inconsistencies this reconciliation found:
 - Authoritative branch target: `main`
 - Current deployed release: `v0.1.2`
 - Current deployed revision: `7d90c065c05bfa93eb380ff071036d61c1f965e2`
-- Release tags without a qualification record: `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`
+- Release tags without a qualification record: `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.3.0`
 - The two pointers above name the last release with a revision-matched
   qualification record; `make docs-check` binds them to that record and fails
   if a newer tag appears without either a record or an entry on the line
@@ -40,7 +40,10 @@ Two reading rules follow from the inconsistencies this reconciliation found:
   tags (2026-08-25 to 2026-08-27) and later `main` revisions have been
   deployed without a qualification record. On 2026-09-23 the Kvant stack was
   observed running `ca44597f2926fc24e77936d365a365908fb8f5a8`. Qualifying a
-  current candidate and publishing its record is Gitea issue #14.
+  current candidate and publishing its record is Gitea issue #14. `v0.3.0`
+  (2026-09-24, `28b4f7f8883f406dc8b7c5337c6684f16cab0187`) failed hosted
+  qualification on a verifier fixture test that ran an unpinned pnpm and was
+  never deployed.
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
 - Required production configuration gate: `make production-config-check` with the deployed environment exported
