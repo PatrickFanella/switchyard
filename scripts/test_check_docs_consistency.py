@@ -108,6 +108,28 @@ class DocsConsistencyTest(unittest.TestCase):
             (root / ".git_archival.txt").write_text(f"node: {'b' * 40}\n", encoding="utf-8")
             checks.validate_release_pointer_currency(root)
 
+    def test_release_pointer_currency_skips_tag_checks_in_shallow_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            origin = Path(directory) / "origin"
+            origin.mkdir()
+            env = {**__import__("os").environ, **GIT_IDENTITY}
+            write_release_pointer(origin, "v1.2.3", "- Release tags without a qualification record: `v1.3.0`\n")
+            git_tag(origin, "v1.2.3")
+            subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "docs"], cwd=origin, check=True, env=env)
+            subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "second"], cwd=origin, check=True, env=env)
+            subprocess.run(["git", "tag", "v1.3.0"], cwd=origin, check=True, env=env)
+            clone = Path(directory) / "clone"
+            subprocess.run(
+                ["git", "clone", "-q", "--depth", "1", "--no-tags", f"file://{origin}", str(clone)], check=True
+            )
+            self.assertIsNone(checks.repository_tags(clone))
+            checks.validate_release_pointer_currency(clone)
+            # The full checkout still enforces declared-tag existence.
+            write_release_pointer(origin, "v1.2.3", "- Release tags without a qualification record: `v1.3.0`, `v9.9.9`\n")
+            with self.assertRaisesRegex(checks.ContractError, "do not exist: v9.9.9"):
+                checks.validate_release_pointer_currency(origin)
+
     def test_semver_prerelease_sorts_below_final_release(self) -> None:
         self.assertLess(checks.semver_key("v1.3.0-rc.1"), checks.semver_key("v1.3.0"))
         self.assertLess(checks.semver_key("v1.2.9"), checks.semver_key("v1.10.0"))
