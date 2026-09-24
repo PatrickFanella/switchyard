@@ -186,6 +186,9 @@ func TestPostgresChangemakerReviewRevisionAndPublicationEndToEnd(t *testing.T) {
 	}
 	fake := &fakeChangemakerPublisher{}
 	api := NewAPI(store, NewRunner(store))
+	// NewAPI owns a PostgreSQL model service singleton; release it so later
+	// singleton tests can acquire it.
+	t.Cleanup(func() { _ = api.Shutdown(context.Background()) })
 	api.clock = clock
 	api.SetChangemakerPublication(NewChangemakerPublication(fake, ""))
 	control := api.ControlPlaneHandler()
