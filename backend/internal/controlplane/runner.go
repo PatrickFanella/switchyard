@@ -12,10 +12,14 @@ import (
 )
 
 type PipelineStepExecution struct {
-	Summary        string
-	Events         []WorkflowExecutionEvent
-	Artifacts      []CreateArtifactInput
-	Inputs         map[string]string
+	Summary   string
+	Events    []WorkflowExecutionEvent
+	Artifacts []CreateArtifactInput
+	Inputs    map[string]string
+	// Outputs are the named values later steps may bind through
+	// {{steps.<step_id>.outputs.<name>}}. The runner bounds and persists them
+	// on the step record only when the step succeeds.
+	Outputs        map[string]string
 	CorrelationIDs map[string]string
 	Halt           bool
 	Handoff        bool
@@ -105,7 +109,7 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if env, ok := registry.(*EnvWorkflowExecutors); ok {
 		env.openPilotGate, env.openPilotGateError = gate, gateErr
 	}
-	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter(), active: map[string]activeRun{}, openPilotGate: gate, openPilotGateError: gateErr}
+	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: NewStoreBackedAgentProfileRegistry(store, DefaultAgentProfileRegistry()), limiter: NewEnvExecutorLimiter(), active: map[string]activeRun{}, openPilotGate: gate, openPilotGateError: gateErr}
 }
 
 func (r *Runner) SetOpenPilotAdmissionGate(gate *OpenPilotAdmissionGate) {
@@ -254,9 +258,17 @@ func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
 	}
 	if pipeline, ok := r.pipelines.PipelineForWorkflow(input.WorkflowID); ok {
 		snapshot := clonePipeline(pipeline)
+		attachPipelineProfileSnapshot(&snapshot, r.effectiveAgentProfiles())
 		input.PipelineSnapshot = &snapshot
 	}
 	return input
+}
+
+func (r *Runner) effectiveAgentProfiles() AgentProfileRegistry {
+	if r.profiles == nil {
+		return NewStoreBackedAgentProfileRegistry(r.store, DefaultAgentProfileRegistry())
+	}
+	return r.profiles
 }
 
 func defaultRunMaxAttempts() int {
@@ -403,6 +415,10 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 	if err != nil {
 		return execution, err
 	}
+	outputs, err := r.restorePipelineStepOutputs(store, run, steps, resumePosition)
+	if err != nil {
+		return execution, err
+	}
 	for _, pipelineStep := range steps {
 		if resumePosition > 0 && pipelineStep.Position < resumePosition {
 			continue
@@ -415,7 +431,7 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		if decider, ok := executor.(PipelineStepDecider); ok && !decider.ShouldExecutePipelineStep(run, pipelineStep, state) {
 			continue
 		}
-		profile, hasProfile, profileErr := r.profileForPipelineStep(pipelineStep)
+		profile, hasProfile, profileErr := r.profileForPipelineStep(pipeline, pipelineStep)
 		if profileErr != nil {
 			return execution, profileErr
 		}
@@ -454,6 +470,7 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 			if step.OutputSummary != "" {
 				execution.Summary = step.OutputSummary
 			}
+			outputs.set(pipelineStep.ID, step.Outputs)
 			continue
 		}
 		release, err := r.acquireExecutorSlot(ctx, pipelineStep.Executor)
@@ -478,6 +495,16 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		if hasProfile {
 			resolvedStep.profileContract = profile.PromptContract
 		}
+		resolvedInputs, resolveErr := resolvePipelineStepInputs(pipelineStep, outputs)
+		if resolveErr != nil {
+			release()
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, resolveErr)
+			}
+			_, _ = store.FinishRunStep(step.ID, StepFailed, "", resolveErr.Error(), nil)
+			return execution, resolveErr
+		}
+		resolvedStep.Inputs = resolvedInputs
 		var stepResult PipelineStepExecution
 		func() {
 			defer release()
@@ -531,6 +558,23 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 			stepStatus = StepPaused
 			execution.Status = RunPaused
 		}
+		if stepStatus == StepSucceeded {
+			boundOutputs, omitted, boundErr := boundStepOutputs(pipelineStep.ID, stepResult.Outputs)
+			if boundErr == nil && boundOutputs != nil {
+				_, boundErr = store.UpdateRunStep(step.ID, UpdateRunStepInput{Outputs: boundOutputs})
+			}
+			if boundErr != nil {
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, boundErr)
+				}
+				_, _ = store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, boundErr.Error(), stepResult.CorrelationIDs)
+				return execution, boundErr
+			}
+			for _, message := range omitted {
+				_, _ = store.AddEvent(run.ID, stepOutputOmittedEvent, message)
+			}
+			outputs.set(pipelineStep.ID, boundOutputs)
+		}
 		if _, err := store.FinishRunStep(step.ID, stepStatus, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
 			return execution, err
 		}
@@ -544,16 +588,49 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 	return execution, nil
 }
 
-func (r *Runner) profileForPipelineStep(step PipelineStep) (AgentProfile, bool, error) {
+// restorePipelineStepOutputs rebuilds the output view from durable records so a
+// retried, resumed, or restarted run never reruns a succeeded step to obtain
+// its outputs. Same-run attempts read this run's succeeded steps. Operator
+// resume runs carry retry_from_run; outputs of the source run's succeeded
+// steps before the resume position are restored only when the source run
+// executed the same immutable pipeline version.
+func (r *Runner) restorePipelineStepOutputs(store Store, run Run, steps []PipelineStep, resumePosition int) (*pipelineStepOutputs, error) {
+	outputs := newPipelineStepOutputs()
+	outputs.loadPersisted(steps, store.ListRunSteps(run.ID), 0)
+	sourceRunID := strings.TrimSpace(run.Inputs["retry_from_run"])
+	if resumePosition <= 0 || sourceRunID == "" || sourceRunID == run.ID {
+		return outputs, nil
+	}
+	source, err := store.RunDetail(sourceRunID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, stepOutputReferenceError{reference: "retry_from_run=" + sourceRunID, reason: "source run does not exist"}
+		}
+		return nil, err
+	}
+	if source.Run.PipelineVersion == "" || run.PipelineVersion == "" || source.Run.PipelineVersion != run.PipelineVersion {
+		_, _ = store.AddEvent(run.ID, stepOutputsRestoredEvent, fmt.Sprintf("skipped: source run %s pipeline version %q differs from %q", sourceRunID, source.Run.PipelineVersion, run.PipelineVersion))
+		return outputs, nil
+	}
+	if restored := outputs.loadPersisted(steps, source.Steps, resumePosition); restored > 0 {
+		_, _ = store.AddEvent(run.ID, stepOutputsRestoredEvent, fmt.Sprintf("restored outputs of %d succeeded step(s) before position %d from run %s", restored, resumePosition, sourceRunID))
+	}
+	return outputs, nil
+}
+
+// profileForPipelineStep prefers the policy captured in the run's pipeline
+// snapshot so later activations or rollbacks never change an in-flight run.
+// Runs created before profile snapshots existed resolve through the registry,
+// which still serves the shipped static defaults.
+func (r *Runner) profileForPipelineStep(pipeline Pipeline, step PipelineStep) (AgentProfile, bool, error) {
 	profileID := strings.TrimSpace(step.Profile)
 	if profileID == "" {
 		return AgentProfile{}, false, nil
 	}
-	profiles := r.profiles
-	if profiles == nil {
-		profiles = DefaultAgentProfileRegistry()
+	profile, ok := pipeline.Profiles[profileID]
+	if !ok {
+		profile, ok = r.effectiveAgentProfiles().Profile(profileID)
 	}
-	profile, ok := profiles.Profile(profileID)
 	if !ok {
 		return AgentProfile{}, false, fmt.Errorf("unknown agent profile %q", profileID)
 	}
@@ -592,6 +669,11 @@ func profileAuditCorrelation(profile AgentProfile, model string) map[string]stri
 		"agent_profile_id":              profile.ID,
 		"agent_profile_role":            profile.Role,
 		"agent_profile_contract_sha256": profileContractHash(profile),
+		"agent_profile_version":         strconv.Itoa(profile.Version),
+		"agent_profile_source":          firstNonEmpty(profile.Source, AgentProfileSourceStatic),
+	}
+	if profile.Provenance != nil && profile.Provenance.Origin != "" {
+		correlation["agent_profile_origin"] = profile.Provenance.Origin
 	}
 	if model != "" {
 		correlation["agent_profile_model"] = model

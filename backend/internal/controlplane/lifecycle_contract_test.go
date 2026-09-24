@@ -101,6 +101,80 @@ func TestStoreLifecycleContract(t *testing.T) {
 				}
 			})
 
+			t.Run("step_outputs_persist_on_success_and_clear_on_retry", func(t *testing.T) {
+				now := time.Unix(3_000, 0).UTC()
+				store := factory.new(t, &now)
+				run := lifecycleContractRun(t, store, 2)
+				step, err := store.CreateRunStep(controlplane.CreateRunStepInput{RunID: run.ID, Position: 1, Name: "source.fetch", Executor: "http"})
+				if err != nil {
+					t.Fatalf("CreateRunStep() error = %v", err)
+				}
+				if _, err := store.StartRunStep(step.ID); err != nil {
+					t.Fatalf("StartRunStep() error = %v", err)
+				}
+				for _, invalid := range []map[string]string{{"api_token": "x"}, {"Bad-Name": "x"}, {"body": string(make([]byte, 2<<20))}} {
+					if _, err := store.UpdateRunStep(step.ID, controlplane.UpdateRunStepInput{Outputs: invalid}); err != controlplane.ErrInvalid {
+						t.Fatalf("UpdateRunStep(invalid outputs) error = %v, want ErrInvalid", err)
+					}
+				}
+				updated, err := store.UpdateRunStep(step.ID, controlplane.UpdateRunStepInput{Outputs: map[string]string{"body": "first attempt", "note": "token=abc123 kept"}})
+				if err != nil {
+					t.Fatalf("UpdateRunStep(outputs) error = %v", err)
+				}
+				if updated.Outputs["body"] != "first attempt" || updated.Outputs["note"] != "token=[REDACTED] kept" {
+					t.Fatalf("updated outputs = %+v", updated.Outputs)
+				}
+				failed, err := store.FinishRunStep(step.ID, controlplane.StepFailed, "", "boom", nil)
+				if err != nil {
+					t.Fatalf("FinishRunStep(failed) error = %v", err)
+				}
+				if failed.Outputs["body"] != "first attempt" {
+					t.Fatalf("failed step lost outputs before retry: %+v", failed)
+				}
+				retried, err := store.RetryRunStep(step.ID)
+				if err != nil {
+					t.Fatalf("RetryRunStep() error = %v", err)
+				}
+				if len(retried.Outputs) != 0 {
+					t.Fatalf("retried step kept outputs: %+v", retried.Outputs)
+				}
+				started, err := store.StartRunStep(step.ID)
+				if err != nil {
+					t.Fatalf("StartRunStep(retry) error = %v", err)
+				}
+				if len(started.Outputs) != 0 || started.AttemptCount != 2 {
+					t.Fatalf("restarted step = %+v", started)
+				}
+				if _, err := store.UpdateRunStep(step.ID, controlplane.UpdateRunStepInput{Outputs: map[string]string{"body": "second attempt", "status": "200"}}); err != nil {
+					t.Fatalf("UpdateRunStep(second outputs) error = %v", err)
+				}
+				if _, err := store.UpdateRunStep(step.ID, controlplane.UpdateRunStepInput{Inputs: map[string]string{"url": "https://example.test"}}); err != nil {
+					t.Fatalf("UpdateRunStep(inputs) error = %v", err)
+				}
+				succeeded, err := store.FinishRunStep(step.ID, controlplane.StepSucceeded, "HTTP GET returned 200", "", nil)
+				if err != nil {
+					t.Fatalf("FinishRunStep(succeeded) error = %v", err)
+				}
+				if succeeded.Status != controlplane.StepSucceeded || succeeded.Outputs["body"] != "second attempt" || succeeded.Outputs["status"] != "200" || succeeded.Inputs["url"] != "https://example.test" || succeeded.OutputSummary != "HTTP GET returned 200" {
+					t.Fatalf("succeeded step = %+v", succeeded)
+				}
+				listed := store.ListRunSteps(run.ID)
+				if len(listed) != 1 || listed[0].ID != step.ID || listed[0].Outputs["body"] != "second attempt" || listed[0].Outputs["status"] != "200" {
+					t.Fatalf("listed steps = %+v", listed)
+				}
+				detail, err := store.RunDetail(run.ID)
+				if err != nil {
+					t.Fatalf("RunDetail() error = %v", err)
+				}
+				if len(detail.Steps) != 1 || detail.Steps[0].Outputs["body"] != "second attempt" {
+					t.Fatalf("detail steps = %+v", detail.Steps)
+				}
+				fetched, err := store.RunStep(step.ID)
+				if err != nil || fetched.Outputs["body"] != "second attempt" {
+					t.Fatalf("RunStep() = %+v, %v", fetched, err)
+				}
+			})
+
 			t.Run("queued_cancellation_prevents_claim", func(t *testing.T) {
 				now := time.Unix(2_000, 0).UTC()
 				store := factory.new(t, &now)

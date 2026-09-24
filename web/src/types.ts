@@ -99,6 +99,8 @@ export type RunStep = {
   model?: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out' | 'paused';
   inputs?: Record<string, string>;
+  // Durable named outputs published by a succeeded step (see docs/reference/step-outputs.md).
+  outputs?: Record<string, string>;
   output_summary?: string;
   error?: string;
   attempt_count: number;
@@ -315,8 +317,13 @@ export type AgentProfile = {
   name: string;
   role: string;
   default_model: string;
+  allowed_models?: string[];
   prompt_contract: string;
   allowed_executors: string[];
+  version?: number;
+  status?: 'static' | 'draft' | 'active' | 'superseded';
+  source?: 'static' | 'persisted';
+  prompt_contract_sha256?: string;
 };
 
 export type OperatorSummaryAlert = {
