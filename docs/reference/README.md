@@ -18,5 +18,6 @@ Keep exploratory notes in `docs/research/` until they become stable references.
 - [Devlog repository evidence](devlog-evidence.md) — allowlisted repository and time-window inputs, bounded Gitea collection, merged/deployed/proposed classification, and the `devlog-evidence.json` provenance artifact.
 - [Devlog review, export, and delivery](devlog-delivery.md) — report preview and source window, exact-bytes export, the `gitea-issue-comment` delivery adapter, digest-bound approvals, idempotent retries, and durable receipts.
 - [Source collection](source-collection.md) — read-only `source` steps, the `gitea-activity` adapter, grounded model steps, and the grounded Changemaker digest.
+- [Changemaker review, revision, and publication](changemaker-review.md) — draft threads and versions, decisions bound to the draft and source evidence digests, same-source or re-collected revisions, opt-in `gitea-issue-comment` publication, and idempotent receipts.
 - [Runtime configuration](runtime-configuration.md) — settings inventory, secret redaction, and the v1 boundary between file-managed and runtime-mutable settings.
 - [Workflow catalog](workflow-catalog.md) — dashboard catalog and linear draft editor for workflow definitions, validation messages, read-only access, and the draft-versus-active save semantics.

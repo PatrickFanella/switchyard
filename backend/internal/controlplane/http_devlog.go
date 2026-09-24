@@ -456,27 +456,17 @@ func (a *API) deliverDevlogReport(w http.ResponseWriter, r *http.Request) {
 		slog.Info("devlog delivery attempt finished", "run_id", finished.RunID, "receipt_id", finished.ID, "status", finished.Status, "reconciled", finished.Reconciled, "attempts", finished.Attempts, "destination", finished.Destination, "artifact_sha256", finished.ArtifactSHA256, "actor", actor)
 		return finished, true
 	}
-	existing, found, err := service.adapter.FindDelivery(ctx, key)
-	if err != nil {
-		if finished, ok := finish(FinishDevlogDeliveryInput{Error: "reconcile with destination: " + err.Error()}); ok {
-			writeJSON(w, http.StatusBadGateway, DevlogDeliveryResponse{Outcome: "failed", Receipt: finished})
-		}
+	attempt := attemptClaimedDelivery(ctx, service.adapter, DevlogDeliveryMessage{IdempotencyKey: key, RunID: report.run.ID, ArtifactSHA256: report.report.SHA256, Body: body})
+	finished, ok := finish(attempt.Finish)
+	if !ok {
 		return
 	}
-	if found {
-		if finished, ok := finish(FinishDevlogDeliveryInput{Delivered: true, Reconciled: true, ExternalID: existing.ExternalID, ExternalURL: existing.ExternalURL}); ok {
-			writeJSON(w, http.StatusOK, DevlogDeliveryResponse{Outcome: "reconciled", Receipt: finished})
-		}
-		return
+	status := http.StatusCreated
+	switch attempt.Outcome {
+	case "failed":
+		status = http.StatusBadGateway
+	case "reconciled":
+		status = http.StatusOK
 	}
-	result, err := service.adapter.Deliver(ctx, DevlogDeliveryMessage{IdempotencyKey: key, RunID: report.run.ID, ArtifactSHA256: report.report.SHA256, Body: body})
-	if err != nil {
-		if finished, ok := finish(FinishDevlogDeliveryInput{Error: "deliver: " + err.Error()}); ok {
-			writeJSON(w, http.StatusBadGateway, DevlogDeliveryResponse{Outcome: "failed", Receipt: finished})
-		}
-		return
-	}
-	if finished, ok := finish(FinishDevlogDeliveryInput{Delivered: true, ExternalID: result.ExternalID, ExternalURL: result.ExternalURL}); ok {
-		writeJSON(w, http.StatusCreated, DevlogDeliveryResponse{Outcome: "delivered", Receipt: finished})
-	}
+	writeJSON(w, status, DevlogDeliveryResponse{Outcome: attempt.Outcome, Receipt: finished})
 }

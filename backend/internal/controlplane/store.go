@@ -139,6 +139,16 @@ type Store interface {
 	FinishDevlogDelivery(FinishDevlogDeliveryInput) (DevlogDeliveryReceipt, error)
 	DevlogDeliveryReceipt(string) (DevlogDeliveryReceipt, error)
 	ListDevlogDeliveryReceipts(string) ([]DevlogDeliveryReceipt, error)
+	ChangemakerDraftVersionByRun(string) (ChangemakerDraftVersion, error)
+	ListChangemakerDraftVersions(string) ([]ChangemakerDraftVersion, error)
+	RecordChangemakerRevision(ChangemakerRevisionInput) (ChangemakerDraftVersion, ChangemakerReviewDecision, error)
+	RecordChangemakerReviewDecision(ChangemakerReviewDecision) (ChangemakerReviewDecision, error)
+	ChangemakerReviewDecision(string) (ChangemakerReviewDecision, error)
+	ListChangemakerReviewDecisions(string) ([]ChangemakerReviewDecision, error)
+	BeginChangemakerPublication(BeginDeliveryInput) (DeliveryReceipt, bool, error)
+	FinishChangemakerPublication(FinishDeliveryInput) (DeliveryReceipt, error)
+	ChangemakerPublicationReceipt(string) (DeliveryReceipt, error)
+	ListChangemakerPublicationReceipts(string) ([]DeliveryReceipt, error)
 }
 
 // OpenPilotCIRepairRequest contains the optimistic claim identity and the only
@@ -204,6 +214,9 @@ type MemoryStore struct {
 	webhookReceiptsPruned      int64
 	devlogApprovals            map[string]DevlogDeliveryApproval
 	devlogReceipts             map[string]DevlogDeliveryReceipt
+	changemakerVersions        map[string][]ChangemakerDraftVersion
+	changemakerDecisions       map[string]ChangemakerReviewDecision
+	changemakerReceipts        map[string]DeliveryReceipt
 }
 
 func NewStore(now func() time.Time) *MemoryStore {

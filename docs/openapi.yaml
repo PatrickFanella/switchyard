@@ -1536,6 +1536,92 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DevlogDeliveryResponse" }
         default: { $ref: "#/components/responses/Error" }
+  /api/changemaker/drafts/{id}:
+    get:
+      summary: Review a Changemaker draft thread
+      description: Control listener only; read role. `id` is the run id of any version in the thread. Returns every draft version (run status, `changemaker-digest.md` draft artifact inline, draft SHA-256, source evidence SHA-256, grounding status, citation check, source mode, revision notes, state), the thread's decisions and publication receipts, and the publication configuration. `current_version` is the highest version whose run has not failed or been canceled; only it can be decided on, revised, or published. Version `state` is one of `not-ready`, `no-draft`, `awaiting-review`, `approved`, `rejected`, `revision-requested`, `approval-expired`, `destination-changed`, `publishing`, `publication-failed`, `published`, or `superseded`. Nothing is sent to any destination.
+      parameters:
+        - $ref: "#/components/parameters/ChangemakerRunID"
+      responses:
+        "200":
+          description: Changemaker draft thread review
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangemakerDraftReview" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/changemaker/drafts/{id}/decisions:
+    post:
+      summary: Approve or reject the exact draft and source evidence of one version
+      description: Admin only. `version`, `draft_sha256`, and `evidence_sha256` must equal the current version's values (409 `version-mismatch`, `stale-draft`, `stale-evidence`, `superseded`, `draft-not-ready`, `already-published`). Approval requires a generated draft (409 `draft-not-generated`). The decision records the publication adapter and destination configured now (`disabled` when publication is off) and expires after `approval_ttl_seconds`; a later decision on the same digests replaces it.
+      parameters:
+        - $ref: "#/components/parameters/ChangemakerRunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangemakerDecisionRequest" }
+      responses:
+        "201":
+          description: Recorded decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decision: { $ref: "#/components/schemas/ChangemakerReviewDecision" }
+                required: [decision]
+        default: { $ref: "#/components/responses/Error" }
+  /api/changemaker/drafts/{id}/revisions:
+    post:
+      summary: Request a revision that produces a new draft version
+      description: Admin only. Records a `revision-requested` decision bound to the current version's draft and evidence digests and creates a new run for the next version from the same pipeline snapshot. `sources` `same` (default) restores the collected source outputs of the run that collected them, so the evidence digest is unchanged and no source is queried; `recollect` queries the same collection window again. Prior versions and decisions are kept. The new run has no trigger and never publishes. Returns 201 after the run finishes (synchronous dispatch) or 202 with a `Location` header (asynchronous dispatch). Error codes include those of the decisions route plus `revision-limit`, `sources-unavailable`, and `pipeline-unavailable`.
+      parameters:
+        - $ref: "#/components/parameters/ChangemakerRunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangemakerRevisionRequest" }
+      responses:
+        "201":
+          description: Revision recorded and its run finished
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangemakerRevisionResponse" }
+        "202":
+          description: Revision recorded and its run queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangemakerRevisionResponse" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/changemaker/drafts/{id}/publications:
+    post:
+      summary: Publish the approved current version once
+      description: Admin only. Publication is disabled unless `CHANGEMAKER_PUBLICATION_ADAPTER`, `CHANGEMAKER_PUBLICATION_GITEA_ISSUE`, and `CHANGEMAKER_PUBLICATION_ALLOWED_REPOS` configure one allowlisted destination (409 `publication-disabled`). Requires the newest decision on the current version's exact draft and evidence digests to be an unexpired approval for the configured adapter and destination. The idempotency key is derived from the adapter, destination, and draft SHA-256. An existing published receipt is returned without sending (`already-published`); otherwise the adapter first searches the destination for the idempotency marker (`reconciled`) and only then posts (`published`, 201). A failed attempt is recorded (`failed`, 502) and may be retried with the same request. Error codes include `approval-required`, `approval-rejected`, `approval-expired`, `approval-superseded`, `stale-approval`, `stale-draft`, `destination-changed`, `superseded`, `already-published`, `draft-not-generated`, `publication-in-progress`, and `draft-too-large`.
+      parameters:
+        - $ref: "#/components/parameters/ChangemakerRunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangemakerPublicationRequest" }
+      responses:
+        "200":
+          description: Already published or reconciled with the destination
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangemakerPublicationResponse" }
+        "201":
+          description: Published
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangemakerPublicationResponse" }
+        "502":
+          description: Publication attempt failed; the receipt records the error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangemakerPublicationResponse" }
+        default: { $ref: "#/components/responses/Error" }
   /api/runs:
     get:
       summary: List runs
@@ -1694,6 +1780,12 @@ components:
       name: id
       in: path
       required: true
+      schema: { type: string }
+    ChangemakerRunID:
+      name: id
+      in: path
+      required: true
+      description: Run id of any draft version in the thread.
       schema: { type: string }
     AgentProfileID:
       name: id
@@ -2838,6 +2930,137 @@ components:
       type: object
       properties:
         outcome: { type: string, enum: [delivered, reconciled, already-delivered, failed] }
+        receipt: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
+      required: [outcome, receipt]
+    ChangemakerPublicationStatus:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        adapter: { type: string, enum: [disabled, gitea-issue-comment] }
+        destination: { type: string }
+        reason: { type: string }
+        approval_ttl_seconds: { type: integer }
+        max_draft_versions: { type: integer }
+        policy: { type: string }
+      required: [enabled, adapter, approval_ttl_seconds, max_draft_versions, policy]
+    ChangemakerReviewDecision:
+      type: object
+      properties:
+        id: { type: string }
+        thread_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        run_id: { type: string }
+        artifact_id: { type: string }
+        draft_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        evidence_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        decision: { type: string, enum: [approved, rejected, revision-requested] }
+        notes: { type: string }
+        actor: { type: string }
+        adapter: { type: string }
+        destination: { type: string }
+        revision_run_id: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      required: [id, thread_id, version, run_id, artifact_id, draft_sha256, evidence_sha256, decision, notes, actor, adapter, destination, created_at, expires_at]
+    ChangemakerDraftVersion:
+      type: object
+      properties:
+        id: { type: string }
+        thread_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        run_id: { type: string }
+        parent_version: { type: integer }
+        sources_run_id: { type: string }
+        source_mode: { type: string, enum: [original, same, recollected] }
+        revision_notes: { type: string }
+        requested_by: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, thread_id, version, run_id, sources_run_id, source_mode, created_at]
+    ChangemakerDraftVersionView:
+      allOf:
+        - $ref: "#/components/schemas/ChangemakerDraftVersion"
+        - type: object
+          properties:
+            run_status: { type: string }
+            run_summary: { type: string }
+            trigger_id: { type: string }
+            draft: { oneOf: [{ $ref: "#/components/schemas/Artifact" }, { type: "null" }] }
+            draft_sha256: { type: string }
+            evidence_sha256: { type: string }
+            evidence_artifact_id: { type: string }
+            grounding_status: { type: string }
+            draft_generated: { type: boolean }
+            cited_sources: { type: string }
+            unknown_citations: { type: string }
+            ready: { type: boolean }
+            not_ready_reason: { type: string }
+            state: { type: string, enum: [not-ready, no-draft, awaiting-review, approved, rejected, revision-requested, approval-expired, destination-changed, publishing, publication-failed, published, superseded] }
+            idempotency_key: { type: string }
+            current_decision: { $ref: "#/components/schemas/ChangemakerReviewDecision" }
+            current_receipt: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
+          required: [run_status, draft, draft_generated, ready, state]
+    ChangemakerDraftReview:
+      type: object
+      properties:
+        thread_id: { type: string }
+        selected_version: { type: integer }
+        latest_version: { type: integer }
+        current_version: { type: integer }
+        published_version: { type: integer }
+        state: { type: string }
+        versions: { type: array, items: { $ref: "#/components/schemas/ChangemakerDraftVersionView" } }
+        decisions: { type: array, items: { $ref: "#/components/schemas/ChangemakerReviewDecision" } }
+        receipts:
+          type: array
+          description: Publication receipts; same shape as Devlog delivery receipts, `artifact_sha256` is the draft digest.
+          items: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
+        publication: { $ref: "#/components/schemas/ChangemakerPublicationStatus" }
+        access:
+          type: object
+          description: Advisory role of the caller; decisions, revisions, and publication still require the admin role.
+          properties:
+            role: { type: string, enum: [admin, read, unrestricted] }
+            can_write: { type: boolean }
+          required: [role, can_write]
+      required: [thread_id, selected_version, latest_version, current_version, state, versions, decisions, receipts, publication, access]
+    ChangemakerDecisionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        version: { type: integer, minimum: 1 }
+        draft_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        evidence_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        decision: { type: string, enum: [approved, rejected] }
+        notes: { type: string, maxLength: 2000 }
+      required: [version, draft_sha256, evidence_sha256, decision]
+    ChangemakerRevisionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        version: { type: integer, minimum: 1 }
+        draft_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        evidence_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        notes: { type: string, minLength: 1, maxLength: 2000 }
+        sources: { type: string, enum: [same, recollect], default: same }
+      required: [version, draft_sha256, evidence_sha256, notes]
+    ChangemakerRevisionResponse:
+      type: object
+      properties:
+        version: { $ref: "#/components/schemas/ChangemakerDraftVersion" }
+        decision: { $ref: "#/components/schemas/ChangemakerReviewDecision" }
+        run: { $ref: "#/components/schemas/Run" }
+      required: [version, decision, run]
+    ChangemakerPublicationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        approval_id: { type: string }
+        draft_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+      required: [approval_id, draft_sha256]
+    ChangemakerPublicationResponse:
+      type: object
+      properties:
+        outcome: { type: string, enum: [published, reconciled, already-published, failed] }
         receipt: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
       required: [outcome, receipt]
     RunDetail:

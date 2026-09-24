@@ -1,7 +1,7 @@
 {
   "contract_version": "switchyard.postgres-object-set.v1",
   "provider": "postgres",
-  "migration_head": "036_workflow_definition_active_version.sql",
+  "migration_head": "038_changemaker_review.sql",
   "migration_ledger": [
     "001_controlplane.sql",
     "002_trigger_scheduler.sql",
@@ -33,7 +33,8 @@
     "029_run_step_outputs.sql",
     "030_agent_profile_versions.sql",
     "035_devlog_delivery.sql",
-    "036_workflow_definition_active_version.sql"
+    "036_workflow_definition_active_version.sql",
+    "038_changemaker_review.sql"
   ],
   "required_objects": [
     "agent_profile_audit",
@@ -44,6 +45,9 @@
     "artifacts",
     "compatibility_observation_daily",
     "compatibility_observer_fence",
+    "changemaker_draft_versions",
+    "changemaker_publication_receipts",
+    "changemaker_review_decisions",
     "compatibility_usage_daily",
     "devlog_delivery_approvals",
     "devlog_delivery_receipts",
