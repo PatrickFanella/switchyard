@@ -128,7 +128,7 @@ export default function App() {
           ) : activeView === 'inbox' ? (
             <OpenPilotInboxPage onOpenRun={openRunCockpit} />
           ) : activeView === 'runs' ? (
-            <RunCockpitPage selectedRunID={selectedRunID} selectedRunDetail={data.selectedRunDetail} openPilotState={data.openPilotState} runActionID={data.runActionID} onRetryRun={data.retryRun} onCancelRun={data.cancelRun} onResumeOpenPilotState={data.resumeOpenPilotState} onStepAction={data.stepAction} onBackToOverview={() => setActiveView('overview')} onRefresh={data.refresh} liveRefresh={data.liveRefresh} />
+            <RunCockpitPage selectedRunID={selectedRunID} selectedRunDetail={data.selectedRunDetail} selectedRunMissing={data.missingRunID !== '' && data.missingRunID === selectedRunID} openPilotState={data.openPilotState} runActionID={data.runActionID} onRetryRun={data.retryRun} onCancelRun={data.cancelRun} onResumeOpenPilotState={data.resumeOpenPilotState} onStepAction={data.stepAction} onBackToOverview={() => setActiveView('overview')} onRefresh={data.refresh} liveRefresh={data.liveRefresh} />
           ) : activeView === 'queues' ? (
             <QueuesPage selectedRequestID={selectedRequestID} setSelectedRequestID={setSelectedRequestID} />
           ) : activeView === 'observability' ? <ObservabilityPage /> : <FeaturePage view={activeView} adapters={data.dashboard.adapters} agentProfiles={data.dashboard.agentProfiles} />}

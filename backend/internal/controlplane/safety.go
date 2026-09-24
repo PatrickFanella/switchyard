@@ -8,10 +8,13 @@ import (
 const OpenPilotAutonomyFull = "full"
 
 type OperatorSafetyStatus struct {
-	PublicURL        string   `json:"public_url,omitempty"`
-	ReverseProxyAuth bool     `json:"reverse_proxy_auth"`
-	OpenPilotMode    string   `json:"open_pilot_autonomy_mode"`
-	Warnings         []string `json:"warnings"`
+	PublicURL        string `json:"public_url,omitempty"`
+	ReverseProxyAuth bool   `json:"reverse_proxy_auth"`
+	OpenPilotMode    string `json:"open_pilot_autonomy_mode"`
+	// CorrelationTargets lists the sanitized external bases the dashboard may
+	// link run correlations to; empty values disable those links.
+	CorrelationTargets CorrelationTargets `json:"correlation_targets"`
+	Warnings           []string           `json:"warnings"`
 }
 
 func openPilotAutonomyMode() string {
@@ -41,6 +44,9 @@ func NewEnvOperatorSafetyStatus() OperatorSafetyStatus {
 	if status.OpenPilotMode == "" {
 		status.OpenPilotMode = "manual"
 	}
+	targets, targetWarnings := NewEnvCorrelationTargets()
+	status.CorrelationTargets = targets
+	status.Warnings = append(status.Warnings, targetWarnings...)
 	if openPilotAutonomyFullEnabled() && !status.ReverseProxyAuth {
 		status.Warnings = append(status.Warnings, "OPEN_PILOT_AUTONOMY_MODE=full requires reverse-proxy authentication before exposing Switchyard publicly; set SWITCHYARD_REVERSE_PROXY_AUTH=true after configuring the proxy")
 	}
