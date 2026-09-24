@@ -5,6 +5,7 @@ import {
   loadDashboardSnapshot,
   loadOpenPilotState,
   loadRunDetail,
+  loadRuns,
   messageFrom,
   openPilotRunInputs,
   resumeOpenPilotState,
@@ -14,6 +15,7 @@ import {
   stepAction,
   toggleTrigger,
 } from '../api';
+import { isTerminalRunStatus, useLiveRefresh, type LiveRefreshTicket } from './useLiveRefresh';
 
 type UseDashboardDataArgs = {
   activeView: ViewID;
@@ -62,7 +64,8 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
     return ok;
   }, []);
 
-  const loadSelectedRun = useCallback(async (runID: string) => {
+  const loadSelectedRun = useCallback(async (runID: string, ticket?: LiveRefreshTicket) => {
+    const current = () => !ticket || ticket.isCurrent();
     setOpenPilotState(null);
     if (!runID) {
       setSelectedRunDetail(null);
@@ -73,6 +76,9 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
 
     try {
       const detail = await loadRunDetail(runID);
+      if (!current()) {
+        return;
+      }
       setSelectedRunDetail(detail);
 
       if (detail.run.workflow_id !== 'open-pilot') {
@@ -87,16 +93,24 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
       }
 
       try {
-        setOpenPilotState(await loadOpenPilotState(inputs.repo, inputs.issue));
+        const state = await loadOpenPilotState(inputs.repo, inputs.issue);
+        if (current()) {
+          setOpenPilotState(state);
+        }
       } catch (caught) {
         if (caught instanceof APIError && caught.status === 404) {
-          setOpenPilotState(null);
+          if (current()) {
+            setOpenPilotState(null);
+          }
           return;
         }
 
         throw caught;
       }
     } catch (caught) {
+      if (!current()) {
+        return;
+      }
       if (caught instanceof APIError && caught.status === 404) {
         setSelectedRunDetail(null);
         setOpenPilotState(null);
@@ -107,12 +121,49 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
     }
   }, []);
 
+  // Bounded live refresh of the selected run. Polls only while the run can still
+  // change and the tab is visible. Poll results never touch dashboardError or
+  // action state, and stale responses are dropped through the shared ticket.
+  const pollSelectedRun = useCallback(async (ticket: LiveRefreshTicket) => {
+    if (!selectedRunID) {
+      return;
+    }
+    const [detail, runs] = await Promise.all([loadRunDetail(selectedRunID), loadRuns()]);
+    let state: OpenPilotStateResponse | null = null;
+    if (detail.run.workflow_id === 'open-pilot') {
+      const inputs = openPilotRunInputs(detail);
+      if (inputs) {
+        try {
+          state = await loadOpenPilotState(inputs.repo, inputs.issue);
+        } catch (caught) {
+          if (!(caught instanceof APIError && caught.status === 404)) {
+            throw caught;
+          }
+        }
+      }
+    }
+    if (!ticket.isCurrent()) {
+      return;
+    }
+    setSelectedRunDetail(detail);
+    setOpenPilotState(state);
+    setDashboard((previous) => ({ ...previous, runs }));
+  }, [selectedRunID]);
+
+  const liveMode = !selectedRunID ? 'off' : !selectedRunDetail || isTerminalRunStatus(selectedRunDetail.run.status) ? 'idle' : 'active';
+  const live = useLiveRefresh({ key: selectedRunID, mode: liveMode, load: pollSelectedRun });
+  const { claimTicket, markUpdated } = live;
+
   const reloadAll = useCallback(async (runID: string) => {
+    const ticket = claimTicket();
     const dashboardLoaded = await loadDashboard('refresh');
     if (dashboardLoaded) {
-      await loadSelectedRun(runID);
+      await loadSelectedRun(runID, ticket);
+      if (ticket.isCurrent()) {
+        markUpdated();
+      }
     }
-  }, [loadDashboard, loadSelectedRun]);
+  }, [claimTicket, loadDashboard, loadSelectedRun, markUpdated]);
 
   useEffect(() => {
     void loadDashboard('initial');
@@ -125,8 +176,13 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
   }, [activeView, dashboard.runs, selectedRunID, setSelectedRunID]);
 
   useEffect(() => {
-    void loadSelectedRun(selectedRunID);
-  }, [loadSelectedRun, selectedRunID]);
+    const ticket = claimTicket();
+    void loadSelectedRun(selectedRunID, ticket).then(() => {
+      if (ticket.isCurrent() && selectedRunID) {
+        markUpdated();
+      }
+    });
+  }, [claimTicket, loadSelectedRun, markUpdated, selectedRunID]);
 
   const refresh = useCallback(async () => {
     await reloadAll(selectedRunID);
@@ -251,5 +307,6 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
     runningTriggerID,
     updatingTriggerID,
     runActionID,
+    liveRefresh: live,
   };
 }
