@@ -25,6 +25,7 @@ type API struct {
 	compatBroker          *llamaLineCompatTracker
 	openCode              OpenCodeExecutorStatusProvider
 	openPilotRepositories OpenPilotRepositoryStatusProvider
+	executorSessionProber ExecutorSessionProber
 	openPilotIssues       GiteaIssueReader
 	openPilotPollRepos    []string
 	canceler              CancelDispatcher
@@ -38,6 +39,7 @@ type API struct {
 }
 
 type controlPlaneActorContextKey struct{}
+type controlPlaneRoleContextKey struct{}
 
 func NewAPI(store Store, runner *Runner) *API {
 	service := NewModelService(store, NewEnvModelBroker(), ModelServiceOptions{})
@@ -54,7 +56,7 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), executorSessionProber: NewEnvExecutorSessionProber(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings()}
 }
 
 // SetOpenPilotIssueReader replaces the Gitea issue reader used by the read-only
@@ -256,7 +258,8 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "admin authorization required")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), controlPlaneActorContextKey{}, actor)))
+		ctx := context.WithValue(r.Context(), controlPlaneActorContextKey{}, actor)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, controlPlaneRoleContextKey{}, role)))
 	})
 }
 
