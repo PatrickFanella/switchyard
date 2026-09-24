@@ -201,3 +201,4 @@ production evidence is recorded in `docs/releases/v0.1.2-qualification.md`.
 - Model ingress: `docs/runbooks/native-model-broker-cutover.md`
 - Client compatibility: `docs/reference/client-compatibility.md`
 - Evidence search: `docs/reference/evidence-search.md`
+- Runtime configuration boundary: `docs/reference/runtime-configuration.md`
