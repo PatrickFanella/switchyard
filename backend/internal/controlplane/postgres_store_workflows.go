@@ -8,7 +8,7 @@ import (
 )
 
 func (s *PostgresStore) UpsertWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
-	definition, err := normalizeWorkflowDefinition(definition)
+	definition, err := normalizeWorkflowDefinition(definition, NewStoreBackedAgentProfileRegistry(s, DefaultAgentProfileRegistry()))
 	if err != nil {
 		return WorkflowDefinition{}, err
 	}

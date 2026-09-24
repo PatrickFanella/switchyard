@@ -271,6 +271,12 @@ func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, i
 	} else {
 		out.Summary = "Completed internal step"
 	}
+	out.Outputs = map[string]string{"summary": out.Summary}
+	for key, value := range inputs {
+		if name, ok := strings.CutPrefix(key, internalStepOutputInputPrefix); ok && name != "" {
+			out.Outputs[name] = value
+		}
+	}
 	artifactName := strings.TrimSpace(inputs["artifact_name"])
 	if artifactName != "" {
 		artifactKind := firstNonEmpty(inputs["artifact_kind"], "json")
@@ -296,9 +302,16 @@ func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, i
 		}
 		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: inlineArtifactURI(contentType, string(artifactBody))})
 	}
+	if artifactName != "" {
+		out.Outputs["artifact_name"] = artifactName
+	}
 	state["summary"] = out.Summary
 	return out
 }
+
+// internalStepOutputInputPrefix marks internal-step inputs that publish an
+// output: input "output.<name>" becomes output <name> after template rendering.
+const internalStepOutputInputPrefix = "output."
 
 func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, run Run, step PipelineStep, inputs map[string]string, state map[string]any) (PipelineStepExecution, error) {
 	if g.env == nil || g.env.modelExecutor == nil {
@@ -326,6 +339,13 @@ func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, ru
 		Artifacts:      []CreateArtifactInput{{Name: step.ID + ".md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", response.Content)}},
 		CorrelationIDs: response.CorrelationIDs,
 		Inputs:         map[string]string{"model": model, "prompt": prompt},
+		Outputs: map[string]string{
+			"content":        response.Content,
+			"content_bytes":  strconv.Itoa(len(response.Content)),
+			"content_sha256": stepOutputDigest(response.Content),
+			"model":          model,
+			"artifact_name":  step.ID + ".md",
+		},
 	}
 	state["summary"] = out.Summary
 	return out, nil
@@ -351,6 +371,14 @@ func (g genericWorkflowExecutor) executeGenericCommandStep(ctx context.Context, 
 	state["summary"] = out.Summary
 	if err != nil {
 		return out, err
+	}
+	out.Outputs = map[string]string{
+		"output":        result.Output,
+		"output_bytes":  strconv.Itoa(len(result.Output)),
+		"output_sha256": stepOutputDigest(result.Output),
+		"command":       command,
+		"executed":      strconv.FormatBool(result.Executed),
+		"policy_reason": result.Decision.Reason,
 	}
 	return out, nil
 }
@@ -416,7 +444,19 @@ func (g genericWorkflowExecutor) executeGenericHTTPStep(ctx context.Context, ste
 	if len(uri) > artifactMaxBytes() {
 		return PipelineStepExecution{}, fmt.Errorf("encoded http response exceeds artifact limit")
 	}
-	return PipelineStepExecution{Summary: fmt.Sprintf("HTTP %s returned %d", method, response.StatusCode), Inputs: map[string]string{"url": target.Redacted(), "method": method, "status": strconv.Itoa(response.StatusCode)}, Artifacts: []CreateArtifactInput{{Name: artifactName, Kind: artifactKind, URI: uri}}}, nil
+	outputs := map[string]string{
+		"status":        strconv.Itoa(response.StatusCode),
+		"content_type":  response.Header.Get("Content-Type"),
+		"body_bytes":    strconv.Itoa(len(responseBody)),
+		"body_sha256":   stepOutputDigest(string(responseBody)),
+		"url":           target.Redacted(),
+		"method":        method,
+		"artifact_name": artifactName,
+	}
+	if body, ok := textStepOutput(responseBody); ok {
+		outputs["body"] = body
+	}
+	return PipelineStepExecution{Summary: fmt.Sprintf("HTTP %s returned %d", method, response.StatusCode), Inputs: map[string]string{"url": target.Redacted(), "method": method, "status": strconv.Itoa(response.StatusCode)}, Artifacts: []CreateArtifactInput{{Name: artifactName, Kind: artifactKind, URI: uri}}, Outputs: outputs}, nil
 }
 
 func httpExecutorHostAllowed(host string) bool {
