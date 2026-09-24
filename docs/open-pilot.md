@@ -173,6 +173,74 @@ registry warns with `runtime_fingerprint_stale`. Other codes are
 `runtime_registry_unavailable`. The dry run performs no cloning, filesystem,
 network, or admission changes.
 
+## Issue inbox
+
+`GET /api/open-pilot/inbox` on the authenticated control listener lists intake
+candidates before anything is dispatched. The read token is sufficient, and the
+route is absent from model ingress. It is read-only: listing never claims an
+issue, creates a run, or writes to Gitea.
+
+The inbox checks the admission gate first. For each registered repository the
+gate currently admits, it lists open issues that carry every
+`OPEN_PILOT_REQUIRED_LABELS` label and, when `OPEN_PILOT_ASSIGNEE` is set,
+open issues assigned to that account. It then adds durable claims stored for
+those repositories. Repositories the gate rejects (disabled activation, a
+closed or stale rollout, a legacy-singleton binding) are reported with an
+`admission_code` and are not queried. `polled` shows whether
+`OPEN_PILOT_POLL_REPOS` includes the repository; only polled repositories are
+picked up automatically.
+
+Each issue reports:
+
+- `pickup`: `assigned`, `labels`, `both`, or `none`, with `missing_labels`.
+- `spec_ready`: the body mentions acceptance criteria and test instructions,
+  the same rule as `OPEN_PILOT_REQUIRE_ISSUE_SPEC`. The check fails only when
+  that setting is `true`.
+- `test_command`: the issue's Test Command, checked against the argv allowlist
+  without executing it.
+- `claim`: the durable lifecycle phase, run ID and status, whether a queued or
+  running run owns the issue, next action, last step, last error, failing gate,
+  branch, pull request, and repair attempts.
+- `links`: the Gitea issue and pull request URLs and the Switchyard run, state,
+  and readiness API paths.
+- `eligible`, `action` (`dispatch`, `resume`, or `none`), and `reason_codes`
+  (the codes of every failing entry in `checks[]`).
+
+Inbox reason codes, in addition to the readiness codes `issue_run_active`,
+`issue_affinity_stale`, `command_denied`, `rollout_proof_target_excluded`,
+`repository_unregistered`, and `gate_unavailable`:
+
+| Code | Meaning |
+|---|---|
+| `labels_missing` | The issue lacks a queue label and is not assigned to the bot. |
+| `issue_not_open` | Gitea reports the issue as not open. |
+| `issue_spec_missing` | Specification is required and the body lacks acceptance criteria or test instructions (a warning when not required). |
+| `issue_claimed` | A durable lifecycle already owns the issue; resume it instead of dispatching again. |
+| `issue_lifecycle_complete` | The lifecycle closed the issue. |
+| `upstream_unavailable` | Gitea listing failed; eligibility is unknown. |
+| `upstream_not_listed` | A durable claim exists but Gitea no longer lists the issue with queue labels or bot assignment, or Gitea was not queried. |
+
+`upstream` is `available` when every admitted repository listed, `partial` or
+`unavailable` when some or all listings failed, and `not_queried` when no
+repository was admitted or no Gitea reader is configured. An empty `issues`
+array with `upstream=available` is an empty queue; with any other value, the
+queue may be incomplete. Durable claims are still shown from the store when
+Gitea is down.
+
+Query parameters are `repo` (slug or alias), `eligibility` (`all`, `eligible`,
+`ineligible`, `claimed`), `phase`, `pickup` (`assigned`, `labels`, `none`),
+`q` (substring of repo#issue, title, labels, or reason codes), `limit` (1-100,
+default 25), and `cursor` (the previous page's `next_cursor`). Issues are
+ordered by repository slug and issue number. A malformed query returns `400`.
+
+The dashboard's Open Pilot inbox view (`#/inbox`) renders this report. Its
+filters are stored in the URL, for example
+`#/inbox?repo=owner/repo&eligibility=eligible`, and `#/inbox/OWNER/REPO/42`
+selects one issue. Dispatch calls `POST /api/workflows/open-pilot/run` and
+resume calls `POST /api/open-pilot/state/resume`. Both apply the admission
+gate, the atomic `(repo, issue)` claim, and admin authorization, so the inbox
+adds no new path around them.
+
 ## Queue an issue by assignment
 
 Set `OPEN_PILOT_ASSIGNEE=open-pilot` in the runtime configuration to enable
