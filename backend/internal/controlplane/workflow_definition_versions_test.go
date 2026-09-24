@@ -75,7 +75,6 @@ func TestWorkflowDefinitionVersionAuthorization(t *testing.T) {
 	}
 }
 
-
 // versionContractDefinition is a one-step internal pipeline whose step name
 // and published output identify the version that produced it.
 func versionContractDefinition(id, marker, executor string) WorkflowDefinition {
