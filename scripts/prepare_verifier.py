@@ -1,18 +1,83 @@
 #!/usr/bin/env python3
-"""Build an offline verifier image from reviewed, committed Go/Node dependency inputs."""
+"""Build an offline verifier image from reviewed, committed Go/Node dependency inputs.
+
+The supported toolchains, bound dependency inputs, and commands come from
+backend/cmd/verifier/profiles.json, which the verifier binary embeds. Network access
+happens only during this operator-owned image build, never inside verification.
+"""
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUTS = ("backend/go.mod", "backend/go.sum", "web/package.json", "web/pnpm-lock.yaml", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "web/.npmrc", "go.work", "go.work.sum")
+PROFILES_PATH = ROOT / "backend/cmd/verifier/profiles.json"
+PROFILE = "go1.26.6-node24-pnpm10.33.0-v2"
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
+
+class PreparationError(ValueError):
+    pass
+
+
+def load_profile(name: str = PROFILE, path: Path = PROFILES_PATH) -> dict:
+    contract = json.loads(path.read_text())
+    if contract.get("version") != 1:
+        raise PreparationError("unsupported verification profile contract")
+    profile = contract.get("profiles", {}).get(name)
+    if profile is None:
+        raise PreparationError("unknown verification profile: " + name)
+    return profile
+
+
+def committed_inputs(source: Path, revision: str, profile: dict) -> tuple[dict[str, str | None], dict[str, bytes]]:
+    """Hash every bound input at the exact revision; absent inputs are recorded as None."""
+    files: dict[str, str | None] = {}
+    contents: dict[str, bytes] = {}
+    for name in profile["inputs"]:
+        result = subprocess.run(["git", "-C", str(source), "show", revision + ":" + name], capture_output=True)
+        if result.returncode:
+            files[name] = None
+            continue
+        if name not in profile["prepared_inputs"]:
+            raise PreparationError("unsupported dependency configuration: " + name)
+        files[name] = hashlib.sha256(result.stdout).hexdigest()
+        contents[name] = result.stdout
+    package = contents.get("web/package.json")
+    if package is not None:
+        pinned = "pnpm@" + profile["toolchains"]["pnpm"]
+        manager = json.loads(package).get("packageManager", pinned)
+        if manager.split("+")[0] != pinned:
+            raise PreparationError("this preparation profile requires " + pinned)
+    return files, contents
+
+
+def build_manifest(revision: str, files: dict[str, str | None], verifier_base: str, profile_name: str = PROFILE, profile: dict | None = None) -> dict:
+    profile = profile or load_profile(profile_name)
+    return {
+        "version": profile["manifest_version"],
+        "base_sha": revision,
+        "files": files,
+        "commands": profile["commands"],
+        "verifier_base": verifier_base,
+        "profile": profile_name,
+    }
+
+
+def resolve_revision(source: Path, revision: str) -> str:
+    resolved = subprocess.check_output(["git", "-C", str(source), "rev-parse", "--verify", revision + "^{commit}"], text=True).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise PreparationError("invalid source revision")
+    return resolved
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--source", type=Path, required=True)
     p.add_argument("--revision", required=True)
     p.add_argument("--verifier-image", required=True)
@@ -20,9 +85,12 @@ def main():
     p.add_argument("--record", type=Path, required=True)
     args = p.parse_args()
     docker = str(ROOT / "deploy/docker-local")
-    revision = subprocess.check_output(["git", "-C", str(args.source), "rev-parse", "--verify", args.revision + "^{commit}"], text=True).strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", revision):
-        p.error("invalid source revision")
+    try:
+        profile = load_profile()
+        revision = resolve_revision(args.source, args.revision)
+        files, contents = committed_inputs(args.source, revision, profile)
+    except PreparationError as error:
+        p.error(str(error))
     base = json.loads(subprocess.check_output([docker, "image", "inspect", args.verifier_image]))[0]["Id"]
     # Pin the local build input by content and use an unambiguous local tag for FROM.
     base_tag = "switchyard-verifier-base:" + base.split(":")[1]
@@ -30,30 +98,19 @@ def main():
     with tempfile.TemporaryDirectory(prefix="switchyard-verifier-build-") as directory:
         root = Path(directory)
         (root / "inputs").mkdir()
-        files = {}
-        for name in INPUTS:
-            result = subprocess.run(["git", "-C", str(args.source), "show", revision + ":" + name], capture_output=True)
-            if result.returncode:
-                files[name] = None
-                continue
-            if name not in INPUTS[:4]:
-                p.error("unsupported dependency configuration: " + name)
-            files[name] = hashlib.sha256(result.stdout).hexdigest()
+        for name, data in contents.items():
             target = root / "inputs" / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(result.stdout)
-        package = root / "inputs/web/package.json"
-        if package.exists():
-            manager = json.loads(package.read_text()).get("packageManager", "pnpm@10.33.0")
-            if manager.split("+")[0] != "pnpm@10.33.0":
-                p.error("this preparation profile requires pnpm@10.33.0")
-        manifest = {"version": 2, "base_sha": revision, "files": files, "commands": [["make", "verify"]], "verifier_base": base, "profile": "go1.26.6-node24-pnpm10.33.0-v2"}
+            target.write_bytes(data)
+        manifest = build_manifest(revision, files, base, PROFILE, profile)
         (root / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
         (root / "Dockerfile").write_bytes((ROOT / "services/verifier/Dockerfile").read_bytes())
         subprocess.run([docker, "build", "--build-arg", "VERIFIER_BASE=" + base_tag, "-t", args.tag, str(root)], check=True)
         image = json.loads(subprocess.check_output([docker, "image", "inspect", args.tag]))[0]["Id"]
         args.record.write_text(json.dumps({"image": image, "tag": args.tag, "manifest": manifest}, indent=2) + "\n")
         print("Prepared immutable verifier image: " + image)
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
