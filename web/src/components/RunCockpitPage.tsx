@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { canResumeOpenPilot, artifactLabel, runDurationMS, stepDurationMS, retryableStepStatuses, cancelableStepStatuses } from './runCockpit';
 import type { OpenPilotStateResponse, RunDetail, RunStep } from '../types';
 import { formatTime, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong, HudSection, statusClasses } from './hud';
+import { LiveRefreshIndicator } from './LiveRefreshIndicator';
+import type { LiveRefreshState } from '../hooks/useLiveRefresh';
 import { ArtifactPreview } from './ArtifactPreview';
 
 type RunCockpitPageProps = {
@@ -15,6 +17,7 @@ type RunCockpitPageProps = {
   onStepAction: (runID: string, stepID: string, action: 'retry' | 'cancel') => void;
   onBackToOverview: () => void;
   onRefresh: () => void;
+  liveRefresh?: LiveRefreshState;
 };
 
 const tracePriority = new Map([
@@ -118,6 +121,7 @@ export function RunCockpitPage({
   onStepAction,
   onBackToOverview,
   onRefresh,
+  liveRefresh,
 }: RunCockpitPageProps) {
   const [stepStatus, setStepStatus] = useState('all');
   const [stepExecutor, setStepExecutor] = useState('all');
@@ -196,6 +200,7 @@ export function RunCockpitPage({
         title="Run cockpit"
         note="Deep run inspection, Open Pilot lifecycle gates, evidence, and operator actions."
         actions={[
+          liveRefresh ? <LiveRefreshIndicator key="live-refresh" live={liveRefresh} /> : null,
           <button
             key="overview"
             className="hud-chip border-[hsl(var(--border))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--muted))] transition hover:border-[hsl(var(--signal))] hover:text-[hsl(var(--signal))]"

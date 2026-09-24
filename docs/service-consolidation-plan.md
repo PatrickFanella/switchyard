@@ -1,5 +1,6 @@
 ---
 title: Service Consolidation Plan
+status: historical (superseded by ADR 0003)
 created: 2026-06-11
 tags:
   - architecture

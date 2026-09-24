@@ -14,6 +14,22 @@ REFERENCE_DEFINITION = re.compile(r"^[ \t]{0,3}\[([^]]+)\]:[ \t]*(<[^>]+>|\S+)",
 STATUS_ROW = re.compile(r"^\| ([^|]+?) \| ([^|]+?) \|", re.MULTILINE)
 SEMVER_TAG = re.compile(r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+ISSUE_REFERENCE = re.compile(r"(?<![\w/#])#(\d+)\b")
+ISSUE_ROW = re.compile(r"^\| #(\d+) \| ([^|]+?) \| ([^|]+?) \| ([^|]*?) \|$", re.MULTILINE)
+ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+ISSUE_STATES = {"open", "closed"}
+CURRENT_STATUS_DOCS = ("docs/status.md", "docs/roadmap.md", "docs/ui-feature-migration.md")
+OPEN_WORK_SECTIONS = {
+    "docs/status.md": ("## Active release blockers",),
+    "docs/roadmap.md": ("## Open work",),
+}
+HISTORICAL_DOC_GLOBS = (
+    "docs/superpowers/plans/*.md",
+    "docs/*plan*.md",
+    "docs/*-stories.md",
+    "docs/*-report-*.md",
+)
+FIXTURE_DOC_GLOBS = ("docs/*proof*.md", "docs/*smoke*.md", "docs/*fixture*.md")
 CAPABILITY_STATES = {
     "implemented",
     "test-verified",
@@ -137,9 +153,13 @@ def validate_capabilities(root: Path) -> None:
     if set(states) != CAPABILITY_STATES or len(states) != len(CAPABILITY_STATES):
         raise ContractError("docs/capabilities-v1.json: states do not match the fixed capability enum")
     status = read_text(root / "docs/status.md", "docs/status.md")
+    heading = "## Capability status"
+    if status.count(heading) > 1:
+        raise ContractError("docs/status.md: the Capability status section must appear at most once")
+    table_source = status.split(heading, 1)[1].split("\n## ", 1)[0] if heading in status else status
     rows = {
         name.strip(): state.strip()
-        for name, state in STATUS_ROW.findall(status)
+        for name, state in STATUS_ROW.findall(table_source)
         if name not in {"Capability", "---"}
     }
     expected = {}
@@ -201,6 +221,167 @@ def validate_release_pointer(root: Path) -> None:
     revisions = re.findall(r"^- Revision: `([^`]*)`$", record, re.MULTILINE)
     if releases != [tag] or revisions != [sha]:
         raise ContractError("docs/status.md: deployed pointer does not match its qualification record")
+
+
+def semver_key(tag: str) -> tuple:
+    match = re.fullmatch(
+        r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", tag
+    )
+    if match is None:
+        raise ContractError(f"release tag is not semver: {tag}")
+    major, minor, patch, prerelease = match.groups()
+    # A pre-release sorts below the final release with the same core version.
+    return (int(major), int(minor), int(patch), prerelease is None, prerelease or "")
+
+
+def repository_tags(root: Path) -> set[str] | None:
+    _, git_context = source_files(root)
+    if not git_context:
+        return None
+    result = subprocess.run(
+        ["git", "tag", "--list"], cwd=root, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise ContractError("release pointer currency check could not list tags")
+    return {line.strip() for line in result.stdout.splitlines() if SEMVER_TAG.fullmatch(line.strip())}
+
+
+def validate_release_pointer_currency(root: Path) -> None:
+    """Reject a deployed pointer that is older than a qualification record or
+    that is silently overtaken by newer release tags without one."""
+    label = "docs/status.md"
+    status = read_text(root / label, label)
+    tags = re.findall(r"^- Current deployed release: `([^`]*)`$", status, re.MULTILINE)
+    if len(tags) != 1 or not SEMVER_TAG.fullmatch(tags[0]):
+        raise ContractError(f"{label}: exactly one semver deployed release is required")
+    pointer = semver_key(tags[0])
+    records = {}
+    for record in (root / "docs/releases").glob("*-qualification.md"):
+        tag = record.name[: -len("-qualification.md")]
+        if SEMVER_TAG.fullmatch(tag):
+            records[tag] = semver_key(tag)
+    newer_records = sorted(tag for tag, key in records.items() if key > pointer)
+    if newer_records:
+        raise ContractError(
+            f"{label}: deployed pointer is older than qualification record(s): {', '.join(newer_records)}"
+        )
+    declared_lines = re.findall(
+        r"^- Release tags without a qualification record: (.*)$", status, re.MULTILINE
+    )
+    if len(declared_lines) > 1:
+        raise ContractError(f"{label}: declare release tags without a qualification record exactly once")
+    declared = set()
+    if declared_lines and declared_lines[0].strip() != "none":
+        declared = set(re.findall(r"`([^`]+)`", declared_lines[0]))
+        for tag in declared:
+            if not SEMVER_TAG.fullmatch(tag):
+                raise ContractError(f"{label}: declared unqualified release tag is not semver: {tag}")
+            if tag in records:
+                raise ContractError(f"{label}: declared unqualified release tag has a qualification record: {tag}")
+            if semver_key(tag) <= pointer:
+                raise ContractError(f"{label}: declared unqualified release tag is not newer than the deployed pointer: {tag}")
+    available = repository_tags(root)
+    if available is None:
+        return
+    newer_unqualified = {tag for tag in available if semver_key(tag) > pointer and tag not in records}
+    undeclared = sorted(newer_unqualified - declared, key=semver_key)
+    if undeclared:
+        raise ContractError(
+            f"{label}: release tag(s) newer than the deployed pointer lack a qualification record and are not declared: {', '.join(undeclared)}"
+        )
+    unknown = sorted(declared - available, key=semver_key)
+    if unknown:
+        raise ContractError(f"{label}: declared unqualified release tag(s) do not exist: {', '.join(unknown)}")
+
+
+def tracked_issues(status: str) -> dict[str, str]:
+    label = "docs/status.md"
+    if status.count("## Tracked issues") != 1:
+        raise ContractError(f"{label}: the Tracked issues section must appear exactly once")
+    section = status.split("## Tracked issues", 1)[1].split("\n## ", 1)[0]
+    issues = {}
+    for number, state, observed, _role in ISSUE_ROW.findall(section):
+        state = state.strip()
+        if number in issues:
+            raise ContractError(f"{label}: tracked issue #{number} is listed more than once")
+        if state not in ISSUE_STATES:
+            raise ContractError(f"{label}: tracked issue #{number} state must be open or closed")
+        if not ISO_DATE.fullmatch(observed.strip()):
+            raise ContractError(f"{label}: tracked issue #{number} needs an ISO observation date")
+        issues[number] = state
+    if not issues:
+        raise ContractError(f"{label}: the Tracked issues table is empty")
+    return issues
+
+
+def section_items(text: str, heading: str) -> list[str]:
+    if text.count(heading) != 1:
+        raise ContractError(f"required section must appear exactly once: {heading}")
+    body = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    items: list[str] = []
+    for line in body.splitlines():
+        if re.match(r"^(\d+\.|-|\*) ", line):
+            items.append(line)
+        elif items and line.startswith((" ", "\t")):
+            items[-1] += "\n" + line
+    return items
+
+
+def validate_issue_references(root: Path) -> None:
+    """Every issue cited by a current-status document must be tracked with an
+    observed state, and open-work items may not cite closed issues as if
+    they were still open."""
+    status = read_text(root / "docs/status.md", "docs/status.md")
+    issues = tracked_issues(status)
+    for relative in CURRENT_STATUS_DOCS:
+        text = read_text(root / relative, relative)
+        cited = set(ISSUE_REFERENCE.findall(text))
+        untracked = sorted(cited - set(issues), key=int)
+        if untracked:
+            raise ContractError(
+                f"{relative}: cites issue(s) missing from the docs/status.md Tracked issues table: "
+                + ", ".join(f"#{number}" for number in untracked)
+            )
+        for heading in OPEN_WORK_SECTIONS.get(relative, ()):
+            for item in section_items(text, heading):
+                closed = sorted(
+                    {number for number in ISSUE_REFERENCE.findall(item) if issues[number] == "closed"},
+                    key=int,
+                )
+                if closed and "closed" not in item.lower():
+                    raise ContractError(
+                        f"{relative}: open work item under {heading!r} cites closed issue(s) without marking them closed: "
+                        + ", ".join(f"#{number}" for number in closed)
+                    )
+
+
+def historical_documents(root: Path) -> list[Path]:
+    found = []
+    for pattern in HISTORICAL_DOC_GLOBS:
+        found.extend(root.glob(pattern))
+    return sorted({path for path in found if path.is_file()})
+
+
+def validate_historical_markers(root: Path) -> None:
+    for document in historical_documents(root):
+        opening = "\n".join(document.read_text(encoding="utf-8").splitlines()[:8]).lower()
+        if "historical" not in opening and "completed plan" not in opening:
+            raise ContractError(
+                f"{document.relative_to(root)}: plan must declare historical/completed status near its title"
+            )
+
+
+def validate_fixture_inventory(root: Path) -> None:
+    """Open Pilot proof stubs and smoke fixtures under docs/ must be classified
+    in docs/status.md so a stub cannot pass as qualification evidence."""
+    status = read_text(root / "docs/status.md", "docs/status.md")
+    fixtures = set()
+    for pattern in FIXTURE_DOC_GLOBS:
+        fixtures.update(path for path in root.glob(pattern) if path.is_file())
+    for fixture in sorted(fixtures):
+        relative = fixture.relative_to(root).as_posix()
+        if f"`{relative}`" not in status:
+            raise ContractError(f"docs/status.md: fixture or proof stub is not classified: {relative}")
 
 
 def tracked_markdown(root: Path) -> list[Path]:
@@ -401,6 +582,10 @@ def main() -> None:
     checks = (
         validate_capabilities,
         validate_release_pointer,
+        validate_release_pointer_currency,
+        validate_issue_references,
+        validate_historical_markers,
+        validate_fixture_inventory,
         validate_markdown_links,
         validate_codemap,
         validate_current_docs,

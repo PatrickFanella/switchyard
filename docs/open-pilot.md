@@ -97,6 +97,82 @@ expired proof is also treated as closed by admission and claims. Promotion to
 singleton binary rollback, close the gate and require the reported active,
 resumable, and cancellable registry-bound counts all to be zero.
 
+## Readiness preflight and onboarding
+
+`GET /api/open-pilot/readiness` on the authenticated control listener explains
+why a repository or issue cannot run before an operator dispatches it. The
+read token is sufficient. The route is absent from model ingress. Query
+parameters are optional: `repo` (canonical slug or alias), `issue` (requires
+`repo`), and `test_command` (evaluated against the argv allowlist without
+executing it). The response is always `200` with `ready=false` and structured
+codes for configuration or prerequisite failures; only a malformed query is
+rejected with `400`.
+
+The report composes, in order: the admission gate, activation mode, repository
+registration and executor generation, the durable rollout gate and its
+fingerprint, the immutable execution bundle, OpenCode and verifier health
+(probed with a 3 second bound through the existing repository status
+provider), the durable issue state and affinity, the command allowlist
+decision, and the effective write, push, commit, CI, merge, and close gates.
+Each entry in `checks[]` carries a stable `code`, a `status` of `pass`, `warn`,
+`fail`, or `skip`, a message, and remediation text. `blockers[]` lists every
+failing code. `onboarding[]` is the checklist an operator works through to
+bring a repository to production readiness, with `done` computed from the same
+evidence. The response never contains passwords, password file paths, host
+paths, or the raw registry document; a test asserts this against fixture
+secrets.
+
+Lifecycle gate warnings (`gitea_write_disabled`, `git_push_disabled`,
+`auto_commit_disabled`, `ci_checks_disabled`, `merge_disabled`,
+`close_issue_disabled`) report effective values and do not block readiness:
+a disabled gate is a deliberate policy and the run stops at that stage for a
+human. Readiness reads policy; it never relaxes admission, affinity, executor
+isolation, the command allowlist, listener boundaries, or CI/merge gates.
+
+Failing codes and remediation:
+
+| Code | Meaning | Remediation |
+|---|---|---|
+| `gate_unavailable` | The admission gate could not be constructed from the runtime configuration. | Fix the configuration named in the message (activation mode, manifest, source origin, singleton binding) and restart the API. |
+| `execution_bundles_unavailable` | A registry entry's password file, endpoint, or identity prevented bundle construction. | Repair that entry in the operator registry, re-render the topology, restart the API. |
+| `activation_disabled` | `SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE=disabled` admits no work. | Set `durable` after topology health checks pass, then open the rollout gate. |
+| `repository_unregistered` | The repository matches no canonical slug or alias. | Add its exact Gitea origin slug to the operator registry, run `scripts/prepare_open_pilot_registry.py`, re-render, restart. |
+| `issue_invalid` | The issue is not a positive decimal number. | Provide the number without a leading `#`. |
+| `repository_not_bound` | Legacy singleton runtime is bound to a different repository. | Dispatch against the bound repository or activate durable mode. |
+| `rollout_store_unavailable` | The durable rollout status or issue state could not be read. | Check PostgreSQL connectivity and the rollout migration. |
+| `rollout_not_configured` | The durable gate has never been configured. | `POST /api/open-pilot/rollout` with the current `registry_fingerprint`. |
+| `rollout_fingerprint_stale` | The gate was configured for a different registry fingerprint than the loaded manifest. | Reconfigure the gate with the fingerprint this endpoint reports. |
+| `rollout_closed` | The gate is closed; the message includes the close reason. | Inspect the reason, then start a bounded proof or promote to allow. |
+| `rollout_proof_expired` | The bounded proof expired. | Start a new proof (24 hours maximum) or promote after both proof targets closed. |
+| `rollout_proof_target_excluded` | Proof mode does not list this repository/issue/generation. | Dispatch a listed proof target or promote the gate. |
+| `execution_bundle_missing` | No bundle is loaded for the repository's executor generation. | Re-render the topology for the current generation and restart the API. |
+| `executor_status_unavailable` | Health could not be projected for the target. | Resolve the gate and bundle errors above; re-render and restart. |
+| `opencode_unreachable` | The repository OpenCode sidecar failed its session probe. | Start or repair the repository's OpenCode service and private password file. |
+| `verifier_unreachable` | The repository verifier failed `/healthz`. | Start or repair the verifier service and prepared image (`scripts/prepare_verifier.py`). |
+| `command_denied` | The verify step would reject `test_command`; the message carries the policy reason. | Use a plain argv command in `OPEN_PILOT_ALLOWED_COMMANDS` with `OPEN_PILOT_COMMAND_POLICY_MODE=allow`. |
+| `issue_affinity_stale` | The durable state is bound to a different repository or executor generation than the registry now resolves. | Finish or pause the issue on its original generation; review through `GET /api/open-pilot/repository-audit`. |
+| `issue_run_active` | A queued or running run already owns the issue. | Wait for it to finish or cancel it. |
+
+Warning and skip codes include `activation_isolated_test`,
+`activation_legacy_singleton`, `rollout_proof_bounded` (proof mode without a
+target), `command_dry_run`, `command_not_provided`, `command_policy_unknown`,
+and the lifecycle gate codes above. The full response shape is in
+`docs/openapi.yaml` under `OpenPilotReadinessReport`.
+
+`POST /api/open-pilot/readiness/validate` (admin token) dry-runs one
+configuration document: `{"registry": <operator registry v1>}` or
+`{"manifest": <runtime manifest v1>}`. It uses the same strict decoders as the
+runtime, rejects secret-looking material with `document_contains_secret`
+without echoing the document, and compares each entry with the loaded runtime
+registry: `runtime_match` is `exact`, `generation-differs` (warning: durable
+states bound to the old generation will fail affinity), `unregistered`
+(warning: restart required), or `slug-differs` (failure: repository IDs are
+immutable identities). A manifest whose fingerprint differs from the loaded
+registry warns with `runtime_fingerprint_stale`. Other codes are
+`document_decode_failed`, `document_invalid`, `document_kind_ambiguous`, and
+`runtime_registry_unavailable`. The dry run performs no cloning, filesystem,
+network, or admission changes.
+
 ## Queue an issue by assignment
 
 Set `OPEN_PILOT_ASSIGNEE=open-pilot` in the runtime configuration to enable

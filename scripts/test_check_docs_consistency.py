@@ -14,7 +14,188 @@ def git_track(root: Path, *paths: str) -> None:
         subprocess.run(["git", "add", "--", *paths], cwd=root, check=True)
 
 
+GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Docs Test",
+    "GIT_AUTHOR_EMAIL": "docs@example.invalid",
+    "GIT_COMMITTER_NAME": "Docs Test",
+    "GIT_COMMITTER_EMAIL": "docs@example.invalid",
+}
+
+
+def git_tag(root: Path, *tags: str) -> None:
+    env = {**__import__("os").environ, **GIT_IDENTITY}
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "tagged"], cwd=root, check=True, env=env)
+    for tag in tags:
+        subprocess.run(["git", "tag", tag], cwd=root, check=True, env=env)
+
+
+def write_release_pointer(root: Path, tag: str, extra: str = "", records: tuple[str, ...] = ()) -> None:
+    (root / "docs/releases").mkdir(parents=True, exist_ok=True)
+    sha = "a" * 40
+    (root / "docs/status.md").write_text(
+        f"- Current deployed release: `{tag}`\n- Current deployed revision: `{sha}`\n{extra}",
+        encoding="utf-8",
+    )
+    for record in (tag, *records):
+        (root / f"docs/releases/{record}-qualification.md").write_text(
+            f"- Release: `{record}`\n- Revision: `{sha}`\n", encoding="utf-8"
+        )
+
+
+def write_tracked_issues(root: Path, rows: str, blockers: str = "") -> None:
+    (root / "docs").mkdir(exist_ok=True)
+    (root / "docs/status.md").write_text(
+        "# Status\n\n## Active release blockers\n\n"
+        + blockers
+        + "\n## Tracked issues\n\n| Issue | State | Observed | Role |\n| --- | --- | --- | --- |\n"
+        + rows
+        + "\n## Active references\n",
+        encoding="utf-8",
+    )
+    (root / "docs/ui-feature-migration.md").write_text("# UI\n", encoding="utf-8")
+
+
 class DocsConsistencyTest(unittest.TestCase):
+    def test_release_pointer_rejects_newer_qualification_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_release_pointer(root, "v1.2.3", records=("v1.3.0",))
+            git_track(root)
+            with self.assertRaisesRegex(checks.ContractError, "older than qualification record"):
+                checks.validate_release_pointer_currency(root)
+
+    def test_release_pointer_requires_newer_unqualified_tags_to_be_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_release_pointer(root, "v1.2.3")
+            git_tag(root, "v1.2.3", "v1.3.0", "v1.3.1")
+            with self.assertRaisesRegex(checks.ContractError, "not declared: v1.3.0, v1.3.1"):
+                checks.validate_release_pointer_currency(root)
+
+    def test_release_pointer_accepts_declared_unqualified_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_release_pointer(
+                root, "v1.2.3", "- Release tags without a qualification record: `v1.3.0`, `v1.3.1`\n"
+            )
+            git_tag(root, "v1.2.3", "v1.3.0", "v1.3.1")
+            checks.validate_release_pointer_currency(root)
+
+    def test_release_pointer_rejects_declaring_a_qualified_or_older_tag_as_unqualified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_release_pointer(root, "v1.2.3", "- Release tags without a qualification record: `v1.2.3`\n")
+            git_tag(root, "v1.2.3")
+            with self.assertRaisesRegex(checks.ContractError, "has a qualification record"):
+                checks.validate_release_pointer_currency(root)
+            write_release_pointer(root, "v1.2.3", "- Release tags without a qualification record: `v1.0.0`\n")
+            with self.assertRaisesRegex(checks.ContractError, "not newer than the deployed pointer"):
+                checks.validate_release_pointer_currency(root)
+
+    def test_release_pointer_rejects_declared_tag_that_does_not_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_release_pointer(root, "v1.2.3", "- Release tags without a qualification record: `v9.9.9`\n")
+            git_tag(root, "v1.2.3")
+            with self.assertRaisesRegex(checks.ContractError, "do not exist: v9.9.9"):
+                checks.validate_release_pointer_currency(root)
+
+    def test_release_pointer_currency_skips_tag_enumeration_outside_git(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_release_pointer(root, "v1.2.3")
+            (root / ".git_archival.txt").write_text(f"node: {'b' * 40}\n", encoding="utf-8")
+            checks.validate_release_pointer_currency(root)
+
+    def test_semver_prerelease_sorts_below_final_release(self) -> None:
+        self.assertLess(checks.semver_key("v1.3.0-rc.1"), checks.semver_key("v1.3.0"))
+        self.assertLess(checks.semver_key("v1.2.9"), checks.semver_key("v1.10.0"))
+
+    def test_issue_reference_must_be_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_tracked_issues(root, "| #14 | open | 2026-09-23 | qualification |\n")
+            (root / "docs/roadmap.md").write_text("# Roadmap\n\n## Open work\n\n1. Finish #99.\n", encoding="utf-8")
+            with self.assertRaisesRegex(checks.ContractError, r"docs/roadmap.md: cites issue\(s\) missing .*#99"):
+                checks.validate_issue_references(root)
+
+    def test_open_work_may_not_cite_closed_issue_as_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_tracked_issues(
+                root,
+                "| #14 | open | 2026-09-23 | qualification |\n| #16 | closed | 2026-09-23 | alert owner |\n",
+            )
+            (root / "docs/roadmap.md").write_text(
+                "# Roadmap\n\n## Open work\n\n1. Assign an alert owner (#16).\n2. Qualify main (#14).\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(checks.ContractError, r"cites closed issue\(s\) without marking them closed: #16"):
+                checks.validate_issue_references(root)
+            (root / "docs/roadmap.md").write_text(
+                "# Roadmap\n\n## Open work\n\n1. Qualify main (#14). Its former blocker #16 is closed.\n",
+                encoding="utf-8",
+            )
+            checks.validate_issue_references(root)
+
+    def test_open_work_continuation_lines_belong_to_their_item(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_tracked_issues(
+                root,
+                "| #14 | open | 2026-09-23 | qualification |\n| #16 | closed | 2026-09-23 | alert owner |\n",
+                blockers="1. Qualify main (#14).\n   The alert drill #16 is\n   closed.\n",
+            )
+            (root / "docs/roadmap.md").write_text("# Roadmap\n\n## Open work\n\n- nothing\n", encoding="utf-8")
+            checks.validate_issue_references(root)
+
+    def test_tracked_issue_rows_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_tracked_issues(root, "| #14 | pending | 2026-09-23 | qualification |\n")
+            (root / "docs/roadmap.md").write_text("# Roadmap\n\n## Open work\n", encoding="utf-8")
+            with self.assertRaisesRegex(checks.ContractError, "state must be open or closed"):
+                checks.validate_issue_references(root)
+            write_tracked_issues(root, "| #14 | open | yesterday | qualification |\n")
+            with self.assertRaisesRegex(checks.ContractError, "ISO observation date"):
+                checks.validate_issue_references(root)
+            write_tracked_issues(root, "| #14 | open | 2026-09-23 | a |\n| #14 | closed | 2026-09-23 | b |\n")
+            with self.assertRaisesRegex(checks.ContractError, "listed more than once"):
+                checks.validate_issue_references(root)
+
+    def test_historical_plan_documents_require_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs/superpowers/plans").mkdir(parents=True)
+            (root / "docs/remediation-plan.md").write_text("# Plan\n\nPhase 1 is next.\n", encoding="utf-8")
+            with self.assertRaisesRegex(checks.ContractError, "docs/remediation-plan.md: plan must declare historical"):
+                checks.validate_historical_markers(root)
+            (root / "docs/remediation-plan.md").write_text(
+                "# Plan\n\n> Historical plan: retained for context.\n", encoding="utf-8"
+            )
+            (root / "docs/production-user-stories.md").write_text("# Stories\n", encoding="utf-8")
+            with self.assertRaisesRegex(checks.ContractError, "production-user-stories.md"):
+                checks.validate_historical_markers(root)
+            (root / "docs/production-user-stories.md").write_text("# Stories\n\nHistorical record.\n", encoding="utf-8")
+            (root / "docs/superpowers/plans/2026-01-01-thing.md").write_text("# Thing\n", encoding="utf-8")
+            with self.assertRaisesRegex(checks.ContractError, "2026-01-01-thing.md"):
+                checks.validate_historical_markers(root)
+
+    def test_proof_stubs_must_be_classified_in_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            (root / "docs/open-pilot-widget-proof.md").write_text("Proof completed.\n", encoding="utf-8")
+            (root / "docs/status.md").write_text("# Status\n", encoding="utf-8")
+            with self.assertRaisesRegex(checks.ContractError, "not classified: docs/open-pilot-widget-proof.md"):
+                checks.validate_fixture_inventory(root)
+            (root / "docs/status.md").write_text(
+                "# Status\n\n- `docs/open-pilot-widget-proof.md`: Open Pilot fixture, not evidence.\n",
+                encoding="utf-8",
+            )
+            checks.validate_fixture_inventory(root)
+
     def test_docs_check_runs_from_git_archive(self) -> None:
         repository = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
