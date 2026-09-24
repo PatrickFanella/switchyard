@@ -829,3 +829,15 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatalf("snapshot = %+v err=%v", snapshot, err)
 	}
 }
+
+func TestAgentProfileMigrationDeclaresVersionedTables(t *testing.T) {
+	data, err := migrationFS.ReadFile("migrations/030_agent_profile_versions.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"create table if not exists agent_profiles", "active_version integer not null default 0", "draft_version integer not null default 0", "latest_version integer not null default 0", "create table if not exists agent_profile_versions", "status in ('draft','active','superseded')", "prompt_contract_sha256 text not null", "provenance jsonb not null default '{}'::jsonb", "primary key(profile_id, version)", "agent_profile_versions_active_idx", "where status='active'", "create table if not exists agent_profile_audit", "action in ('draft-saved','activated','rolled-back')", "previous_active_version", "agent_profile_audit_profile_idx"} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("agent profile migration missing %q", field)
+		}
+	}
+}

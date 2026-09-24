@@ -109,7 +109,7 @@ func NewRunner(store Store, executors ...ExecutorRegistry) *Runner {
 	if env, ok := registry.(*EnvWorkflowExecutors); ok {
 		env.openPilotGate, env.openPilotGateError = gate, gateErr
 	}
-	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: DefaultAgentProfileRegistry(), limiter: NewEnvExecutorLimiter(), active: map[string]activeRun{}, openPilotGate: gate, openPilotGateError: gateErr}
+	return &Runner{store: store, executors: registry, pipelines: NewStoreBackedPipelineRegistry(store, DefaultPipelineRegistry()), profiles: NewStoreBackedAgentProfileRegistry(store, DefaultAgentProfileRegistry()), limiter: NewEnvExecutorLimiter(), active: map[string]activeRun{}, openPilotGate: gate, openPilotGateError: gateErr}
 }
 
 func (r *Runner) SetOpenPilotAdmissionGate(gate *OpenPilotAdmissionGate) {
@@ -258,9 +258,17 @@ func (r *Runner) withPipelineSnapshot(input CreateRunInput) CreateRunInput {
 	}
 	if pipeline, ok := r.pipelines.PipelineForWorkflow(input.WorkflowID); ok {
 		snapshot := clonePipeline(pipeline)
+		attachPipelineProfileSnapshot(&snapshot, r.effectiveAgentProfiles())
 		input.PipelineSnapshot = &snapshot
 	}
 	return input
+}
+
+func (r *Runner) effectiveAgentProfiles() AgentProfileRegistry {
+	if r.profiles == nil {
+		return NewStoreBackedAgentProfileRegistry(r.store, DefaultAgentProfileRegistry())
+	}
+	return r.profiles
 }
 
 func defaultRunMaxAttempts() int {
@@ -423,7 +431,7 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		if decider, ok := executor.(PipelineStepDecider); ok && !decider.ShouldExecutePipelineStep(run, pipelineStep, state) {
 			continue
 		}
-		profile, hasProfile, profileErr := r.profileForPipelineStep(pipelineStep)
+		profile, hasProfile, profileErr := r.profileForPipelineStep(pipeline, pipelineStep)
 		if profileErr != nil {
 			return execution, profileErr
 		}
@@ -610,16 +618,19 @@ func (r *Runner) restorePipelineStepOutputs(store Store, run Run, steps []Pipeli
 	return outputs, nil
 }
 
-func (r *Runner) profileForPipelineStep(step PipelineStep) (AgentProfile, bool, error) {
+// profileForPipelineStep prefers the policy captured in the run's pipeline
+// snapshot so later activations or rollbacks never change an in-flight run.
+// Runs created before profile snapshots existed resolve through the registry,
+// which still serves the shipped static defaults.
+func (r *Runner) profileForPipelineStep(pipeline Pipeline, step PipelineStep) (AgentProfile, bool, error) {
 	profileID := strings.TrimSpace(step.Profile)
 	if profileID == "" {
 		return AgentProfile{}, false, nil
 	}
-	profiles := r.profiles
-	if profiles == nil {
-		profiles = DefaultAgentProfileRegistry()
+	profile, ok := pipeline.Profiles[profileID]
+	if !ok {
+		profile, ok = r.effectiveAgentProfiles().Profile(profileID)
 	}
-	profile, ok := profiles.Profile(profileID)
 	if !ok {
 		return AgentProfile{}, false, fmt.Errorf("unknown agent profile %q", profileID)
 	}
@@ -658,6 +669,11 @@ func profileAuditCorrelation(profile AgentProfile, model string) map[string]stri
 		"agent_profile_id":              profile.ID,
 		"agent_profile_role":            profile.Role,
 		"agent_profile_contract_sha256": profileContractHash(profile),
+		"agent_profile_version":         strconv.Itoa(profile.Version),
+		"agent_profile_source":          firstNonEmpty(profile.Source, AgentProfileSourceStatic),
+	}
+	if profile.Provenance != nil && profile.Provenance.Origin != "" {
+		correlation["agent_profile_origin"] = profile.Provenance.Origin
 	}
 	if model != "" {
 		correlation["agent_profile_model"] = model

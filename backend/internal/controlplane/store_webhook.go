@@ -202,6 +202,7 @@ func (s *MemoryStore) AdmitWebhookContext(ctx context.Context, input AdmitWebhoo
 		return WebhookAdmission{}, err
 	}
 	snapshot := pipelineFromDefinition(definition)
+	attachPipelineProfileSnapshot(&snapshot, memoryLockedAgentProfileRegistry{store: s})
 	run := Run{ID: newID("run"), WorkflowID: trigger.WorkflowID, TriggerID: trigger.ID, Status: RunQueued, Inputs: cloneMap(inputs), CreatedAt: now, QueuedAt: now, AvailableAt: now, MaxAttempts: defaultRunMaxAttempts(), PipelineID: snapshot.ID, PipelineVersion: pipelineVersion(snapshot), PipelineSnapshot: &snapshot}
 	if err := ctx.Err(); err != nil {
 		return WebhookAdmission{}, err
