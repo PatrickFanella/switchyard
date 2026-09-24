@@ -78,7 +78,7 @@ describe('typed destinations', () => {
     const context = { runID: 'run-1', source: 'Step 1 · plan', targets };
     expect(resolveCorrelation('model_broker_request_id', 'req/1', context)).toMatchObject({ kind: 'request', href: '#/queues/requests/req%2F1', external: false });
     expect(resolveCorrelation('llama_line_request_id', 'req-2', context)).toMatchObject({ kind: 'request', href: '#/queues/requests/req-2' });
-    expect(resolveCorrelation('opencode_session_id', 'ses 1', context)).toMatchObject({ kind: 'session', href: '#/logs/search/correlations/ses%201' });
+    expect(resolveCorrelation('opencode_session_id', 'ses 1', context)).toMatchObject({ kind: 'session', href: '#/sessions/ses%201' });
     expect(resolveCorrelation('ocq_request_id', 'ocq-9', context)).toMatchObject({ kind: 'executor-request', href: '#/logs/search/correlations/ocq-9' });
     expect(resolveCorrelation('parent_run_id', 'run-0', context)).toMatchObject({ kind: 'run', href: '#/runs/run-0' });
     expect(resolveCorrelation('parent_run_id', 'run-1', context)).toMatchObject({ kind: 'run', href: null, reason: 'current' });

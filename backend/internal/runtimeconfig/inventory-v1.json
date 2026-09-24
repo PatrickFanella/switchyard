@@ -121,6 +121,7 @@
     {"key": "DEVLOG_DELIVERY_GITEA_ISSUE", "component": "devlog", "kind": "string", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "The single Devlog delivery destination, owner/repo#number; the gitea-issue-comment adapter posts reviewed reports there as comments."},
     {"key": "DEVLOG_DELIVERY_ALLOWED_REPOS", "component": "devlog", "kind": "list", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "owner/repo slugs allowed to receive Devlog deliveries; the configured destination must be listed or delivery stays disabled."},
     {"key": "GITEA_BASE_URL", "component": "gitea", "kind": "url", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API origin."},
-    {"key": "GITEA_TOKEN", "component": "gitea", "kind": "secret", "sensitivity": "secret", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API token for Open Pilot writes."}
+    {"key": "GITEA_TOKEN", "component": "gitea", "kind": "secret", "sensitivity": "secret", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API token for Open Pilot writes and read-only source collection."},
+    {"key": "SWITCHYARD_SOURCE_REPOSITORIES", "component": "gitea", "kind": "list", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "OWNER/REPO allowlist for read-only gitea-activity source collection; empty disables collection."}
   ]
 }

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { confirmNavigation } from '../navigationGuard';
 import type { ViewID } from '../types';
 
 type NavigationState = {
@@ -7,7 +8,7 @@ type NavigationState = {
   selectedRequestID: string;
 };
 
-const viewSet = new Set<ViewID>(['overview', 'inbox', 'runs', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
+const viewSet = new Set<ViewID>(['overview', 'inbox', 'workflows', 'runs', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
 
 function safeDecodeURIComponent(value: string) {
   try {
@@ -80,6 +81,9 @@ export function formatHash(activeView: ViewID, selectedRunID = '', selectedReque
 
 export function useHashNavigation() {
   const [navigation, setNavigation] = useState<NavigationState>(() => parseHash(typeof window === 'undefined' ? '' : window.location.hash));
+  const activeViewRef = useRef(navigation.activeView);
+  const lastHashRef = useRef(typeof window === 'undefined' ? '' : window.location.hash);
+  activeViewRef.current = navigation.activeView;
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -87,7 +91,14 @@ export function useHashNavigation() {
     }
 
     const syncFromHash = () => {
-      setNavigation(parseHash(window.location.hash));
+      const next = parseHash(window.location.hash);
+      // Browser back/forward to another view asks pages with unsaved edits first.
+      if (next.activeView !== activeViewRef.current && !confirmNavigation()) {
+        window.history.pushState(null, '', lastHashRef.current || '#/');
+        return;
+      }
+      lastHashRef.current = window.location.hash;
+      setNavigation(next);
     };
 
     syncFromHash();
@@ -99,11 +110,16 @@ export function useHashNavigation() {
   }, []);
 
   const setActiveView = useCallback((activeView: ViewID) => {
+    if (activeView !== activeViewRef.current && !confirmNavigation()) {
+      return;
+    }
     const next = { activeView, selectedRunID: activeView === 'overview' ? navigation.selectedRunID : '', selectedRequestID: activeView === 'queues' ? navigation.selectedRequestID : '' };
+    activeViewRef.current = next.activeView;
     setNavigation(next);
 
     if (typeof window !== 'undefined') {
       const hash = formatHash(next.activeView, next.selectedRunID, next.selectedRequestID);
+      lastHashRef.current = hash;
       if (window.location.hash !== hash) {
         window.location.hash = hash;
       }
@@ -112,10 +128,12 @@ export function useHashNavigation() {
 
   const setSelectedRunID = useCallback((selectedRunID: string) => {
     const next = { activeView: 'overview' as const, selectedRunID, selectedRequestID: '' };
+    activeViewRef.current = next.activeView;
     setNavigation(next);
 
     if (typeof window !== 'undefined') {
       const hash = formatHash(next.activeView, next.selectedRunID, next.selectedRequestID);
+      lastHashRef.current = hash;
       if (window.location.hash !== hash) {
         window.location.hash = hash;
       }
@@ -124,10 +142,12 @@ export function useHashNavigation() {
 
   const openRunCockpit = useCallback((selectedRunID: string) => {
     const next = { activeView: 'runs' as const, selectedRunID, selectedRequestID: '' };
+    activeViewRef.current = next.activeView;
     setNavigation(next);
 
     if (typeof window !== 'undefined') {
       const hash = formatHash(next.activeView, next.selectedRunID, next.selectedRequestID);
+      lastHashRef.current = hash;
       if (window.location.hash !== hash) {
         window.location.hash = hash;
       }
@@ -136,10 +156,12 @@ export function useHashNavigation() {
 
   const setSelectedRequestID = useCallback((selectedRequestID: string) => {
     const next = { activeView: 'queues' as const, selectedRunID: '', selectedRequestID };
+    activeViewRef.current = next.activeView;
     setNavigation(next);
 
     if (typeof window !== 'undefined') {
       const hash = formatHash(next.activeView, next.selectedRunID, next.selectedRequestID);
+      lastHashRef.current = hash;
       if (window.location.hash !== hash) {
         window.location.hash = hash;
       }

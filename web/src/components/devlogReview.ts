@@ -83,6 +83,7 @@ export type DevlogReportReview = {
   current_receipt?: DevlogDeliveryReceipt;
   approvals: DevlogDeliveryApproval[];
   receipts: DevlogDeliveryReceipt[];
+  access?: { role: string; can_write: boolean };
 };
 
 export type DevlogActionResult<T> =

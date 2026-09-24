@@ -648,6 +648,48 @@ paths:
       description: Reports Switchyard's native OpenCode executor surface. OCQ-compatible ingress may back it during cutover.
       responses:
         "200": { $ref: "#/components/responses/OpenCodeExecutorStatusResponse" }
+  /api/executor-sessions:
+    get:
+      summary: List native OpenCode executor sessions and their related runs
+      description: >-
+        Bounded, read-only view of OpenCode executor sessions built from native
+        contracts: run-step correlation records (opencode_session_id, or the
+        historical ocq_session_id) grouped by owning executor and session, joined
+        with executor status from the default executor and each loaded Open Pilot
+        repository execution bundle. It never reads the GET /api/adapters
+        compatibility snapshot. Only records created within the retention window
+        (SWITCHYARD_RETENTION, default 720h) are read, newest first, capped at 500
+        step records. Active native sessions on an available executor are checked
+        for presence (at most 16 per request) by reading message metadata only.
+        Unavailable executors are never probed, and an empty session list is
+        never evidence of executor health; executor_availability and warnings
+        state what is known. Responses contain no run or step inputs, prompts,
+        message content, endpoint URLs, upstream error text, or credentials.
+        There is no session mutation route: aborting a session requires
+        canceling its owning run through POST /api/runs/{id}/cancel, which is
+        admin-only. Read-only tokens may call this route. The model-ingress
+        listener does not expose it.
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum sessions returned.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: session_id
+          in: query
+          description: Return only this session (matches opencode_session_id or ocq_session_id).
+          schema: { type: string, pattern: "^[A-Za-z0-9_.:-]{1,256}$" }
+        - name: repository
+          in: query
+          description: Restrict to a repository ID, repository slug, executor key, or `default` for the singleton executor.
+          schema: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: Bounded executor session view
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecutorSessionsResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/scheduler:
     get:
       summary: Get scheduler status
@@ -811,6 +853,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
+  /api/control-access:
+    get:
+      summary: Get the caller's control-plane role
+      description: |
+        Control-listener-only. Reports whether the authenticated caller holds
+        the admin or read role so the dashboard can render read-only screens
+        before an edit. Advisory only: every non-GET request from a read-role
+        caller is still rejected with 403. A handler served without the
+        control-plane authentication layer reports role "unrestricted".
+      responses:
+        "200":
+          description: Caller role and whether writes are allowed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  role: { type: string, enum: [admin, read, unrestricted] }
+                  can_write: { type: boolean }
+                required: [role, can_write]
   /api/runtime-config:
     get:
       summary: Get the effective runtime configuration inventory
@@ -1817,6 +1879,118 @@ components:
         limit: { type: integer }
         retention: { $ref: "#/components/schemas/EvidenceRetention" }
       required: [hits, next_cursor, query, scope, limit, retention]
+    ExecutorAvailability:
+      type: object
+      description: One known OpenCode executor. Carries a coarse status only; no URL or upstream error text.
+      properties:
+        key: { type: string, description: "`default` or `<repository_id>/<executor_generation>`" }
+        scope: { type: string, enum: [default, repository] }
+        repository_id: { type: string }
+        executor_generation: { type: string }
+        repository_slug: { type: string }
+        backend: { type: string, enum: [native, ocq] }
+        compatibility: { type: boolean }
+        status: { type: string, enum: [healthy, unreachable, failed, not_configured, unknown] }
+        available: { type: boolean }
+        checked_at: { type: string, format: date-time }
+      required: [key, scope, backend, compatibility, status, available, checked_at]
+    ExecutorSessionRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        workflow_id: { type: string }
+        run_status: { type: string }
+        step_id: { type: string }
+        step_name: { type: string }
+        step_position: { type: integer }
+        step_status: { type: string }
+        active: { type: boolean, description: The step is running or queued. }
+        cancelable: { type: boolean, description: "The run is not terminal; cancel it through POST /api/runs/{id}/cancel." }
+        observed_at: { type: string, format: date-time }
+        lease_expires_at: { type: string, format: date-time }
+      required: [run_id, workflow_id, run_status, step_id, step_name, step_position, step_status, active, cancelable, observed_at]
+    ExecutorSessionRequest:
+      type: object
+      properties:
+        kind: { type: string, enum: [executor_request, model_request] }
+        key: { type: string }
+        value: { type: string }
+        run_id: { type: string }
+      required: [kind, key, value, run_id]
+    ExecutorSession:
+      type: object
+      properties:
+        session_id: { type: string }
+        correlation_key: { type: string, enum: [opencode_session_id, ocq_session_id] }
+        origin: { type: string, enum: [native, compatibility] }
+        executor_key: { type: string }
+        executor_status: { type: string, description: "Owning executor status, `unknown` without status, or `not_loaded` when no executor for the recorded repository generation is loaded." }
+        repository:
+          type: object
+          properties:
+            repository_id: { type: string }
+            executor_generation: { type: string }
+            repo: { type: string }
+        status: { type: string, enum: [active, stale, ended, historical_compatibility] }
+        status_reason: { type: string }
+        active: { type: boolean }
+        presence: { type: string, enum: [present, missing, unknown, not_checked] }
+        presence_reason: { type: string }
+        executor_activity: { type: string, enum: [busy, idle] }
+        first_observed_at: { type: string, format: date-time }
+        last_observed_at: { type: string, format: date-time }
+        last_observed_source: { type: string, enum: [run_step, executor] }
+        runs:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/ExecutorSessionRun" }
+        runs_truncated: { type: boolean }
+        requests:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/ExecutorSessionRequest" }
+        requests_truncated: { type: boolean }
+      required: [session_id, correlation_key, origin, executor_key, executor_status, repository, status, status_reason, active, presence, presence_reason, first_observed_at, last_observed_at, last_observed_source, runs, runs_truncated, requests, requests_truncated]
+    ExecutorSessionsResponse:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        retention: { $ref: "#/components/schemas/EvidenceRetention" }
+        limit: { type: integer }
+        session_id: { type: string }
+        repository: { type: string }
+        scanned_steps: { type: integer }
+        scan_limit: { type: integer }
+        truncated: { type: boolean }
+        executor_availability: { type: string, enum: [available, partial, unavailable, not_configured] }
+        executors:
+          type: array
+          items: { $ref: "#/components/schemas/ExecutorAvailability" }
+        warnings:
+          type: array
+          items: { type: string }
+        counts:
+          type: object
+          properties:
+            total: { type: integer }
+            active: { type: integer }
+            stale: { type: integer }
+            ended: { type: integer }
+            historical_compatibility: { type: integer }
+          required: [total, active, stale, ended, historical_compatibility]
+        sessions:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/ExecutorSession" }
+        abort:
+          type: object
+          properties:
+            direct_abort: { type: boolean, enum: [false] }
+            route: { type: string }
+            admin_required: { type: boolean }
+            note: { type: string }
+          required: [direct_abort, route, admin_required, note]
+      required: [generated_at, retention, limit, scanned_steps, scan_limit, truncated, executor_availability, executors, warnings, counts, sessions, abort]
     StringMap:
       type: object
       additionalProperties: { type: string }
@@ -2558,7 +2732,14 @@ components:
         current_receipt: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
         approvals: { type: array, items: { $ref: "#/components/schemas/DevlogDeliveryApproval" } }
         receipts: { type: array, items: { $ref: "#/components/schemas/DevlogDeliveryReceipt" } }
-      required: [run, state, report, evidence, source, exports, delivery, approvals, receipts]
+        access:
+          type: object
+          description: Advisory role of the caller; approval and delivery still require the admin role.
+          properties:
+            role: { type: string, enum: [admin, read, unrestricted] }
+            can_write: { type: boolean }
+          required: [role, can_write]
+      required: [run, state, report, evidence, source, exports, delivery, approvals, receipts, access]
     DevlogApprovalRequest:
       type: object
       additionalProperties: false

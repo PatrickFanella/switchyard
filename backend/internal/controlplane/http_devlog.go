@@ -42,6 +42,8 @@ type DevlogReportReview struct {
 	CurrentReceipt  *DevlogDeliveryReceipt   `json:"current_receipt,omitempty"`
 	Approvals       []DevlogDeliveryApproval `json:"approvals"`
 	Receipts        []DevlogDeliveryReceipt  `json:"receipts"`
+	// Access is advisory for the dashboard; the auth middleware enforces it.
+	Access ControlAccess `json:"access"`
 }
 
 // DevlogDeliveryResponse reports the outcome of one delivery request.
@@ -129,7 +131,7 @@ func (a *API) devlogReportReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delivery := a.devlogDeliveryState().status()
-	review := DevlogReportReview{Run: report.run, Report: report.report, Evidence: report.evidence, Source: devlogReportSource(report.run, report.evidence), Delivery: delivery, Exports: []DevlogReportExport{}}
+	review := DevlogReportReview{Run: report.run, Report: report.report, Evidence: report.evidence, Source: devlogReportSource(report.run, report.evidence), Delivery: delivery, Exports: []DevlogReportExport{}, Access: controlAccessFromRequest(r)}
 	if report.report != nil {
 		review.Exports = append(review.Exports, DevlogReportExport{Format: "markdown", Name: devlogReportArtifactName, Path: devlogExportPath(report.run.ID, "markdown"), SHA256: report.report.SHA256, ByteSize: report.report.ByteSize})
 	}

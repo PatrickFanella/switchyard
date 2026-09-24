@@ -89,6 +89,7 @@ type EnvWorkflowExecutors struct {
 	giteaWriter                  GiteaWriter
 	devlogEvidenceReader         GiteaRepositoryActivityReader
 	devlogAllowedRepos           string
+	sourceActivityReader         GiteaIssueActivityReader
 	commandRunner                CommandRunner
 	worktreeManager              OpenPilotWorktreeManager
 	client                       *http.Client
@@ -190,6 +191,7 @@ func NewEnvWorkflowExecutorsWithModel(model ModelGeneration, store ...Store) *En
 		giteaWriter:                  giteaClient,
 		devlogEvidenceReader:         giteaClient,
 		devlogAllowedRepos:           devlogAllowedReposFromEnv(),
+		sourceActivityReader:         giteaClient,
 		commandRunner:                NewEnvCommandRunner(),
 		worktreeManager:              NewEnvOpenPilotWorktreeManager(),
 		client:                       &http.Client{Timeout: 10 * time.Second},
@@ -261,6 +263,8 @@ func (g genericWorkflowExecutor) ExecutePipelineStep(ctx context.Context, run Ru
 		return g.executeGenericCommandStep(ctx, run, step, renderedInputs, state)
 	case "http":
 		return g.executeGenericHTTPStep(ctx, step, renderedInputs)
+	case "source":
+		return g.executeGenericSourceStep(ctx, run, step, renderedInputs)
 	default:
 		return PipelineStepExecution{}, fmt.Errorf("unsupported pipeline step executor %q", step.Executor)
 	}
@@ -290,6 +294,12 @@ func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, i
 			artifactBody = []byte(renderPipelineStepMarkdown(inputs))
 			contentType = "text/markdown;charset=utf-8"
 		}
+		// artifact_body, when set, is the exact artifact content after
+		// template rendering, so a step can compose a document from earlier
+		// step outputs instead of dumping its inputs.
+		if body, ok := inputs[internalStepArtifactBodyInput]; ok && strings.TrimSpace(body) != "" {
+			artifactBody = []byte(body)
+		}
 		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: inlineArtifactURI(contentType, string(artifactBody))})
 	} else if len(inputs) > 0 {
 		artifactKind := firstNonEmpty(inputs["artifact_kind"], "json")
@@ -317,6 +327,10 @@ func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, i
 // output: input "output.<name>" becomes output <name> after template rendering.
 const internalStepOutputInputPrefix = "output."
 
+// internalStepArtifactBodyInput replaces the rendered-inputs artifact of an
+// internal step that names an artifact_name with the rendered value.
+const internalStepArtifactBodyInput = "artifact_body"
+
 func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, run Run, step PipelineStep, inputs map[string]string, state map[string]any) (PipelineStepExecution, error) {
 	if g.env == nil || g.env.modelExecutor == nil {
 		return PipelineStepExecution{}, fmt.Errorf("no model broker configured")
@@ -332,6 +346,15 @@ func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, ru
 			return PipelineStepExecution{}, err
 		}
 		model = resolved
+	}
+	grounding, grounded, err := parseModelGrounding(step.ID, inputs)
+	if err != nil {
+		return PipelineStepExecution{}, err
+	}
+	if grounded && grounding.itemCount == 0 {
+		out := skippedGroundedModelStep(step, model, grounding)
+		state["summary"] = out.Summary
+		return out, nil
 	}
 	prompt = applyPipelineProfilePrompt(step, prompt)
 	response, err := g.env.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "user", Content: prompt}}, PreAttempt: preAttemptFromContext(ctx)})
@@ -350,6 +373,11 @@ func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, ru
 			"model":          model,
 			"artifact_name":  step.ID + ".md",
 		},
+	}
+	if grounded {
+		for name, value := range grounding.outputs(response.Content, true) {
+			out.Outputs[name] = value
+		}
 	}
 	state["summary"] = out.Summary
 	return out, nil

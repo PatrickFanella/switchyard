@@ -199,6 +199,9 @@ func TestDevlogReportReviewShowsPreviewSourceAndLocalExport(t *testing.T) {
 	if review.State != "awaiting-approval" || review.Report == nil || review.Report.SHA256 != f.report.SHA256 || !strings.HasPrefix(review.Report.URI, "data:text/markdown") {
 		t.Fatalf("review = %+v", review)
 	}
+	if review.Access.Role != "read" || review.Access.CanWrite {
+		t.Fatalf("read-token review access = %+v", review.Access)
+	}
 	if review.Source.Mode != "run-history" || review.Source.Until != f.run.CreatedAt.UTC().Format(time.RFC3339) || review.Evidence != nil {
 		t.Fatalf("source = %+v", review.Source)
 	}

@@ -6,6 +6,8 @@ Contains the dashboard application shell, API client, shared domain types, style
 ## Design
 - `types.ts` mirrors backend JSON contracts and supplies empty/default states.
 - `openPilotInbox.ts` holds the inbox contract types, request/dispatch helpers, and `#/inbox/<params>` deep-link parsing.
+- `workflowDrafts.ts` holds the workflow draft form model and its conversion to and from `WorkflowDefinition`, executor settings and published outputs, the `{{steps.<id>.outputs.<name>}}` binding options and reference checks, catalog filtering, `#/workflows/...` routes, and the definition, profile, control-access, and guarded draft-save API helpers.
+- `navigationGuard.ts` lets a page with unsaved edits veto shell navigation; `useHashNavigation` consults it for sidebar and browser view changes.
 - `api.ts` centralizes fetch, normalization, formatting, and mutations.
 - `App.tsx` selects pages while hooks own URL and asynchronous state.
 - `correlation.ts` defines typed correlation destinations (run, step, request, session, executor request, Gitea issue/PR/commit/CI, trace, span), the external-link allowlist derived from `/api/operator-safety` `correlation_targets`, run evidence deep links (`#/runs/<run>/<steps|artifacts|events>/<id>`), and the run failure summary. `correlation.test.ts` covers allowlist rejection and destination mapping.

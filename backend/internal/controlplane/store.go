@@ -115,6 +115,7 @@ type Store interface {
 	PruneRetention(time.Time) (RetentionResult, error)
 	ArtifactReport(context.Context, ArtifactReportInput) (ArtifactReport, error)
 	SearchEvidence(context.Context, EvidenceSearchInput) (EvidenceSearchPage, error)
+	ListExecutorSessionSteps(context.Context, ExecutorSessionStepsInput) (ExecutorSessionStepPage, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
 	RecordDevlogDeliveryApproval(DevlogDeliveryApproval) (DevlogDeliveryApproval, error)
 	DevlogDeliveryApproval(string) (DevlogDeliveryApproval, error)
@@ -234,14 +235,23 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition, profiles AgentPr
 	definition.Description, definition.Status = strings.TrimSpace(definition.Description), strings.TrimSpace(definition.Status)
 	definition.Pipeline.ID, definition.Pipeline.WorkflowID = strings.TrimSpace(definition.Pipeline.ID), strings.TrimSpace(definition.Pipeline.WorkflowID)
 	definition.Pipeline.Name, definition.Pipeline.Description = strings.TrimSpace(definition.Pipeline.Name), strings.TrimSpace(definition.Pipeline.Description)
-	if definition.ID == "" || definition.Name == "" || definition.Pipeline.ID == "" || definition.Pipeline.Name == "" || len(definition.Pipeline.Steps) == 0 {
-		return WorkflowDefinition{}, ErrInvalid
+	switch {
+	case definition.ID == "":
+		return WorkflowDefinition{}, invalidDefinition("id is required")
+	case definition.Name == "":
+		return WorkflowDefinition{}, invalidDefinition("name is required")
+	case definition.Pipeline.ID == "":
+		return WorkflowDefinition{}, invalidDefinition("pipeline.id is required")
+	case definition.Pipeline.Name == "":
+		return WorkflowDefinition{}, invalidDefinition("pipeline.name is required")
+	case len(definition.Pipeline.Steps) == 0:
+		return WorkflowDefinition{}, invalidDefinition("pipeline needs at least one step")
 	}
 	if definition.Status == "" {
 		definition.Status = "draft"
 	}
 	if definition.Status != "draft" && definition.Status != "active" {
-		return WorkflowDefinition{}, ErrInvalid
+		return WorkflowDefinition{}, invalidDefinition("status must be \"draft\" or \"active\", got %q", definition.Status)
 	}
 	if definition.Owns == nil {
 		definition.Owns = []string{}
@@ -253,30 +263,44 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition, profiles AgentPr
 		definition.Pipeline.WorkflowID = definition.ID
 	}
 	if definition.Pipeline.WorkflowID != definition.ID {
-		return WorkflowDefinition{}, ErrInvalid
+		return WorkflowDefinition{}, invalidDefinition("pipeline.workflow_id %q must match the definition id %q", definition.Pipeline.WorkflowID, definition.ID)
 	}
 	seenIDs, seenPositions := map[string]bool{}, map[int]bool{}
 	for i := range definition.Pipeline.Steps {
 		step := &definition.Pipeline.Steps[i]
 		step.ID, step.Name, step.Executor = strings.TrimSpace(step.ID), strings.TrimSpace(step.Name), strings.TrimSpace(step.Executor)
 		step.Profile, step.Model = strings.TrimSpace(step.Profile), strings.TrimSpace(step.Model)
-		if step.ID == "" || step.Position < 1 || step.Name == "" || step.Executor == "" || seenIDs[step.ID] || seenPositions[step.Position] {
-			return WorkflowDefinition{}, ErrInvalid
+		switch {
+		case step.ID == "":
+			return WorkflowDefinition{}, invalidDefinition("step at position %d: id is required", step.Position)
+		case seenIDs[step.ID]:
+			return WorkflowDefinition{}, invalidDefinition("step %q: id is used by more than one step", step.ID)
+		case step.Position < 1:
+			return WorkflowDefinition{}, invalidDefinition("step %q: position must be 1 or greater, got %d", step.ID, step.Position)
+		case seenPositions[step.Position]:
+			return WorkflowDefinition{}, invalidDefinition("step %q: position %d is used by more than one step", step.ID, step.Position)
+		case step.Name == "":
+			return WorkflowDefinition{}, invalidDefinition("step %q: name is required", step.ID)
+		case step.Executor == "":
+			return WorkflowDefinition{}, invalidDefinition("step %q: executor is required", step.ID)
 		}
 		if step.Profile != "" {
 			profile, ok := profiles.Profile(step.Profile)
-			if !ok || !profileAllowsExecutor(profile, step.Executor) {
-				return WorkflowDefinition{}, ErrInvalid
+			if !ok {
+				return WorkflowDefinition{}, invalidDefinition("step %q: profile %q is not a known agent profile", step.ID, step.Profile)
+			}
+			if !profileAllowsExecutor(profile, step.Executor) {
+				return WorkflowDefinition{}, invalidDefinition("step %q: profile %q does not allow executor %q", step.ID, step.Profile, step.Executor)
 			}
 			if step.Model != "" && step.Model != "${model}" && !profileAllowsModel(profile, step.Model) {
-				return WorkflowDefinition{}, ErrInvalid
+				return WorkflowDefinition{}, invalidDefinition("step %q: profile %q does not allow model %q", step.ID, step.Profile, step.Model)
 			}
 		}
 		seenIDs[step.ID], seenPositions[step.Position] = true, true
 	}
 	for position := 1; position <= len(definition.Pipeline.Steps); position++ {
 		if !seenPositions[position] {
-			return WorkflowDefinition{}, ErrInvalid
+			return WorkflowDefinition{}, invalidDefinition("step positions must run 1 to %d without gaps; position %d is missing", len(definition.Pipeline.Steps), position)
 		}
 	}
 	if err := validatePipelineStepOutputReferences(definition.Pipeline.Steps); err != nil {
@@ -286,6 +310,12 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition, profiles AgentPr
 		return WorkflowDefinition{}, err
 	}
 	return definition, nil
+}
+
+// invalidDefinition wraps ErrInvalid with an author-facing reason so the
+// control API returns an explicit 400 message instead of a bare "invalid input".
+func invalidDefinition(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 }
 
 func cloneJSONShape(shape JSONShape) JSONShape {

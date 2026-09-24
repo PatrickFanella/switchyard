@@ -8,6 +8,7 @@ import {
   type DashboardState,
   type EvidenceScope,
   type EvidenceSearchResponse,
+  type ExecutorSessionsResponse,
   type OperatorSafetyStatus,
   type ModelBrokerHistoryResponse,
   type ModelBrokerRequestHistoryItem,
@@ -309,6 +310,21 @@ export async function searchEvidence({ query, scope, cursor = '', limit = 25 }: 
   if (cursor) params.set('cursor', cursor);
   const response = await fetchJSON<EvidenceSearchResponse>(`/api/evidence/search?${params.toString()}`);
   return { ...response, hits: arrayOrEmpty(response.hits), next_cursor: response.next_cursor ?? '' };
+}
+
+export type ExecutorSessionsParams = { sessionID?: string; repository?: string; limit?: number };
+
+export async function loadExecutorSessions({ sessionID = '', repository = '', limit = 50 }: ExecutorSessionsParams = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (sessionID.trim()) params.set('session_id', sessionID.trim());
+  if (repository.trim()) params.set('repository', repository.trim());
+  const response = await fetchJSON<ExecutorSessionsResponse>(`/api/executor-sessions?${params.toString()}`);
+  return {
+    ...response,
+    executors: arrayOrEmpty(response.executors),
+    warnings: arrayOrEmpty(response.warnings),
+    sessions: arrayOrEmpty(response.sessions).map((session) => ({ ...session, runs: arrayOrEmpty(session.runs), requests: arrayOrEmpty(session.requests) })),
+  };
 }
 
 export async function loadCorrelationTargets() {

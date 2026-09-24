@@ -181,8 +181,9 @@ export function DevlogReviewPanel({ runID, runStatus, now = defaultNow }: Devlog
     if (loading && !review) return <HudLoadingState>Loading Devlog report review…</HudLoadingState>;
     if (!review) return <HudErrorState>Devlog review unavailable: {loadError || 'unknown error'}</HudErrorState>;
     const { source, delivery } = review;
-    const canDecide = delivery.enabled && review.state !== 'not-ready' && review.state !== 'delivered' && review.state !== 'delivering' && Boolean(review.report) && !busy;
-    const canDeliver = approvalUsable(review, now()) && !busy;
+    const readOnly = review.access?.can_write === false;
+    const canDecide = !readOnly && delivery.enabled && review.state !== 'not-ready' && review.state !== 'delivered' && review.state !== 'delivering' && Boolean(review.report) && !busy;
+    const canDeliver = !readOnly && approvalUsable(review, now()) && !busy;
     return (
       <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
         <div className="space-y-4">
@@ -248,6 +249,11 @@ export function DevlogReviewPanel({ runID, runStatus, now = defaultNow }: Devlog
                   <HudField className="sm:col-span-2" label="Report sha256 to approve" value={<code className="break-all">{review.report?.sha256 ?? '—'}</code>} />
                 </div>
                 <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted))]">{delivery.policy}</p>
+                {readOnly ? (
+                  <p className="mt-2 text-xs text-[hsl(var(--warn))]" data-testid="devlog-read-only">
+                    Read-only access: an admin must approve and deliver.
+                  </p>
+                ) : null}
                 {review.current_approval ? (
                   <p className="mt-2 text-xs text-[hsl(var(--ink))]" data-testid="devlog-current-decision">
                     Latest decision: {review.current_approval.decision} by {review.current_approval.actor} at {formatTime(review.current_approval.created_at)}; expires {formatTime(review.current_approval.expires_at)}.

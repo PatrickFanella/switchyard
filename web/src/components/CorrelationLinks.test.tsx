@@ -134,7 +134,7 @@ describe('run correlation links', () => {
     expect(anchor(container, 'https://git.example.test/OWNER/REPO/actions').dataset.correlationKind).toBe('gitea-ci');
     expect(anchor(container, `https://trace.example.test/traces/${traceID}`).dataset.correlationKind).toBe('trace');
     expect(anchor(container, '#/queues/requests/req-ok').dataset.correlationKind).toBe('request');
-    expect(anchor(container, '#/logs/search/correlations/ses_abc').dataset.correlationKind).toBe('session');
+    expect(anchor(container, '#/sessions/ses_abc').dataset.correlationKind).toBe('session');
     expect(anchor(container, '#/runs/run-old').dataset.correlationKind).toBe('run');
 
     // Unapproved hosts and schemes are never linked but remain copyable text.

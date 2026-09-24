@@ -1,6 +1,7 @@
 import { openPilotRunInputs } from './api';
 import { sanitizeLinkHref } from './components/artifactPreview';
 import { formatEvidenceSearchHash } from './components/evidenceSearch';
+import { formatSessionHash } from './components/sessionLinks';
 import { formatHash } from './hooks/useHashNavigation';
 import type { CorrelationTargets, OpenPilotStateResponse, RunDetail, RunStep } from './types';
 
@@ -229,9 +230,12 @@ export function resolveCorrelation(key: string, rawValue: string, context: { run
   if (requestKeys.has(key)) {
     return { ...base, kind: 'request', label: key, href: value ? formatHash('queues', '', value) : null, reason: value ? undefined : 'invalid-id' };
   }
-  if (sessionKeys.has(key) || executorRequestKeys.has(key)) {
+  if (sessionKeys.has(key)) {
+    return { ...base, kind: 'session', label: key, href: value ? formatSessionHash(value) : null, reason: value ? undefined : 'invalid-id' };
+  }
+  if (executorRequestKeys.has(key)) {
     const href = value ? formatEvidenceSearchHash({ scope: 'correlations', query: value, cursor: '' }) : null;
-    return { ...base, kind: sessionKeys.has(key) ? 'session' : 'executor-request', label: key, href, reason: href ? undefined : 'invalid-id' };
+    return { ...base, kind: 'executor-request', label: key, href, reason: href ? undefined : 'invalid-id' };
   }
   if (/(^|_)run_id$/.test(key)) {
     if (value === context.runID) return { ...base, kind: 'run', label: key, href: null, reason: 'current' };

@@ -261,6 +261,17 @@ describe('DevlogReviewPanel', () => {
     expect(button(container, 'Export Markdown').disabled).toBe(false);
   });
 
+  it('disables approval and delivery for read-only viewers', async () => {
+    const review = await reviewFixture({ access: { role: 'read', can_write: false } });
+    const approved = { ...review, state: 'approved' as const, current_approval: approvalFor(review) };
+    stubRoutes({ [`GET ${reviewURL}`]: () => json(approved) });
+    const container = await render();
+    expect(container.querySelector('[data-testid="devlog-read-only"]')).not.toBeNull();
+    expect(button(container, 'Approve this version').disabled).toBe(true);
+    expect(button(container, 'Deliver to owner/devlog#12').disabled).toBe(true);
+    expect(button(container, 'Export Markdown').disabled).toBe(false);
+  });
+
   it('reports a denied or failed review load', async () => {
     stubRoutes({ [`GET ${reviewURL}`]: () => json({ error: { message: 'authentication required' } }, 401) });
     const container = await render();
