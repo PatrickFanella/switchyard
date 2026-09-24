@@ -589,3 +589,34 @@ func (e *EnvWorkflowExecutors) resolveWorkflowModel(workflowID string, inputs ma
 		return firstNonEmpty(e.devlogModel, e.openPilotModel), nil
 	}
 }
+
+// workflowModelAllowlist returns the sorted models resolveWorkflowModel
+// accepts as an explicit model input for workflowID.
+func (e *EnvWorkflowExecutors) workflowModelAllowlist(workflowID string) []string {
+	allowed := e.devlogAllowedModels
+	if workflowID == string(WorkflowOpenPilot) {
+		allowed = e.openPilotAllowedModels
+	}
+	out := make([]string, 0, len(allowed))
+	for model, ok := range allowed {
+		if ok {
+			out = append(out, model)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (d devlogExecutor) PipelineStepModelAllowlist(workflowID string, step PipelineStep) ([]string, bool) {
+	if step.Model != "${model}" || d.env == nil {
+		return nil, false
+	}
+	return d.env.workflowModelAllowlist(workflowID), true
+}
+
+func (o openPilotExecutor) PipelineStepModelAllowlist(workflowID string, step PipelineStep) ([]string, bool) {
+	if step.Model != "${model}" || o.env == nil {
+		return nil, false
+	}
+	return o.env.workflowModelAllowlist(workflowID), true
+}

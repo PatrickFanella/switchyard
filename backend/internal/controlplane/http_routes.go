@@ -106,6 +106,7 @@ func (a *API) routes() *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": workflowsOrEmpty(a.store.ListWorkflows())})
 	})
 	mux.HandleFunc("POST /api/workflows/open-pilot/run", a.runOpenPilotWorkflow)
+	mux.HandleFunc("GET /api/workflows/{id}/model-policy", a.workflowModelPolicy)
 	mux.HandleFunc("GET /api/triggers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"triggers": triggersOrEmpty(a.store.ListTriggers())})
 	})
