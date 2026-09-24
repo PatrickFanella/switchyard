@@ -5,6 +5,7 @@ import { formatTime, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong
 import { LiveRefreshIndicator } from './LiveRefreshIndicator';
 import type { LiveRefreshState } from '../hooks/useLiveRefresh';
 import { ArtifactPreview } from './ArtifactPreview';
+import { ChangemakerReviewPanel } from './ChangemakerReviewPanel';
 import { DevlogReviewPanel } from './DevlogReviewPanel';
 import { RunPolicyEvidence } from './RunPolicyEvidence';
 import { collectCorrelations, summarizeRunFailure } from '../correlation';
@@ -373,6 +374,9 @@ export function RunCockpitPage({
       </HudSection>
 
       {selectedRunDetail.run.workflow_id === 'devlog' ? <DevlogReviewPanel runID={selectedRunDetail.run.id} runStatus={selectedRunDetail.run.status} /> : null}
+      {selectedRunDetail.run.workflow_id === 'changemaker-daily-digest' ? (
+        <ChangemakerReviewPanel onRevisionCreated={() => onRefresh()} runID={selectedRunDetail.run.id} runStatus={selectedRunDetail.run.status} />
+      ) : null}
 
       <HudSection kicker="Evidence" title="Evidence" note="Search artifacts and events together when you need the full paper trail.">
         <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">

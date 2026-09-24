@@ -1,15 +1,11 @@
 package controlplane
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -24,15 +20,15 @@ import (
 const (
 	devlogReportArtifactName = "devlog.md"
 
-	DevlogDeliveryAdapterDisabled          = "disabled"
-	DevlogDeliveryAdapterGiteaIssueComment = "gitea-issue-comment"
+	DevlogDeliveryAdapterDisabled          = DeliveryAdapterDisabled
+	DevlogDeliveryAdapterGiteaIssueComment = DeliveryAdapterGiteaIssueComment
 
 	DevlogApprovalApproved = "approved"
 	DevlogApprovalRejected = "rejected"
 
-	DevlogDeliverySending   = "sending"
-	DevlogDeliveryDelivered = "delivered"
-	DevlogDeliveryFailed    = "failed"
+	DevlogDeliverySending   = DeliverySending
+	DevlogDeliveryDelivered = DeliveryDelivered
+	DevlogDeliveryFailed    = DeliveryFailed
 
 	devlogApprovalTTL           = 24 * time.Hour
 	devlogDeliveryClaimTTL      = 2 * time.Minute
@@ -40,12 +36,12 @@ const (
 	devlogDeliveryMaxBodyBytes  = 60000
 	devlogDeliveryListLimit     = 50
 	devlogDeliveryMarkerPrefix  = "<!-- switchyard-devlog-delivery:"
-	devlogDeliveryErrorMaxBytes = 1000
-	devlogGiteaCommentPageSize  = 50
-	devlogGiteaCommentMaxPages  = 20
+	devlogDeliveryErrorMaxBytes = deliveryErrorMaxBytes
+	devlogGiteaCommentPageSize  = giteaCommentScanPageSize
+	devlogGiteaCommentMaxPages  = giteaCommentScanMaxPages
 )
 
-var devlogSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var devlogSHA256Pattern = sha256HexPattern
 
 // DevlogDeliveryApproval is one admin decision about delivering the exact
 // report artifact digest to the exact destination.
@@ -63,55 +59,16 @@ type DevlogDeliveryApproval struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
-// DevlogDeliveryReceipt is the durable record of one delivery identity. The
-// idempotency key is unique, so every attempt for the same report digest and
-// destination updates the same receipt.
-type DevlogDeliveryReceipt struct {
-	ID             string     `json:"id"`
-	IdempotencyKey string     `json:"idempotency_key"`
-	RunID          string     `json:"run_id"`
-	ArtifactID     string     `json:"artifact_id"`
-	ArtifactSHA256 string     `json:"artifact_sha256"`
-	Adapter        string     `json:"adapter"`
-	Destination    string     `json:"destination"`
-	ApprovalID     string     `json:"approval_id"`
-	Status         string     `json:"status"`
-	Attempts       int        `json:"attempts"`
-	Reconciled     bool       `json:"reconciled"`
-	ExternalID     string     `json:"external_id,omitempty"`
-	ExternalURL    string     `json:"external_url,omitempty"`
-	LastError      string     `json:"last_error,omitempty"`
-	RequestedBy    string     `json:"requested_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	DeliveredAt    *time.Time `json:"delivered_at,omitempty"`
-
-	claimToken string
-}
-
-// BeginDevlogDeliveryInput claims the delivery identity for one attempt.
-type BeginDevlogDeliveryInput struct {
-	IdempotencyKey string
-	RunID          string
-	ArtifactID     string
-	ArtifactSHA256 string
-	Adapter        string
-	Destination    string
-	ApprovalID     string
-	Actor          string
-	StaleAfter     time.Duration
-}
-
-// FinishDevlogDeliveryInput records the outcome of a claimed attempt.
-type FinishDevlogDeliveryInput struct {
-	IdempotencyKey string
-	ClaimToken     string
-	Delivered      bool
-	Reconciled     bool
-	ExternalID     string
-	ExternalURL    string
-	Error          string
-}
+// Devlog delivery reuses the generic delivery receipt, claim, and adapter
+// contract in delivery.go.
+type (
+	DevlogDeliveryReceipt     = DeliveryReceipt
+	BeginDevlogDeliveryInput  = BeginDeliveryInput
+	FinishDevlogDeliveryInput = FinishDeliveryInput
+	DevlogDeliveryMessage     = DeliveryMessage
+	DevlogDeliveryResult      = DeliveryResult
+	DevlogDeliveryAdapter     = DeliveryAdapter
+)
 
 func validateDevlogDeliveryApproval(approval DevlogDeliveryApproval) error {
 	if approval.ID == "" || approval.RunID == "" || approval.ArtifactID == "" || !devlogSHA256Pattern.MatchString(approval.ArtifactSHA256) ||
@@ -125,26 +82,15 @@ func validateDevlogDeliveryApproval(approval DevlogDeliveryApproval) error {
 }
 
 func validateBeginDevlogDelivery(input BeginDevlogDeliveryInput) error {
-	if input.IdempotencyKey == "" || input.RunID == "" || input.ArtifactID == "" || !devlogSHA256Pattern.MatchString(input.ArtifactSHA256) ||
-		input.Adapter == "" || input.Destination == "" || input.ApprovalID == "" || input.Actor == "" {
-		return ErrInvalid
-	}
-	return nil
+	return validateBeginDelivery(input)
 }
 
 func finishedDevlogDeliveryStatus(input FinishDevlogDeliveryInput) string {
-	if input.Delivered {
-		return DevlogDeliveryDelivered
-	}
-	return DevlogDeliveryFailed
+	return finishedDeliveryStatus(input)
 }
 
 func boundedDevlogDeliveryError(message string) string {
-	message = RedactForLog(strings.TrimSpace(message))
-	if len(message) > devlogDeliveryErrorMaxBytes {
-		message = strings.ToValidUTF8(message[:devlogDeliveryErrorMaxBytes], "")
-	}
-	return message
+	return boundedDeliveryError(message)
 }
 
 // devlogDeliveryIdempotencyKey binds a delivery to the adapter, destination,
@@ -156,32 +102,7 @@ func devlogDeliveryIdempotencyKey(adapter, destination, artifactSHA256 string) s
 }
 
 func devlogDeliveryMarker(key string) string {
-	return devlogDeliveryMarkerPrefix + key + " -->"
-}
-
-// DevlogDeliveryMessage is what an adapter publishes: the exact report bytes
-// followed by a provenance footer and the idempotency marker.
-type DevlogDeliveryMessage struct {
-	IdempotencyKey string
-	RunID          string
-	ArtifactSHA256 string
-	Body           string
-}
-
-// DevlogDeliveryResult identifies the published object at the destination.
-type DevlogDeliveryResult struct {
-	ExternalID  string
-	ExternalURL string
-}
-
-// DevlogDeliveryAdapter publishes to exactly one configured destination.
-// FindDelivery must report whether a message carrying the idempotency key is
-// already present, so a retry after a lost response does not post again.
-type DevlogDeliveryAdapter interface {
-	Name() string
-	Destination() string
-	FindDelivery(ctx context.Context, idempotencyKey string) (DevlogDeliveryResult, bool, error)
-	Deliver(ctx context.Context, message DevlogDeliveryMessage) (DevlogDeliveryResult, error)
+	return deliveryMarker(devlogDeliveryMarkerPrefix, key)
 }
 
 // DevlogDelivery holds the configured adapter. A nil adapter means delivery is
@@ -246,119 +167,14 @@ func NewEnvDevlogDelivery() *DevlogDelivery {
 	return NewDevlogDelivery(adapter, reason)
 }
 
+var devlogDeliverySettingNames = issueCommentSettingNames{Adapter: "DEVLOG_DELIVERY_ADAPTER", Issue: "DEVLOG_DELIVERY_GITEA_ISSUE", AllowedRepos: "DEVLOG_DELIVERY_ALLOWED_REPOS"}
+
 func devlogDeliveryAdapterFromConfig(adapterName, issue, allowedRepos string, giteaConfigured bool, client func() GiteaIssueCommentClient) (DevlogDeliveryAdapter, string) {
-	switch strings.TrimSpace(adapterName) {
-	case "", DevlogDeliveryAdapterDisabled:
-		return nil, "DEVLOG_DELIVERY_ADAPTER is disabled"
-	case DevlogDeliveryAdapterGiteaIssueComment:
-	default:
-		return nil, fmt.Sprintf("DEVLOG_DELIVERY_ADAPTER %q is not supported; use %s or %s", strings.TrimSpace(adapterName), DevlogDeliveryAdapterDisabled, DevlogDeliveryAdapterGiteaIssueComment)
-	}
-	repo, number, err := parseDevlogGiteaIssueDestination(issue)
-	if err != nil {
-		return nil, "DEVLOG_DELIVERY_GITEA_ISSUE " + err.Error()
-	}
-	allowed := false
-	for _, slug := range splitCSV(allowedRepos) {
-		if strings.EqualFold(slug, repo) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return nil, fmt.Sprintf("destination repository %s is not listed in DEVLOG_DELIVERY_ALLOWED_REPOS", repo)
-	}
-	if !giteaConfigured {
-		return nil, "GITEA_BASE_URL and GITEA_TOKEN are required for the gitea-issue-comment adapter"
-	}
-	return &giteaIssueCommentDelivery{client: client(), repo: repo, issue: number}, ""
+	return issueCommentAdapterFromConfig(devlogDeliverySettingNames, devlogDeliveryMarkerPrefix, adapterName, issue, allowedRepos, giteaConfigured, client)
 }
 
 func parseDevlogGiteaIssueDestination(value string) (string, int, error) {
-	value = strings.TrimSpace(value)
-	repo, rawNumber, ok := strings.Cut(value, "#")
-	if value == "" {
-		return "", 0, errors.New("is not set")
-	}
-	number, err := strconv.Atoi(rawNumber)
-	if !ok || err != nil || number < 1 || !validOpenPilotRepositorySlug(repo) {
-		return "", 0, errors.New("must be owner/repo#number")
-	}
-	return repo, number, nil
-}
-
-// GiteaIssueComment is the subset of a Gitea issue comment the delivery
-// adapter needs.
-type GiteaIssueComment struct {
-	ID      int64  `json:"id"`
-	Body    string `json:"body"`
-	HTMLURL string `json:"html_url"`
-	User    *struct {
-		Login string `json:"login"`
-	} `json:"user,omitempty"`
-}
-
-// GiteaIssueCommentClient lists and creates comments on one issue and reports
-// the authenticated account, so reconciliation only trusts markers written by
-// the delivery identity.
-type GiteaIssueCommentClient interface {
-	CurrentUserLogin(ctx context.Context) (string, error)
-	ListIssueComments(ctx context.Context, repo string, issue, page, limit int) ([]GiteaIssueComment, error)
-	CreateIssueComment(ctx context.Context, repo string, issue int, body string) (GiteaIssueComment, error)
-}
-
-type giteaIssueCommentDelivery struct {
-	client GiteaIssueCommentClient
-	repo   string
-	issue  int
-}
-
-func (g *giteaIssueCommentDelivery) Name() string { return DevlogDeliveryAdapterGiteaIssueComment }
-func (g *giteaIssueCommentDelivery) Destination() string {
-	return g.repo + "#" + strconv.Itoa(g.issue)
-}
-
-// FindDelivery scans the issue comments for the marker. It refuses to report
-// absence when the scan hit its page cap, so an unconfirmed state never leads
-// to a second post.
-func (g *giteaIssueCommentDelivery) FindDelivery(ctx context.Context, key string) (DevlogDeliveryResult, bool, error) {
-	login, err := g.client.CurrentUserLogin(ctx)
-	if err != nil {
-		return DevlogDeliveryResult{}, false, fmt.Errorf("resolve delivery identity: %w", err)
-	}
-	marker := devlogDeliveryMarker(key)
-	seen := map[int64]bool{}
-	for page := 1; page <= devlogGiteaCommentMaxPages; page++ {
-		comments, err := g.client.ListIssueComments(ctx, g.repo, g.issue, page, devlogGiteaCommentPageSize)
-		if err != nil {
-			return DevlogDeliveryResult{}, false, fmt.Errorf("list destination comments: %w", err)
-		}
-		fresh := 0
-		for _, comment := range comments {
-			if seen[comment.ID] {
-				continue
-			}
-			seen[comment.ID] = true
-			fresh++
-			if comment.User != nil && strings.EqualFold(comment.User.Login, login) && strings.Contains(comment.Body, marker) {
-				return DevlogDeliveryResult{ExternalID: strconv.FormatInt(comment.ID, 10), ExternalURL: comment.HTMLURL}, true, nil
-			}
-		}
-		// A short page, or a page with nothing new (the endpoint ignored
-		// paging and returned the full list), ends the scan.
-		if len(comments) < devlogGiteaCommentPageSize || fresh == 0 {
-			return DevlogDeliveryResult{}, false, nil
-		}
-	}
-	return DevlogDeliveryResult{}, false, fmt.Errorf("destination has more than %d comments; cannot confirm the report was not already delivered", devlogGiteaCommentPageSize*devlogGiteaCommentMaxPages)
-}
-
-func (g *giteaIssueCommentDelivery) Deliver(ctx context.Context, message DevlogDeliveryMessage) (DevlogDeliveryResult, error) {
-	comment, err := g.client.CreateIssueComment(ctx, g.repo, g.issue, message.Body)
-	if err != nil {
-		return DevlogDeliveryResult{}, err
-	}
-	return DevlogDeliveryResult{ExternalID: strconv.FormatInt(comment.ID, 10), ExternalURL: comment.HTMLURL}, nil
+	return parseGiteaIssueDestination(value)
 }
 
 // DevlogReportSource describes what the report was generated from, shown to
