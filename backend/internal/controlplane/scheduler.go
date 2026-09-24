@@ -13,6 +13,7 @@ import (
 type SchedulerStatus struct {
 	Enabled         bool      `json:"enabled"`
 	Running         bool      `json:"running"`
+	Paused          bool      `json:"paused"`
 	Interval        string    `json:"interval"`
 	LastTick        time.Time `json:"last_tick,omitempty"`
 	LastError       string    `json:"last_error,omitempty"`
@@ -31,12 +32,28 @@ type Scheduler struct {
 
 	mu       sync.RWMutex
 	running  bool
+	paused   bool
 	lastTick time.Time
 	lastErr  string
 	done     chan struct{}
 }
 
 func (s *Scheduler) SetOpenPilotAssigner(assigner *OpenPilotAssigner) { s.assigner = assigner }
+
+// SetPaused suspends or resumes scheduled dispatch without stopping the
+// scheduler loop. The flag is process-local and is not persisted.
+func (s *Scheduler) SetPaused(paused bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = paused
+}
+
+// Paused reports whether scheduled dispatch is currently suspended.
+func (s *Scheduler) Paused() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.paused
+}
 
 func (s *Scheduler) SetAsyncDispatch(enabled bool) {
 	s.async = enabled
@@ -62,7 +79,7 @@ func (s *Scheduler) SetLocation(location *time.Location) {
 func (s *Scheduler) Status() SchedulerStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return SchedulerStatus{Enabled: true, Running: s.running, Interval: s.interval.String(), LastTick: s.lastTick, LastError: s.lastErr, Timezone: s.location.String(), MissedRunPolicy: "coalesce_once"}
+	return SchedulerStatus{Enabled: true, Running: s.running, Paused: s.paused, Interval: s.interval.String(), LastTick: s.lastTick, LastError: s.lastErr, Timezone: s.location.String(), MissedRunPolicy: "coalesce_once"}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
@@ -117,7 +134,11 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	s.mu.Lock()
 	s.lastTick = now
 	s.lastErr = ""
+	paused := s.paused
 	s.mu.Unlock()
+	if paused {
+		return nil
+	}
 
 	for _, trigger := range s.store.ListTriggers() {
 		if !trigger.Enabled || !isScheduledTrigger(trigger.Type) || trigger.Schedule == "" {

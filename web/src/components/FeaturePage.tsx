@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { AdapterPayload, AgentProfile, ViewID } from '../types';
+import { ConfigPage } from './ConfigPage';
 import { EvidenceSearchPage } from './EvidenceSearchPage';
 import {
   formatTime,
@@ -176,52 +177,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
   }
 
   if (view === 'config') {
-    return (
-      <HudSection kicker="Workflow policy / broker" title="Configuration matrix" note="Read-only runtime configuration, feature flags, limits, and module health. Secrets and runtime edits are intentionally excluded.">
-        <div className="grid gap-3 md:grid-cols-3">
-          <HudField label="Environment" value={adapters.config.environment} />
-          <HudField label="Version" value={adapters.config.version} />
-          <HudField label="Base URL" value={adapters.config.base_url || 'not configured'} />
-          <HudField label="Workflow policy" value={`${adapters.changemaker.service.status} ${adapters.changemaker.service.version}`} />
-          <HudField label="Health" value={adapters.health.status} />
-          <HudField label="Checked" value={formatTime(adapters.health.checked_at)} />
-        </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <FeatureCard>
-            <h3 className="hud-label text-[hsl(var(--signal))]">Features</h3>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {adapters.config.features.map((feature) => (
-                <span key={feature} className="hud-chip bg-[hsl(var(--panel-soft))] px-2.5 py-1 text-[0.62rem] text-[hsl(var(--ink))]">
-                  {feature}
-                </span>
-              ))}
-            </div>
-          </FeatureCard>
-          <FeatureCard>
-            <h3 className="hud-label text-[hsl(var(--signal))]">Limits</h3>
-            <div className="mt-4 grid gap-2">
-              {Object.entries(adapters.config.limits).map(([key, value]) => (
-                <HudField key={key} label={key} value={value} />
-              ))}
-            </div>
-          </FeatureCard>
-        </div>
-        <FeatureCard>
-          <h3 className="hud-label text-[hsl(var(--signal))]">Module health</h3>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {adapters.health.services.map((service) => (
-              <HudPanel key={service.name} className="bg-[hsl(var(--panel-soft))] p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{service.name}</span>
-                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(service.status)}`}>{service.status}</span>
-                </div>
-                <p className="mt-2 text-xs text-[hsl(var(--muted))]">{service.details || 'No details'}</p>
-              </HudPanel>
-            ))}
-          </div>
-        </FeatureCard>
-      </HudSection>
-    );
+    return <ConfigPage adapters={adapters} />;
   }
 
   if (view === 'agents') {
