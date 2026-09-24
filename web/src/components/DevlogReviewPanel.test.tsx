@@ -171,12 +171,10 @@ describe('DevlogReviewPanel', () => {
     });
     const container = await render();
     await click(button(container, 'Export Markdown'));
-    // Digest verification is asynchronous (Web Crypto); wait for its outcome.
-    await vi.waitFor(async () => {
-      await flush();
-      expect(container.textContent).toContain('Nothing was sent to any destination.');
-    });
-    expect(created).toHaveLength(1);
+    // The digest check uses crypto.subtle, which settles on a real async tick
+    // rather than a microtask, so wait for the outcome instead of a fixed flush.
+    await vi.waitFor(() => expect(created).toHaveLength(1));
+    await flush();
     expect(await created[0].text()).toBe(markdown);
     expect(container.textContent).toContain('sha256 verified');
     expect(container.textContent).toContain('Nothing was sent to any destination.');
@@ -192,10 +190,7 @@ describe('DevlogReviewPanel', () => {
     });
     const container = await render();
     await click(button(container, 'Export Markdown'));
-    await vi.waitFor(async () => {
-      await flush();
-      expect(container.textContent).toContain('Export refused');
-    });
+    await vi.waitFor(() => expect(container.textContent).toContain('Export refused'));
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
