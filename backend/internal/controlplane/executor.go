@@ -275,12 +275,12 @@ func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, i
 	if artifactName != "" {
 		artifactKind := firstNonEmpty(inputs["artifact_kind"], "json")
 		artifactBody, _ := json.MarshalIndent(inputs, "", "  ")
-		uriPrefix := "data:application/json;charset=utf-8,"
+		contentType := "application/json;charset=utf-8"
 		if artifactKind == "markdown" {
 			artifactBody = []byte(renderPipelineStepMarkdown(inputs))
-			uriPrefix = "data:text/markdown;charset=utf-8,"
+			contentType = "text/markdown;charset=utf-8"
 		}
-		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: uriPrefix + url.QueryEscape(string(artifactBody))})
+		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: inlineArtifactURI(contentType, string(artifactBody))})
 	} else if len(inputs) > 0 {
 		artifactKind := firstNonEmpty(inputs["artifact_kind"], "json")
 		if artifactKind == "markdown" {
@@ -289,12 +289,12 @@ func (g genericWorkflowExecutor) executeGenericInternalStep(step PipelineStep, i
 			artifactName = step.ID + ".json"
 		}
 		artifactBody, _ := json.MarshalIndent(inputs, "", "  ")
-		uriPrefix := "data:application/json;charset=utf-8,"
+		contentType := "application/json;charset=utf-8"
 		if artifactKind == "markdown" {
 			artifactBody = []byte(renderPipelineStepMarkdown(inputs))
-			uriPrefix = "data:text/markdown;charset=utf-8,"
+			contentType = "text/markdown;charset=utf-8"
 		}
-		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: uriPrefix + url.QueryEscape(string(artifactBody))})
+		out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: artifactName, Kind: artifactKind, URI: inlineArtifactURI(contentType, string(artifactBody))})
 	}
 	state["summary"] = out.Summary
 	return out
@@ -323,7 +323,7 @@ func (g genericWorkflowExecutor) executeGenericModelStep(ctx context.Context, ru
 	}
 	out := PipelineStepExecution{
 		Summary:        "Generated model output",
-		Artifacts:      []CreateArtifactInput{{Name: step.ID + ".md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}},
+		Artifacts:      []CreateArtifactInput{{Name: step.ID + ".md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", response.Content)}},
 		CorrelationIDs: response.CorrelationIDs,
 		Inputs:         map[string]string{"model": model, "prompt": prompt},
 	}
@@ -412,7 +412,7 @@ func (g genericWorkflowExecutor) executeGenericHTTPStep(ctx context.Context, ste
 	}
 	artifactName := firstNonEmpty(strings.TrimSpace(inputs["artifact_name"]), step.ID+".response")
 	artifactKind := firstNonEmpty(strings.TrimSpace(inputs["artifact_kind"]), "http-response")
-	uri := "data:application/octet-stream," + url.QueryEscape(string(responseBody))
+	uri := inlineArtifactURI("application/octet-stream", string(responseBody))
 	if len(uri) > artifactMaxBytes() {
 		return PipelineStepExecution{}, fmt.Errorf("encoded http response exceeds artifact limit")
 	}

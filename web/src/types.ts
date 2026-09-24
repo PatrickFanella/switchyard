@@ -114,6 +114,13 @@ export type Artifact = {
   name: string;
   kind: string;
   uri: string;
+  // Inline artifact metadata recorded by the control plane. Optional so
+  // historical fixtures and legacy-inline rows without measurements still render.
+  storage_class?: 'inline-data-uri' | 'legacy-inline' | string;
+  content_type?: string;
+  byte_size?: number;
+  sha256?: string;
+  retention_until?: string | null;
   created_at: string;
 };
 
