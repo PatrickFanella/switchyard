@@ -20,4 +20,5 @@ Keep exploratory notes in `docs/research/` until they become stable references.
 - [Source collection](source-collection.md) — read-only `source` steps, the `gitea-activity` adapter, grounded model steps, and the grounded Changemaker digest.
 - [Changemaker review, revision, and publication](changemaker-review.md) — draft threads and versions, decisions bound to the draft and source evidence digests, same-source or re-collected revisions, opt-in `gitea-issue-comment` publication, and idempotent receipts.
 - [Runtime configuration](runtime-configuration.md) — settings inventory, secret redaction, and the v1 boundary between file-managed and runtime-mutable settings.
+- [Prompt authoring](prompt-authoring.md) — prompt ownership (workflow step templates versus profile prompt contracts), variable validation, the dry-run preview with redaction, promotion through workflow versions, and run binding to the effective template version.
 - [Workflow catalog](workflow-catalog.md) — dashboard catalog and linear draft editor for workflow definitions, validation messages, read-only access, and the draft-versus-active save semantics.

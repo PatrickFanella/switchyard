@@ -171,12 +171,20 @@ export type RunModelPolicyStep = {
   model_source: RunModelSource;
   recorded: boolean;
   error?: string;
+  /** Owner of the step prompt; absent for steps without one. */
+  prompt_owner?: 'workflow-definition' | 'built-in';
+  prompt_input?: 'prompt' | 'template';
+  /** SHA-256 of the unrendered template captured in the run snapshot. */
+  prompt_template_sha256?: string;
 };
 
 export type RunModelPolicy = {
   workflow_id: string;
   pipeline_id?: string;
   pipeline_version?: string;
+  /** Workflow-definition version whose templates the run executes; 0 for built-in pipelines and older snapshots. */
+  definition_id?: string;
+  definition_version?: number;
   override?: string;
   override_status: 'none' | 'accepted' | 'rejected';
   rejections?: string[];

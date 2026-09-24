@@ -30,7 +30,7 @@ const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: st
   observability: { eyebrow: 'Telemetry', title: 'Observability', description: 'Follow broker health, latency, errors, and trace correlation.' },
   sessions: { eyebrow: 'OpenCode executor', title: 'Sessions', description: 'Review active execution sessions and their workflow context.' },
   logs: { eyebrow: 'Evidence', title: 'Logs and search', description: 'Search runtime evidence across native Switchyard modules.' },
-  prompts: { eyebrow: 'Workflow policy', title: 'Prompt library', description: 'Review prompt contracts, inputs, and generated outputs.' },
+  prompts: { eyebrow: 'Workflow policy', title: 'Prompt authoring', description: 'Edit, preview, and version model-step templates; inspect profile prompt contracts.' },
   config: { eyebrow: 'Runtime', title: 'Configuration', description: 'Effective values, their sources and drift, and how to change each setting.' },
   agents: { eyebrow: 'Profiles', title: 'Agent profiles', description: 'Inspect effective profiles, version history, drafts, activation, and rollback.' },
   skills: { eyebrow: 'Capabilities', title: 'Runtime capabilities', description: 'Review profile-scoped executors; capability management is not a dashboard control.' },

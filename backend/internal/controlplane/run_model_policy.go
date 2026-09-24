@@ -67,15 +67,28 @@ type RunModelPolicyStep struct {
 	ModelSource           string   `json:"model_source"`
 	Recorded              bool     `json:"recorded"`
 	Error                 string   `json:"error,omitempty"`
+	// PromptOwner is workflow-definition for a model step whose prompt is its
+	// template input, built-in for a model or opencode step whose executor
+	// assembles the prompt in code, and empty for other steps.
+	PromptOwner string `json:"prompt_owner,omitempty"`
+	// PromptInput names the template input (prompt or template), and
+	// PromptTemplateSHA256 hashes the unrendered template in the run snapshot.
+	PromptInput          string `json:"prompt_input,omitempty"`
+	PromptTemplateSHA256 string `json:"prompt_template_sha256,omitempty"`
 }
 
 // RunModelPolicy summarizes the profile and model policy of a run or of a
 // prospective run of a workflow, including whether a model override is
 // accepted and why it was rejected.
 type RunModelPolicy struct {
-	WorkflowID         string               `json:"workflow_id"`
-	PipelineID         string               `json:"pipeline_id,omitempty"`
-	PipelineVersion    string               `json:"pipeline_version,omitempty"`
+	WorkflowID      string `json:"workflow_id"`
+	PipelineID      string `json:"pipeline_id,omitempty"`
+	PipelineVersion string `json:"pipeline_version,omitempty"`
+	// DefinitionID and DefinitionVersion identify the workflow-definition
+	// version whose step templates the run executes. DefinitionVersion is zero
+	// for built-in pipelines and for snapshots created before it was recorded.
+	DefinitionID       string               `json:"definition_id,omitempty"`
+	DefinitionVersion  int                  `json:"definition_version"`
 	Override           string               `json:"override,omitempty"`
 	OverrideStatus     string               `json:"override_status"`
 	Rejections         []string             `json:"rejections,omitempty"`
@@ -135,7 +148,7 @@ func profileModelRejection(profile AgentProfile, model string) error {
 // modelPolicy evaluates every step of pipeline against inputs. recorded steps,
 // when present, supply the values the runner actually used.
 func (r *Runner) modelPolicy(workflowID string, pipeline Pipeline, inputs map[string]string, recorded []RunStep) RunModelPolicy {
-	policy := RunModelPolicy{WorkflowID: workflowID, PipelineID: pipeline.ID, OverrideStatus: RunModelOverrideStatusNone, Steps: []RunModelPolicyStep{}}
+	policy := RunModelPolicy{WorkflowID: workflowID, PipelineID: pipeline.ID, DefinitionID: pipeline.DefinitionID, DefinitionVersion: pipeline.DefinitionVersion, OverrideStatus: RunModelOverrideStatusNone, Steps: []RunModelPolicyStep{}}
 	var executor WorkflowExecutor
 	if r.executors != nil {
 		executor = r.executors.ExecutorFor(workflowID)
@@ -160,6 +173,7 @@ func (r *Runner) modelPolicy(workflowID string, pipeline Pipeline, inputs map[st
 	var allowed []string
 	for _, step := range steps {
 		entry := RunModelPolicyStep{StepID: step.ID, StepName: step.Name, Position: step.Position, Executor: step.Executor, WorkflowModel: strings.TrimSpace(step.Model)}
+		applyStepPromptPolicy(&entry, step)
 		profile, hasProfile := AgentProfile{}, false
 		if id := strings.TrimSpace(step.Profile); id != "" {
 			entry.ProfileID = id
@@ -239,6 +253,22 @@ func (r *Runner) modelPolicy(workflowID string, pipeline Pipeline, inputs map[st
 		}
 	}
 	return policy
+}
+
+// applyStepPromptPolicy reports which store owns a step's prompt and, for a
+// template, the hash of the unrendered text captured in the snapshot.
+func applyStepPromptPolicy(entry *RunModelPolicyStep, step PipelineStep) {
+	switch {
+	case isPromptStep(step.Executor):
+		input, template := promptTemplateInput(step.Inputs)
+		if strings.TrimSpace(template) == "" {
+			entry.PromptOwner = PromptOwnerBuiltIn
+			return
+		}
+		entry.PromptOwner, entry.PromptInput, entry.PromptTemplateSHA256 = PromptOwnerWorkflowDefinition, input, promptTemplateSHA256(template)
+	case step.Executor == "opencode":
+		entry.PromptOwner = PromptOwnerBuiltIn
+	}
 }
 
 func applyRecordedStepPolicy(entry *RunModelPolicyStep, step RunStep) {

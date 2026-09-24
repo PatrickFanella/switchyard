@@ -2,11 +2,12 @@ import { arrayOrEmpty } from '../api';
 import { describeOverrideRule, modelSourceLabel, profileVersionLabel } from '../profileVersions';
 import type { RunModelPolicy } from '../types';
 import { HudEmptyState, HudLabel, HudPanel, HudSection } from './hud';
+import { RunPromptEvidence } from './RunPromptEvidence';
 
 /** Shows the profile version, model, and the source of each value a run resolved. */
 export function RunPolicyEvidence({ policy }: { policy?: RunModelPolicy }) {
   return (
-    <HudSection kicker="Policy" title="Resolved policy" note="Profile versions come from the run's snapshot, so later profile changes never alter this run. Each model shows where it came from.">
+    <HudSection kicker="Policy" title="Resolved policy" note="Profile and prompt versions come from the run's snapshot, so later profile or workflow changes never alter this run. Each model shows where it came from.">
       {!policy ? (
         <HudEmptyState>This run has no pipeline snapshot, so no profile or model policy was recorded.</HudEmptyState>
       ) : (
@@ -73,6 +74,7 @@ export function RunPolicyEvidence({ policy }: { policy?: RunModelPolicy }) {
               <HudLabel>No pipeline steps</HudLabel>
             </HudPanel>
           ) : null}
+          <RunPromptEvidence policy={policy} />
         </div>
       )}
     </HudSection>
