@@ -20,8 +20,22 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	seed := d.env.buildDevlogMarkdown(run)
-	if _, err := store.FinishRunStep(collect.ID, StepSucceeded, "Collected recent Switchyard run history", "", nil); err != nil {
+	collection, err := d.env.collectDevlog(ctx, run)
+	if err != nil {
+		_, _ = store.FinishRunStep(collect.ID, stepStatusForError(err), "", err.Error(), nil)
+		return WorkflowExecution{}, err
+	}
+	if collection.evidence != nil {
+		for _, event := range devlogEvidenceEvents(*collection.evidence) {
+			_, _ = store.AddEvent(run.ID, event.Type, event.Message)
+		}
+		if _, err := store.AddArtifact(withRunID(devlogEvidenceArtifact(*collection.evidence), run.ID)); err != nil {
+			_, _ = store.FinishRunStep(collect.ID, StepFailed, "", err.Error(), nil)
+			return WorkflowExecution{}, err
+		}
+	}
+	seed := collection.seed
+	if _, err := store.FinishRunStep(collect.ID, StepSucceeded, collection.summary(), "", nil); err != nil {
 		return WorkflowExecution{}, err
 	}
 
@@ -34,9 +48,9 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 		return WorkflowExecution{}, err
 	}
 	markdown := seed
-	generated, genErr := d.env.generateDevlogWithModel(ctx, seed, model)
+	generated, genErr := d.env.generateDevlogForCollection(ctx, collection, seed, model)
 	if genErr == nil && strings.TrimSpace(generated.Content) != "" {
-		markdown = generated.Content
+		markdown = collection.finalMarkdown(generated.Content, true)
 		if _, err := store.FinishRunStep(generate.ID, StepSucceeded, "Generated Markdown with model", "", generated.CorrelationIDs); err != nil {
 			return WorkflowExecution{}, err
 		}
@@ -62,7 +76,12 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 		return WorkflowExecution{}, err
 	}
 
-	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}}}, nil
+	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: collection.generatedMessage()}}}, nil
+}
+
+func withRunID(artifact CreateArtifactInput, runID string) CreateArtifactInput {
+	artifact.RunID = runID
+	return artifact
 }
 
 func (d devlogExecutor) ResolvePipelineStepModel(workflowID string, step PipelineStep, inputs map[string]string) (string, error) {
@@ -75,40 +94,78 @@ func (d devlogExecutor) ResolvePipelineStepModel(workflowID string, step Pipelin
 	return step.Model, nil
 }
 
+const (
+	devlogStateMarkdown   = "devlog.markdown"
+	devlogStateCollection = "devlog.collection"
+)
+
+// pipelineDevlogCollection returns the collection from this attempt's state,
+// or re-collects it when collect-history succeeded in an earlier attempt and
+// was skipped on retry or resume.
+func (d devlogExecutor) pipelineDevlogCollection(ctx context.Context, run Run, state map[string]any) (devlogCollection, error) {
+	if collection, ok := state[devlogStateCollection].(devlogCollection); ok {
+		return collection, nil
+	}
+	collection, err := d.env.collectDevlog(ctx, run)
+	if err != nil {
+		return devlogCollection{}, err
+	}
+	state[devlogStateCollection] = collection
+	return collection, nil
+}
+
 func (d devlogExecutor) ExecutePipelineStep(ctx context.Context, run Run, step PipelineStep, state map[string]any) (PipelineStepExecution, error) {
 	switch step.ID {
 	case "collect-history":
-		seed := d.env.buildDevlogMarkdown(run)
-		state["devlog.markdown"] = seed
-		return PipelineStepExecution{Summary: "Collected recent Switchyard run history"}, nil
+		collection, err := d.env.collectDevlog(ctx, run)
+		if err != nil {
+			return PipelineStepExecution{}, err
+		}
+		state[devlogStateCollection] = collection
+		state[devlogStateMarkdown] = collection.seed
+		out := PipelineStepExecution{Summary: collection.summary()}
+		if collection.evidence != nil {
+			out.Events = devlogEvidenceEvents(*collection.evidence)
+			out.Artifacts = []CreateArtifactInput{devlogEvidenceArtifact(*collection.evidence)}
+			out.Outputs = devlogEvidenceOutputs(*collection.evidence)
+		}
+		return out, nil
 	case "generate-markdown":
-		seed, _ := state["devlog.markdown"].(string)
+		collection, err := d.pipelineDevlogCollection(ctx, run, state)
+		if err != nil {
+			return PipelineStepExecution{}, err
+		}
+		seed, _ := state[devlogStateMarkdown].(string)
 		if seed == "" {
-			seed = d.env.buildDevlogMarkdown(run)
+			seed = collection.seed
 		}
 		markdown := seed
 		model := firstNonEmpty(step.Model, d.env.devlogModel)
-		generated, genErr := d.env.generateDevlogWithModel(ctx, applyPipelineProfilePrompt(step, seed), model)
+		generated, genErr := d.env.generateDevlogForCollection(ctx, collection, applyPipelineProfilePrompt(step, seed), model)
 		if genErr == nil && strings.TrimSpace(generated.Content) != "" {
-			markdown = generated.Content
-			state["devlog.markdown"] = markdown
+			markdown = collection.finalMarkdown(generated.Content, true)
+			state[devlogStateMarkdown] = markdown
 			return PipelineStepExecution{Summary: "Generated Markdown with model", CorrelationIDs: generated.CorrelationIDs}, nil
 		}
-		state["devlog.markdown"] = markdown
+		state[devlogStateMarkdown] = markdown
 		out := PipelineStepExecution{Summary: "Used deterministic Markdown fallback"}
 		if genErr != nil {
 			out.Events = append(out.Events, WorkflowExecutionEvent{Type: "devlog.generate.fallback", Message: genErr.Error()})
 		}
 		return out, nil
 	case "attach-artifact":
-		markdown, _ := state["devlog.markdown"].(string)
+		collection, err := d.pipelineDevlogCollection(ctx, run, state)
+		if err != nil {
+			return PipelineStepExecution{}, err
+		}
+		markdown, _ := state[devlogStateMarkdown].(string)
 		if markdown == "" {
-			markdown = d.env.buildDevlogMarkdown(run)
+			markdown = collection.seed
 		}
 		state["summary"] = "Generated Devlog markdown artifact"
 		return PipelineStepExecution{
 			Summary: "Attached devlog.md artifact",
-			Events:  []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}},
+			Events:  []WorkflowExecutionEvent{{Type: "devlog.generated", Message: collection.generatedMessage()}},
 			Artifacts: []CreateArtifactInput{{
 				Name: "devlog.md",
 				Kind: "markdown",
@@ -121,12 +178,21 @@ func (d devlogExecutor) ExecutePipelineStep(ctx context.Context, run Run, step P
 }
 
 func (e *EnvWorkflowExecutors) executeDevlog(ctx context.Context, run Run) (WorkflowExecution, error) {
-	markdown := e.buildDevlogMarkdown(run)
-	if generated, err := e.generateDevlogWithLLM(ctx, markdown); err == nil && strings.TrimSpace(generated) != "" {
-		markdown = generated
+	collection, err := e.collectDevlog(ctx, run)
+	if err != nil {
+		return WorkflowExecution{}, err
+	}
+	markdown := collection.seed
+	if generated, err := e.generateDevlogForCollection(ctx, collection, markdown, ""); err == nil && strings.TrimSpace(generated.Content) != "" {
+		markdown = collection.finalMarkdown(generated.Content, true)
 	}
 	uri := inlineArtifactURI("text/markdown;charset=utf-8", markdown)
-	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}}, Artifacts: []CreateArtifactInput{{Name: "devlog.md", Kind: "markdown", URI: uri}}}, nil
+	execution := WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: collection.generatedMessage()}}, Artifacts: []CreateArtifactInput{{Name: "devlog.md", Kind: "markdown", URI: uri}}}
+	if collection.evidence != nil {
+		execution.Events = append(devlogEvidenceEvents(*collection.evidence), execution.Events...)
+		execution.Artifacts = append(execution.Artifacts, devlogEvidenceArtifact(*collection.evidence))
+	}
+	return execution, nil
 }
 
 func (e *EnvWorkflowExecutors) buildDevlogMarkdown(current Run) string {
@@ -168,15 +234,26 @@ func (e *EnvWorkflowExecutors) buildDevlogMarkdown(current Run) string {
 	return builder.String()
 }
 
-func (e *EnvWorkflowExecutors) generateDevlogWithLLM(ctx context.Context, seed string) (string, error) {
-	response, err := e.generateDevlogWithModel(ctx, seed)
-	return response.Content, err
-}
+const (
+	devlogSystemPrompt         = "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."
+	devlogEvidenceSystemPrompt = "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history and repository evidence. Describe a change as deployed only when the evidence marks it deployed; describe open pull requests as proposed. Keep source links. Do not invent activity for missing or incomplete sources; say they are missing."
+)
 
 func (e *EnvWorkflowExecutors) generateDevlogWithModel(ctx context.Context, seed string, modelOverride ...string) (ModelResponse, error) {
+	return e.generateDevlogWithPrompt(ctx, devlogSystemPrompt, seed, modelOverride...)
+}
+
+func (e *EnvWorkflowExecutors) generateDevlogForCollection(ctx context.Context, collection devlogCollection, seed string, model string) (ModelResponse, error) {
+	if collection.evidence == nil {
+		return e.generateDevlogWithModel(ctx, seed, model)
+	}
+	return e.generateDevlogWithPrompt(ctx, devlogEvidenceSystemPrompt, seed, model)
+}
+
+func (e *EnvWorkflowExecutors) generateDevlogWithPrompt(ctx context.Context, system, seed string, modelOverride ...string) (ModelResponse, error) {
 	model := e.devlogModel
 	if len(modelOverride) > 0 && strings.TrimSpace(modelOverride[0]) != "" {
 		model = strings.TrimSpace(modelOverride[0])
 	}
-	return e.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "system", Content: "Write a concise technical devlog in Markdown. Keep facts grounded in the provided run history."}, {Role: "user", Content: seed}}, PreAttempt: preAttemptFromContext(ctx)})
+	return e.modelExecutor.Generate(ctx, ModelRequest{Model: model, Messages: []ModelMessage{{Role: "system", Content: system}, {Role: "user", Content: seed}}, PreAttempt: preAttemptFromContext(ctx)})
 }
