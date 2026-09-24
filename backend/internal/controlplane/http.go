@@ -25,6 +25,8 @@ type API struct {
 	compatBroker          *llamaLineCompatTracker
 	openCode              OpenCodeExecutorStatusProvider
 	openPilotRepositories OpenPilotRepositoryStatusProvider
+	openPilotIssues       GiteaIssueReader
+	openPilotPollRepos    []string
 	canceler              CancelDispatcher
 	scheduler             *Scheduler
 	workerPool            *WorkerPool
@@ -52,7 +54,13 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings()}
+}
+
+// SetOpenPilotIssueReader replaces the Gitea issue reader used by the read-only
+// Open Pilot inbox. A nil reader marks upstream data as unavailable.
+func (a *API) SetOpenPilotIssueReader(reader GiteaIssueReader) {
+	a.openPilotIssues = reader
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {
