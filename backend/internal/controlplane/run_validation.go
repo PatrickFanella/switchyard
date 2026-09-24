@@ -44,12 +44,25 @@ func validateArtifactInput(input CreateArtifactInput) error {
 // URLs are deliberately not accepted until a separate, authenticated object
 // storage lifecycle exists.
 func artifactMetadata(uri string, now time.Time) (Artifact, error) {
+	contentType, decoded, err := decodeInlineArtifactURI(uri)
+	if err != nil {
+		return Artifact{}, err
+	}
+	sum := sha256.Sum256(decoded)
+	until := now.Add(artifactRetentionWindow()).UTC()
+	return Artifact{StorageClass: "inline-data-uri", ContentType: contentType, ByteSize: len(decoded), SHA256: hex.EncodeToString(sum[:]), RetentionUntil: &until}, nil
+}
+
+// decodeInlineArtifactURI returns the media type and exact decoded bytes of an
+// inline data-URI artifact. The bytes are the ones described by the persisted
+// size and SHA-256.
+func decodeInlineArtifactURI(uri string) (string, []byte, error) {
 	if !strings.HasPrefix(strings.ToLower(uri), "data:") {
-		return Artifact{}, ErrInvalid
+		return "", nil, ErrInvalid
 	}
 	comma := strings.IndexByte(uri, ',')
 	if comma < 5 {
-		return Artifact{}, ErrInvalid
+		return "", nil, ErrInvalid
 	}
 	meta, payload := uri[5:comma], uri[comma+1:]
 	parts := strings.Split(meta, ";")
@@ -63,7 +76,7 @@ func artifactMetadata(uri string, now time.Time) (Artifact, error) {
 		if strings.HasPrefix(strings.ToLower(parameter), "charset=") && len(strings.TrimSpace(parameter[8:])) > 0 {
 			continue
 		}
-		return Artifact{}, ErrInvalid
+		return "", nil, ErrInvalid
 	}
 	contentType := strings.TrimSpace(parts[0])
 	if contentType == "" {
@@ -79,11 +92,9 @@ func artifactMetadata(uri string, now time.Time) (Artifact, error) {
 		decoded = []byte(text)
 	}
 	if err != nil || len(decoded) > artifactMaxBytes() {
-		return Artifact{}, ErrInvalid
+		return "", nil, ErrInvalid
 	}
-	sum := sha256.Sum256(decoded)
-	until := now.Add(artifactRetentionWindow()).UTC()
-	return Artifact{StorageClass: "inline-data-uri", ContentType: contentType, ByteSize: len(decoded), SHA256: hex.EncodeToString(sum[:]), RetentionUntil: &until}, nil
+	return contentType, decoded, nil
 }
 
 // inlineArtifactURI builds the inline data URI used for text artifacts. It

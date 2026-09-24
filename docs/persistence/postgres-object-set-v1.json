@@ -1,7 +1,7 @@
 {
   "contract_version": "switchyard.postgres-object-set.v1",
   "provider": "postgres",
-  "migration_head": "030_agent_profile_versions.sql",
+  "migration_head": "035_devlog_delivery.sql",
   "migration_ledger": [
     "001_controlplane.sql",
     "002_trigger_scheduler.sql",
@@ -31,7 +31,8 @@
     "027_open_pilot_rollout_gate.sql",
     "028_evidence_search_indexes.sql",
     "029_run_step_outputs.sql",
-    "030_agent_profile_versions.sql"
+    "030_agent_profile_versions.sql",
+    "035_devlog_delivery.sql"
   ],
   "required_objects": [
     "agent_profile_audit",
@@ -43,6 +44,8 @@
     "compatibility_observation_daily",
     "compatibility_observer_fence",
     "compatibility_usage_daily",
+    "devlog_delivery_approvals",
+    "devlog_delivery_receipts",
     "model_broker_feedback",
     "model_broker_requests",
     "open_pilot_issue_states",

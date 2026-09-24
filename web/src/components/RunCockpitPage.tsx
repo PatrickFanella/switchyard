@@ -5,6 +5,7 @@ import { formatTime, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong
 import { LiveRefreshIndicator } from './LiveRefreshIndicator';
 import type { LiveRefreshState } from '../hooks/useLiveRefresh';
 import { ArtifactPreview } from './ArtifactPreview';
+import { DevlogReviewPanel } from './DevlogReviewPanel';
 import { collectCorrelations, summarizeRunFailure } from '../correlation';
 import { CorrelationLinks, EvidenceAnchor, EvidenceFocusNotice, RunFailureSummaryPanel, RunUnavailableNotice, useCorrelationTargets, useEvidenceFocus } from './CorrelationLinks';
 
@@ -368,6 +369,8 @@ export function RunCockpitPage({
           )}
         </div>
       </HudSection>
+
+      {selectedRunDetail.run.workflow_id === 'devlog' ? <DevlogReviewPanel runID={selectedRunDetail.run.id} runStatus={selectedRunDetail.run.status} /> : null}
 
       <HudSection kicker="Evidence" title="Evidence" note="Search artifacts and events together when you need the full paper trail.">
         <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">

@@ -107,6 +107,10 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/triggers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"triggers": triggersOrEmpty(a.store.ListTriggers())})
 	})
+	mux.HandleFunc("GET /api/devlog/reports/{id}", a.devlogReportReview)
+	mux.HandleFunc("GET /api/devlog/reports/{id}/export/{format}", a.devlogReportExport)
+	mux.HandleFunc("POST /api/devlog/reports/{id}/approvals", a.approveDevlogReport)
+	mux.HandleFunc("POST /api/devlog/reports/{id}/deliveries", a.deliverDevlogReport)
 	mux.HandleFunc("GET /api/runs", a.listRuns)
 	mux.HandleFunc("POST /api/runs", a.createRun)
 	mux.HandleFunc("GET /api/runs/{id}", a.runAction)
