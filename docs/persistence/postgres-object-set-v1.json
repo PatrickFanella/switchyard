@@ -32,6 +32,7 @@
     "028_evidence_search_indexes.sql",
     "029_run_step_outputs.sql",
     "030_agent_profile_versions.sql",
+    "035_devlog_delivery.sql",
     "036_workflow_definition_active_version.sql"
   ],
   "required_objects": [
@@ -44,6 +45,8 @@
     "compatibility_observation_daily",
     "compatibility_observer_fence",
     "compatibility_usage_daily",
+    "devlog_delivery_approvals",
+    "devlog_delivery_receipts",
     "model_broker_feedback",
     "model_broker_requests",
     "open_pilot_issue_states",

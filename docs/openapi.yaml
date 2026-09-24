@@ -1447,6 +1447,95 @@ paths:
         "201": { $ref: "#/components/responses/RunEnvelope" }
         "202": { $ref: "#/components/responses/AcceptedRunEnvelope" }
         default: { $ref: "#/components/responses/Error" }
+  /api/devlog/reports/{id}:
+    get:
+      summary: Review a Devlog report before export or delivery
+      description: Control listener only; read role. Returns the Devlog run, its `devlog.md` report and `devlog-evidence.json` artifacts (inline, for preview), the source window, exact-bytes export links, the delivery configuration and approval policy, the current decision and receipt for the report digest, and the run's approvals and receipts. `state` is one of `not-ready`, `delivery-disabled`, `awaiting-approval`, `approved`, `rejected`, `approval-expired`, `delivering`, `delivered`, or `delivery-failed`.
+      parameters:
+        - $ref: "#/components/parameters/DevlogRunID"
+      responses:
+        "200":
+          description: Devlog report review
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevlogReportReview" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/devlog/reports/{id}/export/{format}:
+    get:
+      summary: Download the exact bytes of a Devlog report artifact
+      description: Control listener only; read role. `markdown` returns `devlog.md`; `json` returns `devlog-evidence.json` (404 when the run collected no repository evidence). The body is the exact decoded artifact; the response is refused with 409 when the bytes do not match the recorded SHA-256. Nothing is sent to any external destination.
+      parameters:
+        - $ref: "#/components/parameters/DevlogRunID"
+        - name: format
+          in: path
+          required: true
+          schema: { type: string, enum: [markdown, json] }
+      responses:
+        "200":
+          description: Exact artifact bytes
+          headers:
+            X-Switchyard-Artifact-SHA256:
+              schema: { type: string, pattern: '^[a-f0-9]{64}$' }
+            X-Switchyard-Artifact-Id:
+              schema: { type: string }
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            text/markdown:
+              schema: { type: string }
+            application/json:
+              schema: { type: object }
+        default: { $ref: "#/components/responses/Error" }
+  /api/devlog/reports/{id}/approvals:
+    post:
+      summary: Approve or reject delivery of the exact report version
+      description: Admin only. Records a decision bound to the report artifact SHA-256 and the configured destination; `destination` must equal the configured destination and `artifact_sha256` must equal the current report digest (409 `stale-report` otherwise). Returns 409 `delivery-disabled` when no adapter is configured. Approvals expire after `approval_ttl_seconds`; a later rejection of the same digest and destination blocks delivery.
+      parameters:
+        - $ref: "#/components/parameters/DevlogRunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DevlogApprovalRequest" }
+      responses:
+        "201":
+          description: Recorded decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval: { $ref: "#/components/schemas/DevlogDeliveryApproval" }
+                required: [approval]
+        default: { $ref: "#/components/responses/Error" }
+  /api/devlog/reports/{id}/deliveries:
+    post:
+      summary: Deliver an approved Devlog report once
+      description: Admin only. Requires an unexpired `approved` decision for this run whose digest equals the current report and the request `artifact_sha256`. The idempotency key is derived from the adapter, destination, and report SHA-256. An existing delivered receipt is returned without sending (`already-delivered`); otherwise the adapter first searches the destination for the idempotency marker (`reconciled`) and only then posts (`delivered`, 201). A failed attempt is recorded (`failed`, 502) and may be retried with the same request. Error codes include `approval-required`, `approval-rejected`, `approval-expired`, `stale-approval`, `stale-report`, `destination-changed`, `delivery-disabled`, `delivery-in-progress`, and `report-too-large`.
+      parameters:
+        - $ref: "#/components/parameters/DevlogRunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DevlogDeliveryRequest" }
+      responses:
+        "200":
+          description: Already delivered or reconciled with the destination
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevlogDeliveryResponse" }
+        "201":
+          description: Delivered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevlogDeliveryResponse" }
+        "502":
+          description: Delivery attempt failed; the receipt records the error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevlogDeliveryResponse" }
+        default: { $ref: "#/components/responses/Error" }
   /api/runs:
     get:
       summary: List runs
@@ -1597,6 +1686,11 @@ components:
       required: true
       schema: { type: string }
     WorkflowDefinitionID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    DevlogRunID:
       name: id
       in: path
       required: true
@@ -2633,6 +2727,119 @@ components:
         retention_until: { type: [string, "null"], format: date-time }
         created_at: { type: string, format: date-time }
       required: [id, run_id, name, kind, uri, storage_class, byte_size, created_at]
+    DevlogReportSource:
+      type: object
+      properties:
+        mode: { type: string, enum: [repository-evidence, run-history] }
+        description: { type: string }
+        since: { type: string }
+        until: { type: string }
+        repositories: { type: array, items: { type: string } }
+        complete: { type: boolean }
+        items: { type: integer, minimum: 0 }
+        missing: { type: array, items: { type: string } }
+      required: [mode, description, repositories, missing]
+    DevlogReportExport:
+      type: object
+      properties:
+        format: { type: string, enum: [markdown, json] }
+        name: { type: string }
+        path: { type: string }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        byte_size: { type: integer, minimum: 0 }
+      required: [format, name, path, sha256, byte_size]
+    DevlogDeliveryStatus:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        adapter: { type: string, enum: [disabled, gitea-issue-comment] }
+        destination: { type: string }
+        reason: { type: string }
+        approval_ttl_seconds: { type: integer }
+        policy: { type: string }
+      required: [enabled, adapter, approval_ttl_seconds, policy]
+    DevlogDeliveryApproval:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        artifact_id: { type: string }
+        artifact_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        adapter: { type: string }
+        destination: { type: string }
+        decision: { type: string, enum: [approved, rejected] }
+        actor: { type: string }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      required: [id, run_id, artifact_id, artifact_sha256, adapter, destination, decision, actor, reason, created_at, expires_at]
+    DevlogDeliveryReceipt:
+      type: object
+      properties:
+        id: { type: string }
+        idempotency_key: { type: string, pattern: '^[a-f0-9]{64}$' }
+        run_id: { type: string }
+        artifact_id: { type: string }
+        artifact_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        adapter: { type: string }
+        destination: { type: string }
+        approval_id: { type: string }
+        status: { type: string, enum: [sending, delivered, failed] }
+        attempts: { type: integer, minimum: 1 }
+        reconciled: { type: boolean }
+        external_id: { type: string }
+        external_url: { type: string }
+        last_error: { type: string }
+        requested_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        delivered_at: { type: string, format: date-time }
+      required: [id, idempotency_key, run_id, artifact_id, artifact_sha256, adapter, destination, approval_id, status, attempts, reconciled, requested_by, created_at, updated_at]
+    DevlogReportReview:
+      type: object
+      properties:
+        run: { $ref: "#/components/schemas/Run" }
+        state: { type: string, enum: [not-ready, delivery-disabled, awaiting-approval, approved, rejected, approval-expired, delivering, delivered, delivery-failed] }
+        report: { oneOf: [{ $ref: "#/components/schemas/Artifact" }, { type: "null" }] }
+        evidence: { oneOf: [{ $ref: "#/components/schemas/Artifact" }, { type: "null" }] }
+        source: { $ref: "#/components/schemas/DevlogReportSource" }
+        exports: { type: array, items: { $ref: "#/components/schemas/DevlogReportExport" } }
+        delivery: { $ref: "#/components/schemas/DevlogDeliveryStatus" }
+        idempotency_key: { type: string }
+        current_approval: { $ref: "#/components/schemas/DevlogDeliveryApproval" }
+        current_receipt: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
+        approvals: { type: array, items: { $ref: "#/components/schemas/DevlogDeliveryApproval" } }
+        receipts: { type: array, items: { $ref: "#/components/schemas/DevlogDeliveryReceipt" } }
+        access:
+          type: object
+          description: Advisory role of the caller; approval and delivery still require the admin role.
+          properties:
+            role: { type: string, enum: [admin, read, unrestricted] }
+            can_write: { type: boolean }
+          required: [role, can_write]
+      required: [run, state, report, evidence, source, exports, delivery, approvals, receipts, access]
+    DevlogApprovalRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        artifact_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        destination: { type: string }
+        decision: { type: string, enum: [approved, rejected] }
+        reason: { type: string, maxLength: 1000 }
+      required: [artifact_sha256, destination, decision]
+    DevlogDeliveryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        approval_id: { type: string }
+        artifact_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+      required: [approval_id, artifact_sha256]
+    DevlogDeliveryResponse:
+      type: object
+      properties:
+        outcome: { type: string, enum: [delivered, reconciled, already-delivered, failed] }
+        receipt: { $ref: "#/components/schemas/DevlogDeliveryReceipt" }
+      required: [outcome, receipt]
     RunDetail:
       type: object
       properties:

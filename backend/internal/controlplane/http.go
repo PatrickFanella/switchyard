@@ -35,6 +35,7 @@ type API struct {
 	asyncDispatch         bool
 	compatibilityObserver *CompatibilityObserver
 	runtimeSettings       *RuntimeSettings
+	devlogDelivery        *DevlogDelivery
 	clock                 func() time.Time
 }
 
@@ -56,7 +57,7 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), executorSessionProber: NewEnvExecutorSessionProber(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings()}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), executorSessionProber: NewEnvExecutorSessionProber(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings(), devlogDelivery: NewEnvDevlogDelivery()}
 }
 
 // SetOpenPilotIssueReader replaces the Gitea issue reader used by the read-only
