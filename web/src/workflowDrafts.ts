@@ -398,10 +398,26 @@ export function validateDraftForSave(draft: WorkflowDraft, options: { creating: 
 
 export type CatalogStatusFilter = 'all' | 'active' | 'draft';
 
+/** True when some version of the definition serves new runs. */
+export function hasActiveVersion(definition: WorkflowDefinition) {
+  return (definition.active_version ?? 0) > 0 || definition.status === 'active';
+}
+
+/** True when the latest saved version is a draft that is not active. */
+export function hasPendingDraft(definition: WorkflowDefinition) {
+  return definition.status === 'draft';
+}
+
+export function matchesCatalogStatus(definition: WorkflowDefinition, status: CatalogStatusFilter) {
+  if (status === 'active') return hasActiveVersion(definition);
+  if (status === 'draft') return hasPendingDraft(definition);
+  return true;
+}
+
 export function filterWorkflowCatalog(definitions: WorkflowDefinition[], query: string, status: CatalogStatusFilter) {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return definitions
-    .filter((definition) => status === 'all' || definition.status === status)
+    .filter((definition) => matchesCatalogStatus(definition, status))
     .filter((definition) => {
       if (terms.length === 0) return true;
       const haystack = [definition.id, definition.name, definition.description, definition.status, ...orderedSteps(definition).flatMap((step) => [step.id, step.name, step.executor, step.profile ?? ''])].join(' ').toLowerCase();
@@ -478,11 +494,11 @@ async function currentDefinition(id: string): Promise<WorkflowDefinition | null 
 }
 
 /**
- * Saves a draft with PUT /api/workflow-definitions/{id}. Saving never activates.
- * The backend has no create-only or version precondition, so this re-reads the
- * definition first: creating refuses an existing ID and editing refuses a
- * definition whose version changed since it was opened. The check narrows,
- * but does not close, the race with another writer.
+ * Saves a draft with PUT /api/workflow-definitions/{id}. Saving never activates
+ * and never changes the active version. The request carries expected_version
+ * (0 to create, otherwise the version the editor opened), so the server rejects
+ * a stale write with 409. The re-read beforehand only produces a clearer message
+ * for the common case.
  */
 export async function saveWorkflowDraft(definition: WorkflowDefinition, expectation: { creating: true } | { creating: false; baseVersion?: number }): Promise<SaveDraftResult> {
   const current = await currentDefinition(definition.id);
@@ -496,10 +512,11 @@ export async function saveWorkflowDraft(definition: WorkflowDefinition, expectat
       return { ok: false, kind: 'conflict', message: `Workflow definition "${definition.id}" changed since you opened it (version ${expectation.baseVersion} → ${current.version}). Nothing was saved; your edits are still here.`, currentVersion: current.version };
     }
   }
+  const expectedVersion = expectation.creating ? 0 : expectation.baseVersion;
   const response = await fetch(apiPath(`/api/workflow-definitions/${encodeURIComponent(definition.id)}`), {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...definition, status: 'draft' }),
+    body: JSON.stringify({ ...definition, status: 'draft', ...(expectedVersion === undefined ? {} : { expected_version: expectedVersion }) }),
   });
   const body = (await response.json().catch(() => ({}))) as { workflow_definition?: WorkflowDefinition; error?: { message?: string } };
   if (response.ok && body.workflow_definition) return { ok: true, definition: body.workflow_definition };
@@ -508,5 +525,6 @@ export async function saveWorkflowDraft(definition: WorkflowDefinition, expectat
     return { ok: false, kind: 'forbidden', message: 'This credential is read-only. An admin credential is required to save workflow drafts. Nothing was saved.' };
   }
   if (response.status === 400) return { ok: false, kind: 'validation', message };
+  if (response.status === 409) return { ok: false, kind: 'conflict', message: `${message}. Nothing was saved; your edits are still here.` };
   return { ok: false, kind: 'error', message };
 }

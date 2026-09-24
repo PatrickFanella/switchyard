@@ -24,11 +24,26 @@ type Store interface {
 	WithContext(context.Context) Store
 	Ready(context.Context) error
 	UpsertWorkflowDefinition(WorkflowDefinition) (WorkflowDefinition, error)
+	// SaveWorkflowDefinition stores a new immutable version. A nil expected
+	// version saves unconditionally; zero requires that the ID is unused; any
+	// other value must equal the latest stored version. Mismatches return
+	// ErrConflict. A draft save never changes the active version.
+	SaveWorkflowDefinition(WorkflowDefinition, *int) (WorkflowDefinition, error)
+	// WorkflowDefinition returns the latest stored version.
 	WorkflowDefinition(string) (WorkflowDefinition, error)
+	// ActiveWorkflowDefinition returns the version new runs use, or
+	// ErrNotFound when the definition has no active version.
+	ActiveWorkflowDefinition(string) (WorkflowDefinition, error)
 	ListWorkflowDefinitions() ([]WorkflowDefinition, error)
 	ListWorkflowDefinitionVersions(string) ([]WorkflowDefinition, error)
 	ActivateWorkflowDefinition(string) (WorkflowDefinition, error)
+	// ActivateWorkflowDefinitionVersion activates the latest stored version
+	// when it equals version (zero means the latest), else ErrConflict.
+	ActivateWorkflowDefinitionVersion(string, int) (WorkflowDefinition, error)
 	RollbackWorkflowDefinition(string, int) (WorkflowDefinition, error)
+	// RollbackWorkflowDefinitionVersion copies a stored version into a new
+	// active version, checking the expected latest version like saves do.
+	RollbackWorkflowDefinitionVersion(string, int, *int) (WorkflowDefinition, error)
 	AgentProfileIdentity(string) (AgentProfileIdentity, error)
 	ListAgentProfileIdentities() ([]AgentProfileIdentity, error)
 	ActiveAgentProfile(string) (AgentProfileVersion, error)

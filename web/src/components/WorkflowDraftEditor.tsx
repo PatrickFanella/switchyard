@@ -318,13 +318,12 @@ export function WorkflowDraftEditor({ mode, initialDraft, baseDefinition, profil
   const [baseline, setBaseline] = useState(() => draftFingerprint(initialDraft));
   const [feedback, setFeedback] = useState<SaveFeedback>(null);
   const [saving, setSaving] = useState(false);
-  const [acknowledgedActive, setAcknowledgedActive] = useState(false);
   const feedbackRef = useRef<HTMLDivElement>(null);
   const dirty = draftFingerprint(draft) !== baseline;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const disabled = readOnly || saving;
-  const replacingActive = mode === 'edit' && baseDefinition?.status === 'active';
+  const activeVersion = mode === 'edit' ? baseDefinition?.active_version ?? (baseDefinition?.status === 'active' ? baseDefinition.version : undefined) : undefined;
 
   useEffect(() => {
     const unregister = registerNavigationGuard(() => !dirtyRef.current || window.confirm(unsavedChangesMessage));
@@ -358,7 +357,6 @@ export function WorkflowDraftEditor({ mode, initialDraft, baseDefinition, profil
   const save = async () => {
     if (readOnly || saving) return;
     const { definition, errors } = validateDraftForSave(draft, { creating: mode === 'create', existingIDs });
-    if (replacingActive && !acknowledgedActive) errors.push('Confirm that saving this draft replaces the active definition for new runs until a draft is activated.');
     if (errors.length > 0) {
       setFeedback({ kind: 'client', messages: errors });
       return;
@@ -484,13 +482,10 @@ export function WorkflowDraftEditor({ mode, initialDraft, baseDefinition, profil
       </HudPanelStrong>
 
       <HudPanelStrong className="grid gap-3 p-4">
-        {replacingActive ? (
-          <>
-            <p className="text-xs text-[hsl(var(--warn))]" role="note">
-              {initialDraft.id} is active. Saving stores a new draft version and makes it the current definition. Until a draft is activated again, new runs of this workflow do not use a stored definition and fall back to the workflow's built-in pipeline or executor. Runs already created keep their snapshot.
-            </p>
-            <CheckboxField label="I understand saving takes the active definition out of service for new runs" checked={acknowledgedActive} disabled={disabled} onChange={setAcknowledgedActive} />
-          </>
+        {activeVersion ? (
+          <p className="text-xs text-[hsl(var(--muted))]" role="note">
+            Version {activeVersion} of {initialDraft.id} is active. It keeps serving new runs after you save; activate the new draft from the version history when it is ready.
+          </p>
         ) : null}
         <p className="text-xs text-[hsl(var(--muted))]">Saving writes a new draft version. It does not activate the workflow.</p>
         <div className="flex flex-wrap gap-2">

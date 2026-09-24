@@ -405,14 +405,11 @@ func validateAgentProfileConsumers(store Store, profile AgentProfile) error {
 	if store == nil {
 		return nil
 	}
-	definitions, err := store.ListWorkflowDefinitions()
+	definitions, err := activeWorkflowDefinitions(store)
 	if err != nil {
 		return err
 	}
 	for _, definition := range definitions {
-		if !isActiveWorkflowDefinition(definition) {
-			continue
-		}
 		for _, step := range definition.Pipeline.Steps {
 			if strings.TrimSpace(step.Profile) != profile.ID {
 				continue

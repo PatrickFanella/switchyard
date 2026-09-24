@@ -6,7 +6,7 @@ Contains the dashboard application shell, API client, shared domain types, style
 ## Design
 - `types.ts` mirrors backend JSON contracts and supplies empty/default states.
 - `openPilotInbox.ts` holds the inbox contract types, request/dispatch helpers, and `#/inbox/<params>` deep-link parsing.
-- `workflowDrafts.ts` holds the workflow draft form model and its conversion to and from `WorkflowDefinition`, executor settings and published outputs, the `{{steps.<id>.outputs.<name>}}` binding options and reference checks, catalog filtering, `#/workflows/...` routes, and the definition, profile, control-access, and guarded draft-save API helpers.
+- `workflowDrafts.ts` holds the workflow draft form model and its conversion to and from `WorkflowDefinition`, executor settings and published outputs, the `{{steps.<id>.outputs.<name>}}` binding options and reference checks, catalog filtering, `#/workflows/...` routes, and the definition, profile, control-access, and guarded draft-save API helpers (saves send `expected_version`). `workflowVersions.ts` holds version history loading, active/draft/earlier roles, the version comparison, client-side activation checks, action consequences, and the activate/rollback API helpers.
 - `navigationGuard.ts` lets a page with unsaved edits veto shell navigation; `useHashNavigation` consults it for sidebar and browser view changes.
 - `api.ts` centralizes fetch, normalization, formatting, and mutations.
 - `App.tsx` selects pages while hooks own URL and asynchronous state.

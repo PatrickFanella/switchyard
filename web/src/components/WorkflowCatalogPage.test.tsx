@@ -56,10 +56,17 @@ type BackendOptions = {
   putStatus?: (definition: WorkflowDefinition) => { status: number; message: string } | undefined;
 };
 
-/** A small in-memory stand-in for the definition API: PUT always stores a new draft version. */
+type PutBody = WorkflowDefinition & { expected_version?: number };
+
+/**
+ * A small in-memory stand-in for the definition API: PUT stores a new draft
+ * version, keeps the active version, and enforces expected_version like the
+ * server.
+ */
 function workflowBackend(options: BackendOptions = {}) {
   const store = new Map((options.definitions ?? []).map((definition) => [definition.id, structuredClone(definition)]));
-  const puts: WorkflowDefinition[] = [];
+  const history = new Map((options.definitions ?? []).map((definition) => [definition.id, [structuredClone(definition)]]));
+  const puts: PutBody[] = [];
   const mutations: string[] = [];
   let listStatus = options.listStatus;
   const fetch = mockDashboardFetch((url, init) => {
@@ -73,6 +80,11 @@ function workflowBackend(options: BackendOptions = {}) {
       if (listStatus) return jsonResponse({ error: { message: 'unavailable' } }, { status: listStatus });
       return jsonResponse({ workflow_definitions: [...store.values()] });
     }
+    const versionsMatch = /^\/api\/workflow-definitions\/([^/]+)\/versions$/.exec(url.pathname);
+    if (versionsMatch && method === 'GET') {
+      const versions = history.get(decodeURIComponent(versionsMatch[1]));
+      return versions ? jsonResponse({ workflow_definitions: versions.slice().reverse() }) : jsonResponse({ error: { message: 'not found' } }, { status: 404 });
+    }
     const match = /^\/api\/workflow-definitions\/([^/]+)$/.exec(url.pathname);
     if (!match) return undefined;
     const id = decodeURIComponent(match[1]);
@@ -81,12 +93,21 @@ function workflowBackend(options: BackendOptions = {}) {
       return stored ? jsonResponse({ workflow_definition: stored }) : jsonResponse({ error: { message: 'not found' } }, { status: 404 });
     }
     if (method === 'PUT') {
-      const body = JSON.parse(String(init.body)) as WorkflowDefinition;
+      const body = JSON.parse(String(init.body)) as PutBody;
       puts.push(body);
       const rejection = options.putStatus?.(body);
       if (rejection) return jsonResponse({ error: { message: rejection.message } }, { status: rejection.status });
-      const saved = { ...body, id, status: 'draft', version: (store.get(id)?.version ?? 0) + 1, updated_at: '2026-09-24T12:00:00.000Z' };
+      const existing = store.get(id);
+      const latest = existing?.version ?? 0;
+      if (body.expected_version !== undefined && body.expected_version !== latest) {
+        return jsonResponse({ error: { message: `state conflict: workflow definition "${id}" latest version is ${latest}, expected_version was ${body.expected_version}` } }, { status: 409 });
+      }
+      const { expected_version: _expected, ...definition } = body;
+      void _expected;
+      const activeVersion = existing?.active_version ?? (existing?.status === 'active' ? existing.version : undefined);
+      const saved = { ...definition, id, status: 'draft', version: latest + 1, ...(activeVersion ? { active_version: activeVersion } : {}), updated_at: '2026-09-24T12:00:00.000Z' };
       store.set(id, saved);
+      history.set(id, [...(history.get(id) ?? []), saved]);
       return jsonResponse({ workflow_definition: saved });
     }
     return undefined;
@@ -155,7 +176,8 @@ describe('WorkflowCatalogPage catalog', () => {
     expectText(container, 'Declared outputs: body (string, required)');
     expectText(container, 'topic · string · required · Digest topic');
     expectText(container, 'This version serves new runs.');
-    // Activation belongs to a separate flow.
+    // Version 3 is already active, so the version history offers no activation.
+    await waitFor(() => expect(container.querySelector('[data-version-history="daily-digest"]')).not.toBeNull(), container);
     expect(Array.from(container.querySelectorAll('button')).some((item) => /activate/i.test(item.textContent ?? ''))).toBe(false);
     await unmount(root);
   });
@@ -273,7 +295,7 @@ describe('WorkflowCatalogPage draft journey', () => {
     await waitFor(() => expectText(container, 'Saved release-notes as draft version 1.'), container);
     expect(window.location.hash).toBe('#/workflows/view/release-notes');
     expect(backend.puts[0]).toEqual({
-      id: 'release-notes', name: 'Release Notes', description: 'Summarize releases', status: 'draft', owns: [], uses: [],
+      id: 'release-notes', name: 'Release Notes', description: 'Summarize releases', status: 'draft', expected_version: 0, owns: [], uses: [],
       input_shape: { type: 'object', properties: { version: { type: 'string' } }, required: ['version'] },
       pipeline: {
         id: 'release-notes-pipeline', workflow_id: 'release-notes', name: 'Release Notes',
@@ -284,7 +306,7 @@ describe('WorkflowCatalogPage draft journey', () => {
       },
     });
     await waitFor(() => expectText(container, 'Reads outputs: collect.headline'), container);
-    expectText(container, 'This is a saved draft. New runs do not use it until it is activated.');
+    expectText(container, 'This is a saved draft. No version is active');
 
     // Edit: reorder is allowed, but here change metadata and add a second output.
     await click(button(container, 'Edit draft'));
@@ -400,19 +422,48 @@ describe('WorkflowCatalogPage validation', () => {
     await unmount(root);
   });
 
-  it('requires acknowledgement before replacing an active definition with a draft', async () => {
+  it('saves a draft over an active definition while the active version keeps serving', async () => {
     window.location.hash = '#/workflows/edit/daily-digest';
     const backend = workflowBackend({ definitions: [digest()] });
     const { container, root } = await renderApp('Editing daily-digest');
-    expectText(container, 'daily-digest is active.');
+    expectText(container, 'Version 3 of daily-digest is active. It keeps serving new runs after you save');
     await fill(container, 'Description', 'Updated');
     await click(button(container, 'Save draft'));
-    await waitFor(() => expect(container.querySelector('[data-save-feedback]')?.textContent).toContain('Confirm that saving this draft replaces the active definition'), container);
-    expect(backend.puts).toHaveLength(0);
-    await act(async () => { (controlByLabel(container, 'I understand saving takes the active definition') as HTMLInputElement).click(); });
-    await click(button(container, 'Save draft'));
-    await waitFor(() => expectText(container, 'Saved daily-digest as draft version 4.'), container);
+    await waitFor(() => expectText(container, 'Saved daily-digest as draft version 4. It is not active; version 3 keeps serving new runs until you activate the draft.'), container);
     expect(backend.puts[0].status).toBe('draft');
+    expect(backend.puts[0].expected_version).toBe(3);
+    await waitFor(() => expect(container.querySelector('[data-catalog-entry="daily-digest"]')?.textContent).toContain('draft · v3 active'), container);
+    expectText(container, 'Version 3 is active and keeps serving new runs until this draft is activated.');
+    await unmount(root);
+  });
+
+  it('reports a server-side stale-version conflict and keeps the edits', async () => {
+    window.location.hash = '#/workflows/edit/weekly-report';
+    const backend = workflowBackend({
+      definitions: [draftReport],
+      // Another writer saved between the editor's re-read and its PUT.
+      putStatus: () => ({ status: 409, message: 'state conflict: workflow definition "weekly-report" latest version is 2, expected_version was 1; reload and reapply your changes' }),
+    });
+    const { container, root } = await renderApp('Editing weekly-report');
+    await fill(container, 'Workflow name', 'Mine');
+    await click(button(container, 'Save draft'));
+    await waitFor(() => expect(container.querySelector('[data-save-feedback="conflict"]')?.textContent).toContain('latest version is 2, expected_version was 1'), container);
+    expect(backend.puts[0].expected_version).toBe(1);
+    expect((controlByLabel(container, 'Workflow name') as HTMLInputElement).value).toBe('Mine');
+    expect(button(container, 'Reload latest version (discard my edits)')).toBeTruthy();
+    await unmount(root);
+  });
+
+  it('creates with expected_version 0 so the server rejects an existing ID', async () => {
+    window.location.hash = '#/workflows/new';
+    const backend = workflowBackend();
+    const { container, root } = await renderApp('New draft');
+    await fill(container, 'Workflow ID', 'fresh');
+    await fill(container, 'Workflow name', 'Fresh');
+    await fill(step(container, 0), 'Step name', 'start');
+    await click(button(container, 'Save draft'));
+    await waitFor(() => expectText(container, 'Saved fresh as draft version 1.'), container);
+    expect(backend.puts[0].expected_version).toBe(0);
     await unmount(root);
   });
 });
@@ -421,7 +472,7 @@ describe('WorkflowCatalogPage read-only access', () => {
   it('hides authoring actions and disables the editor for a read credential', async () => {
     window.location.hash = '#/workflows/view/weekly-report';
     const backend = workflowBackend({ definitions: [draftReport], access: { role: 'read', can_write: false } });
-    const { container, root } = await renderApp('Read-only access: you can browse workflow definitions');
+    const { container, root } = await renderApp('Read-only access: you can browse and compare workflow definitions');
     await waitFor(() => expect(container.querySelector('[data-workflow-detail="weekly-report"]')).not.toBeNull(), container);
     for (const name of ['New draft', 'Edit draft', 'Duplicate']) {
       expect(Array.from(container.querySelectorAll('button')).some((item) => item.textContent?.trim() === name)).toBe(false);

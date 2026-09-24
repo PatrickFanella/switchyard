@@ -8,6 +8,8 @@ import {
   emptyDraft,
   filterWorkflowCatalog,
   formatWorkflowHash,
+  hasActiveVersion,
+  hasPendingDraft,
   loadControlAccess,
   loadEditorProfiles,
   loadWorkflowDefinition,
@@ -21,6 +23,7 @@ import {
 } from '../workflowDrafts';
 import { formatTime, HudEmptyState, HudErrorState, HudLabel, HudLoadingState, HudPanel, HudPanelStrong, HudSection, statusClasses } from './hud';
 import { WorkflowDraftEditor } from './WorkflowDraftEditor';
+import { WorkflowVersionsPanel } from './WorkflowVersionsPanel';
 
 const chipClass = 'hud-chip px-3 py-1.5 text-[0.65rem] disabled:opacity-50';
 
@@ -34,6 +37,20 @@ function sameRoute(left: WorkflowRoute, right: WorkflowRoute) {
 
 export function definitionStatusClasses(status: string) {
   return statusClasses(status === 'active' ? 'succeeded' : status === 'draft' ? 'queued' : '');
+}
+
+/** Catalog status: the latest version's status, plus the active version when a newer draft is pending. */
+export function definitionStatusText(definition: WorkflowDefinition) {
+  const active = definition.active_version ?? 0;
+  if (definition.status === 'draft' && active > 0) return `draft · v${active} active`;
+  return definition.status;
+}
+
+function definitionServingText(definition: WorkflowDefinition) {
+  const active = definition.active_version ?? 0;
+  if (definition.status === 'active') return 'This version serves new runs.';
+  if (active > 0) return `This is a saved draft. Version ${active} is active and keeps serving new runs until this draft is activated.`;
+  return "This is a saved draft. No version is active, so new runs use the workflow's built-in pipeline or executor until a version is activated.";
 }
 
 function loadErrorMessage(error: unknown) {
@@ -166,7 +183,7 @@ export function WorkflowCatalogPage() {
 
   const visible = useMemo(() => filterWorkflowCatalog(definitions ?? [], query, statusFilter), [definitions, query, statusFilter]);
   const existingIDs = useMemo(() => (definitions ?? []).map((definition) => definition.id), [definitions]);
-  const counts = useMemo(() => ({ active: (definitions ?? []).filter((item) => item.status === 'active').length, draft: (definitions ?? []).filter((item) => item.status === 'draft').length }), [definitions]);
+  const counts = useMemo(() => ({ active: (definitions ?? []).filter(hasActiveVersion).length, draft: (definitions ?? []).filter(hasPendingDraft).length }), [definitions]);
 
   const focusResult = (index: number) => {
     const buttons = Array.from(resultsRef.current?.querySelectorAll<HTMLButtonElement>('button[data-catalog-entry]') ?? []);
@@ -183,13 +200,13 @@ export function WorkflowCatalogPage() {
 
   const onSaved = (definition: WorkflowDefinition) => {
     navigate({ mode: 'view', id: definition.id });
-    setNotice(`Saved ${definition.id} as draft version ${definition.version ?? '?'}. It is not active; activation is a separate step.`);
+    setNotice(`Saved ${definition.id} as draft version ${definition.version ?? '?'}. It is not active; ${definition.active_version ? `version ${definition.active_version} keeps serving new runs until you activate the draft.` : 'activation is a separate step.'}`);
     setReloadToken((token) => token + 1);
   };
 
   const editing = route.mode === 'new' || route.mode === 'edit' || route.mode === 'duplicate';
   const accessNote = access.role === 'read' || (!access.can_write && access.role === 'unknown')
-    ? 'Read-only access: you can browse workflow definitions but not create, duplicate, or save drafts.'
+    ? 'Read-only access: you can browse and compare workflow definitions but not create, duplicate, save, activate, or roll back.'
     : '';
 
   let body;
@@ -246,8 +263,8 @@ export function WorkflowCatalogPage() {
             Status
             <select className="mt-1 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-1 text-sm text-[hsl(var(--ink))]" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as CatalogStatusFilter)}>
               <option value="all">All ({definitions.length})</option>
-              <option value="active">Active ({counts.active})</option>
-              <option value="draft">Draft ({counts.draft})</option>
+              <option value="active">Has an active version ({counts.active})</option>
+              <option value="draft">Latest is a draft ({counts.draft})</option>
             </select>
           </label>
           <p id="workflow-catalog-count" className="text-xs text-[hsl(var(--faint))]" aria-live="polite">{visible.length} of {definitions.length} workflows shown</p>
@@ -271,7 +288,7 @@ export function WorkflowCatalogPage() {
                     >
                       <span className="flex items-center justify-between gap-2">
                         <span className="text-sm font-semibold text-[hsl(var(--ink))]">{definition.name || definition.id}</span>
-                        <span className={`hud-chip px-2 py-0.5 text-[0.6rem] ${definitionStatusClasses(definition.status)}`}>{definition.status}</span>
+                        <span className={`hud-chip px-2 py-0.5 text-[0.6rem] ${definitionStatusClasses(definition.status)}`}>{definitionStatusText(definition)}</span>
                       </span>
                       <span className="mt-1 block font-mono text-xs text-[hsl(var(--muted))]">{definition.id}{definition.version ? ` · v${definition.version}` : ''} · {orderedDefinitionSteps(definition).length} steps</span>
                     </button>
@@ -296,10 +313,10 @@ export function WorkflowCatalogPage() {
                   <h3 className="text-base font-semibold text-[hsl(var(--ink))]">{selected.definition.name}</h3>
                   <p className="mt-1 font-mono text-xs text-[hsl(var(--muted))]">{selected.definition.id}{selected.definition.version ? ` · version ${selected.definition.version}` : ''}{selected.definition.updated_at ? ` · updated ${formatTime(selected.definition.updated_at)}` : ''}</p>
                 </div>
-                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${definitionStatusClasses(selected.definition.status)}`}>{selected.definition.status}</span>
+                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${definitionStatusClasses(selected.definition.status)}`}>{definitionStatusText(selected.definition)}</span>
               </div>
               {selected.definition.description ? <p className="text-sm text-[hsl(var(--muted))]">{selected.definition.description}</p> : null}
-              <p className="text-xs text-[hsl(var(--faint))]">{selected.definition.status === 'active' ? 'This version serves new runs.' : 'This is a saved draft. New runs do not use it until it is activated.'}</p>
+              <p className="text-xs text-[hsl(var(--faint))]">{definitionServingText(selected.definition)}</p>
               {!readOnly ? (
                 <div className="flex flex-wrap gap-2">
                   <button type="button" className={chipClass} onClick={() => navigate({ mode: 'edit', id: selected.definition!.id })}>Edit draft</button>
@@ -319,8 +336,19 @@ export function WorkflowCatalogPage() {
                 )}
               </div>
               <div>
-                <HudLabel className="text-[hsl(var(--faint))]">Steps in run order</HudLabel>
+                <HudLabel className="text-[hsl(var(--faint))]">Steps in run order (version {selected.definition.version ?? '?'})</HudLabel>
                 <div className="mt-2"><WorkflowDefinitionSteps definition={selected.definition} /></div>
+              </div>
+              <div>
+                <HudLabel className="text-[hsl(var(--faint))]">Version history</HudLabel>
+                <div className="mt-2">
+                  <WorkflowVersionsPanel
+                    definition={selected.definition}
+                    readOnly={readOnly}
+                    onChanged={(message) => { setNotice(message); setReloadToken((token) => token + 1); }}
+                    onReadOnly={() => setAccess({ role: 'read', can_write: false })}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -333,7 +361,7 @@ export function WorkflowCatalogPage() {
     <HudSection
       kicker="Workflow definitions"
       title={route.mode === 'new' ? 'New workflow draft' : route.mode === 'edit' ? `Edit ${route.id}` : route.mode === 'duplicate' ? `Duplicate ${route.id}` : 'Workflow catalog'}
-      note="Author linear workflow drafts with typed inputs, supported executors, step-output bindings, and output contracts. Saving stores a draft version; activation is separate and not available here."
+      note="Author linear workflow drafts with typed inputs, supported executors, step-output bindings, and output contracts. Saving stores a draft version; activate or roll back from a workflow's version history."
       actions={
         <>
           {editing ? <button type="button" className={chipClass} onClick={() => navigate({ mode: 'catalog', id: '' })}>Back to catalog</button> : null}

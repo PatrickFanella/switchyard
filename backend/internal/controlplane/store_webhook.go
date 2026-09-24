@@ -184,8 +184,8 @@ func (s *MemoryStore) AdmitWebhookContext(ctx context.Context, input AdmitWebhoo
 		}
 		return WebhookAdmission{Run: run, Replayed: true}, nil
 	}
-	definition, ok := s.workflowDefinitions[trigger.WorkflowID]
-	if !ok || !isActiveWorkflowDefinition(definition) {
+	definition, ok := s.activeWorkflowDefinitionLocked(trigger.WorkflowID)
+	if !ok {
 		return WebhookAdmission{}, ErrInvalid
 	}
 	inputs := cloneMap(trigger.Inputs)

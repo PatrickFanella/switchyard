@@ -42,21 +42,33 @@ type JSONShapeProperty struct {
 }
 
 type WorkflowDefinition struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Status      string             `json:"status"`
-	Version     int                `json:"version"`
-	Owns        []string           `json:"owns,omitempty"`
-	Uses        []string           `json:"uses,omitempty"`
-	InputShape  JSONShape          `json:"input_shape,omitempty"`
-	Pipeline    PipelineDefinition `json:"pipeline"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Version     int    `json:"version"`
+	// ActiveVersion is the version new runs use; zero when no version is
+	// active. Saving a draft never changes it.
+	ActiveVersion int                `json:"active_version,omitempty"`
+	Owns          []string           `json:"owns,omitempty"`
+	Uses          []string           `json:"uses,omitempty"`
+	InputShape    JSONShape          `json:"input_shape,omitempty"`
+	Pipeline      PipelineDefinition `json:"pipeline"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
 type WorkflowDefinitionRollbackInput struct {
 	Version int `json:"version"`
+	// ExpectedVersion, when set, must equal the latest stored version or the
+	// rollback fails with 409.
+	ExpectedVersion *int `json:"expected_version,omitempty"`
+}
+
+// WorkflowDefinitionActivationInput names the version to activate. Only the
+// latest stored version can be activated; Version zero means the latest.
+type WorkflowDefinitionActivationInput struct {
+	Version int `json:"version,omitempty"`
 }
 
 type PipelineDefinition struct {
