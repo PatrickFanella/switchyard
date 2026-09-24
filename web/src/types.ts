@@ -448,7 +448,7 @@ export type EvidenceSearchResponse = {
   retention: { window: string; floor: string; searched_at: string };
 };
 
-export type ViewID = 'overview' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
+export type ViewID = 'overview' | 'inbox' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {
   id: ViewID;
@@ -512,6 +512,7 @@ export const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode execut
 
 export const views: ViewMeta[] = [
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
+  { id: 'inbox', label: 'Inbox', source: 'Open Pilot' },
   { id: 'runs', label: 'Runs', source: 'Switchyard' },
   { id: 'queues', label: 'Queues', source: 'ModelBroker' },
   { id: 'observability', label: 'Observability', source: 'Phoenix / ModelBroker' },

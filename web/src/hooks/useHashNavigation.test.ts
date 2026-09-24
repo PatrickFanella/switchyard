@@ -7,6 +7,12 @@ describe('hash navigation helpers', () => {
     expect(parseHash('#/queues/requests/request%2Fone')).toEqual({ activeView: 'queues', selectedRunID: '', selectedRequestID: 'request/one' });
   });
 
+  it('resolves inbox deep links to the inbox view', () => {
+    expect(parseHash('#/inbox')).toEqual({ activeView: 'inbox', selectedRunID: '', selectedRequestID: '' });
+    expect(parseHash('#/inbox/eligibility=eligible&issue=owner%2Frepo%2342')).toEqual({ activeView: 'inbox', selectedRunID: '', selectedRequestID: '' });
+    expect(formatHash('inbox')).toBe('#/inbox');
+  });
+
   it('falls back safely for malformed encodings', () => {
     expect(parseHash('#/runs/%E0%A4%A')).toEqual({ activeView: 'runs', selectedRunID: '', selectedRequestID: '' });
     expect(parseHash('#/queues/requests/%E0%A4%A')).toEqual({ activeView: 'queues', selectedRunID: '', selectedRequestID: '' });

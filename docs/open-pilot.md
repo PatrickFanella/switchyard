@@ -233,10 +233,13 @@ Query parameters are `repo` (slug or alias), `eligibility` (`all`, `eligible`,
 default 25), and `cursor` (the previous page's `next_cursor`). Issues are
 ordered by repository slug and issue number. A malformed query returns `400`.
 
-The dashboard's Open Pilot inbox view (`#/inbox`) renders this report. Its
-filters are stored in the URL, for example
-`#/inbox?repo=owner/repo&eligibility=eligible`, and `#/inbox/OWNER/REPO/42`
-selects one issue. Dispatch calls `POST /api/workflows/open-pilot/run` and
+The dashboard's Open Pilot inbox view (`#/inbox`, also linked from the
+overview) renders this report. Filters, the page cursor, and the selected
+issue are stored in one URL-encoded segment, for example
+`#/inbox/repo=owner%2Frepo&eligibility=eligible&issue=owner%2Frepo%2342`, so a
+filtered view or a single issue can be shared as a link. The detail panel
+links to the Gitea issue and pull request and opens the Switchyard run in the
+run cockpit. Dispatch calls `POST /api/workflows/open-pilot/run` and
 resume calls `POST /api/open-pilot/state/resume`. Both apply the admission
 gate, the atomic `(repo, issue)` claim, and admin authorization, so the inbox
 adds no new path around them.
