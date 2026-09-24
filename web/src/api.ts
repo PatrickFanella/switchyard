@@ -16,6 +16,10 @@ import {
   type Run,
   type RunDetail,
   type RunStep,
+  type RuntimeConfigChangeResult,
+  type RuntimeConfigResponse,
+  type RuntimeConfigSetting,
+  type RuntimeSettingChange,
   type SchedulerStatus,
   type Trigger,
   type Workflow,
@@ -267,6 +271,29 @@ export async function runAction(runID: string, action: 'retry' | 'cancel') {
 
 export async function stepAction(runID: string, stepID: string, action: 'retry' | 'cancel') {
   return fetchJSON<{ step: RunStep } | { run: Run; step: RunStep }>(`/api/runs/${runID}/steps/${stepID}/${action}`, { method: 'POST' });
+}
+
+export async function loadRuntimeConfig(): Promise<RuntimeConfigResponse> {
+  const response = await fetchJSON<RuntimeConfigResponse>('/api/runtime-config');
+  return { ...response, settings: arrayOrEmpty(response.settings), changes: arrayOrEmpty(response.changes) };
+}
+
+export async function updateRuntimeSetting(key: string, value: boolean, expectedRevision: number, reason: string): Promise<RuntimeConfigChangeResult> {
+  const response = await fetch(apiPath(`/api/runtime-config/${encodeURIComponent(key)}`), {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ value, expected_revision: expectedRevision, reason }),
+  });
+  const body = (await response.json().catch(() => ({}))) as {
+    setting?: RuntimeConfigSetting;
+    revision?: number;
+    change?: RuntimeSettingChange;
+    error?: { code?: string; message?: string };
+  };
+  if (response.ok && body.setting && body.change && typeof body.revision === 'number') {
+    return { ok: true, setting: body.setting, revision: body.revision, change: body.change };
+  }
+  return { ok: false, status: response.status, code: body.error?.code, message: body.error?.message ?? `Switchyard API returned ${response.status}`, revision: body.revision };
 }
 
 export async function resumeOpenPilotState(repo: string, issue: string) {

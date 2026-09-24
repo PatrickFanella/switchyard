@@ -2,10 +2,14 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,7 +36,39 @@ type OpenPilotRepositoryExecutorStatus struct {
 	VerifierHealthy           bool                   `json:"verifier_healthy"`
 	VerifierStatus            string                 `json:"verifier_status"`
 	MaxConcurrentVerification int                    `json:"max_concurrent_verification"`
+	// VerifierPreparation mirrors the verifier's GET /prepared report: the pinned
+	// toolchains and exact argv commands its offline dependency bundle supports.
+	VerifierPreparation *OpenPilotVerifierPreparation `json:"verifier_preparation,omitempty"`
 }
+
+// OpenPilotVerifierPreparation is the prepared verification environment a repository
+// verifier reports. Prepared is false when no bundle is bound or it is unsupported.
+type OpenPilotVerifierPreparation struct {
+	Prepared        bool              `json:"prepared"`
+	Profile         string            `json:"profile,omitempty"`
+	ManifestVersion int               `json:"manifest_version,omitempty"`
+	BaseSHA         string            `json:"base_sha,omitempty"`
+	Toolchains      map[string]string `json:"toolchains,omitempty"`
+	Commands        [][]string        `json:"commands"`
+	Error           string            `json:"error,omitempty"`
+}
+
+// SupportsCommand reports whether a whitespace-separated test command exactly matches
+// one prepared argv command.
+func (p *OpenPilotVerifierPreparation) SupportsCommand(command string) bool {
+	if p == nil || !p.Prepared {
+		return false
+	}
+	argv := strings.Fields(command)
+	for _, supported := range p.Commands {
+		if slices.Equal(supported, argv) {
+			return true
+		}
+	}
+	return false
+}
+
+const maxVerifierPreparationBytes = 64 << 10
 
 type envOpenPilotRepositoryStatusProvider struct {
 	gate    *OpenPilotAdmissionGate
@@ -83,6 +119,7 @@ func (p *envOpenPilotRepositoryStatusProvider) Status(ctx context.Context) OpenP
 			var openCode OpenCodeExecutorStatus
 			var verifierHealthy bool
 			var verifierStatus string
+			var preparation *OpenPilotVerifierPreparation
 			var services sync.WaitGroup
 			services.Add(2)
 			go func() {
@@ -95,6 +132,9 @@ func (p *envOpenPilotRepositoryStatusProvider) Status(ctx context.Context) OpenP
 			go func() {
 				defer services.Done()
 				verifierHealthy, verifierStatus = p.verifierStatus(ctx, bundle.repository.VerifierEndpoint)
+				if verifierHealthy {
+					preparation = p.verifierPreparation(ctx, bundle.repository.VerifierEndpoint)
+				}
 			}()
 			services.Wait()
 			repositories[index] = OpenPilotRepositoryExecutorStatus{
@@ -102,7 +142,7 @@ func (p *envOpenPilotRepositoryStatusProvider) Status(ctx context.Context) OpenP
 				ExecutorGeneration: bundle.repository.ExecutorGeneration,
 				Healthy:            openCode.Healthy && verifierHealthy, OpenCode: openCode,
 				VerifierHealthy: verifierHealthy, VerifierStatus: verifierStatus,
-				MaxConcurrentVerification: 1,
+				MaxConcurrentVerification: 1, VerifierPreparation: preparation,
 			}
 		}()
 	}
@@ -140,4 +180,39 @@ func (p *envOpenPilotRepositoryStatusProvider) verifierStatus(ctx context.Contex
 		return false, response.Status
 	}
 	return true, "healthy"
+}
+
+// verifierPreparation reads the verifier's prepared-environment report. It never
+// affects health: an older verifier without the route reports an explicit error.
+func (p *envOpenPilotRepositoryStatusProvider) verifierPreparation(ctx context.Context, baseURL string) *OpenPilotVerifierPreparation {
+	unavailable := func(reason string) *OpenPilotVerifierPreparation {
+		return &OpenPilotVerifierPreparation{Commands: [][]string{}, Error: reason}
+	}
+	endpoint, err := url.JoinPath(baseURL, "/prepared")
+	if err != nil {
+		return unavailable("invalid endpoint")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return unavailable("request failed")
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return unavailable("preparation report unreachable")
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return unavailable("verifier does not report preparation; rebuild it from the current runtime source")
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return unavailable("preparation report returned " + response.Status)
+	}
+	var preparation OpenPilotVerifierPreparation
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxVerifierPreparationBytes)).Decode(&preparation); err != nil {
+		return unavailable("invalid preparation report")
+	}
+	if preparation.Commands == nil {
+		preparation.Commands = [][]string{}
+	}
+	return &preparation
 }

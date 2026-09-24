@@ -5,6 +5,7 @@ Contains the dashboard application shell, API client, shared domain types, style
 
 ## Design
 - `types.ts` mirrors backend JSON contracts and supplies empty/default states.
+- `openPilotInbox.ts` holds the inbox contract types, request/dispatch helpers, and `#/inbox/<params>` deep-link parsing.
 - `api.ts` centralizes fetch, normalization, formatting, and mutations.
 - `App.tsx` selects pages while hooks own URL and asynchronous state.
 - `test-utils.tsx` provides strict typed fetch fixtures and DOM helpers for the dashboard suite; `App.test.tsx` navigates operator mutations, selection/error states, and hash routes; `components/ArtifactPreview.test.tsx` covers inline artifact decoding, sanitized rendering, and fallbacks.

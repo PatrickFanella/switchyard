@@ -811,6 +811,59 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
+  /api/runtime-config:
+    get:
+      summary: Get the effective runtime configuration inventory
+      description: |
+        Control-listener-only view of every inventoried setting with its
+        source of truth, sensitivity, mutability, restart requirement,
+        authorization, effective value, and drift against the defaults
+        contract. Secret-classified values are never returned; only whether
+        they are configured. Compose-only and sidecar-only keys are reported
+        as not observable. See docs/reference/runtime-configuration.md.
+      responses:
+        "200":
+          description: Effective configuration, revision, and recent runtime changes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigResponse" }
+  /api/runtime-config/{key}:
+    put:
+      summary: Change one runtime-mutable setting
+      description: |
+        Admin-only. Accepts only inventory keys classified runtime-mutable
+        (scheduler.dispatch_paused and workers.claim_paused in v1). The
+        request must carry the revision it observed; a mismatch is rejected
+        as stale. File-managed keys are rejected with the exact file and
+        restart instructions instead of being applied. Accepted changes are
+        recorded in the bounded process-local change list and the log.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuntimeConfigChangeRequest" }
+      responses:
+        "200":
+          description: Change applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigChangeResponse" }
+        "400":
+          description: Invalid body, missing expected_revision, or value of the wrong type
+        "403":
+          description: Caller is not an admin
+        "404":
+          description: Key is not inventoried
+        "409":
+          description: File-managed key, component unavailable, or stale revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigConflict" }
   /api/operator-summary:
     get:
       summary: Get bounded Switchyard operator summary
@@ -1062,6 +1115,59 @@ paths:
       summary: Report bounded Open Pilot repository affinity and canonical identity readiness
       responses:
         "200": { description: Secret-free singleton admission audit report }
+  /api/open-pilot/inbox:
+    get:
+      summary: List Open Pilot intake candidates with eligibility, claims, and lifecycle state
+      description: >-
+        Bounded, read-only, control-listener-only intake queue. Lists open issues that carry the queue
+        labels or the bot assignee from registered repositories the admission gate currently admits,
+        plus durable claims for those repositories. Each issue carries pickup path, specification
+        readiness, the command allowlist decision, the existing claim (phase, run, last failure, pull
+        request), stable reason codes, and links. `upstream` distinguishes an unavailable or partial
+        Gitea listing from an empty queue. The endpoint never claims, dispatches, or writes to Gitea;
+        dispatch goes through POST /api/workflows/open-pilot/run and resume through
+        POST /api/open-pilot/state/resume, which apply admission, deduplication, and authorization.
+        Configuration failures return 200 with blockers; only a malformed query is rejected.
+      parameters:
+        - name: repo
+          in: query
+          required: false
+          description: Registered canonical slug or alias; limits the listing to that repository
+          schema: { type: string, maxLength: 256 }
+        - name: eligibility
+          in: query
+          required: false
+          schema: { type: string, enum: [all, eligible, ineligible, claimed], default: all }
+        - name: phase
+          in: query
+          required: false
+          description: Only issues whose durable claim is in this lifecycle phase
+          schema: { type: string }
+        - name: pickup
+          in: query
+          required: false
+          schema: { type: string, enum: [assigned, labels, none] }
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive match on repo#issue, title, labels, and reason codes
+          schema: { type: string, maxLength: 128 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque next_cursor from the previous page
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: Inbox page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpenPilotInboxReport" }
+        default: { $ref: "#/components/responses/Error" }
   /api/open-pilot/readiness:
     get:
       summary: Preflight Open Pilot readiness for a repository or issue with structured reason codes
@@ -1641,6 +1747,103 @@ components:
         message: { type: string }
         remediation: { type: string }
       required: [name, code, status, message]
+    OpenPilotInboxClaim:
+      type: object
+      properties:
+        state_id: { type: string }
+        phase: { type: string }
+        run_id: { type: string }
+        run_status: { type: string }
+        active_run: { type: boolean }
+        next_action: { type: string }
+        last_step_name: { type: string }
+        last_error: { type: string }
+        failing_gate: { type: string }
+        operator_summary: { type: string }
+        recommended_next_action: { type: string }
+        branch: { type: string }
+        pull_request_url: { type: string }
+        pull_request_number: { type: integer }
+        merge_commit_sha: { type: string }
+        issue_closed: { type: boolean }
+        repair_attempts: { type: integer }
+        max_repair_attempts: { type: integer }
+        updated_at: { type: string, format: date-time }
+      required: [state_id, phase, active_run, next_action, issue_closed, repair_attempts, max_repair_attempts, updated_at]
+    OpenPilotInboxIssue:
+      type: object
+      properties:
+        key: { type: string, description: "Canonical OWNER/REPO#issue" }
+        repo: { type: string }
+        repository_id: { type: string }
+        executor_generation: { type: string }
+        issue: { type: string }
+        issue_id: { type: integer }
+        title: { type: string }
+        state: { type: string }
+        labels: { type: array, items: { type: string } }
+        assignees: { type: array, items: { type: string } }
+        source: { type: string, enum: [upstream, state], description: upstream when listed by Gitea; state when only the durable claim is known }
+        pickup: { type: string, enum: [assigned, labels, both, none, unknown] }
+        bot_assigned: { type: boolean }
+        labels_satisfied: { type: boolean }
+        missing_labels: { type: array, items: { type: string } }
+        spec_required: { type: boolean }
+        spec_ready: { type: boolean }
+        test_command: { type: string }
+        eligible: { type: boolean, description: True when no check fails and dispatch would start a new lifecycle }
+        action: { type: string, enum: [dispatch, resume, none] }
+        reason_codes: { type: array, items: { type: string }, description: Codes of failing checks }
+        checks: { type: array, items: { $ref: "#/components/schemas/OpenPilotReadinessCheck" } }
+        claim: { $ref: "#/components/schemas/OpenPilotInboxClaim" }
+        links:
+          type: object
+          properties:
+            issue: { type: string }
+            pull_request: { type: string }
+            run: { type: string }
+            state: { type: string }
+            readiness: { type: string }
+          required: [readiness]
+      required: [key, repo, repository_id, executor_generation, issue, labels, assignees, source, pickup, bot_assigned, labels_satisfied, missing_labels, spec_required, spec_ready, eligible, action, reason_codes, checks, links]
+    OpenPilotInboxReport:
+      type: object
+      properties:
+        checked_at: { type: string, format: date-time }
+        activation_mode: { type: string }
+        upstream: { type: string, enum: [available, partial, unavailable, not_queried] }
+        upstream_error: { type: string }
+        policy:
+          type: object
+          properties:
+            required_labels: { type: array, items: { type: string } }
+            assignee: { type: string }
+            require_issue_spec: { type: boolean }
+            poll_repositories: { type: array, items: { type: string } }
+        repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              slug: { type: string }
+              executor_generation: { type: string }
+              admitted: { type: boolean }
+              admission_code: { type: string }
+              admission_message: { type: string }
+              polled: { type: boolean, description: True when OPEN_PILOT_POLL_REPOS includes the repository }
+              upstream: { type: string, enum: [listed, unavailable, not_queried] }
+              upstream_error: { type: string }
+              listed: { type: integer }
+              claims: { type: integer }
+        issues: { type: array, items: { $ref: "#/components/schemas/OpenPilotInboxIssue" } }
+        filter: { type: object }
+        matched: { type: integer, description: Issues matching the filter before pagination }
+        has_more: { type: boolean }
+        next_cursor: { type: string }
+        checks: { type: array, items: { $ref: "#/components/schemas/OpenPilotReadinessCheck" } }
+        blockers: { type: array, items: { type: string } }
+      required: [checked_at, upstream, policy, repositories, issues, filter, matched, has_more, checks, blockers]
     OpenPilotReadinessReport:
       type: object
       properties:
@@ -2313,6 +2516,7 @@ components:
       properties:
         enabled: { type: boolean }
         running: { type: boolean }
+        paused: { type: boolean, description: Runtime dispatch pause; process-local and reset on restart }
         interval: { type: string }
         last_tick: { type: string, format: date-time }
         last_error: { type: string }
@@ -2322,6 +2526,7 @@ components:
       properties:
         enabled: { type: boolean }
         running: { type: boolean }
+        paused: { type: boolean, description: Runtime claim pause; process-local and reset on restart }
         workers: { type: integer }
         active: { type: integer }
         lease: { type: string }
@@ -2342,6 +2547,74 @@ components:
         open_pilot_autonomy_mode: { type: string }
         warnings: { type: array, items: { type: string } }
       required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
+    RuntimeConfigSetting:
+      type: object
+      description: One inventoried setting. Secret-classified settings never carry effective, default, compose_default, or example_default.
+      properties:
+        key: { type: string }
+        component: { type: string }
+        kind: { type: string }
+        sensitivity: { type: string, enum: [public, internal, secret] }
+        mutability: { type: string, enum: [file-managed, runtime-mutable] }
+        restart: { type: string, enum: [api, opencode, compose, none] }
+        authorization: { type: string, enum: [host-operator, admin] }
+        description: { type: string }
+        source: { type: string, enum: [environment, default, unset, runtime, unavailable, not-observable] }
+        effective: { type: string }
+        configured: { type: boolean }
+        default: { type: string }
+        compose_default: { type: string }
+        example_default: { type: string }
+        deployment_override: { type: string }
+        overridden: { type: boolean }
+        available: { type: boolean }
+        instructions: { type: string }
+      required: [key, component, kind, sensitivity, mutability, restart, authorization, description, source, instructions]
+    RuntimeSettingChange:
+      type: object
+      properties:
+        revision: { type: integer, minimum: 1 }
+        key: { type: string }
+        previous: { type: string }
+        value: { type: string }
+        actor: { type: string }
+        reason: { type: string }
+        at: { type: string, format: date-time }
+      required: [revision, key, previous, value, actor, at]
+    RuntimeConfigResponse:
+      type: object
+      properties:
+        contract_version: { type: integer, enum: [1] }
+        revision: { type: integer, minimum: 0 }
+        generated_at: { type: string, format: date-time }
+        settings: { type: array, items: { $ref: "#/components/schemas/RuntimeConfigSetting" } }
+        changes: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/RuntimeSettingChange" } }
+      required: [contract_version, revision, generated_at, settings, changes]
+    RuntimeConfigChangeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        value: { type: boolean }
+        expected_revision: { type: integer, minimum: 0 }
+        reason: { type: string, maxLength: 256 }
+      required: [value, expected_revision]
+    RuntimeConfigChangeResponse:
+      type: object
+      properties:
+        setting: { $ref: "#/components/schemas/RuntimeConfigSetting" }
+        revision: { type: integer, minimum: 1 }
+        change: { $ref: "#/components/schemas/RuntimeSettingChange" }
+      required: [setting, revision, change]
+    RuntimeConfigConflict:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, enum: [file-managed, unavailable, stale-revision] }
+            message: { type: string }
+        revision: { type: integer, minimum: 0 }
+      required: [error, revision]
     CompatibilityRetirementStatus:
       type: object
       additionalProperties: false

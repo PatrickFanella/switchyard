@@ -113,7 +113,8 @@ registration and executor generation, the durable rollout gate and its
 fingerprint, the immutable execution bundle, OpenCode and verifier health
 (probed with a 3 second bound through the existing repository status
 provider), the durable issue state and affinity, the command allowlist
-decision, and the effective write, push, commit, CI, merge, and close gates.
+decision, the prepared verifier's supported commands, and the effective write,
+push, commit, CI, merge, and close gates.
 Each entry in `checks[]` carries a stable `code`, a `status` of `pass`, `warn`,
 `fail`, or `skip`, a message, and remediation text. `blockers[]` lists every
 failing code. `onboarding[]` is the checklist an operator works through to
@@ -150,13 +151,16 @@ Failing codes and remediation:
 | `opencode_unreachable` | The repository OpenCode sidecar failed its session probe. | Start or repair the repository's OpenCode service and private password file. |
 | `verifier_unreachable` | The repository verifier failed `/healthz`. | Start or repair the verifier service and prepared image (`scripts/prepare_verifier.py`). |
 | `command_denied` | The verify step would reject `test_command`; the message carries the policy reason. | Use a plain argv command in `OPEN_PILOT_ALLOWED_COMMANDS` with `OPEN_PILOT_COMMAND_POLICY_MODE=allow`. |
+| `verifier_command_unsupported` | The repository's prepared verifier does not list `test_command` as an exact argv command; it would reject the command before running it. | Use a command the verifier reports in `verifier_preparation.commands`, or extend `backend/cmd/verifier/profiles.json` and rebuild the image with `scripts/prepare_verifier.py`. |
 | `issue_affinity_stale` | The durable state is bound to a different repository or executor generation than the registry now resolves. | Finish or pause the issue on its original generation; review through `GET /api/open-pilot/repository-audit`. |
 | `issue_run_active` | A queued or running run already owns the issue. | Wait for it to finish or cancel it. |
 
 Warning and skip codes include `activation_isolated_test`,
 `activation_legacy_singleton`, `rollout_proof_bounded` (proof mode without a
 target), `command_dry_run`, `command_not_provided`, `command_policy_unknown`,
-and the lifecycle gate codes above. The full response shape is in
+`verifier_unprepared` (the verifier has no usable prepared bundle, so only
+dependency-free commands can pass on its isolated network), and the lifecycle
+gate codes above. The full response shape is in
 `docs/openapi.yaml` under `OpenPilotReadinessReport`.
 
 `POST /api/open-pilot/readiness/validate` (admin token) dry-runs one
@@ -172,6 +176,77 @@ registry warns with `runtime_fingerprint_stale`. Other codes are
 `document_decode_failed`, `document_invalid`, `document_kind_ambiguous`, and
 `runtime_registry_unavailable`. The dry run performs no cloning, filesystem,
 network, or admission changes.
+
+## Issue inbox
+
+`GET /api/open-pilot/inbox` on the authenticated control listener lists intake
+candidates before anything is dispatched. The read token is sufficient, and the
+route is absent from model ingress. It is read-only: listing never claims an
+issue, creates a run, or writes to Gitea.
+
+The inbox checks the admission gate first. For each registered repository the
+gate currently admits, it lists open issues that carry every
+`OPEN_PILOT_REQUIRED_LABELS` label and, when `OPEN_PILOT_ASSIGNEE` is set,
+open issues assigned to that account. It then adds durable claims stored for
+those repositories. Repositories the gate rejects (disabled activation, a
+closed or stale rollout, a legacy-singleton binding) are reported with an
+`admission_code` and are not queried. `polled` shows whether
+`OPEN_PILOT_POLL_REPOS` includes the repository; only polled repositories are
+picked up automatically.
+
+Each issue reports:
+
+- `pickup`: `assigned`, `labels`, `both`, or `none`, with `missing_labels`.
+- `spec_ready`: the body mentions acceptance criteria and test instructions,
+  the same rule as `OPEN_PILOT_REQUIRE_ISSUE_SPEC`. The check fails only when
+  that setting is `true`.
+- `test_command`: the issue's Test Command, checked against the argv allowlist
+  without executing it.
+- `claim`: the durable lifecycle phase, run ID and status, whether a queued or
+  running run owns the issue, next action, last step, last error, failing gate,
+  branch, pull request, and repair attempts.
+- `links`: the Gitea issue and pull request URLs and the Switchyard run, state,
+  and readiness API paths.
+- `eligible`, `action` (`dispatch`, `resume`, or `none`), and `reason_codes`
+  (the codes of every failing entry in `checks[]`).
+
+Inbox reason codes, in addition to the readiness codes `issue_run_active`,
+`issue_affinity_stale`, `command_denied`, `rollout_proof_target_excluded`,
+`repository_unregistered`, and `gate_unavailable`:
+
+| Code | Meaning |
+|---|---|
+| `labels_missing` | The issue lacks a queue label and is not assigned to the bot. |
+| `issue_not_open` | Gitea reports the issue as not open. |
+| `issue_spec_missing` | Specification is required and the body lacks acceptance criteria or test instructions (a warning when not required). |
+| `issue_claimed` | A durable lifecycle already owns the issue; resume it instead of dispatching again. |
+| `issue_lifecycle_complete` | The lifecycle closed the issue. |
+| `upstream_unavailable` | Gitea listing failed; eligibility is unknown. |
+| `upstream_not_listed` | A durable claim exists but Gitea no longer lists the issue with queue labels or bot assignment, or Gitea was not queried. |
+
+`upstream` is `available` when every admitted repository listed, `partial` or
+`unavailable` when some or all listings failed, and `not_queried` when no
+repository was admitted or no Gitea reader is configured. An empty `issues`
+array with `upstream=available` is an empty queue; with any other value, the
+queue may be incomplete. Durable claims are still shown from the store when
+Gitea is down.
+
+Query parameters are `repo` (slug or alias), `eligibility` (`all`, `eligible`,
+`ineligible`, `claimed`), `phase`, `pickup` (`assigned`, `labels`, `none`),
+`q` (substring of repo#issue, title, labels, or reason codes), `limit` (1-100,
+default 25), and `cursor` (the previous page's `next_cursor`). Issues are
+ordered by repository slug and issue number. A malformed query returns `400`.
+
+The dashboard's Open Pilot inbox view (`#/inbox`, also linked from the
+overview) renders this report. Filters, the page cursor, and the selected
+issue are stored in one URL-encoded segment, for example
+`#/inbox/repo=owner%2Frepo&eligibility=eligible&issue=owner%2Frepo%2342`, so a
+filtered view or a single issue can be shared as a link. The detail panel
+links to the Gitea issue and pull request and opens the Switchyard run in the
+run cockpit. Dispatch calls `POST /api/workflows/open-pilot/run` and
+resume calls `POST /api/open-pilot/state/resume`. Both apply the admission
+gate, the atomic `(repo, issue)` claim, and admin authorization, so the inbox
+adds no new path around them.
 
 ## Queue an issue by assignment
 
@@ -257,12 +332,102 @@ Gitea 1.27 atomically checks the tested head with `head_commit_id`, but the merg
 ## Prepared offline verification
 
 `scripts/prepare_verifier.py` builds an operator-owned verification image for a
-committed source revision. The version 2 profile supports `backend/go.mod` and
-`backend/go.sum` plus `web/package.json` and `web/pnpm-lock.yaml`, Go 1.26.6,
-Node 24, pnpm 10.33.0, and `make verify`. Unsupported workspace or npm
-configuration is rejected. Dependency lifecycle scripts are disabled during
-network-enabled preparation. Repository checks execute only in the isolated
-verifier, with dependencies installed offline.
+committed source revision. Dependencies are downloaded only during that image
+build. Verification runs on the verifier's internal network with
+`GOPROXY=off` and pnpm in offline mode, and never downloads.
+
+### Profile contract
+
+`backend/cmd/verifier/profiles.json` is the machine-readable preparation
+contract. The verifier binary embeds it and `scripts/prepare_verifier.py` reads
+the same file. Each profile names:
+
+- `toolchains`: pinned versions. The current profile,
+  `go1.26.6-node24-pnpm10.33.0-v2`, pins Go 1.26.6, Node 24, and pnpm 10.33.0.
+  `web/package.json` must declare `pnpm@10.33.0` or omit `packageManager`.
+- `inputs`: every dependency input bound to the image, including files that
+  must stay absent: `backend/go.mod`, `backend/go.sum`, `web/package.json`,
+  `web/pnpm-lock.yaml`, root `package.json`, `pnpm-lock.yaml`,
+  `pnpm-workspace.yaml`, `.npmrc`, `web/.npmrc`, `go.work`, and `go.work.sum`.
+- `prepared_inputs`: the inputs the build actually installs from (the backend
+  Go module and the `web/` pnpm lockfile). Preparation rejects a revision that
+  commits any other bound input, such as a pnpm workspace or `.npmrc`.
+- `commands`: the exact argv commands the prepared image supports. The current
+  profile supports only `make verify`. A manifest cannot widen this list; the
+  verifier rejects any manifest command outside its profile.
+- `manifest_version` and `reuse`: version 1 images (`exact-revision`) run only
+  at their preparation revision. Version 2 images (`dependency-inputs`) are
+  reused across revisions while every bound input still matches.
+
+Adding a toolchain, input, or command means adding a profile to
+`profiles.json`, rebuilding the verifier, and preparing a new image.
+
+### Supported environments at runtime
+
+Each verifier answers `GET /prepared` with its bound profile, toolchains,
+preparation revision (`base_sha`), input hashes, and supported commands. It
+reports `prepared: false` with an error when no bundle is configured or the
+bundle names a profile this binary does not support. The API's repository
+status provider projects this as `verifier_preparation` on each entry of
+`GET /api/opencode-executor/status` and the readiness report's `executors[]`.
+A verifier built before this route existed reports an explicit error there;
+health is unaffected. Readiness adds a `verifier_preparation` check when
+`test_command` is supplied: it passes for a listed command, fails with
+`verifier_command_unsupported` otherwise, and warns with `verifier_unprepared`
+for a verifier without a usable bundle.
+
+### Binding and rejection
+
+For each non-Git command the verifier:
+
+1. snapshots the worktree and records its content manifest;
+2. reads the bundle manifest and checks the profile, manifest version, and
+   (for version 1) the exact revision;
+3. rejects commands the manifest does not list, naming the supported ones;
+4. hashes every bound input in the snapshot and rejects the attempt before
+   running anything if an input is `stale` (different bytes), `missing`
+   (expected but absent), or `unexpected` (present but absent at
+   preparation); the error names the file and says to rerun
+   `scripts/prepare_verifier.py`;
+5. copies the immutable pnpm store into a fresh per-attempt cache directory
+   under `/cache`, with a fresh Go build cache and temp directory beside it;
+6. runs the command and deletes the snapshot and per-attempt cache afterwards.
+
+A successful response carries both the source `manifest` and the `prepared`
+identity (profile, manifest version, preparation revision), so a result is tied
+to the exact source bytes and the dependency preparation it used. pnpm offline
+and store settings are set under both `npm_config_` and `pnpm_config_`
+prefixes, because pnpm 11 and later ignore `npm_config_`.
+
+Hash checks are the first guard against stale dependencies. The offline
+toolchain is the second: if a manifest were rebound to new inputs without
+re-preparing, `GOPROXY=off` and offline pnpm fail on the missing packages
+instead of reusing old ones.
+
+### Test coverage
+
+`make verify` runs these through the real `/verify` handler with fixture
+repositories. The tests simulate preparation outside the boundary with a local
+`file://` Go module proxy and an in-process npm registry, then verify offline:
+
+- a Go fixture with a module dependency passes; after `go.mod` and `go.sum`
+  move to a new version, the attempt is rejected as stale before any command
+  runs, and a manifest rebound without re-preparing fails offline;
+- a Go fixture whose module was never prepared fails with `GOPROXY=off`;
+- a Node fixture with a registry dependency installs from the prepared store
+  with `pnpm install --frozen-lockfile` and passes; with an empty store it fails
+  offline; after `web/pnpm-lock.yaml` changes, it is rejected as stale;
+- each attempt leaves no per-attempt cache and no `node_modules` in the source
+  worktree.
+
+`scripts/test_prepare_verifier.py` (`make verifier-preparation-test`) covers
+input hashing at the exact revision, rejection of unsupported configuration,
+the pnpm version pin, and the shared profile file. Building and running a real
+prepared image (`scripts/prepare_verifier.py`, `make linked-worktree-smoke`,
+`make open-pilot-topology-smoke`) needs Docker and remains operator-run; it is
+not part of `make verify`.
+
+### Building an image
 
 Build the base verifier from the intended Switchyard runtime source, then run:
 
@@ -279,12 +444,10 @@ profile. Set the repository's optional `verifier_image` registry field to that
 accepted for this field. Preparation and runtime deployment are separate steps.
 Set a bounded `OPEN_PILOT_COMMAND_TIMEOUT` appropriate for a cold full build
 (the initial Switchyard profile is qualified with `10m`).
-Version 2 images may be reused across source revisions when all eleven dependency
-inputs (including absent configuration files) match the preparation record. The
-preparation revision remains provenance; the current worktree identity and content
-manifest bind each command and result to its actual source. Version 1 images retain
-their exact preparation-revision restriction. Rebuild preparation after dependency
-input changes; stale or newly introduced inputs fail before any repository command.
+Rebuild preparation after any bound input changes; until then the verifier
+rejects the repository's commands as stale.
+
+### Isolation and limits
 
 A container init process reaps orphaned test processes throughout each attempt. The prepared verifier retains a read-only root and source mounts, internal-only
 network, no capabilities, and no Docker socket. It uses bounded 2 GiB temporary

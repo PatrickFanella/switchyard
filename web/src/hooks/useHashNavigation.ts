@@ -7,7 +7,7 @@ type NavigationState = {
   selectedRequestID: string;
 };
 
-const viewSet = new Set<ViewID>(['overview', 'runs', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
+const viewSet = new Set<ViewID>(['overview', 'inbox', 'runs', 'queues', 'observability', 'sessions', 'logs', 'prompts', 'config', 'agents', 'skills']);
 
 function safeDecodeURIComponent(value: string) {
   try {

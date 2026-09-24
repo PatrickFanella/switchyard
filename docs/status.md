@@ -59,6 +59,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Durable linear workflow runtime | test-verified | Workers, scheduler, leases, retries, cancellation, pipeline snapshots, memory/PostgreSQL contracts |
 | Native model broker and compatible ingress | test-verified | OpenAI/Ollama routes, durable ledger, bounded queue, status and metrics |
 | Native OpenCode execution | test-verified | Session correlation, authenticated abort-on-cancel, strict source-checkout-free and shell-denied sidecar with read-only Git-common and managed-worktree access, non-root API/verifier, static Compose isolation contract, pinned runtime, and no default MCP/global permission surface |
+| Prepared offline verification | test-verified | Pinned per-repository profile contract (`backend/cmd/verifier/profiles.json`) shared by the verifier and `scripts/prepare_verifier.py`; `GET /prepared` and the `verifier_preparation` status projection; fixture Go and Node repositories pass offline, missing dependencies fail without network, and changed lockfiles are rejected before any command runs. Building a prepared image is operator-run and not exercised by `make verify` (#69) |
 | Open Pilot policy pipeline | implemented | Issue-to-PR/CI/merge/close path exists; mutation remains deny-by-default |
 | Devlog and Changemaker policy | implemented | Native model-backed linear pipelines |
 | Agent profiles | test-verified | Versioned persistence with static defaults, draft/active/rollback lifecycle, consumer validation, admin-only audited activation, and run/step policy snapshots; see `docs/reference/agent-profiles.md` |
@@ -168,6 +169,7 @@ of what was observed; it is not live tracker state.
 | #60 | open | 2026-09-23 | Roadmap: operator experience and workflow capability completion |
 | #61 | closed | 2026-09-23 | Reconcile production Open Pilot work, main, and pending assignment changes |
 | #65 | open | 2026-09-23 | This reconciliation of roadmap, status, release pointers, and proof issues |
+| #69 | open | 2026-09-24 | Reproducible repository-specific verification environments |
 
 Production configuration validation also enforces strict OpenCode mode, a
 non-default password, a dedicated externally located workspace with matching
@@ -175,9 +177,13 @@ non-root ownership, a valid top-level Git repository, and a private managed
 worktree marker/layout. Only the API mounts the source workspace; OpenCode and
 verifier mount its Git common directory read-only plus the managed worktree
 subtree at write/read-only modes respectively. The persistent executor still sees sibling worktrees. The verifier
-has Git, pinned Go 1.26, Make, npm, pnpm 10.33.0, and Cargo with tmpfs caches;
-its internal network and read-only worktrees limit it to dependency-free or
-already-snapshotted checks. Arbitrary dependency installation is not claimed.
+has Git, pinned Go 1.26, Make, npm, pnpm 10.33.0, and Cargo with tmpfs caches.
+Its internal network and read-only worktrees limit an unprepared verifier to
+dependency-free checks. A prepared verifier image supports the commands its
+profile lists (currently `make verify`), using dependencies fetched during the
+operator-run image build; see "Prepared offline verification" in
+`docs/open-pilot.md`. Installing arbitrary dependencies during verification is
+not claimed.
 
 ## Operational evidence
 
@@ -195,3 +201,4 @@ production evidence is recorded in `docs/releases/v0.1.2-qualification.md`.
 - Model ingress: `docs/runbooks/native-model-broker-cutover.md`
 - Client compatibility: `docs/reference/client-compatibility.md`
 - Evidence search: `docs/reference/evidence-search.md`
+- Runtime configuration boundary: `docs/reference/runtime-configuration.md`
