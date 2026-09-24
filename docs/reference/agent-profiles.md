@@ -2,7 +2,7 @@
 
 Agent profiles are Switchyard-native policy for pipeline steps: the executors a step may use, the models it may select, a default model, and the prompt contract prepended to model requests. Blacktower-style personas live here; there is no separate application boundary.
 
-Source: `backend/internal/controlplane/profiles.go`, `store_profiles.go`, `postgres_store_profiles.go`, `http_agent_profiles.go`, migration `028_agent_profile_versions.sql`. Route contract: `docs/openapi.yaml`.
+Source: `backend/internal/controlplane/profiles.go`, `store_profiles.go`, `postgres_store_profiles.go`, `http_agent_profiles.go`, migration `029_agent_profile_versions.sql`. Route contract: `docs/openapi.yaml`.
 
 ## Identity and versions
 
@@ -14,7 +14,7 @@ Source: `backend/internal/controlplane/profiles.go`, `store_profiles.go`, `postg
 
 ## Effective resolution
 
-`StoreBackedAgentProfileRegistry` resolves an ID to the active persisted version first and otherwise to the static default. Existing pipeline and workflow-definition references keep working unchanged: nothing is migrated into the tables until an operator saves a draft. Migration `028` creates empty tables only.
+`StoreBackedAgentProfileRegistry` resolves an ID to the active persisted version first and otherwise to the static default. Existing pipeline and workflow-definition references keep working unchanged: nothing is migrated into the tables until an operator saves a draft. Migration `029` creates empty tables only.
 
 Workflow-definition writes validate profile references against the effective registry, so a persisted profile can be referenced by definitions and a persisted narrowing is enforced for new definitions.
 
@@ -58,7 +58,7 @@ Every save, activation, and rollback appends an entry with `action` (`draft-save
 
 ## Storage
 
-PostgreSQL tables from migration `028_agent_profile_versions.sql`:
+PostgreSQL tables from migration `029_agent_profile_versions.sql`:
 
 - `agent_profiles` — identity: `active_version`, `draft_version`, `latest_version`, `static_default`, timestamps.
 - `agent_profile_versions` — immutable bodies keyed by `(profile_id, version)`, a partial unique index guaranteeing at most one `active` row per profile, JSON `allowed_models`, `allowed_executors`, and `provenance`.

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { AdapterPayload, AgentProfile, ViewID } from '../types';
+import { EvidenceSearchPage } from './EvidenceSearchPage';
 import {
   formatTime,
   statusClasses,
@@ -132,36 +133,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
   }
 
   if (view === 'logs') {
-    return (
-      <HudSection kicker="ModelBroker / OpenCode executor" title="Logs and search" note="Unified request, log, audit, and semantic-search surface for native modules.">
-        <FeatureCard>
-          <h3 className="hud-label text-[hsl(var(--signal))]">Search hits</h3>
-          <div className="mt-4 grid gap-3">
-            {adapters.llama_line.search.map((hit) => (
-              <HudPanel key={`${hit.source}-${hit.query}`} className="bg-[hsl(var(--panel-soft))] p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{hit.match}</span>
-                  <span className="hud-chip bg-[hsl(var(--pulse-soft))] px-2.5 py-1 text-[0.62rem] text-[hsl(var(--pulse))]">{Math.round(hit.score * 100)}%</span>
-                </div>
-                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{hit.query} · {hit.source}</p>
-              </HudPanel>
-            ))}
-          </div>
-        </FeatureCard>
-        {adapters.logs.length === 0 ? <HudEmptyState>No logs are available yet.</HudEmptyState> : null}
-        <div className="grid gap-3" role="log" aria-live="polite">
-          {[...adapters.logs, ...adapters.ocq.logs.map((log) => ({ ...log, source: `ocq:${log.channel}` }))].map((log) => (
-            <HudPanel key={log.id} className="bg-[hsl(var(--panel-strong))] px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(log.level)}`}>{log.level}</span>
-                <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{log.source} · {formatTime(log.created_at)}</span>
-              </div>
-              <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{log.message}</p>
-            </HudPanel>
-          ))}
-        </div>
-      </HudSection>
-    );
+    return <EvidenceSearchPage />;
   }
 
   if (view === 'prompts') {

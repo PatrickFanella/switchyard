@@ -50,6 +50,12 @@
       "tests": ["web/src/App.test.tsx"]
     },
     {
+      "name": "Evidence search",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/evidence_search.go", "backend/internal/controlplane/postgres_store_evidence_search.go", "web/src/components/EvidenceSearchPage.tsx"],
+      "tests": ["backend/internal/controlplane/evidence_search_test.go", "backend/internal/controlplane/evidence_search_postgres_test.go", "web/src/components/EvidenceSearchPage.test.tsx"]
+    },
+    {
       "name": "Scale and lifecycle",
       "state": "test-verified",
       "implementation": ["backend/internal/controlplane/retention.go", "backend/internal/controlplane/artifact_report.go", "backend/internal/controlplane/compatibility_usage.go"],
