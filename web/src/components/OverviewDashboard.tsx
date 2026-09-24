@@ -34,6 +34,7 @@ type OverviewDashboardProps = {
   onCancelRun: (runID: string) => void;
   onResumeOpenPilotState: (state: OpenPilotIssueState) => void;
   onOpenRunCockpit: (runID: string) => void;
+  onOpenInbox?: () => void;
   setOpenPilotRepo: (value: string) => void;
   setOpenPilotIssue: (value: string) => void;
 };
@@ -308,6 +309,7 @@ export function OverviewDashboard({
   onCancelRun,
   onResumeOpenPilotState,
   onOpenRunCockpit,
+  onOpenInbox,
   setOpenPilotRepo,
   setOpenPilotIssue,
   workflows,
@@ -367,7 +369,16 @@ export function OverviewDashboard({
         ) : null}
       </HudSection>
 
-      <HudSection kicker="Dispatch" title="Workflows and triggers" note="Start manual work, manage schedules, and watch recent execution state.">
+      <HudSection
+        kicker="Dispatch"
+        title="Workflows and triggers"
+        note="Start manual work, manage schedules, and watch recent execution state."
+        actions={onOpenInbox ? [
+          <button key="inbox" className="hud-chip border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--signal))] transition hover:bg-[hsl(var(--panel-soft))]" onClick={onOpenInbox} type="button">
+            Open Pilot inbox
+          </button>,
+        ] : undefined}
+      >
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-3">
             {dashboard.triggers.length === 0 ? <HudEmptyState>{loading ? 'Loading triggers…' : 'No triggers returned by the API.'}</HudEmptyState> : null}
