@@ -238,6 +238,14 @@ def repository_tags(root: Path) -> set[str] | None:
     _, git_context = source_files(root)
     if not git_context:
         return None
+    # A shallow clone (the default CI checkout) carries an incomplete tag set,
+    # so tag existence and currency cannot be judged from it. Full checkouts,
+    # including release and qualification runs, still enforce both directions.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"], cwd=root, capture_output=True, text=True, check=False
+    )
+    if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+        return None
     result = subprocess.run(
         ["git", "tag", "--list"], cwd=root, capture_output=True, text=True, check=False
     )

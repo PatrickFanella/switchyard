@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testProfile = "go1.26.6-node24-pnpm10.33.0-v2"
@@ -265,6 +266,7 @@ func TestPreparedGoFixtureMissingDependencyFailsOffline(t *testing.T) {
 
 func TestPreparedNodeFixturePassesOfflineAndMissingStoreFails(t *testing.T) {
 	requireTools(t, "go", "make", "git", "node", "pnpm")
+	pinProfilePnpm(t)
 	hermeticToolEnvironment(t)
 	registry := npmFixtureRegistry(t)
 	repo, root, workdir := verifierTestWorktree(t)
@@ -350,6 +352,51 @@ func requireTools(t *testing.T, names ...string) {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Skipf("%s is required for prepared fixture verification: %v", name, err)
 		}
+	}
+}
+
+// pinProfilePnpm makes both simulated preparation and verification run the
+// exact pnpm version the prepared profile pins, as the operator-built verifier
+// image does. Preparation and each verification attempt use a private HOME, so
+// a Corepack-provided pnpm would otherwise lose its activated default and fall
+// back to the newest release, and a manager shim could resolve a different
+// global version in each phase. Call it before hermeticToolEnvironment.
+func pinProfilePnpm(t *testing.T) {
+	t.Helper()
+	want := mustLoadPreparedProfiles().Profiles[testProfile].Toolchains["pnpm"]
+	if want == "" {
+		t.Fatalf("profile %s pins no pnpm version", testProfile)
+	}
+	binary, err := exec.LookPath("pnpm")
+	if err != nil {
+		t.Skipf("pnpm is required for prepared fixture verification: %v", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(binary); err == nil && filepath.Base(resolved) == "pnpm" {
+		binary = resolved
+	}
+	probe, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(probe, binary, "--version").Output()
+	if err != nil {
+		t.Skipf("could not run %s --version within 30s: %v", binary, err)
+	}
+	if got := strings.TrimSpace(string(output)); got != want {
+		t.Skipf("prepared fixture proves the pinned pnpm %s; %s resolves to pnpm %s", want, binary, got)
+	}
+	corepackHome := os.Getenv("COREPACK_HOME")
+	if corepackHome == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			corepackHome = filepath.Join(home, ".cache", "node", "corepack")
+		}
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\nCOREPACK_HOME='" + corepackHome + "'\nexport COREPACK_HOME\nexec '" + binary + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if output, err := exec.CommandContext(probe, "pnpm", "--version").Output(); err != nil || strings.TrimSpace(string(output)) != want {
+		t.Fatalf("pinned pnpm wrapper resolves %q (err %v), want %s", strings.TrimSpace(string(output)), err, want)
 	}
 }
 
