@@ -28,6 +28,8 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
   const [workflowDefinitions, setWorkflowDefinitions] = useState<WorkflowDefinition[]>([]);
   const [dashboardError, setDashboardError] = useState('');
   const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
+  // The run ID most recently answered with 404 (unknown or retained out).
+  const [missingRunID, setMissingRunID] = useState('');
   const [openPilotState, setOpenPilotState] = useState<OpenPilotStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -80,6 +82,7 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
         return;
       }
       setSelectedRunDetail(detail);
+      setMissingRunID((missing) => (missing === runID ? '' : missing));
 
       if (detail.run.workflow_id !== 'open-pilot') {
         setOpenPilotState(null);
@@ -114,6 +117,7 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
       if (caught instanceof APIError && caught.status === 404) {
         setSelectedRunDetail(null);
         setOpenPilotState(null);
+        setMissingRunID(runID);
         return;
       }
 
@@ -290,6 +294,7 @@ export function useDashboardData({ activeView, selectedRunID, setSelectedRunID }
     refreshing,
     selectedRunID,
     selectedRunDetail,
+    missingRunID,
     setSelectedRunID,
     refresh,
     runTrigger: runTriggerAction,

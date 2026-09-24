@@ -2494,8 +2494,14 @@ components:
         public_url: { type: string }
         reverse_proxy_auth: { type: boolean }
         open_pilot_autonomy_mode: { type: string }
+        correlation_targets:
+          type: object
+          description: Sanitized external bases (scheme, host, path only) the dashboard may link run correlations to. Absent values disable those links.
+          properties:
+            gitea_base_url: { type: string, description: "Sanitized GITEA_BASE_URL for issue, pull request, commit, and CI links." }
+            trace_ui_base_url: { type: string, description: "Sanitized SWITCHYARD_TRACE_UI_URL; may contain a literal {trace_id} placeholder." }
         warnings: { type: array, items: { type: string } }
-      required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
+      required: [reverse_proxy_auth, open_pilot_autonomy_mode, correlation_targets, warnings]
     RuntimeConfigSetting:
       type: object
       description: One inventoried setting. Secret-classified settings never carry effective, default, compose_default, or example_default.

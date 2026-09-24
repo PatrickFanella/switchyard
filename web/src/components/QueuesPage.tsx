@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { cancelModelBrokerRequest, loadModelBrokerHistory, loadModelBrokerRequest, messageFrom } from '../api';
+import { APIError, cancelModelBrokerRequest, loadModelBrokerHistory, loadModelBrokerRequest, messageFrom } from '../api';
 import type { ModelBrokerRequestHistoryItem } from '../types';
 import { formatTime, HudChip, HudEmptyState, HudErrorState, HudField, HudLabel, HudPanel, HudPanelStrong, HudSection, statusClasses } from './hud';
 
@@ -112,7 +112,15 @@ export function QueuesPage({ selectedRequestID, setSelectedRequestID }: { select
       setRequests(history);
       setError('');
       if (selectedRequestID) {
-        const detail = history.find((request) => request.id === selectedRequestID) ?? (await loadModelBrokerRequest(selectedRequestID));
+        let detail = history.find((request) => request.id === selectedRequestID) ?? null;
+        if (!detail) {
+          try {
+            detail = await loadModelBrokerRequest(selectedRequestID);
+          } catch (err) {
+            if (!(err instanceof APIError && err.status === 404)) throw err;
+            setError(`Request ${selectedRequestID} is not in model broker history. It is unknown or was removed by retention.`);
+          }
+        }
         setSelected(detail);
       } else {
         setSelected((current) => (current ? (history.find((request) => request.id === current.id) ?? current) : null));
