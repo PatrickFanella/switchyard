@@ -1,5 +1,7 @@
 # Production Remediation Plan
 
+> **Historical plan.** This document records the 2026-07 release-readiness audit remediation and its 2026-07-19 acceptance evidence. It is not a current work list; current capability state and release pointers are in `docs/status.md`.
+
 This plan tracks the release-readiness audit remediation. Phases 0–5 have focused commits; phase 6 is complete when the final production gate passes and its focused commit is recorded.
 
 ## CI verification gates

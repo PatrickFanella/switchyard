@@ -1,5 +1,7 @@
 # Development Readiness Report — 2026-07-19
 
+> **Historical evidence for commit `41813c9` only.** The verdict below was true on 2026-07-19 for that commit. It is not evidence for any later revision; see `docs/status.md` and `docs/releases/`.
+
 ## Verdict
 
 **Production-qualified and deployed.** Switchyard passes its complete local and actual-runner production qualification. Commit `41813c9` is deployed on Kvant, the public dashboard is protected by Almaz Caddy and Authelia, and listener-isolation and model-generation smoke checks pass.

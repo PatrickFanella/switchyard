@@ -1,5 +1,7 @@
 # Production User Stories
 
+> **Historical record.** These stories accompanied the 2026-07 production remediation plan. Acceptance statements below describe the gates as designed then; current evidence levels are in `docs/status.md`.
+
 These stories define the release behavior behind the production remediation plan. A story is accepted only when its automated gate passes and its operational evidence is available.
 
 ## Operator access and safety
