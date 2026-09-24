@@ -96,6 +96,8 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/agent-profiles/{id}/audit", a.agentProfileAudit)
 	mux.HandleFunc("POST /api/agent-profiles/{id}/activate", a.activateAgentProfile)
 	mux.HandleFunc("POST /api/agent-profiles/{id}/rollback", a.rollbackAgentProfile)
+	mux.HandleFunc("GET /api/prompts", a.promptInventory)
+	mux.HandleFunc("POST /api/prompts/preview", a.previewPrompt)
 	mux.HandleFunc("GET /api/workflow-definitions", a.workflowDefinitions)
 	mux.HandleFunc("GET /api/workflow-definitions/{id}", a.workflowDefinitionAction)
 	mux.HandleFunc("PUT /api/workflow-definitions/{id}", a.workflowDefinitionAction)

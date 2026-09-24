@@ -27,9 +27,12 @@ func clonePipeline(pipeline Pipeline) Pipeline {
 // pipelineVersion identifies the pipeline shape. The profile policy snapshot
 // is deliberately excluded so runs of the same pipeline share a version even
 // when the effective profile version differs; profile identity is recorded on
-// run-step correlation IDs instead.
+// run-step correlation IDs instead. The source workflow-definition version is
+// excluded for the same reason: it is provenance, not shape.
 func pipelineVersion(pipeline Pipeline) string {
 	pipeline.Profiles = nil
+	pipeline.DefinitionID = ""
+	pipeline.DefinitionVersion = 0
 	encoded, _ := json.Marshal(pipeline)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:8])
@@ -44,6 +47,12 @@ type Pipeline struct {
 	// Profiles holds the effective agent-profile policy captured when a run
 	// snapshot is created. Registry pipelines leave it empty.
 	Profiles map[string]AgentProfile `json:"profiles,omitempty"`
+	// DefinitionID and DefinitionVersion name the stored workflow-definition
+	// version this pipeline came from. They bind a run snapshot to the exact
+	// prompt templates it executes. Built-in registry pipelines, and snapshots
+	// created before this field existed, leave them empty.
+	DefinitionID      string `json:"definition_id,omitempty"`
+	DefinitionVersion int    `json:"definition_version,omitempty"`
 }
 
 type PipelineStep struct {
@@ -137,7 +146,7 @@ func pipelineFromDefinition(definition WorkflowDefinition) Pipeline {
 	if workflowID == "" {
 		workflowID = definition.ID
 	}
-	return Pipeline{ID: definition.Pipeline.ID, WorkflowID: workflowID, Name: definition.Pipeline.Name, Description: definition.Pipeline.Description, Steps: steps}
+	return Pipeline{ID: definition.Pipeline.ID, WorkflowID: workflowID, Name: definition.Pipeline.Name, Description: definition.Pipeline.Description, Steps: steps, DefinitionID: definition.ID, DefinitionVersion: definition.Version}
 }
 
 func isActiveWorkflowDefinition(definition WorkflowDefinition) bool {
