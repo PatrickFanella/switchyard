@@ -35,7 +35,7 @@ Switchyard
 2. **Reference apps become native modules.** llama-line ideas become the model broker module; OCQ ideas become the OpenCode executor module; Blacktower ideas become native profiles; Changemaker ideas become workflow policy.
 3. **Workflows own domain policy only.** Open Pilot owns issue/PR policy; Changemaker-style workflows own content policy; generic scheduling and execution stay in Switchyard.
 4. **UI talks to Switchyard only.** The dashboard should not become a pile of direct service consoles.
-5. **Linear first, DAG later.** Start with ordered step pipelines. Add branching only after real workflow pressure demands it.
+5. **Linear first, DAG later.** Start with ordered step pipelines. Add branching only after real workflow pressure demands it. The current decision and its revisit trigger are in `docs/adr/0006-linear-workflows-before-branching.md`.
 
 ## What native Blacktower includes
 
@@ -426,10 +426,25 @@ appear above; the earlier list is preserved in Git history.
    enforces the parts it can read from the repository (#30, closed, extended
    under #65).
 
+## Recorded decisions
+
+Deferred capability decisions from roadmap #60. Each keeps the current
+boundary, names the repository owner, and states the trigger for revisiting
+it. None authorizes building the deferred feature.
+
+- Plugin and skill installation stays outside Switchyard:
+  [ADR 0005](adr/0005-plugin-and-skill-installation-boundary.md) (#62).
+- Workflows stay linear; limited conditions and parallel groups are specified
+  but not built, and a general DAG stays out of scope:
+  [ADR 0006](adr/0006-linear-workflows-before-branching.md) (#78).
+- Dynamic child agents, model-chosen handoffs, and parallel reviewers are
+  deferred; static profiles and bounded follow-up runs remain:
+  [ADR 0007](adr/0007-bounded-multi-agent-orchestration.md) (#79).
+
 ## Non-goals for the next phase
 
-- No broad plugin/skill installer inside Switchyard in this phase.
-- No full DAG engine.
+- No broad plugin/skill installer inside Switchyard in this phase (ADR 0005).
+- No full DAG engine (ADR 0006).
 - No direct provider routing around compatibility ingress.
 - No broad shell executor without a permissions model.
 - No requirement that external Blacktower be checked out or running.
