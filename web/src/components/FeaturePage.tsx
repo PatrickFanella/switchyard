@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { AdapterPayload, AgentProfile, ViewID } from '../types';
 import { ConfigPage } from './ConfigPage';
 import { EvidenceSearchPage } from './EvidenceSearchPage';
+import { SessionsPage } from './SessionsPage';
 import {
   formatTime,
   statusClasses,
@@ -87,50 +88,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
   }
 
   if (view === 'sessions') {
-    return (
-      <HudSection kicker="OpenCode executor" title="Session console" note="Read-only OpenCode session inventory and workflow correlation. Session prompting and editing are not dashboard controls.">
-        <div className="mb-4 grid gap-3 md:grid-cols-4">
-          <HudField label="Workspace" value={adapters.ocq.settings.workspace || 'unknown'} />
-          <HudField label="Provider" value={adapters.ocq.settings.provider || 'unknown'} />
-          <HudField label="Retention" value={`${adapters.ocq.settings.retention_days}d`} />
-          <HudField label="CORS" value={adapters.ocq.settings.cors_allowed.join(', ') || 'none'} />
-        </div>
-        {adapters.sessions.length === 0 ? <HudEmptyState>No sessions have been reported yet.</HudEmptyState> : null}
-        <div className="grid gap-3">
-          {adapters.sessions.map((session) => (
-            <HudPanel key={session.id} className="bg-[hsl(var(--panel-strong))] p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <HudLabel className="text-[hsl(var(--faint))]">{session.surface}</HudLabel>
-                  <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{session.name}</h3>
-                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">{session.id}</p>
-                </div>
-                <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(session.status)}`}>{session.status}</span>
-              </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <HudField label="Workflow" value={session.workflow_id || 'unbound'} />
-                <HudField label="Started" value={formatTime(session.started_at)} />
-                <HudField label="Updated" value={formatTime(session.updated_at)} />
-              </div>
-            </HudPanel>
-          ))}
-        </div>
-        <FeatureCard>
-          <h3 className="hud-label text-[hsl(var(--signal))]">OpenCode executor requests</h3>
-          <div className="mt-4 grid gap-3">
-            {adapters.ocq.requests.map((request) => (
-              <HudPanel key={request.id} className="bg-[hsl(var(--panel-soft))] p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{request.workflow}</span>
-                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
-                </div>
-                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{request.trigger} · {request.actor} · updated {formatTime(request.updated_at)}</p>
-              </HudPanel>
-            ))}
-          </div>
-        </FeatureCard>
-      </HudSection>
-    );
+    return <SessionsPage />;
   }
 
   if (view === 'logs') {
