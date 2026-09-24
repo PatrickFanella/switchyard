@@ -11,3 +11,4 @@ Use this section for durable technical references:
 Keep exploratory notes in `docs/research/` until they become stable references.
 
 - [Client Compatibility](client-compatibility.md) — llama-line/Ollama/OpenAI compatibility behavior for downstream clients.
+- [Agent Profiles](agent-profiles.md) — versioned profile identity, draft/active lifecycle, validation, audit, and run/step policy snapshots.

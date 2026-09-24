@@ -36,7 +36,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Native OpenCode execution | test-verified | Session correlation, authenticated abort-on-cancel, strict source-checkout-free and shell-denied sidecar with read-only Git-common and managed-worktree access, non-root API/verifier, static Compose isolation contract, pinned runtime, and no default MCP/global permission surface |
 | Open Pilot policy pipeline | implemented | Issue-to-PR/CI/merge/close path exists; mutation remains deny-by-default |
 | Devlog and Changemaker policy | implemented | Native model-backed linear pipelines |
-| Agent profiles | test-verified | Registry/API, executor/model validation, default resolution, prompt contracts, and run-step audit correlation |
+| Agent profiles | test-verified | Versioned persistence with static defaults, draft/active/rollback lifecycle, consumer validation, admin-only audited activation, and run/step policy snapshots; see `docs/reference/agent-profiles.md` |
 | Operator UI | test-verified | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
 | Release qualification | qualified-with-exceptions | `v0.1.2` is deployed with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md` |

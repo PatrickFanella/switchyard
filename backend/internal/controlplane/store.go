@@ -29,6 +29,16 @@ type Store interface {
 	ListWorkflowDefinitionVersions(string) ([]WorkflowDefinition, error)
 	ActivateWorkflowDefinition(string) (WorkflowDefinition, error)
 	RollbackWorkflowDefinition(string, int) (WorkflowDefinition, error)
+	AgentProfileIdentity(string) (AgentProfileIdentity, error)
+	ListAgentProfileIdentities() ([]AgentProfileIdentity, error)
+	ActiveAgentProfile(string) (AgentProfileVersion, error)
+	ListActiveAgentProfiles() ([]AgentProfileVersion, error)
+	AgentProfileVersion(string, int) (AgentProfileVersion, error)
+	ListAgentProfileVersions(string) ([]AgentProfileVersion, error)
+	SaveAgentProfileDraft(string, AgentProfileDraftInput, string) (AgentProfileVersion, error)
+	ActivateAgentProfileVersion(string, AgentProfileActivationInput, string) (AgentProfileVersion, error)
+	RollbackAgentProfile(string, AgentProfileActivationInput, string) (AgentProfileVersion, error)
+	ListAgentProfileAudit(string, int) ([]AgentProfileAuditEntry, error)
 	UpsertWorkflow(Workflow) error
 	UpsertTrigger(Trigger) error
 	OpenPilotIssueState(string, string) (OpenPilotIssueState, error)
@@ -140,6 +150,9 @@ type MemoryStore struct {
 	now                        func() time.Time
 	workflowDefinitions        map[string]WorkflowDefinition
 	workflowDefinitionVersions map[string]map[int]WorkflowDefinition
+	agentProfiles              map[string]AgentProfileIdentity
+	agentProfileVersions       map[string]map[int]AgentProfileVersion
+	agentProfileAudit          map[string][]AgentProfileAuditEntry
 	workflows                  map[string]Workflow
 	triggers                   map[string]Trigger
 	openPilotIssueStates       map[string]OpenPilotIssueState
@@ -172,7 +185,7 @@ func NewStore(now func() time.Time) *MemoryStore {
 		now = time.Now
 	}
 	created := now().UTC()
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, openPilotRollout: OpenPilotRolloutStatus{Mode: "legacy", ProofTargets: []OpenPilotProofTarget{}, UpdatedAt: created}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: created, webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, agentProfiles: map[string]AgentProfileIdentity{}, agentProfileVersions: map[string]map[int]AgentProfileVersion{}, agentProfileAudit: map[string][]AgentProfileAuditEntry{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, openPilotRollout: OpenPilotRolloutStatus{Mode: "legacy", ProofTargets: []OpenPilotProofTarget{}, UpdatedAt: created}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: created, webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
 }
 
 func (s *MemoryStore) Ready(context.Context) error { return nil }
@@ -200,7 +213,12 @@ func cloneMap(in map[string]string) map[string]string {
 	return out
 }
 
-func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
+// normalizeWorkflowDefinition validates profile references against the
+// effective registry (active persisted versions, then shipped defaults).
+func normalizeWorkflowDefinition(definition WorkflowDefinition, profiles AgentProfileRegistry) (WorkflowDefinition, error) {
+	if profiles == nil {
+		profiles = DefaultAgentProfileRegistry()
+	}
 	definition = cloneWorkflowDefinition(definition)
 	definition.ID, definition.Name = strings.TrimSpace(definition.ID), strings.TrimSpace(definition.Name)
 	definition.Description, definition.Status = strings.TrimSpace(definition.Description), strings.TrimSpace(definition.Status)
@@ -236,7 +254,7 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinit
 			return WorkflowDefinition{}, ErrInvalid
 		}
 		if step.Profile != "" {
-			profile, ok := DefaultAgentProfileRegistry().Profile(step.Profile)
+			profile, ok := profiles.Profile(step.Profile)
 			if !ok || !profileAllowsExecutor(profile, step.Executor) {
 				return WorkflowDefinition{}, ErrInvalid
 			}

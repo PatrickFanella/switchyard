@@ -18,7 +18,7 @@ func (s *MemoryStore) UpsertWorkflow(w Workflow) error {
 func (s *MemoryStore) UpsertWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	definition, err := normalizeWorkflowDefinition(definition)
+	definition, err := normalizeWorkflowDefinition(definition, memoryLockedAgentProfileRegistry{store: s})
 	if err != nil {
 		return WorkflowDefinition{}, err
 	}

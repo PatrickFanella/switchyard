@@ -14,10 +14,21 @@ func clonePipeline(pipeline Pipeline) Pipeline {
 	for i := range out.Steps {
 		out.Steps[i].Inputs = cloneMap(out.Steps[i].Inputs)
 	}
+	if pipeline.Profiles != nil {
+		out.Profiles = make(map[string]AgentProfile, len(pipeline.Profiles))
+		for id, profile := range pipeline.Profiles {
+			out.Profiles[id] = cloneAgentProfile(profile)
+		}
+	}
 	return out
 }
 
+// pipelineVersion identifies the pipeline shape. The profile policy snapshot
+// is deliberately excluded so runs of the same pipeline share a version even
+// when the effective profile version differs; profile identity is recorded on
+// run-step correlation IDs instead.
 func pipelineVersion(pipeline Pipeline) string {
+	pipeline.Profiles = nil
 	encoded, _ := json.Marshal(pipeline)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:8])
@@ -29,6 +40,9 @@ type Pipeline struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Steps       []PipelineStep `json:"steps"`
+	// Profiles holds the effective agent-profile policy captured when a run
+	// snapshot is created. Registry pipelines leave it empty.
+	Profiles map[string]AgentProfile `json:"profiles,omitempty"`
 }
 
 type PipelineStep struct {
