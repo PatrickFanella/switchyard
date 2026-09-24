@@ -111,6 +111,11 @@ func (m *RetentionManager) prune() bool {
 	return more && pruneErr == nil
 }
 
+// Window returns the configured retention window that bounds evidence search.
+func (m *RetentionManager) Window() time.Duration {
+	return m.window
+}
+
 func (m *RetentionManager) Status() RetentionStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

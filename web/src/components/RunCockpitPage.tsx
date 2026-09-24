@@ -4,6 +4,7 @@ import type { OpenPilotStateResponse, RunDetail, RunStep } from '../types';
 import { formatTime, HudEmptyState, HudField, HudLabel, HudPanel, HudPanelStrong, HudSection, statusClasses } from './hud';
 import { LiveRefreshIndicator } from './LiveRefreshIndicator';
 import type { LiveRefreshState } from '../hooks/useLiveRefresh';
+import { ArtifactPreview } from './ArtifactPreview';
 
 type RunCockpitPageProps = {
   selectedRunID: string;
@@ -35,7 +36,7 @@ function inputClassName() {
   return 'mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-3 py-2 text-sm text-[hsl(var(--ink))] outline-none transition placeholder:text-[hsl(var(--faint))] focus:border-[hsl(var(--signal))]';
 }
 
-function filterEvidence<T extends { [key: string]: string | undefined }>(items: T[], query: string, fields: Array<keyof T>) {
+function filterEvidence<T extends object>(items: T[], query: string, fields: Array<keyof T>) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) {
     return items;
@@ -404,7 +405,7 @@ export function RunCockpitPage({
                       </div>
                       <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{formatTime(artifact.created_at)}</span>
                     </div>
-                    <p className="mt-3 break-all text-xs text-[hsl(var(--muted))]">{artifact.uri}</p>
+                    <ArtifactPreview artifact={artifact} />
                   </HudPanel>
                 ))
               )}

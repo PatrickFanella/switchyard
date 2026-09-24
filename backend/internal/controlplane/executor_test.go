@@ -914,7 +914,7 @@ func TestRunnerSkipsOpenPilotWorktreeCleanupWithoutDurableHandoff(t *testing.T) 
 	}
 	cleanupArtifact := false
 	for _, artifact := range detail.Artifacts {
-		if artifact.Name == "open-pilot-worktree-cleanup.json" && strings.Contains(artifact.URI, "branch+not+pushed+or+published") {
+		if artifact.Name == "open-pilot-worktree-cleanup.json" && strings.Contains(artifact.URI, "branch%20not%20pushed%20or%20published") {
 			cleanupArtifact = true
 		}
 	}
@@ -1411,7 +1411,7 @@ func TestRunnerGeneratesDevlogWithModel(t *testing.T) {
 	if len(detail.Steps) != 3 || detail.Steps[1].Model != "devlog-test-model" || detail.Steps[1].OutputSummary != "Generated Markdown with model" {
 		t.Fatalf("steps = %+v", detail.Steps)
 	}
-	if len(detail.Artifacts) != 1 || !strings.Contains(detail.Artifacts[0].URI, "Generated+by+model") {
+	if len(detail.Artifacts) != 1 || !strings.Contains(detail.Artifacts[0].URI, "Generated%20by%20model") {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }

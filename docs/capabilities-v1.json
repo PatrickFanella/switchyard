@@ -40,14 +40,20 @@
     {
       "name": "Agent profiles",
       "state": "test-verified",
-      "implementation": ["backend/internal/controlplane/profiles.go"],
-      "tests": ["backend/internal/controlplane/profiles_test.go"]
+      "implementation": ["backend/internal/controlplane/profiles.go", "backend/internal/controlplane/store_profiles.go", "backend/internal/controlplane/postgres_store_profiles.go", "backend/internal/controlplane/http_agent_profiles.go"],
+      "tests": ["backend/internal/controlplane/profiles_test.go", "backend/internal/controlplane/profiles_postgres_test.go"]
     },
     {
       "name": "Operator UI",
       "state": "test-verified",
       "implementation": ["web/src/App.tsx"],
       "tests": ["web/src/App.test.tsx"]
+    },
+    {
+      "name": "Evidence search",
+      "state": "test-verified",
+      "implementation": ["backend/internal/controlplane/evidence_search.go", "backend/internal/controlplane/postgres_store_evidence_search.go", "web/src/components/EvidenceSearchPage.tsx"],
+      "tests": ["backend/internal/controlplane/evidence_search_test.go", "backend/internal/controlplane/evidence_search_postgres_test.go", "web/src/components/EvidenceSearchPage.test.tsx"]
     },
     {
       "name": "Scale and lifecycle",
