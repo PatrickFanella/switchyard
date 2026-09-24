@@ -24,7 +24,7 @@ When a run is created, the effective policy for every profile referenced by its 
 
 `pipeline_version` hashes the pipeline shape only; the profile snapshot is excluded so runs of one pipeline share a version regardless of which profile version applied.
 
-Each step that uses a profile records correlation IDs: `agent_profile_id`, `agent_profile_role`, `agent_profile_contract_sha256`, `agent_profile_model`, `agent_profile_version`, `agent_profile_source`, and `agent_profile_origin` when provenance exists. The `agent-profile.resolved` run event is unchanged.
+Each step that uses a profile records correlation IDs: `agent_profile_id`, `agent_profile_role`, `agent_profile_contract_sha256`, `agent_profile_model`, `agent_profile_version`, `agent_profile_source`, `agent_profile_model_source` when a model was resolved, and `agent_profile_origin` when provenance exists. The `agent-profile.resolved` run event is unchanged.
 
 ## Control API
 
@@ -66,6 +66,38 @@ PostgreSQL tables from migration `030_agent_profile_versions.sql`:
 
 Identity rows are locked `for update` during save, activate, and rollback so version numbers and status transitions are serialized per profile.
 
+## Per-run model overrides
+
+A non-empty `inputs.model` on `POST /api/runs` is a run-level model override. Source: `run_model_policy.go`.
+
+A step accepts the override when its model is not fixed by the workflow: a profile-bound step with no `model`, or a step whose `model` is `${model}`. The allowed overrides for a step are the profile's `allowed_models` (empty means any) intersected with the workflow executor's allowlist when one exists. Devlog and Open Pilot `${model}` steps use `DEVLOG_ALLOWED_MODELS` and `OPEN_PILOT_ALLOWED_MODELS`. Generic workflows add no executor allowlist.
+
+For workflows with a pipeline, the runner checks the override against the new run's profile snapshot before the run is created. It rejects the override with 400 and creates nothing when:
+
+- the value is not a single token of at most 128 characters, or is `${model}`;
+- no step of the workflow accepts an override;
+- a step that accepts it would reject it, for example `step "devlog.generate-markdown": agent profile "devlog-summarizer" does not allow model "m3"; allowed: m2`.
+
+The message has the form `invalid input: model override "<model>" rejected: <reasons>`. Runs without a pipeline, Open Pilot lifecycle resumes, and webhook admissions are not checked at dispatch; the runner still enforces the profile allowlist when each step runs, as before. Retries reuse the original snapshot, so they are checked against the profile versions the original run captured.
+
+`GET /api/workflows/{id}/model-policy[?model=<name>]` previews this without creating a run. It needs the read or admin role and is served only on the control listener. It returns 404 for an unknown workflow or one without a pipeline.
+
+## Resolved policy in run evidence
+
+`GET /api/runs/{id}` includes `policy` (`RunModelPolicy`) for runs with a pipeline snapshot. The same type is returned by the preview route. For each step it reports:
+
+- `profile_id`, `profile_version`, `profile_source` (`static` or `persisted`), and `profile_captured` (`run-snapshot`, or `registry` for runs created before profile snapshots existed). The profile always comes from the workflow step.
+- `model` and `model_source`: `workflow` (fixed by the step), `override` (the run's `model` input), `profile-default`, `executor-default` (the workflow's configured default, such as `DEVLOG_MODEL`), `none`, or `unrecorded` (a step recorded before model sources existed whose model differs from the current prediction).
+- `inherited_model` and `inherited_model_source`: what the step uses without an override.
+- `accepts_override`, `override_restricted`, and `allowed_overrides`.
+- `recorded`: true once the step has run. Recorded steps report the values the runner stored in their correlation IDs, which now include `agent_profile_model_source`.
+
+The run-level fields are `override`, `override_status` (`none`, `accepted`, `rejected`), `rejections`, and the intersection of `allowed_overrides` across steps. Because the policy is read from the run's snapshot, activating or rolling back a profile after the run was created does not change it.
+
 ## Operator UI
 
-Issue #85 owns the editing UI. This change only adds optional fields to the web `AgentProfile` type; the read-only profiles view is otherwise unchanged.
+- **Agents** view (`#/agents`, `ProfilesPage.tsx`, client in `web/src/profileVersions.ts`): lists effective profiles and draft-only identities. It shows the serving version, default and allowed models, executors, contract hash, identity counters, version history with provenance, and the audit log. Admin callers can edit a new draft from the current draft or serving version, activate the pending draft, and roll back to any previously active version, each with an optional audited reason. Saving sends `expected_version` equal to the identity's `latest_version`. On a 409 the editor keeps the edits, explains the conflict, and offers to reload the latest version before saving again. Read-role callers see the same data without editing controls; a 401 or 403 on a mutation switches the page to read-only. Unsaved drafts are guarded like workflow drafts.
+- **Overview → Dispatch with model override** (`RunModelOverrideDispatch.tsx`): picks an enabled non-Open-Pilot trigger, loads the model-policy preview, and explains each step's inherited model and override rule. The override field is a list of the allowed models when the policy restricts them. The server's rejection message is shown verbatim.
+- **Run cockpit → Resolved policy** (`RunPolicyEvidence.tsx`): renders the run's `policy`, with each step's profile version and the source of its model.
+
+Workflow authors choose a profile per step in the workflow draft editor, which offers only profiles that allow the step's executor (see [Workflow catalog](workflow-catalog.md)).

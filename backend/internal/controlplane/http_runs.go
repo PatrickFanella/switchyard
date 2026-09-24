@@ -144,7 +144,41 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 		detail.Steps = detail.Steps[len(detail.Steps)-200:]
 		truncated["steps"] = true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": detail.Run, "steps": detail.Steps, "events": detail.Events, "artifacts": detail.Artifacts, "truncated": truncated})
+	body := map[string]any{"run": detail.Run, "steps": detail.Steps, "events": detail.Events, "artifacts": detail.Artifacts, "truncated": truncated}
+	if a.runner != nil {
+		if policy := a.runner.RunModelPolicy(detail.Run, detail.Steps); policy != nil {
+			body["policy"] = policy
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// workflowModelPolicy previews the profile and model policy a new run of the
+// workflow would capture, and evaluates an optional ?model= override without
+// creating a run.
+func (a *API) workflowModelPolicy(w http.ResponseWriter, r *http.Request) {
+	workflowID := strings.TrimSpace(r.PathValue("id"))
+	if a.runner == nil || workflowID == "" {
+		writeError(w, http.StatusNotFound, "workflow not found")
+		return
+	}
+	known := false
+	for _, workflow := range a.store.ListWorkflows() {
+		if workflow.ID == workflowID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		writeError(w, http.StatusNotFound, "workflow not found")
+		return
+	}
+	policy, ok := a.runner.WorkflowModelPolicy(workflowID, r.URL.Query().Get("model"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "workflow has no pipeline; run-level model policy is not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]RunModelPolicy{"policy": policy})
 }
 
 func (a *API) stepAction(w http.ResponseWriter, r *http.Request, runID string, path string) {

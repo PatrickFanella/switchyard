@@ -225,7 +225,11 @@ func (r *Runner) prepareRunInput(input CreateRunInput) (CreateRunInput, error) {
 		setOpenPilotAffinityInputs(input.Inputs, target)
 		input.OpenPilotTarget = &target
 	}
-	return r.withPipelineSnapshot(input), nil
+	input = r.withPipelineSnapshot(input)
+	if err := r.validateRunModelOverride(input); err != nil {
+		return CreateRunInput{}, err
+	}
+	return input, nil
 }
 
 func (r *Runner) prepareOpenPilotStateRunInput(state OpenPilotIssueState, input CreateRunInput) (CreateRunInput, error) {
@@ -435,7 +439,7 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		if profileErr != nil {
 			return execution, profileErr
 		}
-		model, err := r.resolvePipelineStepModel(run, pipelineStep, executor, profile, hasProfile)
+		model, modelSource, err := r.resolvePipelineStepModel(run, pipelineStep, executor, profile, hasProfile)
 		if err != nil {
 			step, _, createErr := r.prepareRunStep(store, CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs})
 			if createErr != nil {
@@ -460,6 +464,9 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		}
 		if hasProfile {
 			correlationIDs = mergeStringMaps(correlationIDs, profileAuditCorrelation(profile, model))
+			if model != "" {
+				correlationIDs["agent_profile_model_source"] = modelSource
+			}
 			_, _ = store.AddEvent(run.ID, "agent-profile.resolved", profile.ID+" for "+pipelineStep.Name)
 		}
 		step, skip, err := r.prepareRunStep(store, CreateRunStepInput{RunID: run.ID, Position: pipelineStep.Position, Name: pipelineStep.Name, Executor: pipelineStep.Executor, Model: model, Inputs: pipelineStep.Inputs, CorrelationIDs: correlationIDs})
@@ -652,28 +659,15 @@ func (r *Runner) profileForPipelineStep(pipeline Pipeline, step PipelineStep) (A
 	return profile, true, nil
 }
 
-func (r *Runner) resolvePipelineStepModel(run Run, step PipelineStep, executor WorkflowExecutor, profile AgentProfile, hasProfile bool) (string, error) {
-	model := strings.TrimSpace(step.Model)
-	if hasProfile && model == "" {
-		if override := strings.TrimSpace(run.Inputs["model"]); override != "" {
-			model = override
-		} else if strings.TrimSpace(profile.DefaultModel) != "" && (step.Executor == "model" || step.Executor == "opencode") {
-			model = strings.TrimSpace(profile.DefaultModel)
-		}
-	}
-	if model == "" || model == "${model}" {
-		if resolver, ok := executor.(PipelineStepModelResolver); ok {
-			resolved, err := resolver.ResolvePipelineStepModel(run.WorkflowID, step, run.Inputs)
-			if err != nil {
-				return "", err
-			}
-			model = strings.TrimSpace(resolved)
-		}
+func (r *Runner) resolvePipelineStepModel(run Run, step PipelineStep, executor WorkflowExecutor, profile AgentProfile, hasProfile bool) (string, string, error) {
+	model, source, err := resolveStepModel(run.WorkflowID, run.Inputs, step, executor, profile, hasProfile)
+	if err != nil {
+		return "", "", err
 	}
 	if hasProfile && model != "" && !profileAllowsModel(profile, model) {
-		return "", fmt.Errorf("agent profile %q does not allow model %q", profile.ID, model)
+		return "", "", profileModelRejection(profile, model)
 	}
-	return model, nil
+	return model, source, nil
 }
 
 func profileAuditCorrelation(profile AgentProfile, model string) map[string]string {

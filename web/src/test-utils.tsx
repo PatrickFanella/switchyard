@@ -47,6 +47,10 @@ export function mockDashboardFetch(handler?: FetchHandler) {
     else if (method === 'GET' && url.pathname === '/api/workers') payload = { enabled: false, running: false, workers: 0, active: 0 };
     else if (method === 'GET' && url.pathname === '/api/operator-summary') payload = operatorSummary;
     else if (method === 'GET' && url.pathname === '/api/agent-profiles') payload = agentProfiles;
+    else if (method === 'GET' && url.pathname === '/api/agent-profiles/open-pilot-executor') payload = { profile: agentProfiles.profiles[0], identity: { id: 'open-pilot-executor', active_version: 0, draft_version: 0, latest_version: 0, static_default: true } };
+    else if (method === 'GET' && url.pathname === '/api/agent-profiles/open-pilot-executor/versions') payload = { profile_versions: [] };
+    else if (method === 'GET' && url.pathname === '/api/agent-profiles/open-pilot-executor/audit') payload = { audit: [] };
+    else if (method === 'GET' && url.pathname === '/api/control-access') payload = { role: 'admin', can_write: true };
     else if (method === 'GET' && url.pathname === '/api/operator-safety') payload = { reverse_proxy_auth: false, open_pilot_autonomy_mode: 'manual', correlation_targets: {}, warnings: [] };
     else if (method === 'GET' && url.pathname === '/api/open-pilot/state' && url.searchParams.get('repo') === 'OWNER/REPO' && url.searchParams.get('issue') === '123') payload = openPilotState;
     else if (method === 'GET' && url.pathname === '/api/history/req-ok') payload = historyRequest;
