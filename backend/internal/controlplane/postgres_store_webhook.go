@@ -205,6 +205,7 @@ func (s *PostgresStore) AdmitWebhookContext(ctx context.Context, input AdmitWebh
 		return WebhookAdmission{}, err
 	}
 	snapshot := pipelineFromDefinition(definition)
+	attachPipelineProfileSnapshot(&snapshot, NewStoreBackedAgentProfileRegistry(s, DefaultAgentProfileRegistry()))
 	encodedPipeline, err := json.Marshal(snapshot)
 	if err != nil {
 		return WebhookAdmission{}, err

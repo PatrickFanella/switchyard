@@ -838,7 +838,8 @@ paths:
                 required: [pipelines]
   /api/agent-profiles:
     get:
-      summary: List agent profiles
+      summary: List effective agent profiles
+      description: Returns the effective policy for every profile ID (active persisted version first, otherwise the shipped static default) plus the identity records of profiles that have persisted versions.
       responses:
         "200":
           description: Agent profile list
@@ -850,7 +851,125 @@ paths:
                   profiles:
                     type: array
                     items: { $ref: "#/components/schemas/AgentProfile" }
-                required: [profiles]
+                  identities:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentProfileIdentity" }
+                required: [profiles, identities]
+  /api/agent-profiles/{id}:
+    get:
+      summary: Get the effective agent profile and its identity
+      parameters:
+        - $ref: "#/components/parameters/AgentProfileID"
+      responses:
+        "200":
+          description: Effective profile and identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profile: { $ref: "#/components/schemas/AgentProfile" }
+                  identity: { $ref: "#/components/schemas/AgentProfileIdentity" }
+                required: [profile, identity]
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      summary: Save a new immutable draft version
+      description: Admin only. `expected_version` must equal the identity's `latest_version` (0 for a profile that has never been persisted); a mismatch returns 409 so concurrent editors cannot overwrite each other. Saving supersedes any earlier unactivated draft. The body is validated against the closed executor set and model-name rules but not activated.
+      parameters:
+        - $ref: "#/components/parameters/AgentProfileID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProfileDraftRequest" }
+      responses:
+        "200":
+          description: Saved draft version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profile_version: { $ref: "#/components/schemas/AgentProfileVersion" }
+                  identity: { $ref: "#/components/schemas/AgentProfileIdentity" }
+                required: [profile_version, identity]
+        default: { $ref: "#/components/responses/Error" }
+  /api/agent-profiles/{id}/versions:
+    get:
+      summary: List immutable agent-profile versions, newest first
+      parameters:
+        - $ref: "#/components/parameters/AgentProfileID"
+      responses:
+        "200":
+          description: Version history (empty for a profile that only has a static default)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profile_versions:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentProfileVersion" }
+                required: [profile_versions]
+        default: { $ref: "#/components/responses/Error" }
+  /api/agent-profiles/{id}/audit:
+    get:
+      summary: List the append-only agent-profile audit trail, newest first
+      parameters:
+        - $ref: "#/components/parameters/AgentProfileID"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentProfileAuditEntry" }
+                required: [audit]
+        default: { $ref: "#/components/responses/Error" }
+  /api/agent-profiles/{id}/activate:
+    post:
+      summary: Validate and activate a draft version
+      description: Admin only. The version must currently be a draft (409 otherwise). Activation is rejected with 400 when the policy would stop allowing an executor or fixed model used by a shipped default pipeline or an active workflow definition. The previous active version becomes superseded and an `activated` audit entry records the actor. Runs already created keep their snapshot of the previous policy.
+      parameters:
+        - $ref: "#/components/parameters/AgentProfileID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProfileActivationRequest" }
+      responses:
+        "200":
+          description: Activated profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProfileTransitionResponse" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/agent-profiles/{id}/rollback:
+    post:
+      summary: Restore a previously active version as a new active version
+      description: Admin only. The target must have been active at some point and must not be the current active version. The historical version is left unchanged; its body is copied into a new version with `provenance.origin` `rollback` and `rolled_back_from_version`, validated against consumers, and recorded as a `rolled-back` audit entry.
+      parameters:
+        - $ref: "#/components/parameters/AgentProfileID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProfileActivationRequest" }
+      responses:
+        "200":
+          description: Rolled-back profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProfileTransitionResponse" }
+        default: { $ref: "#/components/responses/Error" }
   /api/workflow-definitions:
     get:
       summary: List workflow definitions
@@ -1254,6 +1373,11 @@ components:
       in: path
       required: true
       schema: { type: string }
+    AgentProfileID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" }
     Repo:
       name: repo
       in: query
@@ -2044,14 +2168,95 @@ components:
       required: [id, position, name, executor]
     AgentProfile:
       type: object
+      description: Effective agent-profile policy. Static defaults report `version` 0, `status` `static`, and `source` `static`; persisted versions report their immutable version number, lifecycle status, and provenance.
       properties:
         id: { type: string }
         name: { type: string }
         role: { type: string }
         default_model: { type: string }
+        allowed_models:
+          type: array
+          items: { type: string }
+          description: Optional closed model list. Empty means the executor's own model policy applies.
         prompt_contract: { type: string }
-        allowed_executors: { type: array, items: { type: string } }
-      required: [id, name, role, default_model, prompt_contract, allowed_executors]
+        allowed_executors: { type: array, items: { type: string, enum: [internal, model, opencode, command, http, git, gitea] } }
+        version: { type: integer, minimum: 0 }
+        status: { type: string, enum: [static, draft, active, superseded] }
+        source: { type: string, enum: [static, persisted] }
+        prompt_contract_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        provenance: { $ref: "#/components/schemas/AgentProfileProvenance" }
+      required: [id, name, role, default_model, prompt_contract, allowed_executors, version, status, source, prompt_contract_sha256]
+    AgentProfileProvenance:
+      type: object
+      properties:
+        origin: { type: string, enum: [static-default, operator, rollback] }
+        actor: { type: string }
+        note: { type: string }
+        derived_from_version: { type: integer, minimum: 0 }
+        rolled_back_from_version: { type: integer, minimum: 0 }
+        static_contract_sha256: { type: string, description: Prompt-contract hash of the shipped default when the version was written. }
+      required: [origin]
+    AgentProfileVersion:
+      allOf:
+        - $ref: "#/components/schemas/AgentProfile"
+        - type: object
+          properties:
+            created_at: { type: string, format: date-time, readOnly: true }
+            updated_at: { type: string, format: date-time, readOnly: true }
+            activated_at: { type: string, format: date-time, readOnly: true }
+          required: [created_at, updated_at]
+    AgentProfileIdentity:
+      type: object
+      description: Stable identity record. `active_version` 0 means the shipped static default serves requests; `draft_version` 0 means no unactivated draft exists.
+      properties:
+        id: { type: string }
+        active_version: { type: integer, minimum: 0 }
+        draft_version: { type: integer, minimum: 0 }
+        latest_version: { type: integer, minimum: 0 }
+        static_default: { type: boolean }
+        created_at: { type: string, format: date-time, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true }
+      required: [id, active_version, draft_version, latest_version, static_default]
+    AgentProfileDraftRequest:
+      type: object
+      description: Creates a new immutable draft version. The path ID is authoritative and must match `^[a-z0-9][a-z0-9-]{0,63}$`. Unknown fields are rejected.
+      properties:
+        expected_version: { type: integer, minimum: 0, description: Must equal the identity's latest_version (0 when nothing is persisted yet). }
+        name: { type: string, maxLength: 128 }
+        role: { type: string, maxLength: 128 }
+        default_model: { type: string, maxLength: 128 }
+        allowed_models: { type: array, items: { type: string, maxLength: 128 } }
+        allowed_executors: { type: array, minItems: 1, items: { type: string, enum: [internal, model, opencode, command, http, git, gitea] } }
+        prompt_contract: { type: string, maxLength: 16384 }
+        note: { type: string, maxLength: 1024 }
+      required: [expected_version, name, role, allowed_executors, prompt_contract]
+    AgentProfileActivationRequest:
+      type: object
+      properties:
+        version: { type: integer, minimum: 1 }
+        reason: { type: string, maxLength: 1024 }
+      required: [version]
+    AgentProfileTransitionResponse:
+      type: object
+      properties:
+        profile: { $ref: "#/components/schemas/AgentProfile" }
+        profile_version: { $ref: "#/components/schemas/AgentProfileVersion" }
+        identity: { $ref: "#/components/schemas/AgentProfileIdentity" }
+        rolled_back_from_version: { type: integer, minimum: 1 }
+      required: [profile, profile_version, identity]
+    AgentProfileAuditEntry:
+      type: object
+      properties:
+        id: { type: string }
+        profile_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        action: { type: string, enum: [draft-saved, activated, rolled-back] }
+        actor: { type: string }
+        reason: { type: string }
+        prompt_contract_sha256: { type: string }
+        previous_active_version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+      required: [id, profile_id, version, action, actor, prompt_contract_sha256, previous_active_version, created_at]
     SchedulerStatus:
       type: object
       properties:
