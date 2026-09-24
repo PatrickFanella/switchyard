@@ -30,9 +30,10 @@ type verifyRequest struct {
 }
 
 type verifyResponse struct {
-	Output   string `json:"output"`
-	Error    string `json:"error,omitempty"`
-	Manifest string `json:"manifest,omitempty"`
+	Output   string            `json:"output"`
+	Error    string            `json:"error,omitempty"`
+	Manifest string            `json:"manifest,omitempty"`
+	Prepared *preparedIdentity `json:"prepared,omitempty"`
 }
 
 const (
@@ -44,10 +45,13 @@ const (
 	maxSnapshotBytes     int64 = 1 << 30
 	snapshotReadBatch          = 128
 	processReadBatch           = 128
+	defaultCacheRoot           = "/cache"
 )
 
 type verifierConfig struct {
 	bundle        string
+	cacheRoot     string
+	profiles      preparedProfiles
 	worktreeRoot  string
 	gitCommonDir  string
 	outputBytes   int
@@ -67,6 +71,7 @@ func main() {
 	config.cleanup = cleanupVerifierProcesses
 	mux := http.NewServeMux()
 	mux.Handle("POST /verify", newVerifyHandler(config))
+	mux.Handle("GET /prepared", newPreparedHandler(config))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	server := &http.Server{Addr: ":8090", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -91,8 +96,21 @@ func verifierConfigFromEnv() (verifierConfig, error) {
 	if err != nil {
 		return verifierConfig{}, err
 	}
+	profiles, err := loadPreparedProfiles()
+	if err != nil {
+		return verifierConfig{}, err
+	}
+	cacheRoot := strings.TrimSpace(os.Getenv("SWITCHYARD_VERIFIER_CACHE_ROOT"))
+	if cacheRoot == "" {
+		cacheRoot = defaultCacheRoot
+	}
+	if !filepath.IsAbs(cacheRoot) {
+		return verifierConfig{}, errors.New("SWITCHYARD_VERIFIER_CACHE_ROOT must be an absolute path")
+	}
 	return verifierConfig{
 		bundle:        os.Getenv("SWITCHYARD_VERIFIER_BUNDLE"),
+		cacheRoot:     cacheRoot,
+		profiles:      profiles,
 		worktreeRoot:  os.Getenv("OPEN_PILOT_WORKTREE_ROOT"),
 		gitCommonDir:  os.Getenv("OPEN_PILOT_GIT_COMMON_DIR"),
 		outputBytes:   outputBytes,
@@ -190,6 +208,7 @@ func verifyWithConfig(config verifierConfig, w http.ResponseWriter, r *http.Requ
 	}
 	var command *exec.Cmd
 	var cleanup func()
+	var prepared *preparedIdentity
 	if request.Command[0] == "git" {
 		command = identity.Command(ctx, nil, request.Command[1:]...)
 	} else {
@@ -217,13 +236,14 @@ func verifyWithConfig(config verifierConfig, w http.ResponseWriter, r *http.Requ
 		}
 		command = exec.CommandContext(ctx, request.Command[0], request.Command[1:]...)
 		command.Dir = snapshot
-		environment, cleanupPrepared, prepareErr := prepareVerification(ctx, config.bundle, snapshot, identity, request.Command)
+		environment, preparedWith, cleanupPrepared, prepareErr := prepareVerification(ctx, config, snapshot, identity, request.Command)
 		if prepareErr != nil {
 			writeResponse(w, http.StatusUnprocessableEntity, verifyResponse{Error: prepareErr.Error()})
 			return
 		}
 		defer cleanupPrepared()
 		command.Env = environment
+		prepared = preparedWith
 	}
 	output := &cappedWriter{limit: config.outputBytes}
 	command.Stdout = output
@@ -252,7 +272,7 @@ func verifyWithConfig(config verifierConfig, w http.ResponseWriter, r *http.Requ
 		writeResponse(w, http.StatusUnprocessableEntity, verifyResponse{Output: strings.TrimSpace(output.String()), Error: "managed worktree changed during verification"})
 		return
 	}
-	response := verifyResponse{Output: strings.TrimSpace(output.String()), Manifest: manifest}
+	response := verifyResponse{Output: strings.TrimSpace(output.String()), Manifest: manifest, Prepared: prepared}
 	if err != nil {
 		response.Error = "command failed"
 		writeResponse(w, http.StatusUnprocessableEntity, response)

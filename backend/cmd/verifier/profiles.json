@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "description": "Prepared verification profiles shared by the verifier (embedded) and scripts/prepare_verifier.py. Dependency inputs are hashed at preparation; every listed input must match at verification, including absent files.",
+  "profiles": {
+    "go1.26.6-node24-pnpm10.33.0-v2": {
+      "manifest_version": 2,
+      "reuse": "dependency-inputs",
+      "toolchains": {"go": "1.26.6", "node": "24", "pnpm": "10.33.0"},
+      "inputs": [
+        "backend/go.mod",
+        "backend/go.sum",
+        "web/package.json",
+        "web/pnpm-lock.yaml",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        ".npmrc",
+        "web/.npmrc",
+        "go.work",
+        "go.work.sum"
+      ],
+      "prepared_inputs": ["backend/go.mod", "backend/go.sum", "web/package.json", "web/pnpm-lock.yaml"],
+      "commands": [["make", "verify"]]
+    },
+    "go1.26.6-node24-pnpm10.33.0-v1": {
+      "manifest_version": 1,
+      "reuse": "exact-revision",
+      "toolchains": {"go": "1.26.6", "node": "24", "pnpm": "10.33.0"},
+      "inputs": [
+        "backend/go.mod",
+        "backend/go.sum",
+        "web/package.json",
+        "web/pnpm-lock.yaml",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        ".npmrc",
+        "web/.npmrc",
+        "go.work",
+        "go.work.sum"
+      ],
+      "prepared_inputs": ["backend/go.mod", "backend/go.sum", "web/package.json", "web/pnpm-lock.yaml"],
+      "commands": [["make", "verify"]]
+    }
+  }
+}
