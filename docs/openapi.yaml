@@ -885,6 +885,56 @@ paths:
       summary: Report bounded Open Pilot repository affinity and canonical identity readiness
       responses:
         "200": { description: Secret-free singleton admission audit report }
+  /api/open-pilot/readiness:
+    get:
+      summary: Preflight Open Pilot readiness for a repository or issue with structured reason codes
+      description: >-
+        Composes project registration, repository/executor generation, OpenCode and verifier health,
+        rollout mode and fingerprint, durable issue affinity, the command allowlist decision, and
+        effective write/CI/merge gates into one bounded control-only report. Configuration and
+        prerequisite failures are returned as 200 with `ready=false` and stable `checks[].code`
+        values; only a malformed query is rejected. The response never contains passwords, password
+        file paths, or host paths, and the route is absent from model ingress.
+      parameters:
+        - name: repo
+          in: query
+          required: false
+          schema: { type: string, maxLength: 256 }
+        - name: issue
+          in: query
+          required: false
+          schema: { type: string, maxLength: 32 }
+        - name: test_command
+          in: query
+          required: false
+          description: Argv command to evaluate against the repository command allowlist without executing it
+          schema: { type: string, maxLength: 4096 }
+      responses:
+        "200":
+          description: Readiness report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpenPilotReadinessReport" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/open-pilot/readiness/validate:
+    post:
+      summary: Dry-run validate an Open Pilot operator registry or runtime manifest document
+      description: >-
+        Strictly decodes exactly one document, rejects secret-looking material without echoing it,
+        validates identities, and compares entries with the loaded runtime registry. It performs no
+        cloning, filesystem, network, or admission changes. Requires admin authorization.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpenPilotConfigurationDryRunInput" }
+      responses:
+        "200":
+          description: Dry-run validation report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpenPilotConfigurationDryRunReport" }
+        default: { $ref: "#/components/responses/Error" }
   /api/open-pilot/rollout:
     get:
       summary: Report durable Open Pilot rollout and singleton rollback readiness
@@ -1364,6 +1414,132 @@ components:
         repository_slug: { type: string }
         issue: { type: string, pattern: "^[1-9][0-9]*$" }
       required: [repository_id, executor_generation, repository_slug, issue]
+    OpenPilotReadinessCheck:
+      type: object
+      properties:
+        name: { type: string }
+        code: { type: string, description: Stable reason code documented in docs/open-pilot.md }
+        status: { type: string, enum: [pass, warn, fail, skip] }
+        message: { type: string }
+        remediation: { type: string }
+      required: [name, code, status, message]
+    OpenPilotReadinessReport:
+      type: object
+      properties:
+        ready: { type: boolean, description: True when no check has status fail }
+        checked_at: { type: string, format: date-time }
+        activation_mode: { type: string }
+        registry_generation: { type: string }
+        registry_fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+        repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              slug: { type: string }
+              aliases: { type: array, items: { type: string } }
+              executor_generation: { type: string }
+        target:
+          type: object
+          properties:
+            repo: { type: string }
+            issue: { type: string }
+            repository_id: { type: string }
+            repository_slug: { type: string }
+            executor_generation: { type: string }
+            canonical_issue: { type: string }
+            registered: { type: boolean }
+        rollout:
+          type: object
+          properties:
+            mode: { type: string }
+            registry_fingerprint: { type: string }
+            fingerprint_matches: { type: boolean }
+            proof_targets: { type: array, items: { $ref: "#/components/schemas/OpenPilotProofTarget" } }
+            expires_at: { type: string, format: date-time }
+            closed_reason: { type: string }
+            generation: { type: integer }
+        executors:
+          type: array
+          description: Per-repository OpenCode and verifier health for the resolved target (or every repository when no repo is given)
+          items: { type: object }
+        gates:
+          type: object
+          properties:
+            autonomy_mode: { type: string }
+            gitea_write_mode: { type: string }
+            git_push_mode: { type: string }
+            auto_commit_mode: { type: string }
+            ci_check_mode: { type: string }
+            ci_required_checks: { type: array, items: { type: string } }
+            ci_auto_repair_mode: { type: string }
+            merge_mode: { type: string }
+            close_issue_mode: { type: string }
+            worktree_mode: { type: string }
+            command_policy_mode: { type: string }
+            known: { type: boolean }
+        command:
+          type: object
+          properties:
+            command: { type: string }
+            allowed: { type: boolean }
+            dry_run: { type: boolean }
+            reason: { type: string }
+        issue_state:
+          type: object
+          properties:
+            phase: { type: string }
+            run_id: { type: string }
+            next_action: { type: string }
+            active_run: { type: boolean }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/OpenPilotReadinessCheck" }
+        blockers:
+          type: array
+          description: Codes of every failing check, in check order
+          items: { type: string }
+        onboarding:
+          type: array
+          items:
+            type: object
+            properties:
+              step: { type: string }
+              done: { type: boolean }
+              detail: { type: string }
+      required: [ready, checked_at, activation_mode, repositories, executors, gates, checks, blockers, onboarding]
+    OpenPilotConfigurationDryRunInput:
+      type: object
+      additionalProperties: false
+      description: Exactly one of registry (operator registry v1) or manifest (runtime manifest v1)
+      properties:
+        registry: { type: object }
+        manifest: { type: object }
+    OpenPilotConfigurationDryRunReport:
+      type: object
+      properties:
+        valid: { type: boolean }
+        kind: { type: string, enum: [operator-registry, runtime-manifest, ""] }
+        checked_at: { type: string, format: date-time }
+        generation: { type: string }
+        fingerprint: { type: string }
+        runtime_fingerprint: { type: string }
+        runtime_fingerprint_matches: { type: boolean }
+        repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              slug: { type: string }
+              executor_generation: { type: string }
+              runtime_match: { type: string, enum: [exact, generation-differs, slug-differs, unregistered, unknown] }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/OpenPilotReadinessCheck" }
+        blockers: { type: array, items: { type: string } }
+      required: [valid, kind, checked_at, repositories, checks, blockers]
     ConfigureOpenPilotRollout:
       type: object
       additionalProperties: false
