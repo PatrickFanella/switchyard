@@ -37,7 +37,7 @@ These views in `web/src/components/FeaturePage.tsx` still read the compatibility
 
 ## Historical adapter plan
 
-The original sequence from the migration start. Items 1 and 3 are done as described under "Current state". Item 2 is done for sessions (issue #81); the Sessions view no longer renders the OCQ settings or request placeholders. Item 4 covers the remaining surfaces above.
+The original sequence from the migration start. Items 1 and 3 are done as described under "Current state". Item 2 is done for sessions; the Sessions view no longer renders the OCQ settings or request placeholders. Item 4 covers the remaining surfaces above.
 
 1. Redesign Queues/Requests around the durable native model broker ledger, status filters, deep links, and correlation IDs.
 2. Replace OpenCode-executor requests/logs/sessions/settings placeholders with native executor state.
