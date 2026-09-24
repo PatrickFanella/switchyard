@@ -1,5 +1,7 @@
 # Switchyard UI Feature Migration
 
+> Reconciled against `main` on 2026-09-23 (Gitea issue #65). The "Historical adapter plan" section is the original migration sequence and is kept for context; "Current state" and "Remaining adapter-backed surfaces" describe `main` as observed in `web/src/App.tsx` and `web/src/components/`.
+
 Switchyard is absorbing the operator-facing UI ideas from the reference repos into one native HUD. The goal is not separate service consoles; it is native module surfaces backed by Switchyard APIs.
 
 ## Implemented Switchyard homes
@@ -14,13 +16,28 @@ Switchyard is absorbing the operator-facing UI ideas from the reference repos in
 ## Current state
 
 - The web app uses the neubrutal HUD token system from `web/tailwind.config.js` and CSS variables emitted into `web/src/styles.css`.
-- The dashboard has module navigation for Overview, Queues, Sessions, Logs/Search, Prompts, Config, Agents, and Skills.
-- `web/src/App.tsx` is now a shell, with API/data/navigation/presentation split into focused modules.
-- Overview has been redesigned for command strip, active work, selected run, and evidence scanning.
-- `GET /api/adapters` still returns typed compatibility contracts for absorbed historical surfaces.
-- Pages are wired so those contracts can evolve into native module state without changing the overall HUD layout.
+- Navigation in `web/src/App.tsx` is grouped as Operate (Overview, Runs, Queues), Inspect (Observability, Sessions, Logs), and Configure (Prompts, Agents, Skills, Config).
+- `web/src/App.tsx` is a shell; API, data, hash navigation, and presentation are split into `web/src/api.ts`, `web/src/hooks/`, and `web/src/components/`.
+- Native surfaces (backed by Switchyard APIs, not `GET /api/adapters`):
+  - Overview (`OverviewDashboard.tsx`): workflows, triggers, runs, scheduler, workers, operator summary, and Open Pilot dispatch/resume.
+  - Runs (`RunCockpitPage.tsx`): run detail, step timeline, evidence filters, retry/cancel, and Open Pilot lifecycle actions.
+  - Queues (`QueuesPage.tsx`): the durable model-broker ledger through `/api/history`, with request deep links.
+  - Observability (`ObservabilityPage.tsx`): `/api/observability/model-broker`.
+  - Agents and Skills (`FeaturePage.tsx`): native profiles from `/api/agent-profiles`, rendered as read-only policy records.
+- `GET /api/adapters` still returns typed compatibility contracts for the absorbed historical surfaces, and the remaining views below render from it.
 
-## Next adapter work
+## Remaining adapter-backed surfaces
+
+These views in `web/src/components/FeaturePage.tsx` still read the compatibility payload rather than native module state. Finishing them is tracked under roadmap #60; no issue-level breakdown existed on 2026-09-23.
+
+- Sessions: `adapters.ocq` settings, sessions, and requests (OpenCode executor state).
+- Logs/Search: `adapters.llama_line.search`, `adapters.logs`, and `adapters.ocq.logs`.
+- Prompts: `adapters.changemaker` run control and posts plus `adapters.prompts` (workflow-policy state).
+- Config: `adapters.config` and `adapters.health` (native configuration and health state).
+
+## Historical adapter plan
+
+The original sequence from the migration start. Items 1 and 3 are done as described under "Current state"; items 2 and 4 are the remaining surfaces above.
 
 1. Redesign Queues/Requests around the durable native model broker ledger, status filters, deep links, and correlation IDs.
 2. Replace OpenCode-executor requests/logs/sessions/settings placeholders with native executor state.

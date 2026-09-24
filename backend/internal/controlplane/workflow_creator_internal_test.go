@@ -50,7 +50,7 @@ func TestGenericWorkflowHTTPExecutorUsesAllowlistedBoundedEndpoint(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Artifacts) != 1 || !strings.Contains(detail.Artifacts[0].URI, "%7B%22ok%22%3Atrue%7D") {
+	if len(detail.Artifacts) != 1 || !strings.Contains(detail.Artifacts[0].URI, "%7B%22ok%22:true%7D") {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }
@@ -218,7 +218,7 @@ func TestRunnerExecutesPersistedInternalWorkflow(t *testing.T) {
 	if detail.Steps[1].Name != "custom.publish" || detail.Steps[1].Status != StepSucceeded {
 		t.Fatalf("second step = %+v", detail.Steps[1])
 	}
-	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Name != "collect.md" || detail.Artifacts[0].Kind != "markdown" || !strings.Contains(detail.Artifacts[0].URI, "Collect+release+notes") {
+	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Name != "collect.md" || detail.Artifacts[0].Kind != "markdown" || !strings.Contains(detail.Artifacts[0].URI, "Collect%20release%20notes") {
 		t.Fatalf("artifacts = %+v", detail.Artifacts)
 	}
 }

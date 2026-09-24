@@ -1,8 +1,17 @@
 # Switchyard Roadmap
 
+> **How to read this document.** Reconciled against `main` on 2026-09-23
+> (Gitea issue #65). The phase and milestone sections below are historical
+> planning records: their "Build" lists are the original scope, and their
+> "Status" lines were updated during reconciliation. Current capability state,
+> evidence levels, release pointers, and the observed state of every cited
+> tracker issue live in `docs/status.md`; where this document and that page
+> disagree, `docs/status.md` wins. The only current work list is "Open work"
+> near the end.
+
 Switchyard is the monorepo for one cohesive automation runtime. OCQ, llama-line, and Changemaker are historical references whose useful ideas have been rebuilt as native Switchyard modules; the imported directories were removed.
 
-Switchyard Runtime phases 1–6 are implemented: durable linear workflows, native model brokering, native OpenCode execution, first-party workflow policy, and release qualification exist. Scheduled disposable restore-drill evidence, deadline telemetry, and external alerts are implemented. The active phase is to make autonomous execution controllable and constrained and finish selected operator surfaces.
+Switchyard Runtime phases 1–7 are implemented: durable linear workflows, native model brokering, native OpenCode execution, first-party workflow policy, release qualification tooling, and the static profile layer exist. Scheduled disposable restore-drill evidence, deadline telemetry, and external alerts are implemented. The last qualified release is `v0.1.2`; later tags and `main` are deployed without a qualification record, and qualifying the current candidate is Gitea issue #14. The active phase is to keep autonomous execution controllable and constrained and finish the remaining operator surfaces listed in `docs/ui-feature-migration.md`.
 
 ## North star
 
@@ -78,12 +87,12 @@ Already done:
 - Devlog Markdown artifact workflow.
 - Best-effort cancellation adapters.
 
-Current hardening track:
+Hardening track (historical list; each item now has a home on `main`):
 
-- Production runbooks and smoke checks for the live `11434` cutover.
-- Observability UI backed by the durable broker ledger and Phoenix trace correlation.
-- Model-broker reliability policy for bounded retries, clearer degradation, and safer async recovery.
-- Feature-tab UI redesign, starting with Queues/Requests.
+- Production runbooks and smoke checks for the live `11434` cutover: `docs/runbooks/native-model-broker-cutover.md`, `scripts/smoke-model-broker.sh`.
+- Observability UI backed by the durable broker ledger: `web/src/components/ObservabilityPage.tsx` over `/api/observability/model-broker`.
+- Model-broker reliability policy for bounded retries, clearer degradation, and safer async recovery: `backend/internal/controlplane/model_service.go`; plan record `docs/superpowers/plans/2026-06-17-model-broker-reliability.md`.
+- Feature-tab UI redesign, starting with Queues/Requests: `web/src/components/QueuesPage.tsx`; plan record `docs/superpowers/plans/2026-06-17-ui-queues-requests-sprint.md`.
 
 Exit criteria before Phase 1:
 
@@ -279,13 +288,15 @@ Exit criteria:
 
 ## Phase 6 — runtime hardening
 
-Status: code-complete and deployed at `v0.1.2`. Production backup, isolated
+Status: code-complete and qualified at `v0.1.2`. Production backup, isolated
 restore, monitoring scrape/rules, and live application rollback are proven for
-that release. A newer provider-neutral restore-evidence contract now requires
-manifest-last policy-bound bundles and a disposable PostgreSQL adapter; old
-evidence does not qualify the new contract.
-Acknowledged alert delivery and encrypted proxy transport remain operational
-prerequisites.
+that release only. A newer provider-neutral restore-evidence contract now
+requires manifest-last policy-bound bundles and a disposable PostgreSQL
+adapter; old evidence does not qualify the new contract.
+Acknowledged alert delivery (#16, closed) and encrypted proxy transport (#18
+and #19, closed with smoke evidence on revision
+`9521e5439870e5661a4fa197e30ae8febc66aa24`) are in place for that revision;
+each later candidate must re-prove them under #14.
 
 Goal: make Switchyard Runtime reliable enough for unattended scheduled workflows.
 
@@ -374,26 +385,46 @@ Exit criteria:
 - Artifact retention.
 - API docs and better HUD diagnostics.
 
-## Near-term implementation backlog
+## Completed foundations
 
-1. Assign a human receiver/escalation owner for the active NTFY route, then
-   record a delivered, acknowledged, and resolved Switchyard test alert.
-2. Replace the Almaz-to-Kvant plaintext dashboard hop with the approved
-   encrypted Tailscale path after the central policy permits Almaz
-   (`100.77.128.80`) to reach Kvant (`100.65.164.66`) on TCP/28081, while
-   preserving the control/model listener split.
-3. Observe durable deprecated-selector usage for 90 days and require two
-   qualifying zero-use releases before selector removal.
-4. Continue measuring retained inline-artifact growth. Keep PostgreSQL until an
-   operator-supplied byte budget, observation window, and sustained threshold
-   are exceeded by measured workload. Current: bounded report, durable totals,
-   and low-cardinality metrics complete; no threshold values or object storage
-   selected.
-5. Keep `docs/openapi.yaml`, codemaps, current release evidence, and
-   environment defaults aligned with implementation.
-6. Obtain live timer evidence for the bounded restore-drill scheduler under
-   Gitea #24. The implementation and automated tests are verified; no live
-   timer execution is claimed.
+Closed tracker issues whose code or evidence is on `main`. Each closure is
+bound to the revision its issue names; none qualifies a later release. The
+full table with what each one does not prove is in `docs/status.md`.
+
+- #13 release evidence validator; #17 static production configuration contract.
+- #16 alert owner and acknowledgement drill; #25 monitoring and CI-runner responsibility.
+- #18 encrypted Almaz-to-Kvant path; #19 encrypted proxy production smoke.
+- #24 scheduled restore-drill evidence capture.
+- #28 inline-artifact storage decision (`docs/adr/0004-inline-artifact-storage-threshold.md`); #29 deprecated-selector retirement gate; #30 documentation drift checks.
+- #61 reconciliation of the production Open Pilot branch with `main`.
+
+## Open work
+
+Reconciled 2026-09-23. Items that were on this list before and are now closed
+appear above; the earlier list is preserved in Git history.
+
+1. Qualify the current `main` candidate and publish its release record (#14,
+   open, human-run on the production host). Its former blockers #13, #16, #18
+   and #19 are closed. Until this lands, `docs/status.md` keeps `v0.1.2` as
+   the last qualified pointer.
+2. Complete the operational deprecated-selector observation: 90 days of
+   durable usage data and two qualifying zero-use releases before selector
+   removal. The eligibility gate itself is enforced (#29, closed); the
+   observation window is production runtime, not a code change.
+3. Continue measuring retained inline-artifact growth against the decision in
+   `docs/adr/0004-inline-artifact-storage-threshold.md` (#28, closed). Keep
+   PostgreSQL until an operator-supplied byte budget, observation window, and
+   sustained threshold are exceeded; none has been.
+4. Obtain live production timer evidence for the restore-drill scheduler. The
+   implementation and tests landed under #24 (closed); no live timer execution
+   is claimed in this repository.
+5. Finish the remaining native operator surfaces listed under "Remaining
+   adapter-backed surfaces" in `docs/ui-feature-migration.md` (parent #60,
+   open).
+6. Keep `docs/openapi.yaml`, codemaps, release pointers, tracked-issue states,
+   and environment defaults aligned with implementation; `make docs-check`
+   enforces the parts it can read from the repository (#30, closed, extended
+   under #65).
 
 ## Non-goals for the next phase
 
