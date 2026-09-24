@@ -1,6 +1,13 @@
 export type JSONShapeProperty = {
   type: string;
   description?: string;
+  // Output-contract keywords; see docs/reference/step-outputs.md.
+  properties?: Record<string, JSONShapeProperty>;
+  required?: string[];
+  items?: JSONShapeProperty;
+  maxLength?: number;
+  maxItems?: number;
+  enum?: string[];
 };
 
 export type JSONShape = {

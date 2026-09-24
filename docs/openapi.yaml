@@ -1056,6 +1056,7 @@ paths:
         default: { $ref: "#/components/responses/Error" }
     put:
       summary: Create or update a workflow definition draft
+      description: Returns 400 with a message naming the step and schema location when a step `output_shape` falls outside the supported output-contract subset (see `StepOutputShape` and docs/reference/step-outputs.md). Activation and rollback apply the same check.
       parameters:
         - $ref: "#/components/parameters/WorkflowDefinitionID"
       requestBody:
@@ -2184,10 +2185,57 @@ components:
       required: [type]
     JSONShapeProperty:
       type: object
+      description: Property schema. Input shapes use `type` and `description`. Step output contracts also accept `properties`, `required`, `items`, `maxLength`, `maxItems`, and `enum`; see `StepOutputShape`.
       properties:
-        type: { type: string }
+        type: { type: string, enum: [string, number, integer, boolean, object, array] }
         description: { type: string }
+        properties:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/JSONShapeProperty" }
+          description: Child properties; `type` must be `object`.
+        required:
+          type: array
+          items: { type: string }
+          description: Required child property names; each must be declared in `properties`.
+        items:
+          allOf: [{ $ref: "#/components/schemas/JSONShapeProperty" }]
+          description: Element schema; `type` must be `array`.
+        maxLength: { type: integer, minimum: 0, maximum: 1048576, description: "Maximum Unicode code points; `type` must be `string`." }
+        maxItems: { type: integer, minimum: 0, maximum: 1048576, description: "Maximum array length; `type` must be `array`." }
+        enum:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 1024 }
+          description: Allowed values; `type` must be `string`.
       required: [type]
+    StepOutputShape:
+      type: object
+      description: >-
+        Step output contract (version 1). Describes the map of named string outputs, so `type` must be `object`.
+        Top-level property names follow the step output name rules and at most 32 are declared. A top-level
+        `string` output is the raw text; `number`, `integer`, `boolean`, `object`, and `array` outputs must be
+        JSON text of that type. Nesting is limited to 8 levels and 256 schema nodes. Other keywords
+        (`$ref`, `pattern`, `format`, `additionalProperties`, `oneOf`, ...) are rejected. Undeclared outputs are
+        not validated.
+      additionalProperties: false
+      properties:
+        type: { type: string, enum: [object] }
+        description: { type: string }
+        properties:
+          type: object
+          maxProperties: 32
+          additionalProperties: { $ref: "#/components/schemas/JSONShapeProperty" }
+        required:
+          type: array
+          items: { type: string }
+      required: [type]
+    StepOutputContract:
+      type: object
+      description: Versioned output contract copied from a definition step `output_shape` into the immutable run pipeline snapshot. Retries, resumes, and definition rollbacks keep validating against it.
+      properties:
+        version: { type: integer, enum: [1] }
+        shape: { $ref: "#/components/schemas/StepOutputShape" }
+      required: [version, shape]
     PipelineStepDefinition:
       type: object
       properties:
@@ -2198,7 +2246,9 @@ components:
         profile: { type: string }
         model: { type: string }
         inputs: { $ref: "#/components/schemas/StringMap" }
-        output_shape: { $ref: "#/components/schemas/JSONShape" }
+        output_shape:
+          allOf: [{ $ref: "#/components/schemas/StepOutputShape" }]
+          description: Optional output contract. Omit it to leave outputs unvalidated. See docs/reference/step-outputs.md.
       required: [id, position, name, executor]
     PipelineDefinition:
       type: object
@@ -2298,7 +2348,7 @@ components:
         inputs: { $ref: "#/components/schemas/StringMap" }
         outputs:
           allOf: [{ $ref: "#/components/schemas/StringMap" }]
-          description: Durable named outputs published by a succeeded step. Later steps bind them with `{{steps.<step_id>.outputs.<name>}}`; values are bounded by `SWITCHYARD_MAX_STEP_OUTPUT_BYTES` and credential-shaped names are never persisted. See docs/reference/step-outputs.md.
+          description: Durable named outputs published by a succeeded step. Later steps bind them with `{{steps.<step_id>.outputs.<name>}}`; values are bounded by `SWITCHYARD_MAX_STEP_OUTPUT_BYTES` and credential-shaped names are never persisted. Steps with an output contract persist outputs only after they satisfy it. See docs/reference/step-outputs.md.
         output_summary: { type: string }
         error: { type: string }
         attempt_count: { type: integer }
@@ -2368,6 +2418,7 @@ components:
         profile: { type: string }
         model: { type: string }
         inputs: { $ref: "#/components/schemas/StringMap" }
+        output_contract: { $ref: "#/components/schemas/StepOutputContract" }
       required: [id, position, name, executor]
     AgentProfile:
       type: object

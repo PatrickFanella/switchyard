@@ -78,6 +78,113 @@ keep their existing state handoff and do not use output references.
 - Both the memory and PostgreSQL stores enforce the name, count, and size rules
   on write (`run_steps.outputs`, migration `029_run_step_outputs.sql`).
 
+## Output contracts
+
+A workflow-definition step may declare `output_shape`. When a run is created,
+the shape is copied into the run's immutable pipeline snapshot as
+`output_contract: {"version": 1, "shape": …}`. The runner validates the step's
+outputs against that snapshot contract before persisting them or letting a
+later step consume them.
+
+### Supported schema subset (contract version 1)
+
+The top-level shape describes the map of named outputs, so its `type` must be
+`object`. Top-level keywords: `type`, `description`, `properties`, `required`.
+Each top-level property name must be a valid output name (see above), and at
+most 32 outputs can be declared.
+
+Each property accepts `type`, `description`, and these type-specific keywords:
+
+| Keyword | Allowed on | Meaning |
+|---|---|---|
+| `properties`, `required` | `object` | Declared child properties; `required` names must be declared. |
+| `items` | `array` | Schema for every element. |
+| `maxItems` | `array` | Maximum element count (`0`–`1048576`). |
+| `maxLength` | `string` | Maximum length in Unicode code points (`0`–`1048576`). |
+| `enum` | `string` | Allowed values; at most 64 values of up to 1024 bytes each. |
+
+`type` is one of `string`, `number`, `integer`, `boolean`, `object`, `array`.
+Nesting is limited to 8 levels and 256 schema nodes. Every other keyword is
+rejected, including `$ref`, `pattern`, `format`, `minLength`, `minimum`,
+`additionalProperties`, `oneOf`/`anyOf`/`allOf`, and a `null` type. Every
+keyword in the subset is enforced.
+
+Outputs are strings, so the declared type of a top-level property says how its
+value is read:
+
+| Declared type | Accepted output value |
+|---|---|
+| `string` | The raw text. |
+| `number` | JSON number text, for example `-1.5e3`. |
+| `integer` | JSON number text with an integral value (`2`, `2.0`). |
+| `boolean` | Exactly `true` or `false`. |
+| `object`, `array` | JSON text of that type, validated recursively. |
+
+Nested values use JSON types directly. Outputs the shape does not declare, and
+nested properties it does not declare, pass through unvalidated. Executor
+metadata outputs such as `content_bytes` remain available without being
+declared.
+
+Validation runs on the bounded, redacted values that downstream steps would
+read. A required output that was omitted because it exceeded
+`SWITCHYARD_MAX_STEP_OUTPUT_BYTES` is reported as omitted, with its size.
+
+### Author-facing validation
+
+`PUT /api/workflow-definitions/{id}` returns `400` when an `output_shape` falls
+outside the subset. The message names the step and the schema location, for
+example:
+
+```
+invalid input: step "emit" output_shape is not a supported output contract: output_shape.properties.count: unsupported keyword "pattern"
+```
+
+Activation and rollback apply the same check, so a version stored before
+contracts were enforced, with a shape outside the subset, cannot be activated
+or restored. Save a corrected version instead.
+
+### Run-time failures
+
+When outputs violate the contract, the step is recorded as `failed` with
+nothing persisted in `outputs`, a `step.output.contract.violated` event is
+added, and no later step runs. Each problem names a JSON path:
+
+```
+step "produce" output violates its output contract (v1): $.count: expected integer encoded as JSON text, got "two"; $.report.items[0].id: required property is missing
+```
+
+At most 10 problems are listed. The failure is deterministic for the recorded
+output, so it is classified non-retryable and the run pauses. An operator can
+retry the step after fixing the producer.
+
+If a snapshot contract cannot be enforced, the step fails before its executor
+runs. This happens with an unknown contract `version`, or with a shape outside
+the subset that was stored before enforcement and snapshotted from an
+already-active definition. The error ends with
+`update the workflow definition output_shape and activate a new version`.
+
+### Compatibility, retries, and rollback
+
+- Steps without `output_shape` have no `output_contract`; their outputs are not
+  validated, and their snapshot JSON and `pipeline_version` are unchanged.
+- Runs whose snapshot was created before output contracts existed carry no
+  `output_contract` and keep executing without validation, even if the current
+  definition now declares a shape.
+- The snapshot governs. Same-run retries, worker restarts, operator resume
+  (`retry_from_run`), and `POST /api/runs/{runId}/retry` reuse the original
+  snapshot, so activating or rolling back a definition never changes the
+  contract of an existing run. New runs use the active definition.
+- Restored outputs are checked against the snapshot contract before any later
+  step consumes them. A record that fails (for example one written before
+  enforcement) is withheld, and the consuming reference fails with
+  `recorded outputs fail the producing step's output contract: …`.
+- The contract is part of the snapshot JSON and therefore of
+  `pipeline_version`, so resume restores outputs only from a source run that
+  executed the same contract.
+
+No database migration is involved; contracts are stored in the existing
+`runs.pipeline_snapshot` and `workflow_definitions.pipeline` JSONB columns.
+
 ## Durability and restoration
 
 Outputs are keyed by the immutable run step identity (`run_id`, `position`);

@@ -27,9 +27,18 @@ type JSONShape struct {
 	Required    []string                     `json:"required,omitempty"`
 }
 
+// JSONShapeProperty describes one property. Input shapes use only Type and
+// Description. Step output contracts additionally accept the bounded keyword
+// subset documented in docs/reference/step-outputs.md.
 type JSONShapeProperty struct {
-	Type        string `json:"type"`
-	Description string `json:"description,omitempty"`
+	Type        string                       `json:"type"`
+	Description string                       `json:"description,omitempty"`
+	Properties  map[string]JSONShapeProperty `json:"properties,omitempty"`
+	Required    []string                     `json:"required,omitempty"`
+	Items       *JSONShapeProperty           `json:"items,omitempty"`
+	MaxLength   *int                         `json:"maxLength,omitempty"`
+	MaxItems    *int                         `json:"maxItems,omitempty"`
+	Enum        []string                     `json:"enum,omitempty"`
 }
 
 type WorkflowDefinition struct {

@@ -470,7 +470,7 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 			if step.OutputSummary != "" {
 				execution.Summary = step.OutputSummary
 			}
-			outputs.set(pipelineStep.ID, step.Outputs)
+			outputs.accept(pipelineStep, step.Outputs)
 			continue
 		}
 		release, err := r.acquireExecutorSlot(ctx, pipelineStep.Executor)
@@ -496,6 +496,10 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 			resolvedStep.profileContract = profile.PromptContract
 		}
 		resolvedInputs, resolveErr := resolvePipelineStepInputs(pipelineStep, outputs)
+		if resolveErr == nil {
+			// An unenforceable snapshot contract fails before any side effect.
+			resolveErr = checkStepOutputContract(pipelineStep)
+		}
 		if resolveErr != nil {
 			release()
 			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
@@ -560,6 +564,17 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		}
 		if stepStatus == StepSucceeded {
 			boundOutputs, omitted, boundErr := boundStepOutputs(pipelineStep.ID, stepResult.Outputs)
+			for _, message := range omitted {
+				_, _ = store.AddEvent(run.ID, stepOutputOmittedEvent, message)
+			}
+			if boundErr == nil {
+				// Validate exactly what downstream steps would consume, before
+				// the outputs are persisted or the step is reported succeeded.
+				if contractErr := enforceStepOutputContract(pipelineStep, boundOutputs, stepResult.Outputs); contractErr != nil {
+					_, _ = store.AddEvent(run.ID, stepOutputContractViolatedEvent, contractErr.Error())
+					boundErr = contractErr
+				}
+			}
 			if boundErr == nil && boundOutputs != nil {
 				_, boundErr = store.UpdateRunStep(step.ID, UpdateRunStepInput{Outputs: boundOutputs})
 			}
@@ -569,9 +584,6 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 				}
 				_, _ = store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, boundErr.Error(), stepResult.CorrelationIDs)
 				return execution, boundErr
-			}
-			for _, message := range omitted {
-				_, _ = store.AddEvent(run.ID, stepOutputOmittedEvent, message)
 			}
 			outputs.set(pipelineStep.ID, boundOutputs)
 		}

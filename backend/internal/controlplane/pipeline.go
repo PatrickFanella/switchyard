@@ -13,6 +13,7 @@ func clonePipeline(pipeline Pipeline) Pipeline {
 	out.Steps = append([]PipelineStep(nil), pipeline.Steps...)
 	for i := range out.Steps {
 		out.Steps[i].Inputs = cloneMap(out.Steps[i].Inputs)
+		out.Steps[i].OutputContract = cloneStepOutputContract(out.Steps[i].OutputContract)
 	}
 	if pipeline.Profiles != nil {
 		out.Profiles = make(map[string]AgentProfile, len(pipeline.Profiles))
@@ -46,13 +47,17 @@ type Pipeline struct {
 }
 
 type PipelineStep struct {
-	ID              string            `json:"id"`
-	Position        int               `json:"position"`
-	Name            string            `json:"name"`
-	Executor        string            `json:"executor"`
-	Profile         string            `json:"profile,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Inputs          map[string]string `json:"inputs,omitempty"`
+	ID       string            `json:"id"`
+	Position int               `json:"position"`
+	Name     string            `json:"name"`
+	Executor string            `json:"executor"`
+	Profile  string            `json:"profile,omitempty"`
+	Model    string            `json:"model,omitempty"`
+	Inputs   map[string]string `json:"inputs,omitempty"`
+	// OutputContract is the versioned output_shape captured when the run
+	// snapshot is created. Nil means the step's outputs are unvalidated, which
+	// is also how snapshots created before output contracts existed behave.
+	OutputContract  *StepOutputContract `json:"output_contract,omitempty"`
 	profileContract string
 }
 
@@ -128,7 +133,7 @@ func (r StoreBackedPipelineRegistry) ListPipelines() []Pipeline {
 func pipelineFromDefinition(definition WorkflowDefinition) Pipeline {
 	steps := make([]PipelineStep, 0, len(definition.Pipeline.Steps))
 	for _, step := range definition.Pipeline.Steps {
-		steps = append(steps, PipelineStep{ID: step.ID, Position: step.Position, Name: step.Name, Executor: step.Executor, Profile: step.Profile, Model: step.Model, Inputs: cloneMap(step.Inputs)})
+		steps = append(steps, PipelineStep{ID: step.ID, Position: step.Position, Name: step.Name, Executor: step.Executor, Profile: step.Profile, Model: step.Model, Inputs: cloneMap(step.Inputs), OutputContract: stepOutputContractFromShape(step.OutputShape)})
 	}
 	sort.Slice(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
 	workflowID := definition.Pipeline.WorkflowID

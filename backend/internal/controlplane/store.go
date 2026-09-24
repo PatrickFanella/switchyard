@@ -273,19 +273,46 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition, profiles AgentPr
 	if err := validatePipelineStepOutputReferences(definition.Pipeline.Steps); err != nil {
 		return WorkflowDefinition{}, err
 	}
+	if err := validatePipelineStepOutputShapes(definition.Pipeline.Steps); err != nil {
+		return WorkflowDefinition{}, err
+	}
 	return definition, nil
 }
 
 func cloneJSONShape(shape JSONShape) JSONShape {
 	shape.Required = append([]string(nil), shape.Required...)
-	if shape.Properties != nil {
-		properties := make(map[string]JSONShapeProperty, len(shape.Properties))
-		for key, value := range shape.Properties {
-			properties[key] = value
-		}
-		shape.Properties = properties
-	}
+	shape.Properties = cloneJSONShapeProperties(shape.Properties)
 	return shape
+}
+
+func cloneJSONShapeProperties(properties map[string]JSONShapeProperty) map[string]JSONShapeProperty {
+	if properties == nil {
+		return nil
+	}
+	out := make(map[string]JSONShapeProperty, len(properties))
+	for key, value := range properties {
+		out[key] = cloneJSONShapeProperty(value)
+	}
+	return out
+}
+
+func cloneJSONShapeProperty(property JSONShapeProperty) JSONShapeProperty {
+	property.Properties = cloneJSONShapeProperties(property.Properties)
+	property.Required = append([]string(nil), property.Required...)
+	property.Enum = append([]string(nil), property.Enum...)
+	if property.Items != nil {
+		items := cloneJSONShapeProperty(*property.Items)
+		property.Items = &items
+	}
+	if property.MaxLength != nil {
+		value := *property.MaxLength
+		property.MaxLength = &value
+	}
+	if property.MaxItems != nil {
+		value := *property.MaxItems
+		property.MaxItems = &value
+	}
+	return property
 }
 
 func cloneWorkflowDefinition(definition WorkflowDefinition) WorkflowDefinition {
