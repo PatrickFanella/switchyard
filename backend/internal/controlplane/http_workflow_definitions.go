@@ -183,6 +183,12 @@ func validateWorkflowDefinitionStructure(definition WorkflowDefinition, requireE
 			if requireExecutable && (strings.TrimSpace(step.Inputs["url"]) == "" || !strings.EqualFold(strings.TrimSpace(step.Inputs["allow_http"]), "true")) {
 				return ErrInvalid
 			}
+		case "source":
+			// Source steps only read through a named adapter; they carry no
+			// agent profile and name a supported adapter even as drafts.
+			if strings.TrimSpace(step.Profile) != "" || strings.TrimSpace(step.Inputs["adapter"]) != SourceAdapterGiteaActivity {
+				return ErrInvalid
+			}
 		default:
 			return ErrInvalid
 		}

@@ -117,6 +117,7 @@
     {"key": "OPEN_PILOT_SINGLETON_REPOSITORY", "component": "open-pilot", "kind": "string", "sensitivity": "public", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "owner/repo admitted by legacy-singleton mode."},
     {"key": "DEVLOG_MODEL", "component": "devlog", "kind": "string", "sensitivity": "public", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Default Devlog model."},
     {"key": "GITEA_BASE_URL", "component": "gitea", "kind": "url", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API origin."},
-    {"key": "GITEA_TOKEN", "component": "gitea", "kind": "secret", "sensitivity": "secret", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API token for Open Pilot writes."}
+    {"key": "GITEA_TOKEN", "component": "gitea", "kind": "secret", "sensitivity": "secret", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "Gitea API token for Open Pilot writes and read-only source collection."},
+    {"key": "SWITCHYARD_SOURCE_REPOSITORIES", "component": "gitea", "kind": "list", "sensitivity": "internal", "mutability": "file-managed", "restart": "api", "authorization": "host-operator", "description": "OWNER/REPO allowlist for read-only gitea-activity source collection; empty disables collection."}
   ]
 }

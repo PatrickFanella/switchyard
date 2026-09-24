@@ -57,6 +57,11 @@ Validation happens twice:
 | `http` | `body` | Response body, present only when it is valid UTF-8 text. |
 | `http` | `body_bytes`, `body_sha256` | Size and SHA-256 of the full body. |
 | `http` | `url`, `method`, `artifact_name` | Redacted target URL, method, and artifact name. |
+| `source` | `adapter`, `status`, `item_count`, `source_count`, `failed_source_count`, `omitted_item_count`, `window_start`, `window_end`, `content`, `references`, `failures`, `source_ids`, `items`, `evidence_sha256`, `artifact_name` | Collected source material; see [Source collection](source-collection.md). |
+| `model` (grounded) | `generated`, `grounding_item_count`, `cited_sources`, `unknown_citations` | Published when the step declares `grounding_item_count`; see [Grounded model steps](source-collection.md#grounded-model-steps). |
+
+An internal step that sets `artifact_name` may also set `artifact_body`; the
+rendered body then becomes the artifact content instead of the rendered inputs.
 
 Outputs are published only when the step succeeds. Failed, canceled, timed-out,
 and paused steps publish nothing. First-party Open Pilot and Devlog pipelines
