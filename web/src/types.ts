@@ -166,6 +166,7 @@ export type OpenPilotStateResponse = {
 export type SchedulerStatus = {
   enabled: boolean;
   running: boolean;
+  paused?: boolean;
   interval?: string;
   last_tick?: string;
   last_error?: string;
@@ -174,6 +175,7 @@ export type SchedulerStatus = {
 export type WorkerPoolStatus = {
   enabled: boolean;
   running: boolean;
+  paused?: boolean;
   workers?: number;
   active?: number;
   lease?: string;
@@ -470,7 +472,7 @@ export type OperatorSafetyStatus = {
   warnings: string[];
 };
 
-export type ViewID = 'overview' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
+export type ViewID = 'overview' | 'inbox' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {
   id: ViewID;
@@ -534,6 +536,7 @@ export const routingSteps = ['UI', 'Switchyard', 'ModelBroker', 'OpenCode execut
 
 export const views: ViewMeta[] = [
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
+  { id: 'inbox', label: 'Inbox', source: 'Open Pilot' },
   { id: 'runs', label: 'Runs', source: 'Switchyard' },
   { id: 'queues', label: 'Queues', source: 'ModelBroker' },
   { id: 'observability', label: 'Observability', source: 'Phoenix / ModelBroker' },
@@ -575,3 +578,48 @@ export const defaultDashboardState: DashboardState = {
 };
 
 export const defaultWorkflowDefinitions: WorkflowDefinition[] = [];
+
+export type RuntimeConfigSource = 'environment' | 'default' | 'unset' | 'runtime' | 'unavailable' | 'not-observable';
+
+export type RuntimeConfigSetting = {
+  key: string;
+  component: string;
+  kind: string;
+  sensitivity: 'public' | 'internal' | 'secret';
+  mutability: 'file-managed' | 'runtime-mutable';
+  restart: 'api' | 'opencode' | 'compose' | 'none';
+  authorization: 'host-operator' | 'admin';
+  description: string;
+  source: RuntimeConfigSource;
+  effective?: string;
+  configured?: boolean;
+  default?: string;
+  compose_default?: string;
+  example_default?: string;
+  deployment_override?: string;
+  overridden?: boolean;
+  available?: boolean;
+  instructions: string;
+};
+
+export type RuntimeSettingChange = {
+  revision: number;
+  key: string;
+  previous: string;
+  value: string;
+  actor: string;
+  reason?: string;
+  at: string;
+};
+
+export type RuntimeConfigResponse = {
+  contract_version: number;
+  revision: number;
+  generated_at: string;
+  settings: RuntimeConfigSetting[];
+  changes: RuntimeSettingChange[];
+};
+
+export type RuntimeConfigChangeResult =
+  | { ok: true; setting: RuntimeConfigSetting; revision: number; change: RuntimeSettingChange }
+  | { ok: false; status: number; code?: string; message: string; revision?: number };

@@ -5,6 +5,7 @@ Contains the dashboard application shell, API client, shared domain types, style
 
 ## Design
 - `types.ts` mirrors backend JSON contracts and supplies empty/default states.
+- `openPilotInbox.ts` holds the inbox contract types, request/dispatch helpers, and `#/inbox/<params>` deep-link parsing.
 - `api.ts` centralizes fetch, normalization, formatting, and mutations.
 - `App.tsx` selects pages while hooks own URL and asynchronous state.
 - `correlation.ts` defines typed correlation destinations (run, step, request, session, executor request, Gitea issue/PR/commit/CI, trace, span), the external-link allowlist derived from `/api/operator-safety` `correlation_targets`, run evidence deep links (`#/runs/<run>/<steps|artifacts|events>/<id>`), and the run failure summary. `correlation.test.ts` covers allowlist rejection and destination mapping.

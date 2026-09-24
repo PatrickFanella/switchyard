@@ -550,3 +550,24 @@ func (a *API) openPilotReadinessValidate(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, dryRunOpenPilotConfiguration(input, gate, time.Now()))
 }
+
+// openPilotInbox is the bounded, read-only intake queue. It answers 200 with
+// per-issue reason codes and upstream availability; only a malformed query is
+// rejected. It never claims, dispatches, or writes to Gitea.
+func (a *API) openPilotInbox(w http.ResponseWriter, r *http.Request) {
+	filter, problem := parseOpenPilotInboxFilter(r.URL.Query())
+	if problem != "" {
+		writeError(w, http.StatusBadRequest, problem)
+		return
+	}
+	input := openPilotInboxInput{Filter: filter, Issues: a.openPilotIssues, Store: a.store, PollRepos: a.openPilotPollRepos, Now: time.Now()}
+	if a.runner != nil {
+		input.Gate, input.GateError = a.runner.openPilotGate, a.runner.openPilotGateError
+		if env, ok := a.runner.executors.(*EnvWorkflowExecutors); ok {
+			input.Executors = env
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), openPilotInboxTimeout)
+	defer cancel()
+	writeJSON(w, http.StatusOK, buildOpenPilotInbox(ctx, input))
+}
