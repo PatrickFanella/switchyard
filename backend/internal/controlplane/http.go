@@ -31,6 +31,7 @@ type API struct {
 	retention             *RetentionManager
 	asyncDispatch         bool
 	compatibilityObserver *CompatibilityObserver
+	runtimeSettings       *RuntimeSettings
 }
 
 type controlPlaneActorContextKey struct{}
@@ -50,7 +51,7 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), canceler: NewEnvCancelDispatcherWithStore(store)}
+	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings()}
 }
 
 func (a *API) SetCancelDispatcher(canceler CancelDispatcher) {

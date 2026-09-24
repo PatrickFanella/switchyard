@@ -754,6 +754,59 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
+  /api/runtime-config:
+    get:
+      summary: Get the effective runtime configuration inventory
+      description: |
+        Control-listener-only view of every inventoried setting with its
+        source of truth, sensitivity, mutability, restart requirement,
+        authorization, effective value, and drift against the defaults
+        contract. Secret-classified values are never returned; only whether
+        they are configured. Compose-only and sidecar-only keys are reported
+        as not observable. See docs/reference/runtime-configuration.md.
+      responses:
+        "200":
+          description: Effective configuration, revision, and recent runtime changes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigResponse" }
+  /api/runtime-config/{key}:
+    put:
+      summary: Change one runtime-mutable setting
+      description: |
+        Admin-only. Accepts only inventory keys classified runtime-mutable
+        (scheduler.dispatch_paused and workers.claim_paused in v1). The
+        request must carry the revision it observed; a mismatch is rejected
+        as stale. File-managed keys are rejected with the exact file and
+        restart instructions instead of being applied. Accepted changes are
+        recorded in the bounded process-local change list and the log.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuntimeConfigChangeRequest" }
+      responses:
+        "200":
+          description: Change applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigChangeResponse" }
+        "400":
+          description: Invalid body, missing expected_revision, or value of the wrong type
+        "403":
+          description: Caller is not an admin
+        "404":
+          description: Key is not inventoried
+        "409":
+          description: File-managed key, component unavailable, or stale revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigConflict" }
   /api/operator-summary:
     get:
       summary: Get bounded Switchyard operator summary
@@ -1785,6 +1838,7 @@ components:
       properties:
         enabled: { type: boolean }
         running: { type: boolean }
+        paused: { type: boolean, description: Runtime dispatch pause; process-local and reset on restart }
         interval: { type: string }
         last_tick: { type: string, format: date-time }
         last_error: { type: string }
@@ -1794,6 +1848,7 @@ components:
       properties:
         enabled: { type: boolean }
         running: { type: boolean }
+        paused: { type: boolean, description: Runtime claim pause; process-local and reset on restart }
         workers: { type: integer }
         active: { type: integer }
         lease: { type: string }
@@ -1814,6 +1869,74 @@ components:
         open_pilot_autonomy_mode: { type: string }
         warnings: { type: array, items: { type: string } }
       required: [reverse_proxy_auth, open_pilot_autonomy_mode, warnings]
+    RuntimeConfigSetting:
+      type: object
+      description: One inventoried setting. Secret-classified settings never carry effective, default, compose_default, or example_default.
+      properties:
+        key: { type: string }
+        component: { type: string }
+        kind: { type: string }
+        sensitivity: { type: string, enum: [public, internal, secret] }
+        mutability: { type: string, enum: [file-managed, runtime-mutable] }
+        restart: { type: string, enum: [api, opencode, compose, none] }
+        authorization: { type: string, enum: [host-operator, admin] }
+        description: { type: string }
+        source: { type: string, enum: [environment, default, unset, runtime, unavailable, not-observable] }
+        effective: { type: string }
+        configured: { type: boolean }
+        default: { type: string }
+        compose_default: { type: string }
+        example_default: { type: string }
+        deployment_override: { type: string }
+        overridden: { type: boolean }
+        available: { type: boolean }
+        instructions: { type: string }
+      required: [key, component, kind, sensitivity, mutability, restart, authorization, description, source, instructions]
+    RuntimeSettingChange:
+      type: object
+      properties:
+        revision: { type: integer, minimum: 1 }
+        key: { type: string }
+        previous: { type: string }
+        value: { type: string }
+        actor: { type: string }
+        reason: { type: string }
+        at: { type: string, format: date-time }
+      required: [revision, key, previous, value, actor, at]
+    RuntimeConfigResponse:
+      type: object
+      properties:
+        contract_version: { type: integer, enum: [1] }
+        revision: { type: integer, minimum: 0 }
+        generated_at: { type: string, format: date-time }
+        settings: { type: array, items: { $ref: "#/components/schemas/RuntimeConfigSetting" } }
+        changes: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/RuntimeSettingChange" } }
+      required: [contract_version, revision, generated_at, settings, changes]
+    RuntimeConfigChangeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        value: { type: boolean }
+        expected_revision: { type: integer, minimum: 0 }
+        reason: { type: string, maxLength: 256 }
+      required: [value, expected_revision]
+    RuntimeConfigChangeResponse:
+      type: object
+      properties:
+        setting: { $ref: "#/components/schemas/RuntimeConfigSetting" }
+        revision: { type: integer, minimum: 1 }
+        change: { $ref: "#/components/schemas/RuntimeSettingChange" }
+      required: [setting, revision, change]
+    RuntimeConfigConflict:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, enum: [file-managed, unavailable, stale-revision] }
+            message: { type: string }
+        revision: { type: integer, minimum: 0 }
+      required: [error, revision]
     CompatibilityRetirementStatus:
       type: object
       additionalProperties: false

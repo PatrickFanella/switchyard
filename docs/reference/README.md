@@ -11,3 +11,4 @@ Use this section for durable technical references:
 Keep exploratory notes in `docs/research/` until they become stable references.
 
 - [Client Compatibility](client-compatibility.md) — llama-line/Ollama/OpenAI compatibility behavior for downstream clients.
+- [Runtime configuration](runtime-configuration.md) — settings inventory, secret redaction, and the v1 boundary between file-managed and runtime-mutable settings.

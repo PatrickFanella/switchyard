@@ -27,7 +27,7 @@ const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: st
   sessions: { eyebrow: 'OpenCode executor', title: 'Sessions', description: 'Review active execution sessions and their workflow context.' },
   logs: { eyebrow: 'Evidence', title: 'Logs and search', description: 'Search runtime evidence across native Switchyard modules.' },
   prompts: { eyebrow: 'Workflow policy', title: 'Prompt library', description: 'Review prompt contracts, inputs, and generated outputs.' },
-  config: { eyebrow: 'Runtime', title: 'Configuration', description: 'Understand active features, limits, and module health.' },
+  config: { eyebrow: 'Runtime', title: 'Configuration', description: 'Effective values, their sources and drift, and how to change each setting.' },
   agents: { eyebrow: 'Profiles', title: 'Agent roster', description: 'Inspect roles, model assignments, and capabilities.' },
   skills: { eyebrow: 'Capabilities', title: 'Runtime capabilities', description: 'Review profile-scoped executors; capability management is not a dashboard control.' },
 };
