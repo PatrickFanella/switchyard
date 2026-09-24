@@ -853,6 +853,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OperatorSafetyStatus" }
+  /api/control-access:
+    get:
+      summary: Get the caller's control-plane role
+      description: |
+        Control-listener-only. Reports whether the authenticated caller holds
+        the admin or read role so the dashboard can render read-only screens
+        before an edit. Advisory only: every non-GET request from a read-role
+        caller is still rejected with 403. A handler served without the
+        control-plane authentication layer reports role "unrestricted".
+      responses:
+        "200":
+          description: Caller role and whether writes are allowed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  role: { type: string, enum: [admin, read, unrestricted] }
+                  can_write: { type: boolean }
+                required: [role, can_write]
   /api/runtime-config:
     get:
       summary: Get the effective runtime configuration inventory

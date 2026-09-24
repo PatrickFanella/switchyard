@@ -65,12 +65,12 @@ func TestRunnerEnforcesProfileDefaultsAndAuditMetadata(t *testing.T) {
 func TestWorkflowDefinitionRejectsUnknownOrDisallowedProfiles(t *testing.T) {
 	store := NewStore(nil)
 	base := WorkflowDefinition{ID: "profile-definition", Name: "Profile Definition", Status: "draft", Pipeline: PipelineDefinition{ID: "profile-definition-pipeline", WorkflowID: "profile-definition", Name: "Profile Definition", Steps: []PipelineStepDefinition{{ID: "step", Position: 1, Name: "step", Executor: "model", Profile: "missing"}}}}
-	if _, err := store.UpsertWorkflowDefinition(base); err != ErrInvalid {
+	if _, err := store.UpsertWorkflowDefinition(base); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown profile error = %v, want ErrInvalid", err)
 	}
 	base.Pipeline.Steps[0].Profile = "content-writer"
 	base.Pipeline.Steps[0].Executor = "command"
-	if _, err := store.UpsertWorkflowDefinition(base); err != ErrInvalid {
+	if _, err := store.UpsertWorkflowDefinition(base); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("disallowed executor error = %v, want ErrInvalid", err)
 	}
 }
