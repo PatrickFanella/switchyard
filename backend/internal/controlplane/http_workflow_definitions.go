@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -117,9 +118,18 @@ func workflowFromDefinition(definition WorkflowDefinition) Workflow {
 }
 
 func (a *API) updateWorkflowDefinition(w http.ResponseWriter, r *http.Request, id string) {
-	var definition WorkflowDefinition
-	if err := json.NewDecoder(r.Body).Decode(&definition); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeJSONDecodeError(w, err)
+		return
+	}
+	var definition WorkflowDefinition
+	if err := json.Unmarshal(body, &definition); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	if err := validateRawOutputShapeKeywords(body); err != nil {
+		writeControlError(w, err)
 		return
 	}
 	definition.ID = id
@@ -197,7 +207,9 @@ func validateWorkflowDefinitionStructure(definition WorkflowDefinition, requireE
 			return ErrInvalid
 		}
 	}
-	return nil
+	// Versions saved before output contracts were enforced may carry shapes
+	// outside the supported subset; they cannot be activated or rolled back to.
+	return validatePipelineStepOutputShapes(definition.Pipeline.Steps)
 }
 
 func workflowsOrEmpty(items []Workflow) []Workflow {

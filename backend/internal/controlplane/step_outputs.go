@@ -144,10 +144,37 @@ func validatePipelineStepOutputReferences(steps []PipelineStepDefinition) error 
 // have already succeeded, keyed by pipeline step id.
 type pipelineStepOutputs struct {
 	byStepID map[string]map[string]string
+	// rejected records steps whose recorded outputs fail the snapshot output
+	// contract; references to them fail with the recorded reason.
+	rejected map[string]string
 }
 
 func newPipelineStepOutputs() *pipelineStepOutputs {
-	return &pipelineStepOutputs{byStepID: map[string]map[string]string{}}
+	return &pipelineStepOutputs{byStepID: map[string]map[string]string{}, rejected: map[string]string{}}
+}
+
+// accept validates recorded outputs of an already succeeded step against the
+// step's snapshot output contract before any later step may consume them.
+// Records that do not satisfy the contract are withheld and the violation is
+// kept as the reason a downstream reference fails.
+func (p *pipelineStepOutputs) accept(step PipelineStep, outputs map[string]string) {
+	if p == nil || step.ID == "" {
+		return
+	}
+	if err := enforceStepOutputContract(step, outputs, nil); err != nil {
+		delete(p.byStepID, step.ID)
+		p.rejected[step.ID] = err.Error()
+		return
+	}
+	p.set(step.ID, outputs)
+}
+
+func (p *pipelineStepOutputs) rejection(stepID string) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	reason, ok := p.rejected[stepID]
+	return reason, ok
 }
 
 func (p *pipelineStepOutputs) set(stepID string, outputs map[string]string) {
@@ -155,6 +182,7 @@ func (p *pipelineStepOutputs) set(stepID string, outputs map[string]string) {
 		return
 	}
 	p.byStepID[stepID] = cloneMap(outputs)
+	delete(p.rejected, stepID)
 }
 
 func (p *pipelineStepOutputs) lookup(reference StepOutputReference) (string, bool) {
@@ -188,7 +216,7 @@ func (p *pipelineStepOutputs) loadPersisted(pipelineSteps []PipelineStep, record
 		if !ok || pipelineStep.Name != record.Name || pipelineStep.Executor != record.Executor {
 			continue
 		}
-		p.set(pipelineStep.ID, record.Outputs)
+		p.accept(pipelineStep, record.Outputs)
 		restored++
 	}
 	return restored
@@ -217,6 +245,9 @@ func resolvePipelineStepInputs(step PipelineStep, outputs *pipelineStepOutputs) 
 		for _, reference := range references {
 			if reference.StepID == step.ID {
 				return nil, fmt.Errorf("step %q input %q: %w", step.ID, key, stepOutputReferenceError{reference: reference.String(), reason: "a step cannot reference its own outputs"})
+			}
+			if reason, rejected := outputs.rejection(reference.StepID); rejected {
+				return nil, fmt.Errorf("step %q input %q: %w", step.ID, key, stepOutputReferenceError{reference: reference.String(), reason: "recorded outputs fail the producing step's output contract: " + reason})
 			}
 			value, ok := outputs.lookup(reference)
 			if !ok {
