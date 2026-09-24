@@ -100,4 +100,6 @@ The run-level fields are `override`, `override_status` (`none`, `accepted`, `rej
 - **Overview → Dispatch with model override** (`RunModelOverrideDispatch.tsx`): picks an enabled non-Open-Pilot trigger, loads the model-policy preview, and explains each step's inherited model and override rule. The override field is a list of the allowed models when the policy restricts them. The server's rejection message is shown verbatim.
 - **Run cockpit → Resolved policy** (`RunPolicyEvidence.tsx`): renders the run's `policy`, with each step's profile version and the source of its model.
 
+The **Prompts** view (`#/prompts`) shows each profile's contract read-only beside the step templates that use it; see [Prompt authoring](prompt-authoring.md) for which prompt text belongs in a profile contract and which in a workflow step template.
+
 Workflow authors choose a profile per step in the workflow draft editor, which offers only profiles that allow the step's executor (see [Workflow catalog](workflow-catalog.md)).

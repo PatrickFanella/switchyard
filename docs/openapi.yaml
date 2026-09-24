@@ -1085,6 +1085,53 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AgentProfileTransitionResponse" }
         default: { $ref: "#/components/responses/Error" }
+  /api/prompts:
+    get:
+      summary: List prompt templates, profile prompt contracts, and built-in prompt steps
+      description: >-
+        Control listener only; read or admin role. A derived view over the two prompt owners:
+        model-step templates in the latest version of each workflow definition (with the variables
+        they read, validation problems, and whether they differ from the active version) and the
+        effective prompt contract of every agent profile (with the workflow steps that use it).
+        Steps whose prompt an executor assembles in code are listed as built-in. Template and
+        contract text is redacted. Nothing is stored here; edits go through the owning
+        workflow-definition or agent-profile routes. See docs/reference/prompt-authoring.md.
+      responses:
+        "200":
+          description: Prompt inventory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PromptInventory" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/prompts/preview:
+    post:
+      summary: Render a stored or draft step template with sample values
+      description: >-
+        Control listener only; admin role, like every non-GET control route. Renders a model
+        step's template the way the runner would (step output references, then run inputs, then
+        the profile contract prefix) using sample inputs and sample step outputs. Missing variables
+        and template problems are reported explicitly and set `ok` to false. The result is
+        redacted. It is a dry run: no model call, no run, and no stored change. Unknown fields are
+        rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromptPreviewRequest" }
+      responses:
+        "200":
+          description: Rendered preview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preview: { $ref: "#/components/schemas/PromptPreview" }
+                required: [preview]
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/workflow-definitions:
     get:
       summary: List workflow definitions
@@ -2894,6 +2941,13 @@ components:
         workflow_id: { type: string }
         pipeline_id: { type: string }
         pipeline_version: { type: string }
+        definition_id: { type: string, description: Workflow definition whose step templates the run executes. }
+        definition_version:
+          type: integer
+          minimum: 0
+          description: >-
+            Workflow-definition version bound in the run snapshot. Zero for built-in pipelines and
+            for snapshots created before the version was recorded.
         override: { type: string, description: The run-level `model` input, when set. }
         override_status: { type: string, enum: [none, accepted, rejected] }
         rejections: { type: array, items: { type: string } }
@@ -2901,7 +2955,7 @@ components:
         override_restricted: { type: boolean, description: True when at least one step that accepts an override limits it to `allowed_overrides`. }
         allowed_overrides: { type: array, items: { type: string } }
         steps: { type: array, items: { $ref: "#/components/schemas/RunModelPolicyStep" } }
-      required: [workflow_id, override_status, accepts_override, override_restricted, steps]
+      required: [workflow_id, definition_version, override_status, accepts_override, override_restricted, steps]
     RunModelPolicyStep:
       type: object
       properties:
@@ -2927,6 +2981,14 @@ components:
         model_source: { $ref: "#/components/schemas/RunModelSource" }
         recorded: { type: boolean, description: True when the values come from the executed run step. }
         error: { type: string }
+        prompt_owner:
+          type: string
+          enum: [workflow-definition, built-in]
+          description: >-
+            Owner of the step prompt: its workflow-definition template, or code in the executor.
+            Absent for steps without a prompt.
+        prompt_input: { type: string, enum: [prompt, template] }
+        prompt_template_sha256: { type: string, pattern: '^[a-f0-9]{64}$', description: SHA-256 of the unrendered template in the run snapshot. }
       required: [step_id, step_name, position, executor, profile_version, accepts_override, override_restricted, inherited_model_source, model_source, recorded]
     RunModelSource:
       type: string
@@ -2949,6 +3011,8 @@ components:
         steps:
           type: array
           items: { $ref: "#/components/schemas/PipelineStep" }
+        definition_id: { type: string, description: Stored workflow definition this pipeline came from; absent for built-in pipelines. }
+        definition_version: { type: integer, minimum: 1, description: Workflow-definition version whose step templates this pipeline carries; absent for built-in pipelines. }
       required: [id, workflow_id, name, description, steps]
     PipelineStep:
       type: object
@@ -2962,6 +3026,136 @@ components:
         inputs: { $ref: "#/components/schemas/StringMap" }
         output_contract: { $ref: "#/components/schemas/StepOutputContract" }
       required: [id, position, name, executor]
+    PromptVariable:
+      type: object
+      properties:
+        name: { type: string, description: "Run input name, or steps.<step_id>.outputs.<name>." }
+        kind: { type: string, enum: [input, step-output] }
+        step_id: { type: string }
+        output: { type: string }
+        declared: { type: boolean, description: True when a run input is declared in the workflow input_shape; always true for step outputs. }
+        required: { type: boolean }
+      required: [name, kind, declared, required]
+    PromptProblem:
+      type: object
+      properties:
+        severity: { type: string, enum: [error, warning] }
+        message: { type: string }
+      required: [severity, message]
+    PromptProfileConstraints:
+      type: object
+      properties:
+        profile_id: { type: string }
+        name: { type: string }
+        role: { type: string }
+        version: { type: integer, minimum: 0, description: Zero for the shipped static default. }
+        source: { type: string, enum: [static, persisted] }
+        status: { type: string }
+        default_model: { type: string }
+        allowed_models: { type: array, items: { type: string } }
+        allowed_executors: { type: array, items: { type: string } }
+        prompt_contract: { type: string, description: Redacted contract text. }
+        prompt_contract_sha256: { type: string }
+      required: [profile_id, version, allowed_executors, prompt_contract, prompt_contract_sha256]
+    PromptTemplate:
+      type: object
+      properties:
+        owner: { type: string, enum: [workflow-definition] }
+        workflow_id: { type: string }
+        workflow_name: { type: string }
+        version: { type: integer, minimum: 1, description: Latest stored version. }
+        active_version: { type: integer, minimum: 0 }
+        step_id: { type: string }
+        step_name: { type: string }
+        position: { type: integer }
+        executor: { type: string }
+        profile_id: { type: string }
+        model: { type: string }
+        input: { type: string, enum: [prompt, template] }
+        template: { type: string, description: Redacted template text. }
+        template_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        active_template_sha256: { type: string }
+        changed_since_active: { type: boolean }
+        variables: { type: array, items: { $ref: "#/components/schemas/PromptVariable" } }
+        problems: { type: array, items: { $ref: "#/components/schemas/PromptProblem" } }
+      required: [owner, workflow_id, workflow_name, version, active_version, step_id, step_name, position, executor, input, template, template_sha256, changed_since_active, variables, problems]
+    PromptContractEntry:
+      allOf:
+        - $ref: "#/components/schemas/PromptProfileConstraints"
+        - type: object
+          properties:
+            owner: { type: string, enum: [agent-profile] }
+            referenced_by:
+              type: array
+              items:
+                type: object
+                properties:
+                  workflow_id: { type: string }
+                  step_id: { type: string }
+                  version: { type: integer, minimum: 0, description: Latest definition version; zero for built-in pipelines. }
+                required: [workflow_id, step_id, version]
+          required: [owner, referenced_by]
+    PromptBuiltInStep:
+      type: object
+      properties:
+        owner: { type: string, enum: [built-in] }
+        workflow_id: { type: string }
+        pipeline_id: { type: string }
+        step_id: { type: string }
+        step_name: { type: string }
+        executor: { type: string }
+        profile_id: { type: string }
+        note: { type: string }
+      required: [owner, workflow_id, pipeline_id, step_id, step_name, executor, note]
+    PromptInventory:
+      type: object
+      properties:
+        templates: { type: array, items: { $ref: "#/components/schemas/PromptTemplate" } }
+        contracts: { type: array, items: { $ref: "#/components/schemas/PromptContractEntry" } }
+        built_in: { type: array, items: { $ref: "#/components/schemas/PromptBuiltInStep" } }
+      required: [templates, contracts, built_in]
+    PromptPreviewRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        workflow_id: { type: string }
+        step_id: { type: string }
+        version: { type: integer, minimum: 0, description: Stored version to preview; 0 or absent means the latest. }
+        template: { type: string, maxLength: 65536, description: Unsaved draft text that replaces the stored template. }
+        inputs: { $ref: "#/components/schemas/StringMap" }
+        step_outputs:
+          type: object
+          description: Sample outputs keyed by step ID, then output name.
+          additionalProperties: { $ref: "#/components/schemas/StringMap" }
+      required: [workflow_id, step_id]
+    PromptPreview:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        version: { type: integer }
+        active_version: { type: integer }
+        step_id: { type: string }
+        step_name: { type: string }
+        input: { type: string, enum: [prompt, template] }
+        draft: { type: boolean, description: True when the request supplied a draft template. }
+        template_sha256: { type: string }
+        profile: { $ref: "#/components/schemas/PromptProfileConstraints" }
+        variables: { type: array, items: { $ref: "#/components/schemas/PromptVariable" } }
+        problems: { type: array, items: { $ref: "#/components/schemas/PromptProblem" } }
+        missing_variables:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              kind: { type: string, enum: [input, step-output] }
+              message: { type: string }
+            required: [name, kind, message]
+        ok: { type: boolean, description: False when a variable is missing or a problem has severity error. }
+        workflow_request: { type: string, description: The rendered template, redacted. }
+        rendered: { type: string, description: The full model prompt including the profile contract prefix, redacted. }
+        redacted: { type: boolean }
+      required: [workflow_id, version, active_version, step_id, step_name, input, draft, template_sha256, variables, problems, missing_variables, ok, workflow_request, rendered, redacted]
     AgentProfile:
       type: object
       description: Effective agent-profile policy. Static defaults report `version` 0, `status` `static`, and `source` `static`; persisted versions report their immutable version number, lifecycle status, and provenance.

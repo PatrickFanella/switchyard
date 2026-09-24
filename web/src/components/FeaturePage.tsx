@@ -3,6 +3,7 @@ import type { AdapterPayload, AgentProfile, ViewID } from '../types';
 import { ConfigPage } from './ConfigPage';
 import { EvidenceSearchPage } from './EvidenceSearchPage';
 import { ProfilesPage } from './ProfilesPage';
+import { PromptsPage } from './PromptsPage';
 import { SessionsPage } from './SessionsPage';
 import {
   formatTime,
@@ -97,42 +98,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
   }
 
   if (view === 'prompts') {
-    return (
-      <HudSection kicker="Workflow policy" title="Prompt contracts" note="Read-only workflow prompt inventory, variables, and generated content references. Prompt editing is managed through workflow policy, not this dashboard.">
-        <div className="mb-4 grid gap-3 md:grid-cols-4">
-          <HudField label="Run mode" value={adapters.changemaker.run_control.mode} />
-          <HudField label="Run control" value={adapters.changemaker.run_control.enabled ? 'enabled' : 'disabled'} />
-          <HudField label="Queued runs" value={adapters.changemaker.run_control.queued_runs} />
-          <HudField label="Active run" value={adapters.changemaker.run_control.active_run_id || 'none'} />
-        </div>
-        {adapters.prompts.length === 0 ? <HudEmptyState>No prompt templates have been reported yet.</HudEmptyState> : null}
-        <div className="grid gap-4 lg:grid-cols-2">
-          {adapters.prompts.map((prompt) => (
-            <FeatureCard key={prompt.id}>
-              <HudLabel className="text-[hsl(var(--faint))]">{prompt.surface}</HudLabel>
-              <h3 className="mt-2 text-lg font-semibold text-[hsl(var(--ink))]">{prompt.name}</h3>
-              <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{prompt.description}</p>
-              <pre className="mt-4 overflow-auto border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] p-3 text-xs text-[hsl(var(--ink))]">{prompt.template}</pre>
-              <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Variables: {prompt.variables.join(', ') || 'none'}</p>
-            </FeatureCard>
-          ))}
-        </div>
-        <FeatureCard>
-          <h3 className="hud-label text-[hsl(var(--signal))]">Posts</h3>
-          <div className="mt-4 grid gap-3">
-            {adapters.changemaker.posts.map((post) => (
-              <HudPanel key={post.id} className="bg-[hsl(var(--panel-soft))] p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-semibold text-[hsl(var(--ink))]">{post.title}</span>
-                  <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(post.status)}`}>{post.status}</span>
-                </div>
-                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{post.tags.join(', ') || 'untagged'} · {formatTime(post.published_at)}</p>
-              </HudPanel>
-            ))}
-          </div>
-        </FeatureCard>
-      </HudSection>
-    );
+    return <PromptsPage />;
   }
 
   if (view === 'config') {

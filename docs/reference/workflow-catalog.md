@@ -15,6 +15,10 @@ versions. It uses the existing definition API:
 | `GET /api/agent-profiles` | Profiles offered for each step. |
 | `GET /api/control-access` | The caller's role (`admin`, `read`, or `unrestricted`), used to show read-only screens. |
 
+Model-step templates can also be edited and previewed with sample values in
+the **Prompts** view; saves there use the same draft route and version
+panel. See [Prompt authoring](prompt-authoring.md).
+
 ## Routes
 
 | Hash | Screen |
