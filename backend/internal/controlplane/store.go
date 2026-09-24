@@ -104,6 +104,7 @@ type Store interface {
 	ListModelBrokerFeedback(int) ([]ModelBrokerFeedback, error)
 	PruneRetention(time.Time) (RetentionResult, error)
 	ArtifactReport(context.Context, ArtifactReportInput) (ArtifactReport, error)
+	SearchEvidence(context.Context, EvidenceSearchInput) (EvidenceSearchPage, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
 }
 

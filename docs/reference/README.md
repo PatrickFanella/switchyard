@@ -11,3 +11,4 @@ Use this section for durable technical references:
 Keep exploratory notes in `docs/research/` until they become stable references.
 
 - [Client Compatibility](client-compatibility.md) — llama-line/Ollama/OpenAI compatibility behavior for downstream clients.
+- [Evidence Search](evidence-search.md) — bounded, redacted control-plane search over retained runs, steps, and model requests.
