@@ -20,6 +20,8 @@ export type ArtifactPreviewProps = {
   artifact: Artifact;
   now?: () => Date;
   previewMaxBytes?: number;
+  // Start with the preview open, for review surfaces where reading is the task.
+  initiallyExpanded?: boolean;
 };
 
 const actionButtonClass =
@@ -208,9 +210,9 @@ function fallbackReason(analysis: ArtifactAnalysis) {
 // not re-run on every render when callers omit `now`.
 const defaultNow = () => new Date();
 
-export function ArtifactPreview({ artifact, now = defaultNow, previewMaxBytes = ARTIFACT_PREVIEW_MAX_BYTES }: ArtifactPreviewProps) {
+export function ArtifactPreview({ artifact, now = defaultNow, previewMaxBytes = ARTIFACT_PREVIEW_MAX_BYTES, initiallyExpanded = false }: ArtifactPreviewProps) {
   const regionID = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const [showExpired, setShowExpired] = useState(false);
   const [notice, setNotice] = useState('');
   const [integrity, setIntegrity] = useState<ArtifactIntegrity>('pending');

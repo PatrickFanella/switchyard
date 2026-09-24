@@ -117,6 +117,13 @@ type Store interface {
 	SearchEvidence(context.Context, EvidenceSearchInput) (EvidenceSearchPage, error)
 	ListExecutorSessionSteps(context.Context, ExecutorSessionStepsInput) (ExecutorSessionStepPage, error)
 	RuntimeMetrics() (RuntimeMetrics, error)
+	RecordDevlogDeliveryApproval(DevlogDeliveryApproval) (DevlogDeliveryApproval, error)
+	DevlogDeliveryApproval(string) (DevlogDeliveryApproval, error)
+	ListDevlogDeliveryApprovals(string) ([]DevlogDeliveryApproval, error)
+	BeginDevlogDelivery(BeginDevlogDeliveryInput) (DevlogDeliveryReceipt, bool, error)
+	FinishDevlogDelivery(FinishDevlogDeliveryInput) (DevlogDeliveryReceipt, error)
+	DevlogDeliveryReceipt(string) (DevlogDeliveryReceipt, error)
+	ListDevlogDeliveryReceipts(string) ([]DevlogDeliveryReceipt, error)
 }
 
 // OpenPilotCIRepairRequest contains the optimistic claim identity and the only
@@ -180,6 +187,8 @@ type MemoryStore struct {
 	webhookAuthDigest          string
 	webhookReceiptRetention    time.Duration
 	webhookReceiptsPruned      int64
+	devlogApprovals            map[string]DevlogDeliveryApproval
+	devlogReceipts             map[string]DevlogDeliveryReceipt
 }
 
 func NewStore(now func() time.Time) *MemoryStore {

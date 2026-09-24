@@ -168,3 +168,6 @@ attached `devlog-evidence.json` from the original step remains the recorded
 evidence.
 
 No database migration is involved.
+
+To preview, export, approve, and deliver a finished report, see
+[Devlog review, export, and delivery](devlog-delivery.md).
