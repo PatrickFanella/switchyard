@@ -16,11 +16,12 @@ Switchyard is absorbing the operator-facing UI ideas from the reference repos in
 ## Current state
 
 - The web app uses the neubrutal HUD token system from `web/tailwind.config.js` and CSS variables emitted into `web/src/styles.css`.
-- Navigation in `web/src/App.tsx` is grouped as Operate (Overview, Runs, Queues), Inspect (Observability, Sessions, Logs), and Configure (Prompts, Agents, Skills, Config).
+- Navigation in `web/src/App.tsx` is grouped as Operate (Overview, Inbox, Runs, Queues), Inspect (Observability, Sessions, Logs), and Configure (Workflows, Prompts, Agents, Skills, Config).
 - `web/src/App.tsx` is a shell; API, data, hash navigation, and presentation are split into `web/src/api.ts`, `web/src/hooks/`, and `web/src/components/`.
 - Native surfaces (backed by Switchyard APIs, not `GET /api/adapters`):
   - Overview (`OverviewDashboard.tsx`): workflows, triggers, runs, scheduler, workers, operator summary, and Open Pilot dispatch/resume.
   - Runs (`RunCockpitPage.tsx`): run detail, step timeline, evidence filters, retry/cancel, and Open Pilot lifecycle actions.
+  - Workflows (`WorkflowCatalogPage.tsx`, `WorkflowDraftEditor.tsx`): searchable catalog and linear draft editor over `/api/workflow-definitions`; see `docs/reference/workflow-catalog.md`.
   - Queues (`QueuesPage.tsx`): the durable model-broker ledger through `/api/history`, with request deep links.
   - Observability (`ObservabilityPage.tsx`): `/api/observability/model-broker`.
   - Logs/Search (`EvidenceSearchPage.tsx`): `GET /api/evidence/search`, a retention-bounded, cursor-paginated, redacted search over runs, steps, and model requests with `#/logs/search/<scope>/<query>[/<cursor>]` deep links; see `docs/reference/evidence-search.md`.

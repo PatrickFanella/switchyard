@@ -15,3 +15,4 @@ Keep exploratory notes in `docs/research/` until they become stable references.
 - [Evidence Search](evidence-search.md) — bounded, redacted control-plane search over retained runs, steps, and model requests.
 - [Step outputs](step-outputs.md) — durable named step outputs, `{{steps.<step_id>.outputs.<name>}}` bindings, limits, output contracts (`output_shape`), and retry/resume restoration.
 - [Runtime configuration](runtime-configuration.md) — settings inventory, secret redaction, and the v1 boundary between file-managed and runtime-mutable settings.
+- [Workflow catalog](workflow-catalog.md) — dashboard catalog and linear draft editor for workflow definitions, validation messages, read-only access, and the draft-versus-active save semantics.

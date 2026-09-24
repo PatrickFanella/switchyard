@@ -83,6 +83,7 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/compatibility/report", a.compatibilityReport)
 	mux.HandleFunc("GET /api/compatibility/observer", a.compatibilityObserverStatus)
 	mux.HandleFunc("GET /api/operator-safety", a.operatorSafety)
+	mux.HandleFunc("GET /api/control-access", a.controlAccess)
 	mux.HandleFunc("GET /api/runtime-config", a.runtimeConfig)
 	mux.HandleFunc("PUT /api/runtime-config/{key}", a.updateRuntimeConfig)
 	mux.HandleFunc("GET /api/operator-summary", a.operatorSummary)

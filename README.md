@@ -232,6 +232,7 @@ The backend exposes a workflow/run API:
 - `GET /api/opencode-executor/status`
 - `GET /api/operator-summary`
 - `GET /api/operator-safety`
+- `GET /api/control-access` (caller role for read-only dashboard screens)
 - `GET /api/pipelines`
 - `GET /api/agent-profiles`
 - `GET /api/scheduler`

@@ -38,6 +38,7 @@ type API struct {
 }
 
 type controlPlaneActorContextKey struct{}
+type controlPlaneRoleContextKey struct{}
 
 func NewAPI(store Store, runner *Runner) *API {
 	service := NewModelService(store, NewEnvModelBroker(), ModelServiceOptions{})
@@ -256,7 +257,8 @@ func controlPlaneAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "admin authorization required")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), controlPlaneActorContextKey{}, actor)))
+		ctx := context.WithValue(r.Context(), controlPlaneActorContextKey{}, actor)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, controlPlaneRoleContextKey{}, role)))
 	})
 }
 
