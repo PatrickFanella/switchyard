@@ -695,6 +695,63 @@ paths:
                 required: [artifact_report]
         "400": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
+  /api/evidence/search:
+    get:
+      summary: Search retained runs, steps, and model requests
+      description: >-
+        Bounded, authenticated native search over retained Switchyard evidence.
+        Matching is a case-insensitive substring test over identifiers, names,
+        statuses, summaries, errors, and correlation-ID values only. Run inputs,
+        step inputs, and model request/response bodies are never matched or
+        returned, and every returned text field is redacted and capped at 512
+        characters. Only records created within the configured retention
+        window (SWITCHYARD_RETENTION, default 720h) are searchable; the
+        response states the exact floor. Results are ordered by
+        (created_at desc, kind desc, id desc) and paginated with an opaque
+        keyset cursor, so pages stay stable while new evidence arrives.
+        Read-only tokens may call this route. The model-ingress listener does
+        not expose it.
+      parameters:
+        - name: q
+          in: query
+          description: Substring query; empty lists the most recent evidence in scope.
+          schema: { type: string, maxLength: 256 }
+        - name: scope
+          in: query
+          description: >-
+            all searches runs, steps, and requests. runs, steps, and requests
+            restrict to one kind. errors restricts to failed or timed-out runs,
+            steps with an error or failed/timed-out status, and failed or
+            errored requests. correlations matches only step and request
+            identifiers, step run IDs, and correlation-ID values.
+          schema: { type: string, enum: [all, runs, steps, requests, errors, correlations], default: all }
+        - name: status
+          in: query
+          description: Exact, case-insensitive status filter.
+          schema: { type: string, maxLength: 128 }
+        - name: workflow
+          in: query
+          description: Restrict runs and steps to one workflow ID; requests carry no workflow and are excluded.
+          schema: { type: string, maxLength: 128 }
+        - name: run_id
+          in: query
+          description: Restrict to one run, its steps, and requests whose correlation IDs reference it.
+          schema: { type: string, maxLength: 128 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: cursor
+          in: query
+          description: Opaque next_cursor value from a previous page.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of redacted evidence hits
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceSearchPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/compatibility/retirement:
     get:
       summary: Get durable deprecated-backend retirement status
@@ -1399,6 +1456,42 @@ components:
         canonical_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
         qualification_eligible: { type: boolean, description: False for non-durable diagnostic stores. }
       required: [version, source_revision, source_identity, source_segment, window_start, window_end, generated_at, observations, canonical_sha256, qualification_eligible]
+    EvidenceHit:
+      type: object
+      description: Redacted evidence projection without inputs or bodies.
+      properties:
+        kind: { type: string, enum: [run, step, request] }
+        id: { type: string }
+        run_id: { type: string, description: Owning run for runs and steps; empty for requests. }
+        workflow_id: { type: string, description: Workflow for runs and steps; empty for requests. }
+        status: { type: string }
+        title: { type: string, maxLength: 513, description: Workflow ID for runs, step name for steps, model for requests. }
+        summary: { type: string, maxLength: 513, description: Run summary, step output summary, or request path and client. }
+        error: { type: string, maxLength: 513 }
+        correlation_ids: { $ref: "#/components/schemas/StringMap" }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+      required: [kind, id, status, title, created_at]
+    EvidenceRetention:
+      type: object
+      properties:
+        window: { type: string, description: Configured retention window as a Go duration string. }
+        floor: { type: string, format: date-time, description: Records created before this instant are not searchable even if not yet pruned. }
+        searched_at: { type: string, format: date-time }
+      required: [window, floor, searched_at]
+    EvidenceSearchPage:
+      type: object
+      properties:
+        hits:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/EvidenceHit" }
+        next_cursor: { type: string, description: Opaque cursor for the next page; empty on the last page. }
+        query: { type: string }
+        scope: { type: string, enum: [all, runs, steps, requests, errors, correlations] }
+        limit: { type: integer }
+        retention: { $ref: "#/components/schemas/EvidenceRetention" }
+      required: [hits, next_cursor, query, scope, limit, retention]
     StringMap:
       type: object
       additionalProperties: { type: string }

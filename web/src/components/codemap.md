@@ -9,7 +9,8 @@ Renders operator-facing pages and reusable HUD controls for runtime overview, ru
 - `RunCockpitPage`/`runCockpit.tsx` present steps, events, artifacts, gates, and run actions.
 - `LiveRefreshIndicator` shows live-refresh state from `useLiveRefresh`: cadence or pause reason, last successful update, reconnect/backoff attempt, stale and error markers.
 - `QueuesPage` and `ObservabilityPage` independently query model-broker history/health.
-- `FeaturePage` handles sessions, logs, prompts, agents, skills, and configuration views.
+- `FeaturePage` handles sessions, prompts, agents, skills, and configuration views and delegates the logs view to `EvidenceSearchPage`.
+- `EvidenceSearchPage`/`evidenceSearch.ts` query the bounded `/api/evidence/search` route with idle, loading, no-results, error, deep-link (`#/logs/search/<scope>/<query>[/<cursor>]`), and cursor-pagination states.
 
 ## Flow
 `App` selects a page by hash route, passes normalized state and action callbacks, and components render status or invoke callbacks/API helpers in response to operator input.
