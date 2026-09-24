@@ -3,7 +3,6 @@ package controlplane
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -54,7 +53,7 @@ func (d devlogExecutor) ExecuteSteps(ctx context.Context, run Run, store Store) 
 	if err != nil {
 		return WorkflowExecution{}, err
 	}
-	uri := "data:text/markdown;charset=utf-8," + url.QueryEscape(markdown)
+	uri := inlineArtifactURI("text/markdown;charset=utf-8", markdown)
 	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "devlog.md", Kind: "markdown", URI: uri}); err != nil {
 		_, _ = store.FinishRunStep(attach.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
@@ -113,7 +112,7 @@ func (d devlogExecutor) ExecutePipelineStep(ctx context.Context, run Run, step P
 			Artifacts: []CreateArtifactInput{{
 				Name: "devlog.md",
 				Kind: "markdown",
-				URI:  "data:text/markdown;charset=utf-8," + url.QueryEscape(markdown),
+				URI:  inlineArtifactURI("text/markdown;charset=utf-8", markdown),
 			}},
 		}, nil
 	default:
@@ -126,7 +125,7 @@ func (e *EnvWorkflowExecutors) executeDevlog(ctx context.Context, run Run) (Work
 	if generated, err := e.generateDevlogWithLLM(ctx, markdown); err == nil && strings.TrimSpace(generated) != "" {
 		markdown = generated
 	}
-	uri := "data:text/markdown;charset=utf-8," + url.QueryEscape(markdown)
+	uri := inlineArtifactURI("text/markdown;charset=utf-8", markdown)
 	return WorkflowExecution{Summary: "Generated Devlog markdown artifact", Events: []WorkflowExecutionEvent{{Type: "devlog.generated", Message: "Generated devlog from Switchyard run history"}}, Artifacts: []CreateArtifactInput{{Name: "devlog.md", Kind: "markdown", URI: uri}}}, nil
 }
 

@@ -32,6 +32,7 @@ type API struct {
 	asyncDispatch         bool
 	compatibilityObserver *CompatibilityObserver
 	runtimeSettings       *RuntimeSettings
+	clock                 func() time.Time
 }
 
 type controlPlaneActorContextKey struct{}

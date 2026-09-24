@@ -695,6 +695,63 @@ paths:
                 required: [artifact_report]
         "400": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
+  /api/evidence/search:
+    get:
+      summary: Search retained runs, steps, and model requests
+      description: >-
+        Bounded, authenticated native search over retained Switchyard evidence.
+        Matching is a case-insensitive substring test over identifiers, names,
+        statuses, summaries, errors, and correlation-ID values only. Run inputs,
+        step inputs, and model request/response bodies are never matched or
+        returned, and every returned text field is redacted and capped at 512
+        characters. Only records created within the configured retention
+        window (SWITCHYARD_RETENTION, default 720h) are searchable; the
+        response states the exact floor. Results are ordered by
+        (created_at desc, kind desc, id desc) and paginated with an opaque
+        keyset cursor, so pages stay stable while new evidence arrives.
+        Read-only tokens may call this route. The model-ingress listener does
+        not expose it.
+      parameters:
+        - name: q
+          in: query
+          description: Substring query; empty lists the most recent evidence in scope.
+          schema: { type: string, maxLength: 256 }
+        - name: scope
+          in: query
+          description: >-
+            all searches runs, steps, and requests. runs, steps, and requests
+            restrict to one kind. errors restricts to failed or timed-out runs,
+            steps with an error or failed/timed-out status, and failed or
+            errored requests. correlations matches only step and request
+            identifiers, step run IDs, and correlation-ID values.
+          schema: { type: string, enum: [all, runs, steps, requests, errors, correlations], default: all }
+        - name: status
+          in: query
+          description: Exact, case-insensitive status filter.
+          schema: { type: string, maxLength: 128 }
+        - name: workflow
+          in: query
+          description: Restrict runs and steps to one workflow ID; requests carry no workflow and are excluded.
+          schema: { type: string, maxLength: 128 }
+        - name: run_id
+          in: query
+          description: Restrict to one run, its steps, and requests whose correlation IDs reference it.
+          schema: { type: string, maxLength: 128 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: cursor
+          in: query
+          description: Opaque next_cursor value from a previous page.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of redacted evidence hits
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceSearchPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /api/compatibility/retirement:
     get:
       summary: Get durable deprecated-backend retirement status
@@ -938,6 +995,56 @@ paths:
       summary: Report bounded Open Pilot repository affinity and canonical identity readiness
       responses:
         "200": { description: Secret-free singleton admission audit report }
+  /api/open-pilot/readiness:
+    get:
+      summary: Preflight Open Pilot readiness for a repository or issue with structured reason codes
+      description: >-
+        Composes project registration, repository/executor generation, OpenCode and verifier health,
+        rollout mode and fingerprint, durable issue affinity, the command allowlist decision, and
+        effective write/CI/merge gates into one bounded control-only report. Configuration and
+        prerequisite failures are returned as 200 with `ready=false` and stable `checks[].code`
+        values; only a malformed query is rejected. The response never contains passwords, password
+        file paths, or host paths, and the route is absent from model ingress.
+      parameters:
+        - name: repo
+          in: query
+          required: false
+          schema: { type: string, maxLength: 256 }
+        - name: issue
+          in: query
+          required: false
+          schema: { type: string, maxLength: 32 }
+        - name: test_command
+          in: query
+          required: false
+          description: Argv command to evaluate against the repository command allowlist without executing it
+          schema: { type: string, maxLength: 4096 }
+      responses:
+        "200":
+          description: Readiness report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpenPilotReadinessReport" }
+        default: { $ref: "#/components/responses/Error" }
+  /api/open-pilot/readiness/validate:
+    post:
+      summary: Dry-run validate an Open Pilot operator registry or runtime manifest document
+      description: >-
+        Strictly decodes exactly one document, rejects secret-looking material without echoing it,
+        validates identities, and compares entries with the loaded runtime registry. It performs no
+        cloning, filesystem, network, or admission changes. Requires admin authorization.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpenPilotConfigurationDryRunInput" }
+      responses:
+        "200":
+          description: Dry-run validation report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpenPilotConfigurationDryRunReport" }
+        default: { $ref: "#/components/responses/Error" }
   /api/open-pilot/rollout:
     get:
       summary: Report durable Open Pilot rollout and singleton rollback readiness
@@ -1402,6 +1509,42 @@ components:
         canonical_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
         qualification_eligible: { type: boolean, description: False for non-durable diagnostic stores. }
       required: [version, source_revision, source_identity, source_segment, window_start, window_end, generated_at, observations, canonical_sha256, qualification_eligible]
+    EvidenceHit:
+      type: object
+      description: Redacted evidence projection without inputs or bodies.
+      properties:
+        kind: { type: string, enum: [run, step, request] }
+        id: { type: string }
+        run_id: { type: string, description: Owning run for runs and steps; empty for requests. }
+        workflow_id: { type: string, description: Workflow for runs and steps; empty for requests. }
+        status: { type: string }
+        title: { type: string, maxLength: 513, description: Workflow ID for runs, step name for steps, model for requests. }
+        summary: { type: string, maxLength: 513, description: Run summary, step output summary, or request path and client. }
+        error: { type: string, maxLength: 513 }
+        correlation_ids: { $ref: "#/components/schemas/StringMap" }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+      required: [kind, id, status, title, created_at]
+    EvidenceRetention:
+      type: object
+      properties:
+        window: { type: string, description: Configured retention window as a Go duration string. }
+        floor: { type: string, format: date-time, description: Records created before this instant are not searchable even if not yet pruned. }
+        searched_at: { type: string, format: date-time }
+      required: [window, floor, searched_at]
+    EvidenceSearchPage:
+      type: object
+      properties:
+        hits:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/EvidenceHit" }
+        next_cursor: { type: string, description: Opaque cursor for the next page; empty on the last page. }
+        query: { type: string }
+        scope: { type: string, enum: [all, runs, steps, requests, errors, correlations] }
+        limit: { type: integer }
+        retention: { $ref: "#/components/schemas/EvidenceRetention" }
+      required: [hits, next_cursor, query, scope, limit, retention]
     StringMap:
       type: object
       additionalProperties: { type: string }
@@ -1417,6 +1560,132 @@ components:
         repository_slug: { type: string }
         issue: { type: string, pattern: "^[1-9][0-9]*$" }
       required: [repository_id, executor_generation, repository_slug, issue]
+    OpenPilotReadinessCheck:
+      type: object
+      properties:
+        name: { type: string }
+        code: { type: string, description: Stable reason code documented in docs/open-pilot.md }
+        status: { type: string, enum: [pass, warn, fail, skip] }
+        message: { type: string }
+        remediation: { type: string }
+      required: [name, code, status, message]
+    OpenPilotReadinessReport:
+      type: object
+      properties:
+        ready: { type: boolean, description: True when no check has status fail }
+        checked_at: { type: string, format: date-time }
+        activation_mode: { type: string }
+        registry_generation: { type: string }
+        registry_fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+        repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              slug: { type: string }
+              aliases: { type: array, items: { type: string } }
+              executor_generation: { type: string }
+        target:
+          type: object
+          properties:
+            repo: { type: string }
+            issue: { type: string }
+            repository_id: { type: string }
+            repository_slug: { type: string }
+            executor_generation: { type: string }
+            canonical_issue: { type: string }
+            registered: { type: boolean }
+        rollout:
+          type: object
+          properties:
+            mode: { type: string }
+            registry_fingerprint: { type: string }
+            fingerprint_matches: { type: boolean }
+            proof_targets: { type: array, items: { $ref: "#/components/schemas/OpenPilotProofTarget" } }
+            expires_at: { type: string, format: date-time }
+            closed_reason: { type: string }
+            generation: { type: integer }
+        executors:
+          type: array
+          description: Per-repository OpenCode and verifier health for the resolved target (or every repository when no repo is given)
+          items: { type: object }
+        gates:
+          type: object
+          properties:
+            autonomy_mode: { type: string }
+            gitea_write_mode: { type: string }
+            git_push_mode: { type: string }
+            auto_commit_mode: { type: string }
+            ci_check_mode: { type: string }
+            ci_required_checks: { type: array, items: { type: string } }
+            ci_auto_repair_mode: { type: string }
+            merge_mode: { type: string }
+            close_issue_mode: { type: string }
+            worktree_mode: { type: string }
+            command_policy_mode: { type: string }
+            known: { type: boolean }
+        command:
+          type: object
+          properties:
+            command: { type: string }
+            allowed: { type: boolean }
+            dry_run: { type: boolean }
+            reason: { type: string }
+        issue_state:
+          type: object
+          properties:
+            phase: { type: string }
+            run_id: { type: string }
+            next_action: { type: string }
+            active_run: { type: boolean }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/OpenPilotReadinessCheck" }
+        blockers:
+          type: array
+          description: Codes of every failing check, in check order
+          items: { type: string }
+        onboarding:
+          type: array
+          items:
+            type: object
+            properties:
+              step: { type: string }
+              done: { type: boolean }
+              detail: { type: string }
+      required: [ready, checked_at, activation_mode, repositories, executors, gates, checks, blockers, onboarding]
+    OpenPilotConfigurationDryRunInput:
+      type: object
+      additionalProperties: false
+      description: Exactly one of registry (operator registry v1) or manifest (runtime manifest v1)
+      properties:
+        registry: { type: object }
+        manifest: { type: object }
+    OpenPilotConfigurationDryRunReport:
+      type: object
+      properties:
+        valid: { type: boolean }
+        kind: { type: string, enum: [operator-registry, runtime-manifest, ""] }
+        checked_at: { type: string, format: date-time }
+        generation: { type: string }
+        fingerprint: { type: string }
+        runtime_fingerprint: { type: string }
+        runtime_fingerprint_matches: { type: boolean }
+        repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              slug: { type: string }
+              executor_generation: { type: string }
+              runtime_match: { type: string, enum: [exact, generation-differs, slug-differs, unregistered, unknown] }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/OpenPilotReadinessCheck" }
+        blockers: { type: array, items: { type: string } }
+      required: [valid, kind, checked_at, repositories, checks, blockers]
     ConfigureOpenPilotRollout:
       type: object
       additionalProperties: false
@@ -1753,6 +2022,9 @@ components:
         model: { type: string }
         status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out, paused] }
         inputs: { $ref: "#/components/schemas/StringMap" }
+        outputs:
+          allOf: [{ $ref: "#/components/schemas/StringMap" }]
+          description: Durable named outputs published by a succeeded step. Later steps bind them with `{{steps.<step_id>.outputs.<name>}}`; values are bounded by `SWITCHYARD_MAX_STEP_OUTPUT_BYTES` and credential-shaped names are never persisted. See docs/reference/step-outputs.md.
         output_summary: { type: string }
         error: { type: string }
         attempt_count: { type: integer }

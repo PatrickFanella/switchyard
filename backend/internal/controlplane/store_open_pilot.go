@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"encoding/json"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -156,7 +155,7 @@ func openPilotCIRepairArtifactInput(request OpenPilotCIRepairRequest) (CreateArt
 	if err != nil {
 		return CreateArtifactInput{}, err
 	}
-	input := CreateArtifactInput{RunID: request.ParentRunID, Name: "open-pilot-ci-checks.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(payload))}
+	input := CreateArtifactInput{RunID: request.ParentRunID, Name: "open-pilot-ci-checks.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(payload))}
 	if err := validateArtifactInput(input); err != nil {
 		return CreateArtifactInput{}, err
 	}

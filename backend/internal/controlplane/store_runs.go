@@ -294,6 +294,7 @@ func (s *MemoryStore) startRunStep(fence RunAttemptFence, present bool, fenceErr
 	step.FinishedAt = nil
 	step.Error = ""
 	step.OutputSummary = ""
+	step.Outputs = nil
 	s.steps[id] = step
 	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.started", Message: step.Name, CreatedAt: now})
 	return step, nil
@@ -304,6 +305,9 @@ func (s *MemoryStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunSte
 }
 
 func (s *MemoryStore) updateRunStep(fence RunAttemptFence, present bool, fenceErr error, id string, input UpdateRunStepInput) (RunStep, error) {
+	if err := validatePersistedStepOutputs(input.Outputs); err != nil {
+		return RunStep{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	step, ok := s.steps[id]
@@ -315,6 +319,12 @@ func (s *MemoryStore) updateRunStep(fence RunAttemptFence, present bool, fenceEr
 	}
 	if input.Inputs != nil {
 		step.Inputs = cloneMap(input.Inputs)
+	}
+	if input.Outputs != nil {
+		step.Outputs = redactStepOutputs(cloneMap(input.Outputs))
+		if step.Outputs == nil {
+			step.Outputs = map[string]string{}
+		}
 	}
 	s.steps[id] = step
 	return step, nil
@@ -428,6 +438,7 @@ func (s *MemoryStore) retryRunStep(fence RunAttemptFence, present bool, fenceErr
 	step.FinishedAt = nil
 	step.Error = ""
 	step.OutputSummary = ""
+	step.Outputs = nil
 	s.steps[id] = step
 	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.retry", Message: step.Name, CreatedAt: now})
 	return step, nil
@@ -456,6 +467,7 @@ func (s *MemoryStore) recoverRunStep(fence RunAttemptFence, present bool, fenceE
 	step.FinishedAt = nil
 	step.Error = ""
 	step.OutputSummary = ""
+	step.Outputs = nil
 	s.steps[id] = step
 	s.events[step.RunID] = append(s.events[step.RunID], RunEvent{ID: newID("evt"), RunID: step.RunID, Type: "step.recovered", Message: step.Name, CreatedAt: now})
 	return step, nil

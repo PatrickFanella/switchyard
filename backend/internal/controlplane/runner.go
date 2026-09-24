@@ -12,10 +12,14 @@ import (
 )
 
 type PipelineStepExecution struct {
-	Summary        string
-	Events         []WorkflowExecutionEvent
-	Artifacts      []CreateArtifactInput
-	Inputs         map[string]string
+	Summary   string
+	Events    []WorkflowExecutionEvent
+	Artifacts []CreateArtifactInput
+	Inputs    map[string]string
+	// Outputs are the named values later steps may bind through
+	// {{steps.<step_id>.outputs.<name>}}. The runner bounds and persists them
+	// on the step record only when the step succeeds.
+	Outputs        map[string]string
 	CorrelationIDs map[string]string
 	Halt           bool
 	Handoff        bool
@@ -403,6 +407,10 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 	if err != nil {
 		return execution, err
 	}
+	outputs, err := r.restorePipelineStepOutputs(store, run, steps, resumePosition)
+	if err != nil {
+		return execution, err
+	}
 	for _, pipelineStep := range steps {
 		if resumePosition > 0 && pipelineStep.Position < resumePosition {
 			continue
@@ -454,6 +462,7 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 			if step.OutputSummary != "" {
 				execution.Summary = step.OutputSummary
 			}
+			outputs.set(pipelineStep.ID, step.Outputs)
 			continue
 		}
 		release, err := r.acquireExecutorSlot(ctx, pipelineStep.Executor)
@@ -478,6 +487,16 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		if hasProfile {
 			resolvedStep.profileContract = profile.PromptContract
 		}
+		resolvedInputs, resolveErr := resolvePipelineStepInputs(pipelineStep, outputs)
+		if resolveErr != nil {
+			release()
+			if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+				reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, resolveErr)
+			}
+			_, _ = store.FinishRunStep(step.ID, StepFailed, "", resolveErr.Error(), nil)
+			return execution, resolveErr
+		}
+		resolvedStep.Inputs = resolvedInputs
 		var stepResult PipelineStepExecution
 		func() {
 			defer release()
@@ -531,6 +550,23 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 			stepStatus = StepPaused
 			execution.Status = RunPaused
 		}
+		if stepStatus == StepSucceeded {
+			boundOutputs, omitted, boundErr := boundStepOutputs(pipelineStep.ID, stepResult.Outputs)
+			if boundErr == nil && boundOutputs != nil {
+				_, boundErr = store.UpdateRunStep(step.ID, UpdateRunStepInput{Outputs: boundOutputs})
+			}
+			if boundErr != nil {
+				if reporter, ok := executor.(PipelineStepFailureReporter); ok {
+					reporter.HandlePipelineStepFailure(ctx, run, resolvedStep, state, boundErr)
+				}
+				_, _ = store.FinishRunStep(step.ID, StepFailed, stepResult.Summary, boundErr.Error(), stepResult.CorrelationIDs)
+				return execution, boundErr
+			}
+			for _, message := range omitted {
+				_, _ = store.AddEvent(run.ID, stepOutputOmittedEvent, message)
+			}
+			outputs.set(pipelineStep.ID, boundOutputs)
+		}
 		if _, err := store.FinishRunStep(step.ID, stepStatus, stepResult.Summary, "", stepResult.CorrelationIDs); err != nil {
 			return execution, err
 		}
@@ -542,6 +578,36 @@ func (r *Runner) executePipelineWithStore(ctx context.Context, store Store, run 
 		execution.Summary = summary
 	}
 	return execution, nil
+}
+
+// restorePipelineStepOutputs rebuilds the output view from durable records so a
+// retried, resumed, or restarted run never reruns a succeeded step to obtain
+// its outputs. Same-run attempts read this run's succeeded steps. Operator
+// resume runs carry retry_from_run; outputs of the source run's succeeded
+// steps before the resume position are restored only when the source run
+// executed the same immutable pipeline version.
+func (r *Runner) restorePipelineStepOutputs(store Store, run Run, steps []PipelineStep, resumePosition int) (*pipelineStepOutputs, error) {
+	outputs := newPipelineStepOutputs()
+	outputs.loadPersisted(steps, store.ListRunSteps(run.ID), 0)
+	sourceRunID := strings.TrimSpace(run.Inputs["retry_from_run"])
+	if resumePosition <= 0 || sourceRunID == "" || sourceRunID == run.ID {
+		return outputs, nil
+	}
+	source, err := store.RunDetail(sourceRunID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, stepOutputReferenceError{reference: "retry_from_run=" + sourceRunID, reason: "source run does not exist"}
+		}
+		return nil, err
+	}
+	if source.Run.PipelineVersion == "" || run.PipelineVersion == "" || source.Run.PipelineVersion != run.PipelineVersion {
+		_, _ = store.AddEvent(run.ID, stepOutputsRestoredEvent, fmt.Sprintf("skipped: source run %s pipeline version %q differs from %q", sourceRunID, source.Run.PipelineVersion, run.PipelineVersion))
+		return outputs, nil
+	}
+	if restored := outputs.loadPersisted(steps, source.Steps, resumePosition); restored > 0 {
+		_, _ = store.AddEvent(run.ID, stepOutputsRestoredEvent, fmt.Sprintf("restored outputs of %d succeeded step(s) before position %d from run %s", restored, resumePosition, sourceRunID))
+	}
+	return outputs, nil
 }
 
 func (r *Runner) profileForPipelineStep(step PipelineStep) (AgentProfile, bool, error) {

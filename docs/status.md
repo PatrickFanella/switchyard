@@ -63,6 +63,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Devlog and Changemaker policy | implemented | Native model-backed linear pipelines |
 | Agent profiles | test-verified | Registry/API, executor/model validation, default resolution, prompt contracts, and run-step audit correlation |
 | Operator UI | test-verified | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
+| Evidence search | test-verified | Authenticated, retention-bounded `/api/evidence/search` over runs, steps, and model requests with stable cursor pagination, payload exclusion, and redaction on memory and PostgreSQL stores; see `docs/reference/evidence-search.md` |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
 | Release qualification | qualified-with-exceptions | `v0.1.2` is the last release with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md`. Later deployed tags and `main` revisions are unqualified (see Development target and #14) |
 | Production recovery | test-verified | Versioned policy, completed-bundle, PostgreSQL object, provider-neutral restore evidence, opt-in timer, deadline metrics, and external alerts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
@@ -193,4 +194,5 @@ production evidence is recorded in `docs/releases/v0.1.2-qualification.md`.
 - Incident response: `docs/runbooks/incident-response.md`
 - Model ingress: `docs/runbooks/native-model-broker-cutover.md`
 - Client compatibility: `docs/reference/client-compatibility.md`
+- Evidence search: `docs/reference/evidence-search.md`
 - Runtime configuration boundary: `docs/reference/runtime-configuration.md`

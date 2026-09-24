@@ -131,7 +131,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		}
 	}
 	if issueData != nil {
-		if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))}); err != nil {
+		if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-issue.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(issueData))}); err != nil {
 			_, _ = store.FinishRunStep(validate.ID, StepFailed, "", err.Error(), nil)
 			return WorkflowExecution{}, err
 		}
@@ -151,7 +151,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 	branchBytes, _ := json.MarshalIndent(branchPlan, "", "  ")
-	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-branch-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(branchBytes))}); err != nil {
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-branch-plan.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(branchBytes))}); err != nil {
 		_, _ = store.FinishRunStep(branch.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
 	}
@@ -180,7 +180,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 	prompt := buildOpenPilotPrompt(repo, issue, issueSummary, fetchedIssue, run.Inputs, branchPlan)
-	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}); err != nil {
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-prompt.md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", prompt)}); err != nil {
 		_, _ = store.FinishRunStep(prepare.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
 	}
@@ -223,7 +223,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if branchPlan.WorktreePath != "" {
 		response.CorrelationIDs["worktree_path"] = branchPlan.WorktreePath
 	}
-	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}); err != nil {
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-response.md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", response.Content)}); err != nil {
 		_, _ = store.FinishRunStep(agent.ID, StepFailed, "", err.Error(), response.CorrelationIDs)
 		return WorkflowExecution{}, err
 	}
@@ -267,7 +267,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 	pushPlanBytes, _ := json.MarshalIndent(pushPlan, "", "  ")
-	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}); err != nil {
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-push-plan.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(pushPlanBytes))}); err != nil {
 		_, _ = store.FinishRunStep(pushStep.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
 	}
@@ -297,7 +297,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 		return WorkflowExecution{}, err
 	}
 	prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
-	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}); err != nil {
+	if _, err := store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-pr-plan.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(prPlanBytes))}); err != nil {
 		_, _ = store.FinishRunStep(prStep.ID, StepFailed, "", err.Error(), nil)
 		return WorkflowExecution{}, err
 	}
@@ -309,7 +309,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 			return WorkflowExecution{}, err
 		}
 		createdBytes, _ := json.MarshalIndent(created, "", "  ")
-		_, _ = store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-pr.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(createdBytes))})
+		_, _ = store.AddArtifact(CreateArtifactInput{RunID: run.ID, Name: "open-pilot-pr.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(createdBytes))})
 		if _, err := store.FinishRunStep(prStep.ID, StepSucceeded, "Created pull request", "", map[string]string{"pull_request": created.HTMLURL}); err != nil {
 			return WorkflowExecution{}, err
 		}
@@ -1226,7 +1226,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			}
 		}
 		if issueData != nil {
-			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-issue.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(issueData))})
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-issue.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(issueData))})
 		}
 		out.Summary = "Validated Open Pilot run inputs"
 		if issueSummary != "" {
@@ -1244,7 +1244,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		branchBytes, _ := json.MarshalIndent(branchPlan, "", "  ")
 		state["open-pilot.branch-name"] = branchName
 		state["open-pilot.branch-plan"] = branchPlan
-		out := PipelineStepExecution{Inputs: branchPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-branch-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(branchBytes))}}}
+		out := PipelineStepExecution{Inputs: branchPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-branch-plan.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(branchBytes))}}}
 		if prepareWorktreeErr != nil {
 			if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, prepareWorktreeErr.Error(), state); persistErr != nil {
 				return out, errors.Join(prepareWorktreeErr, persistErr)
@@ -1275,7 +1275,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		branchPlan, _ := state["open-pilot.branch-plan"].(OpenPilotWorktreePlan)
 		prompt := buildOpenPilotPrompt(repo, issue, issueSummary, fetchedIssue, run.Inputs, branchPlan)
 		state["open-pilot.prompt"] = prompt
-		return PipelineStepExecution{Summary: "Prepared Open Pilot implementation prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-prompt.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(prompt)}}}, nil
+		return PipelineStepExecution{Summary: "Prepared Open Pilot implementation prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-prompt.md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", prompt)}}}, nil
 	case "agent-work":
 		prompt, _ := state["open-pilot.prompt"].(string)
 		issueSummary, _ := state["open-pilot.issue-summary"].(string)
@@ -1349,7 +1349,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		state["open-pilot.agent-summary"] = response.Content
 		state["open-pilot.response"] = response.Content
 		state["open-pilot.agent-correlation"] = response.CorrelationIDs
-		stepResult := PipelineStepExecution{Summary: "OpenCode completed Open Pilot prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-response.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(response.Content)}}, CorrelationIDs: response.CorrelationIDs}
+		stepResult := PipelineStepExecution{Summary: "OpenCode completed Open Pilot prompt", Artifacts: []CreateArtifactInput{{Name: "open-pilot-response.md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", response.Content)}}, CorrelationIDs: response.CorrelationIDs}
 		if err := o.persistOpenPilotIssueState(run, OpenPilotPhaseAgentCompleted, step.Name, "", state); err != nil {
 			return stepResult, err
 		}
@@ -1494,7 +1494,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		if pushPlan.RemoteHeadExists {
 			pushCorrelation["remote_head_exists"] = "true"
 		}
-		out := PipelineStepExecution{Inputs: pushPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-push-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(pushPlanBytes))}}, CorrelationIDs: pushCorrelation}
+		out := PipelineStepExecution{Inputs: pushPlan.StepInputs(), Artifacts: []CreateArtifactInput{{Name: "open-pilot-push-plan.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(pushPlanBytes))}}, CorrelationIDs: pushCorrelation}
 		if branchPlan.Executed && branchPlan.WorktreePath != "" {
 			status, err := identityGitStatus(ctx, pushIdentity)
 			if err != nil {
@@ -1503,7 +1503,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 				}
 				return out, err
 			}
-			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(status)})
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-status.txt", Kind: "text", URI: inlineArtifactURI("text/plain;charset=utf-8", status)})
 			if pushPlan.Executed && strings.TrimSpace(status) != "clean" {
 				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires a clean worktree; commit or discard uncommitted changes")
 			}
@@ -1531,7 +1531,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			if err != nil {
 				return out, err
 			}
-			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-ahead.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(fmt.Sprintf("%d\n", ahead))})
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-git-ahead.txt", Kind: "text", URI: inlineArtifactURI("text/plain;charset=utf-8", fmt.Sprintf("%d\n", ahead))})
 			out.CorrelationIDs["commits_ahead"] = fmt.Sprintf("%d", ahead)
 			if pushPlan.Executed && ahead == 0 {
 				return out, errors.New("OPEN_PILOT_GIT_PUSH_MODE=allow requires committed changes ahead of base branch")
@@ -1613,7 +1613,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			prInput.Repo, prInput.Head, prInput.Base = repo, branchPlan.Branch, branchPlan.BaseBranch
 		}
 		prPlanBytes, _ := json.MarshalIndent(prInput, "", "  ")
-		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(prPlanBytes))}}}
+		out := PipelineStepExecution{Inputs: map[string]string{"mode": o.env.openPilotWriteMode, "head": prInput.Head, "base": prInput.Base}, Artifacts: []CreateArtifactInput{{Name: "open-pilot-pr-plan.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(prPlanBytes))}}}
 		switch o.env.openPilotWriteMode {
 		case "allow":
 			if branchPlan.Executed && !pushPlan.Executed && !pushPlan.RemoteHeadExists && !prKnown {
@@ -1648,7 +1648,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			state["open-pilot.pull-request"] = created
 			prKnown = true
 			createdBytes, _ := json.MarshalIndent(created, "", "  ")
-			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-pr.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(createdBytes))})
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-pr.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(createdBytes))})
 			out.Summary = "Created pull request"
 			out.CorrelationIDs = map[string]string{"pull_request": created.HTMLURL}
 		case "dry-run":
@@ -1659,7 +1659,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 		if branchPlan.Executed {
 			cleanupPlan, err := execution.worktreeManager.Cleanup(ctx, branchPlan, pushPlan.Executed || pushPlan.RemoteHeadExists || prKnown)
 			cleanupBytes, _ := json.MarshalIndent(cleanupPlan, "", "  ")
-			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-worktree-cleanup.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(cleanupBytes))})
+			out.Artifacts = append(out.Artifacts, CreateArtifactInput{Name: "open-pilot-worktree-cleanup.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(cleanupBytes))})
 			if err != nil {
 				if persistErr := o.persistOpenPilotIssueState(run, OpenPilotPhaseFailed, step.Name, err.Error(), state); persistErr != nil {
 					return out, errors.Join(err, persistErr)
@@ -1763,7 +1763,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 			gateStatus = map[string]string{}
 		}
 		artifactBody := buildOpenPilotAIReviewArtifact(repo, issue, run.Inputs, state, verdict, feedback, response.Content)
-		artifact := CreateArtifactInput{RunID: run.ID, Name: "open-pilot-ai-review.md", Kind: "markdown", URI: "data:text/markdown;charset=utf-8," + url.QueryEscape(artifactBody)}
+		artifact := CreateArtifactInput{RunID: run.ID, Name: "open-pilot-ai-review.md", Kind: "markdown", URI: inlineArtifactURI("text/markdown;charset=utf-8", artifactBody)}
 		state["open-pilot.gate-status"] = gateStatus
 		state["open-pilot.ai-review.body"] = response.Content
 		summary := "AI review approved"
@@ -2490,7 +2490,7 @@ func buildOpenPilotMergeArtifact(repo string, pr GiteaPullRequest, result GiteaM
 		"gate_status":  gateStatus,
 	}
 	encoded, _ := json.MarshalIndent(body, "", "  ")
-	return string(encoded), CreateArtifactInput{Name: "open-pilot-merge.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}
+	return string(encoded), CreateArtifactInput{Name: "open-pilot-merge.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(encoded))}
 }
 
 func buildOpenPilotIssueCloseArtifact(repo, issue string, closed GiteaIssue, gateStatus map[string]string) (string, CreateArtifactInput) {
@@ -2501,7 +2501,7 @@ func buildOpenPilotIssueCloseArtifact(repo, issue string, closed GiteaIssue, gat
 		"gate_status": gateStatus,
 	}
 	encoded, _ := json.MarshalIndent(body, "", "  ")
-	return string(encoded), CreateArtifactInput{Name: "open-pilot-issue-close.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}
+	return string(encoded), CreateArtifactInput{Name: "open-pilot-issue-close.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(encoded))}
 }
 
 func (o openPilotExecutor) resolveOpenPilotCIPullRequest(ctx context.Context, run Run, state map[string]any, allowMissing bool) (GiteaPullRequest, bool, error) {
@@ -2751,7 +2751,7 @@ func buildOpenPilotCICheckArtifact(repo string, pr GiteaPullRequest, mode string
 		"checks":          snapshot,
 	}
 	encoded, _ := json.MarshalIndent(body, "", "  ")
-	return string(encoded), CreateArtifactInput{Name: "open-pilot-ci-checks.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}
+	return string(encoded), CreateArtifactInput{Name: "open-pilot-ci-checks.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(encoded))}
 }
 
 func prCorrelationIDs(pr GiteaPullRequest) map[string]string {
@@ -3086,18 +3086,18 @@ func (e *EnvWorkflowExecutors) persistOpenPilotCommitIntent(run Run, state map[s
 
 func openPilotCommitArtifacts(result OpenPilotCommitResult) []CreateArtifactInput {
 	encoded, _ := json.MarshalIndent(result, "", "  ")
-	artifacts := []CreateArtifactInput{{Name: "open-pilot-commit.json", Kind: "json", URI: "data:application/json;charset=utf-8," + url.QueryEscape(string(encoded))}}
+	artifacts := []CreateArtifactInput{{Name: "open-pilot-commit.json", Kind: "json", URI: inlineArtifactURI("application/json;charset=utf-8", string(encoded))}}
 	if result.StatusBefore != "" {
-		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-status-before-commit.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.StatusBefore)})
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-status-before-commit.txt", Kind: "text", URI: inlineArtifactURI("text/plain;charset=utf-8", result.StatusBefore)})
 	}
 	if result.DiffStat != "" {
-		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-diffstat.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.DiffStat)})
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-diffstat.txt", Kind: "text", URI: inlineArtifactURI("text/plain;charset=utf-8", result.DiffStat)})
 	}
 	if result.NameStatus != "" {
-		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-name-status.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.NameStatus)})
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-name-status.txt", Kind: "text", URI: inlineArtifactURI("text/plain;charset=utf-8", result.NameStatus)})
 	}
 	if result.StatusAfter != "" {
-		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-status-after-commit.txt", Kind: "text", URI: "data:text/plain;charset=utf-8," + url.QueryEscape(result.StatusAfter)})
+		artifacts = append(artifacts, CreateArtifactInput{Name: "open-pilot-git-status-after-commit.txt", Kind: "text", URI: inlineArtifactURI("text/plain;charset=utf-8", result.StatusAfter)})
 	}
 	return artifacts
 }

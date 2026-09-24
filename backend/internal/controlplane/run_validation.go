@@ -86,6 +86,15 @@ func artifactMetadata(uri string, now time.Time) (Artifact, error) {
 	return Artifact{StorageClass: "inline-data-uri", ContentType: contentType, ByteSize: len(decoded), SHA256: hex.EncodeToString(sum[:]), RetentionUntil: &until}, nil
 }
 
+// inlineArtifactURI builds the inline data URI used for text artifacts. It
+// percent-encodes the body with path escaping so that spaces round-trip as
+// spaces through artifactMetadata and through browser data-URI decoding; the
+// stored byte size and SHA-256 therefore describe the readable text rather than
+// a query-escaped rendering of it.
+func inlineArtifactURI(contentType, body string) string {
+	return "data:" + contentType + "," + url.PathEscape(body)
+}
+
 func artifactMaxBytes() int {
 	maxBytes := 1 << 20
 	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWITCHYARD_MAX_ARTIFACT_BYTES"))); err == nil && parsed >= 1024 && parsed <= 16<<20 {
