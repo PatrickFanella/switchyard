@@ -148,6 +148,7 @@ type RunStep struct {
 	Model          string            `json:"model,omitempty"`
 	Status         RunStepStatus     `json:"status"`
 	Inputs         map[string]string `json:"inputs,omitempty"`
+	Outputs        map[string]string `json:"outputs,omitempty"`
 	OutputSummary  string            `json:"output_summary,omitempty"`
 	Error          string            `json:"error,omitempty"`
 	AttemptCount   int               `json:"attempt_count"`
@@ -167,8 +168,12 @@ type CreateRunStepInput struct {
 	CorrelationIDs map[string]string `json:"correlation_ids,omitempty"`
 }
 
+// UpdateRunStepInput replaces the named maps when they are non-nil. Outputs
+// are only meaningful before the step finishes successfully; StartRunStep,
+// RetryRunStep, and RecoverRunStep clear them for the next attempt.
 type UpdateRunStepInput struct {
-	Inputs map[string]string `json:"inputs,omitempty"`
+	Inputs  map[string]string `json:"inputs,omitempty"`
+	Outputs map[string]string `json:"outputs,omitempty"`
 }
 
 type RunEvent struct {

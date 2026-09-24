@@ -252,6 +252,9 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition) (WorkflowDefinit
 			return WorkflowDefinition{}, ErrInvalid
 		}
 	}
+	if err := validatePipelineStepOutputReferences(definition.Pipeline.Steps); err != nil {
+		return WorkflowDefinition{}, err
+	}
 	return definition, nil
 }
 
