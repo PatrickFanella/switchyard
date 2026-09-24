@@ -30,6 +30,7 @@
     "026_open_pilot_candidate_monotonicity.sql",
     "027_open_pilot_rollout_gate.sql",
     "028_evidence_search_indexes.sql",
+    "029_run_step_outputs.sql",
     "030_agent_profile_versions.sql"
   ],
   "required_objects": [

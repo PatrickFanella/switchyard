@@ -2093,6 +2093,9 @@ components:
         model: { type: string }
         status: { type: string, enum: [queued, running, succeeded, failed, canceled, timed_out, paused] }
         inputs: { $ref: "#/components/schemas/StringMap" }
+        outputs:
+          allOf: [{ $ref: "#/components/schemas/StringMap" }]
+          description: Durable named outputs published by a succeeded step. Later steps bind them with `{{steps.<step_id>.outputs.<name>}}`; values are bounded by `SWITCHYARD_MAX_STEP_OUTPUT_BYTES` and credential-shaped names are never persisted. See docs/reference/step-outputs.md.
         output_summary: { type: string }
         error: { type: string }
         attempt_count: { type: integer }

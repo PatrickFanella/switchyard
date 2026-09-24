@@ -465,7 +465,7 @@ func (s *PostgresStore) StartRunStep(id string) (RunStep, error) {
 		_ = tx.Rollback()
 		return RunStep{}, err
 	}
-	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, attempt_count=attempt_count+1, started_at=$3, finished_at=null, error='', output_summary='' where id=$1 and status=$4 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, StepRunning, now, StepQueued)
+	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, attempt_count=attempt_count+1, started_at=$3, finished_at=null, error='', output_summary='', outputs='{}'::jsonb where id=$1 and status=$4 returning id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, StepRunning, now, StepQueued)
 	step, err := scanRunStepRow(row)
 	if err != nil {
 		_ = tx.Rollback()
@@ -482,9 +482,23 @@ func (s *PostgresStore) StartRunStep(id string) (RunStep, error) {
 }
 
 func (s *PostgresStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunStep, error) {
-	inputs, err := json.Marshal(input.Inputs)
-	if err != nil {
+	if err := validatePersistedStepOutputs(input.Outputs); err != nil {
 		return RunStep{}, err
+	}
+	var inputs, outputs sql.NullString
+	if input.Inputs != nil {
+		encoded, err := json.Marshal(input.Inputs)
+		if err != nil {
+			return RunStep{}, err
+		}
+		inputs = sql.NullString{String: string(encoded), Valid: true}
+	}
+	if input.Outputs != nil {
+		encoded, err := json.Marshal(redactStepOutputs(input.Outputs))
+		if err != nil {
+			return RunStep{}, err
+		}
+		outputs = sql.NullString{String: string(encoded), Valid: true}
 	}
 	tx, err := s.db.BeginTx(s.operationContext(), nil)
 	if err != nil {
@@ -494,7 +508,7 @@ func (s *PostgresStore) UpdateRunStep(id string, input UpdateRunStepInput) (RunS
 		_ = tx.Rollback()
 		return RunStep{}, err
 	}
-	row := tx.QueryRowContext(s.operationContext(), `update run_steps set inputs=$2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(inputs))
+	row := tx.QueryRowContext(s.operationContext(), `update run_steps set inputs=coalesce($2::jsonb, inputs), outputs=coalesce($3::jsonb, outputs) where id=$1 returning id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, inputs, outputs)
 	step, err := scanRunStepRow(row)
 	if err != nil {
 		_ = tx.Rollback()
@@ -520,7 +534,7 @@ func (s *PostgresStore) FinishRunStep(id string, status RunStepStatus, outputSum
 		_ = tx.Rollback()
 		return RunStep{}, err
 	}
-	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, output_summary=$3, error=$4, correlation_ids=correlation_ids || $5::jsonb, finished_at=$6 where id=$1 and status in ($7,$8) returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, status, outputSummary, errText, string(encodedCorrelationIDs), now, StepRunning, StepQueued)
+	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, output_summary=$3, error=$4, correlation_ids=correlation_ids || $5::jsonb, finished_at=$6 where id=$1 and status in ($7,$8) returning id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, status, outputSummary, errText, string(encodedCorrelationIDs), now, StepRunning, StepQueued)
 	step, err := scanRunStepRow(row)
 	if err != nil {
 		_ = tx.Rollback()
@@ -556,7 +570,7 @@ func (s *PostgresStore) MergeRunStepCorrelationIDs(id string, correlationIDs map
 		_ = tx.Rollback()
 		return RunStep{}, err
 	}
-	step, err := scanRunStepRow(tx.QueryRowContext(s.operationContext(), `update run_steps set correlation_ids=correlation_ids || $2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(encoded)))
+	step, err := scanRunStepRow(tx.QueryRowContext(s.operationContext(), `update run_steps set correlation_ids=correlation_ids || $2::jsonb where id=$1 returning id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, string(encoded)))
 	if err != nil {
 		_ = tx.Rollback()
 		return RunStep{}, mapScanErr(err)
@@ -635,7 +649,7 @@ func (s *PostgresStore) transitionRunStep(id string, allowed []RunStepStatus, ne
 		_ = tx.Rollback()
 		return RunStep{}, err
 	}
-	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, started_at=case when $2=$6 then null else started_at end, finished_at=$3, error=$4, output_summary=case when $2=$6 then '' else output_summary end where id=$1 and status = any($5) returning id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, next, finished, errorText, allowedStrings, StepQueued)
+	row := tx.QueryRowContext(s.operationContext(), `update run_steps set status=$2, started_at=case when $2=$6 then null else started_at end, finished_at=$3, error=$4, output_summary=case when $2=$6 then '' else output_summary end, outputs=case when $2=$6 then '{}'::jsonb else outputs end where id=$1 and status = any($5) returning id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at`, id, next, finished, errorText, allowedStrings, StepQueued)
 	step, err := scanRunStepRow(row)
 	if err != nil {
 		_ = tx.Rollback()
@@ -652,7 +666,7 @@ func (s *PostgresStore) transitionRunStep(id string, allowed []RunStepStatus, ne
 }
 
 func (s *PostgresStore) ListRunSteps(runID string) []RunStep {
-	rows, err := s.db.QueryContext(s.operationContext(), `select id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at from run_steps where run_id=$1 order by position`, runID)
+	rows, err := s.db.QueryContext(s.operationContext(), `select id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at from run_steps where run_id=$1 order by position`, runID)
 	if err != nil {
 		return nil
 	}
@@ -667,7 +681,7 @@ func (s *PostgresStore) ListRunSteps(runID string) []RunStep {
 }
 
 func (s *PostgresStore) RunStep(id string) (RunStep, error) {
-	step, err := scanRunStepRow(s.db.QueryRowContext(s.operationContext(), `select id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at from run_steps where id=$1`, id))
+	step, err := scanRunStepRow(s.db.QueryRowContext(s.operationContext(), `select id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at from run_steps where id=$1`, id))
 	return step, mapScanErr(err)
 }
 
@@ -789,7 +803,7 @@ func (s *PostgresStore) RunDetailContext(ctx context.Context, id string) (RunDet
 		return RunDetail{}, mapScanErr(err)
 	}
 	detail := RunDetail{Run: r, Steps: []RunStep{}, Events: []RunEvent{}, Artifacts: []Artifact{}}
-	rows, err := s.db.QueryContext(ctx, `select id, run_id, position, name, executor, model, status, inputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at from run_steps where run_id=$1 order by position`, id)
+	rows, err := s.db.QueryContext(ctx, `select id, run_id, position, name, executor, model, status, inputs, outputs, output_summary, error, attempt_count, correlation_ids, created_at, started_at, finished_at from run_steps where run_id=$1 order by position`, id)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -874,9 +888,9 @@ func scanRunStep(rows *sql.Rows) (RunStep, bool) {
 
 func scanRunStepRow(row scanner) (RunStep, error) {
 	var step RunStep
-	var inputs, correlationIDs []byte
+	var inputs, outputs, correlationIDs []byte
 	var started, finished sql.NullTime
-	if err := row.Scan(&step.ID, &step.RunID, &step.Position, &step.Name, &step.Executor, &step.Model, &step.Status, &inputs, &step.OutputSummary, &step.Error, &step.AttemptCount, &correlationIDs, &step.CreatedAt, &started, &finished); err != nil {
+	if err := row.Scan(&step.ID, &step.RunID, &step.Position, &step.Name, &step.Executor, &step.Model, &step.Status, &inputs, &outputs, &step.OutputSummary, &step.Error, &step.AttemptCount, &correlationIDs, &step.CreatedAt, &started, &finished); err != nil {
 		return RunStep{}, err
 	}
 	if started.Valid {
@@ -886,6 +900,10 @@ func scanRunStepRow(row scanner) (RunStep, error) {
 		step.FinishedAt = &finished.Time
 	}
 	_ = json.Unmarshal(inputs, &step.Inputs)
+	_ = json.Unmarshal(outputs, &step.Outputs)
+	if len(step.Outputs) == 0 {
+		step.Outputs = nil
+	}
 	_ = json.Unmarshal(correlationIDs, &step.CorrelationIDs)
 	return step, nil
 }

@@ -99,6 +99,8 @@ export type RunStep = {
   model?: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out' | 'paused';
   inputs?: Record<string, string>;
+  // Durable named outputs published by a succeeded step (see docs/reference/step-outputs.md).
+  outputs?: Record<string, string>;
   output_summary?: string;
   error?: string;
   attempt_count: number;

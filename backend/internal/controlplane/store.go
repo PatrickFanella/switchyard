@@ -270,6 +270,9 @@ func normalizeWorkflowDefinition(definition WorkflowDefinition, profiles AgentPr
 			return WorkflowDefinition{}, ErrInvalid
 		}
 	}
+	if err := validatePipelineStepOutputReferences(definition.Pipeline.Steps); err != nil {
+		return WorkflowDefinition{}, err
+	}
 	return definition, nil
 }
 
