@@ -1,0 +1,13 @@
+{
+  "source_revision": "c9577bb60b0be62d491ff0dd667d01a1007e5ba7",
+  "release_tag": "v0.3.1",
+  "built_at": "2026-09-24T23:44:08Z",
+  "ci_run_url": "http://gitea:3000/subculture-collective/switchyard/actions/runs/9946",
+  "migration_head": "038_changemaker_review.sql",
+  "images": [
+    {"archive": "switchyard-api.oci.tar", "archive_sha256": "7a7eb37d2d885ac4021626671aacddb92d152f23b03ba52c643ef5601c98b4f6", "oci_index_digest": "sha256:d3ff042ed8e48cf9298718c2a9cea12189d6b0f27e7a9a0604467d9cd0904ed0"},
+    {"archive": "switchyard-web.oci.tar", "archive_sha256": "9b1ffb400c5e1d26581a33121d6a5690b2e1ccb5e4a3edff99914b2c1965a5f2", "oci_index_digest": "sha256:ac29d1b42370deb91692e3f617a55953bd675250807b096e7068dea6ce29a062"},
+    {"archive": "switchyard-opencode.oci.tar", "archive_sha256": "34e5543942dbf9713f1297cb9c659a79058696baaedea43895982f71e2674e67", "oci_index_digest": "sha256:2f7974f528c36cf7bd6cd5c5e40b27a530fefae884128c603c0d8a81570491fc"}
+  ],
+  "checksums_file": "SHA256SUMS"
+}

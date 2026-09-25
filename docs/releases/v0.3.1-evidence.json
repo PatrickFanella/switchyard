@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "phase": "deployed",
+  "candidate_sha": "c9577bb60b0be62d491ff0dd667d01a1007e5ba7",
+  "release_tag": "v0.3.1",
+  "pull_request": "https://git.subcult.tv/subculture-collective/switchyard/pulls/127",
+  "ci_run": "http://gitea:3000/subculture-collective/switchyard/actions/runs/9946",
+  "migration_head": "038_changemaker_review.sql",
+  "rollback_target": "ca44597f2926fc24e77936d365a365908fb8f5a8",
+  "exceptions": [
+    "Remote deployment proof run 9957 (prove-production-deployment.yml on v0.3.1) failed with an HTTP 404 from one endpoint configured in workflow secrets; the workflow has never passed in this repository. Equivalent manual probes from Almaz on 2026-09-25 returned 200 for web root and healthz, control operator-safety and operator-summary through the web proxy with the read token, and model health, broker status and tags, and 404 for model /api/runs as required. The workflow secrets need review before the remote proof can be claimed."
+  ],
+  "recorded_at": "2026-09-25T01:03:31Z",
+  "gates": {
+    "verify_production": {
+      "status": "passed",
+      "completed_at": "2026-09-24T23:59:13Z",
+      "proof": "http://gitea:3000/subculture-collective/switchyard/actions/runs/9946"
+    },
+    "extended_soak": {
+      "status": "passed",
+      "completed_at": "2026-09-24T23:59:13Z",
+      "proof": "http://gitea:3000/subculture-collective/switchyard/actions/runs/9946"
+    },
+    "backup_restore": {
+      "status": "passed",
+      "completed_at": "2026-09-25T00:00:55Z",
+      "proof": "bundle switchyard-20260925T000035Z-ca44597f2926 (sha256 4e3cc850f1e648bbbb4d4dc3ffa8a3e23c43919bcb9e3fea271a8b7812146503) restored in a disposable PostgreSQL 17 container; evidence restore-evidence-20260925t000040z-8cb018589b24.json"
+    },
+    "production_smoke": {
+      "status": "passed",
+      "completed_at": "2026-09-25T00:15:32Z",
+      "proof": "make production-smoke on kvant at c9577bb60b0be62d491ff0dd667d01a1007e5ba7: production configuration contract passed; Switchyard production contract smoke passed"
+    }
+  },
+  "artifacts": [
+    {
+      "archive": "switchyard-api.oci.tar",
+      "archive_sha256": "7a7eb37d2d885ac4021626671aacddb92d152f23b03ba52c643ef5601c98b4f6"
+    },
+    {
+      "archive": "switchyard-web.oci.tar",
+      "archive_sha256": "9b1ffb400c5e1d26581a33121d6a5690b2e1ccb5e4a3edff99914b2c1965a5f2"
+    },
+    {
+      "archive": "switchyard-opencode.oci.tar",
+      "archive_sha256": "34e5543942dbf9713f1297cb9c659a79058696baaedea43895982f71e2674e67"
+    }
+  ],
+  "deployment": {
+    "deployed_sha": "c9577bb60b0be62d491ff0dd667d01a1007e5ba7",
+    "deployed_at": "2026-09-25T00:14:21Z",
+    "host": "kvant"
+  }
+}
