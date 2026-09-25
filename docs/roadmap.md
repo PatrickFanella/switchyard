@@ -403,12 +403,10 @@ full table with what each one does not prove is in `docs/status.md`.
 Reconciled 2026-09-25. Items that were on this list before and are now closed
 appear above; the earlier list is preserved in Git history.
 
-1. Make the remote deployment proof pass. `v0.3.1` is qualified and deployed
-   (#14, closed 2026-09-25; `docs/releases/v0.3.1-qualification.md`), but
-   `prove-production-deployment.yml` failed with a 404 from an endpoint set in
-   workflow secrets while manual probes from Almaz passed. Review the secrets,
-   rerun the proof on the deployed tag, and rebuild the prepared Open Pilot
-   verifier images for the deployed revision.
+1. Before re-enabling Open Pilot admission, configure the rollout gate for
+   the current registry fingerprint. `v0.3.1` is qualified and deployed with
+   passing on-host and remote proofs, and the Switchyard verifier is prepared
+   for it (`docs/releases/v0.3.1-qualification.md`).
 2. Complete the operational deprecated-selector observation: 90 days of
    durable usage data and two qualifying zero-use releases before selector
    removal. The eligibility gate itself is enforced (#29, closed); the

@@ -7,10 +7,8 @@
   "ci_run": "http://gitea:3000/subculture-collective/switchyard/actions/runs/9946",
   "migration_head": "038_changemaker_review.sql",
   "rollback_target": "ca44597f2926fc24e77936d365a365908fb8f5a8",
-  "exceptions": [
-    "Remote deployment proof run 9957 (prove-production-deployment.yml on v0.3.1) failed with an HTTP 404 from one endpoint configured in workflow secrets; the workflow has never passed in this repository. Equivalent manual probes from Almaz on 2026-09-25 returned 200 for web root and healthz, control operator-safety and operator-summary through the web proxy with the read token, and model health, broker status and tags, and 404 for model /api/runs as required. The workflow secrets need review before the remote proof can be claimed."
-  ],
-  "recorded_at": "2026-09-25T01:03:31Z",
+  "exceptions": [],
+  "recorded_at": "2026-09-25T14:47:59Z",
   "gates": {
     "verify_production": {
       "status": "passed",
@@ -30,7 +28,7 @@
     "production_smoke": {
       "status": "passed",
       "completed_at": "2026-09-25T00:15:32Z",
-      "proof": "make production-smoke on kvant at c9577bb60b0be62d491ff0dd667d01a1007e5ba7: production configuration contract passed; Switchyard production contract smoke passed"
+      "proof": "make production-smoke on kvant at c9577bb60b0be62d491ff0dd667d01a1007e5ba7 passed 2026-09-25T00:15:32Z and again 2026-09-25T14:47:40Z; remote prove-production-deployment.yml run 10239 on v0.3.1 passed on almaz-docker-01"
     }
   },
   "artifacts": [
