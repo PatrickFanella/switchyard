@@ -30,20 +30,16 @@ Two reading rules follow from the inconsistencies this reconciliation found:
 ## Development target
 
 - Authoritative branch target: `main`
-- Current deployed release: `v0.1.2`
-- Current deployed revision: `7d90c065c05bfa93eb380ff071036d61c1f965e2`
-- Release tags without a qualification record: `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.3.0`
-- The two pointers above name the last release with a revision-matched
-  qualification record; `make docs-check` binds them to that record and fails
+- Current deployed release: `v0.3.1`
+- Current deployed revision: `c9577bb60b0be62d491ff0dd667d01a1007e5ba7`
+- Release tags without a qualification record: none
+- The two pointers above name the deployed release and its revision-matched
+  qualification record, `docs/releases/v0.3.1-qualification.md`, deployed to
+  Kvant on 2026-09-25. `make docs-check` binds them to that record and fails
   if a newer tag appears without either a record or an entry on the line
-  above. They are not a claim about which revision currently runs. The listed
-  tags (2026-08-25 to 2026-08-27) and later `main` revisions have been
-  deployed without a qualification record. On 2026-09-23 the Kvant stack was
-  observed running `ca44597f2926fc24e77936d365a365908fb8f5a8`. Qualifying a
-  current candidate and publishing its record is Gitea issue #14. `v0.3.0`
-  (2026-09-24, `28b4f7f8883f406dc8b7c5337c6684f16cab0187`) failed hosted
-  qualification on a verifier fixture test that ran an unpinned pnpm and was
-  never deployed.
+  above. Tags `v0.2.0` to `v0.2.4` were deployed without a record, and
+  `v0.3.0` failed hosted qualification and was never deployed; see the
+  record for details.
 - Required local gate: `make verify`
 - Required release gate: `make verify-production`
 - Required production configuration gate: `make production-config-check` with the deployed environment exported
@@ -69,7 +65,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Operator UI | test-verified | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Evidence search | test-verified | Authenticated, retention-bounded `/api/evidence/search` over runs, steps, and model requests with stable cursor pagination, payload exclusion, and redaction on memory and PostgreSQL stores; see `docs/reference/evidence-search.md` |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
-| Release qualification | qualified-with-exceptions | `v0.1.2` is the last release with revision-matched CI, extended soak, production-contract, monitoring, and rollback evidence; see `docs/releases/v0.1.2-qualification.md`. Later deployed tags and `main` revisions are unqualified (see Development target and #14) |
+| Release qualification | qualified-with-exceptions | `v0.3.1` is deployed with revision-matched hosted qualification, extended soak, pre-deployment backup and restore drill, and on-host production-contract evidence; the remote deployment proof is an open exception. See `docs/releases/v0.3.1-qualification.md` |
 | Production recovery | test-verified | Versioned policy, completed-bundle, PostgreSQL object, provider-neutral restore evidence, opt-in timer, deadline metrics, and external alerts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
 
 `docs/capabilities-v1.json` is the machine-readable capability contract. Its
@@ -80,28 +76,23 @@ implementation and test paths bind each status claim to repository evidence.
 Do not increase unattended Open Pilot autonomy until the following is proven
 for one immutable revision:
 
-1. Gitea issue #14: run the documented production qualification for the exact
-   current candidate and publish a release record naming the candidate and
-   deployed SHAs. Its former blockers are closed: #13 (release evidence
-   validator), #16 (alert owner and acknowledgement drill), #18 (encrypted
-   Almaz-to-Kvant path) and #19 (encrypted proxy smoke). #18 and #19 were
-   closed on 2026-08-24 with production smoke evidence on revision
-   `9521e5439870e5661a4fa197e30ae8febc66aa24`; that evidence applies to that
-   revision only. #14 is unblocked and open; it is human-run on the
-   production host and is not queued for an agent.
+1. The remote deployment proof workflow (`prove-production-deployment.yml`)
+   passes for the deployed tag. Run 9957 on `v0.3.1` failed with a 404 from
+   an endpoint configured in workflow secrets; manual probes from Almaz
+   passed. Gitea issue #14 (release qualification) closed with `v0.3.1`.
+2. Prepared Open Pilot verifier images are rebuilt for the deployed revision.
 
 Issue #17 (closed) adds static enforcement for the production configuration contract. It does not prove the deployed target path for any later revision.
 
 ## Completed foundations
 
 These tracker issues are closed. Each one landed code or evidence on `main`
-that later work relies on. None of them qualifies a release: the only current
-qualification record remains `v0.1.2`, and the current candidate is tracked by
-#14.
+that later work relies on. None of them qualifies a release by itself; the
+current qualification record is `v0.3.1`.
 
 | Issue | Foundation | What it does not prove |
 | --- | --- | --- |
-| #13 | Revision-bound release evidence validator (`scripts/validate_release_evidence.py`, schema in `docs/releases/`) | A record for any release after `v0.1.2` |
+| #13 | Revision-bound release evidence validator (`scripts/validate_release_evidence.py`, schema in `docs/releases/`) | A record for any release other than the ones in `docs/releases/` |
 | #16 | Alert owner assigned; Alertmanager-to-ntfy firing, resolved delivery, and human acknowledgement drill recorded 2026-08-24 | Alert delivery for a later revision or a changed route |
 | #17 | Static production configuration contract checks (`scripts/validate_production_config.py`) | The live target path of any deployed revision |
 | #18 | Approved encrypted Almaz-to-Kvant Tailscale path provisioned | Transport on any revision other than `9521e5439870e5661a4fa197e30ae8febc66aa24` |
@@ -151,9 +142,9 @@ of what was observed; it is not live tracker state.
 
 | Issue | State | Observed | Role |
 | --- | --- | --- | --- |
-| #7 | open | 2026-09-23 | Epic: revision-matched release qualification (parent of #14) |
+| #7 | closed | 2026-09-25 | Epic: revision-matched release qualification (parent of #14) |
 | #13 | closed | 2026-09-23 | Release evidence validator |
-| #14 | open | 2026-09-23 | Qualify current main and publish immutable release evidence |
+| #14 | closed | 2026-09-25 | Qualify current main and publish immutable release evidence (`v0.3.1`) |
 | #16 | closed | 2026-09-23 | Alert owner and acknowledgement drill |
 | #17 | closed | 2026-09-23 | Secure proxy transport configuration and contract checks |
 | #18 | closed | 2026-09-23 | Encrypted Almaz-to-Kvant network path |
@@ -169,7 +160,7 @@ of what was observed; it is not live tracker state.
 | #47 | closed | 2026-09-23 | Multi-repo proof stub (duplicate set) |
 | #48 | closed | 2026-09-23 | Multi-repo proof stub (duplicate set) |
 | #49 | closed | 2026-09-23 | Multi-repo proof stub (duplicate set) |
-| #60 | open | 2026-09-23 | Roadmap: operator experience and workflow capability completion |
+| #60 | closed | 2026-09-25 | Roadmap: operator experience and workflow capability completion |
 | #61 | closed | 2026-09-23 | Reconcile production Open Pilot work, main, and pending assignment changes |
 | #62 | closed | 2026-09-24 | Decision: keep plugin and skill installation outside Switchyard (ADR 0005, deferred) |
 | #65 | closed | 2026-09-24 | Reconciliation of roadmap, status, release pointers, and proof issues |
@@ -195,7 +186,7 @@ not claimed.
 
 `docs/development-readiness-report-2026-07-19.md` is historical evidence for
 commit `41813c9`. It must not be used as evidence for a later commit. Current
-production evidence is recorded in `docs/releases/v0.1.2-qualification.md`.
+production evidence is recorded in `docs/releases/v0.3.1-qualification.md`.
 
 ## Active references
 

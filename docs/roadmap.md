@@ -400,13 +400,15 @@ full table with what each one does not prove is in `docs/status.md`.
 
 ## Open work
 
-Reconciled 2026-09-23. Items that were on this list before and are now closed
+Reconciled 2026-09-25. Items that were on this list before and are now closed
 appear above; the earlier list is preserved in Git history.
 
-1. Qualify the current `main` candidate and publish its release record (#14,
-   open, human-run on the production host). Its former blockers #13, #16, #18
-   and #19 are closed. Until this lands, `docs/status.md` keeps `v0.1.2` as
-   the last qualified pointer.
+1. Make the remote deployment proof pass. `v0.3.1` is qualified and deployed
+   (#14, closed 2026-09-25; `docs/releases/v0.3.1-qualification.md`), but
+   `prove-production-deployment.yml` failed with a 404 from an endpoint set in
+   workflow secrets while manual probes from Almaz passed. Review the secrets,
+   rerun the proof on the deployed tag, and rebuild the prepared Open Pilot
+   verifier images for the deployed revision.
 2. Complete the operational deprecated-selector observation: 90 days of
    durable usage data and two qualifying zero-use releases before selector
    removal. The eligibility gate itself is enforced (#29, closed); the
@@ -419,8 +421,9 @@ appear above; the earlier list is preserved in Git history.
    implementation and tests landed under #24 (closed); no live timer execution
    is claimed in this repository.
 5. Finish the remaining native operator surfaces listed under "Remaining
-   adapter-backed surfaces" in `docs/ui-feature-migration.md` (parent #60,
-   open).
+   adapter-backed surfaces" in `docs/ui-feature-migration.md`. The roadmap
+   that tracked them (#60) closed on 2026-09-25; open a new issue for any
+   surface still listed there.
 6. Keep `docs/openapi.yaml`, codemaps, release pointers, tracked-issue states,
    and environment defaults aligned with implementation; `make docs-check`
    enforces the parts it can read from the repository (#30, closed, extended
