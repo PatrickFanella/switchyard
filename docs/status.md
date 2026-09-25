@@ -65,7 +65,7 @@ Record the exact candidate and deployed SHA in `docs/releases/`.
 | Operator UI | test-verified | Native overview, profiles, queues, and cockpit; intentionally read-only status surfaces replace unsafe placeholder editors |
 | Evidence search | test-verified | Authenticated, retention-bounded `/api/evidence/search` over runs, steps, and model requests with stable cursor pagination, payload exclusion, and redaction on memory and PostgreSQL stores; see `docs/reference/evidence-search.md` |
 | Scale and lifecycle | test-verified | Bounded database summaries, 24-hour broker observability, inline artifact integrity/retention metadata, and durable 90-day compatibility usage |
-| Release qualification | qualified-with-exceptions | `v0.3.1` is deployed with revision-matched hosted qualification, extended soak, pre-deployment backup and restore drill, and on-host production-contract evidence; the remote deployment proof is an open exception. See `docs/releases/v0.3.1-qualification.md` |
+| Release qualification | qualified-with-exceptions | `v0.3.1` is deployed with revision-matched hosted qualification, extended soak, pre-deployment backup and restore drill, and on-host and remote production-contract evidence. See `docs/releases/v0.3.1-qualification.md` |
 | Production recovery | test-verified | Versioned policy, completed-bundle, PostgreSQL object, provider-neutral restore evidence, opt-in timer, deadline metrics, and external alerts are test-verified. Historical production restore and rollback evidence predates this contract and does not qualify it. |
 
 `docs/capabilities-v1.json` is the machine-readable capability contract. Its
@@ -73,14 +73,9 @@ implementation and test paths bind each status claim to repository evidence.
 
 ## Active release blockers
 
-Do not increase unattended Open Pilot autonomy until the following is proven
-for one immutable revision:
-
-1. The remote deployment proof workflow (`prove-production-deployment.yml`)
-   passes for the deployed tag. Run 9957 on `v0.3.1` failed with a 404 from
-   an endpoint configured in workflow secrets; manual probes from Almaz
-   passed. Gitea issue #14 (release qualification) closed with `v0.3.1`.
-2. Prepared Open Pilot verifier images are rebuilt for the deployed revision.
+None for the deployed release. Before increasing unattended Open Pilot
+autonomy, configure the rollout gate for the current registry fingerprint;
+readiness reports `rollout_fingerprint_stale` until then.
 
 Issue #17 (closed) adds static enforcement for the production configuration contract. It does not prove the deployed target path for any later revision.
 
