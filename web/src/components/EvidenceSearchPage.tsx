@@ -40,7 +40,7 @@ function HitCard({ hit }: { hit: EvidenceHit }) {
       </div>
       {hit.summary ? <p className="mt-3 break-words text-sm leading-6 text-[hsl(var(--muted))]">{hit.summary}</p> : null}
       {hit.error ? <HudErrorState className="mt-3 mb-0">{hit.error}</HudErrorState> : null}
-      <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+      <p className="mt-3 text-xs text-[hsl(var(--faint))]">
         {hit.workflow_id ? `${hit.workflow_id} · ` : ''}created {formatTime(hit.created_at)}{hit.finished_at ? ` · finished ${formatTime(hit.finished_at)}` : ''}
       </p>
       {correlations.length > 0 ? (
@@ -53,7 +53,7 @@ function HitCard({ hit }: { hit: EvidenceHit }) {
         </div>
       ) : null}
       {href ? (
-        <a className="mt-3 inline-block text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]" href={href}>
+        <a className="mt-3 inline-block text-xs text-[hsl(var(--signal))]" href={href}>
           {hit.kind === 'request' ? 'Open request' : 'Open run cockpit'}
         </a>
       ) : null}
@@ -200,7 +200,7 @@ export function EvidenceSearchPage() {
 
       {searched && !loading && !error && result && (hits.length > 0 || link?.cursor) ? (
         <HudPanelStrong className="mt-4 flex flex-wrap items-center justify-between gap-3 p-3">
-          <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{hits.length} on this page{result.next_cursor ? ' · more available' : ' · last page'}</span>
+          <span className="text-xs text-[hsl(var(--faint))]">{hits.length} on this page{result.next_cursor ? ' · more available' : ' · last page'}</span>
           <div className="flex flex-wrap gap-2">
             <HudChip className="px-3 py-2 text-[0.62rem] text-[hsl(var(--muted))]" disabled={!link?.cursor} onClick={firstPage} type="button">First page</HudChip>
             <HudChip className="px-3 py-2 text-[0.62rem] text-[hsl(var(--muted))]" disabled={previousCursors.current.length === 0} onClick={previousPage} type="button">Previous page</HudChip>

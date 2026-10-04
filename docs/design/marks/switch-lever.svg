@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="square" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Switch Lever mark study</title>
+  <desc id="desc">A mechanical lever at a diagonal angle rests above two short parallel tracks.</desc>
+  <path d="M10 43H54M10 55H54M27 43L44 17"/>
+  <circle cx="47" cy="12" r="7" fill="currentColor" stroke="none"/>
+  <circle cx="25" cy="44" r="6" fill="currentColor" stroke="none"/>
+</svg>

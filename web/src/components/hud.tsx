@@ -9,7 +9,7 @@ export function statusClasses(status: string) {
     case 'running':
       return 'border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] text-[hsl(var(--pulse))]';
     case 'queued':
-      return 'border-[hsl(var(--warn))] bg-[hsl(var(--warn-soft))] text-[hsl(var(--warn))]';
+      return 'border-[hsl(var(--border))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]';
     case 'canceled':
       return 'border-[hsl(var(--faint))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]';
     case 'paused':

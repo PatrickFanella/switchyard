@@ -37,7 +37,7 @@ function RequestCard({ request, selected, onSelect }: { request: ModelBrokerRequ
         </div>
         <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
       </div>
-      <p className="mt-3 break-all text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+      <p className="mt-3 break-all text-xs text-[hsl(var(--faint))]">
         {request.path || 'unknown path'} · {durationMS(request)}ms · {formatTime(request.created_at)}
       </p>
     </button>
@@ -78,7 +78,7 @@ function RequestDetail({ request, onCancel, canceling }: { request: ModelBrokerR
         <div className="mt-3 grid gap-2">
           {correlations.map(([key, value]) => (
             <HudPanel key={key} className="bg-[hsl(var(--panel-soft))] px-3 py-2">
-              <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{key}</span>
+              <span className="text-xs text-[hsl(var(--faint))]">{key}</span>
               <p className="mt-1 break-all text-sm text-[hsl(var(--ink))]">{value}</p>
             </HudPanel>
           ))}
@@ -188,7 +188,7 @@ export function QueuesPage({ selectedRequestID, setSelectedRequestID }: { select
         <HudPanelStrong className="p-4">
           <div className="flex items-center justify-between gap-3">
             <HudLabel className="text-[hsl(var(--signal))]">Request lanes</HudLabel>
-            <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{filtered.length} visible</span>
+            <span className="text-xs text-[hsl(var(--faint))]">{filtered.length} visible</span>
           </div>
           <div className="mt-4 grid gap-3">
             {loading ? <HudEmptyState>Loading broker history…</HudEmptyState> : null}

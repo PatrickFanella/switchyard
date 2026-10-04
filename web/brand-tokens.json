@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "product": "Switchyard",
+  "direction": "Signal Yard",
+  "directionStatus": "owner-selected",
+  "specificationStatus": "proposed",
+  "selectedOn": "2026-10-03",
+  "identity": {
+    "markStudy": "E2",
+    "markName": "Split plates",
+    "markStatus": "owner-selected",
+    "master": "docs/design/identity/mark.svg",
+    "lockupStatus": "proposed-spacing",
+    "wordmark": {
+      "family": "Sora",
+      "weight": 600,
+      "status": "owner-selected"
+    }
+  },
+  "source": "docs/design/signal-yard.md",
+  "applicationStatus": "implemented-local",
+  "color": {
+    "dark": {
+      "canvas": "#111017",
+      "surface": "#1B1923",
+      "surfaceRaised": "#25212F",
+      "text": "#F2ECDE",
+      "textSecondary": "#B4ADBD",
+      "divider": "#464050",
+      "controlBorder": "#746B84",
+      "action": "#AD8AFF",
+      "actionForeground": "#111017",
+      "focus": "#AD8AFF",
+      "success": "#50EF97",
+      "attention": "#F4C16B",
+      "failure": "#FF8A90"
+    },
+    "light": {
+      "canvas": "#F4F0E7",
+      "surface": "#FFFCF5",
+      "surfaceRaised": "#E8E1D6",
+      "text": "#28242F",
+      "textSecondary": "#625B6D",
+      "divider": "#C8BECE",
+      "controlBorder": "#80768D",
+      "action": "#6334AA",
+      "actionForeground": "#FFFCF5",
+      "focus": "#6334AA",
+      "success": "#196A43",
+      "attention": "#85511F",
+      "failure": "#A52B3B"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Sora",
+      "fallback": "sans-serif",
+      "weights": [
+        600
+      ]
+    },
+    "body": {
+      "family": "Public Sans",
+      "fallback": "sans-serif",
+      "weights": [
+        400,
+        500,
+        600
+      ]
+    },
+    "technical": {
+      "family": "IBM Plex Mono",
+      "fallback": "monospace",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "sizePx": {
+      "supporting": 12,
+      "compact": 14,
+      "body": 16,
+      "section": 20,
+      "page": 32,
+      "display": 64
+    },
+    "fontBundleStatus": "self-hosted-woff2-with-licenses"
+  },
+  "spacingPx": [
+    4,
+    8,
+    12,
+    16,
+    24,
+    32,
+    48,
+    64
+  ],
+  "radiusPx": {
+    "control": 4,
+    "panel": 8
+  },
+  "borderPx": {
+    "divider": 1,
+    "control": 1,
+    "focus": 2
+  },
+  "focusOffsetPx": 3,
+  "touchTargetPx": 44,
+  "motion": {
+    "transitionMs": 150,
+    "respectReducedMotion": true,
+    "decorativeLooping": false
+  },
+  "contrastTargets": {
+    "text": 4.5,
+    "controlBoundary": 3,
+    "focus": 3
+  }
+}

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="square" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Three Lanes mark study</title>
+  <desc id="desc">Three staggered tracks are joined by one diagonal turnout at the right edge.</desc>
+  <path d="M9 13H48M9 31H33L51 13M9 49H17L35 31H53"/>
+</svg>

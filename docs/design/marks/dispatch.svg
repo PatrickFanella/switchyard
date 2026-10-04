@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="square" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Switchyard dispatch mark study</title>
+  <desc id="desc">A lower input routes to three upper destinations through one central junction.</desc>
+  <path d="M32 55V34M32 34L12 14M32 34V10M32 34L52 14"/>
+  <path d="M8 10H16V18H8ZM28 6H36V14H28ZM48 10H56V18H48Z" fill="currentColor" stroke="none"/>
+</svg>

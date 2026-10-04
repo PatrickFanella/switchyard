@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor" role="img" aria-labelledby="title desc">
+  <title id="title">Point Blade twin route variation</title>
+  <desc id="desc">A straight rail branches into two parallel diagonal blades.</desc>
+  <path d="M8 8H17V46L41 8H50L21 56H8ZM56 8H62L33 56H27Z"/>
+</svg>

@@ -1,14 +1,16 @@
 # Switchyard
 
-Switchyard is a Go backend and Vite React TypeScript monorepo for a cohesive automation runtime: workflow orchestration, model routing, OpenCode execution, built-in agent profiles, operator HUD/API, and first-party workflows such as Open Pilot, native workflow-creator templates, and Devlog.
+Switchyard is a Go backend and Vite React TypeScript monorepo for a cohesive automation runtime: workflow orchestration, model routing, OpenCode execution, built-in agent profiles, operator dashboard/API, and first-party workflows such as Open Pilot, native workflow-creator templates, and Devlog.
 
 OCQ, llama-line, and Changemaker are historical references that have been absorbed into native Switchyard modules. The product direction is to keep their useful ideas as first-party contracts: model broker, OpenCode executor, profiles/personas, workflow policy, logs, artifacts, and operator controls.
+
+[Signal Yard](docs/design/README.md) is the selected branding direction, with the E2 split-plate S mark and Sora 600 wordmark. The dashboard applies its dark palette, shared component styles, and locally bundled Sora, Public Sans, and IBM Plex Mono fonts. Design assets, font licenses, and regeneration instructions live in the guide; local implementation does not establish deployment.
 
 ## Monorepo layout
 
 ```txt
 backend/              Switchyard API, scheduler, runs, triggers, native runtime
-web/                  Switchyard HUD dashboard
+web/                  Switchyard operator dashboard
 blacktower/           legacy/reference checkout only, ignored when present
 docs/                 ADRs, references, and migration notes
 ```
@@ -301,5 +303,4 @@ Open Pilot supports operator-prepared offline Go/Node verification images bound 
 GPL-3.0-only. See `LICENSE`.
 
 https://www2.onnwee.me
-
 

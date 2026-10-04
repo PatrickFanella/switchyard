@@ -91,12 +91,12 @@ function TriggerCard({
         <div>
           <HudLabel className="text-[hsl(var(--faint))]">{trigger.type}</HudLabel>
           <h3 className="mt-2 text-base font-semibold text-[hsl(var(--ink))]">{trigger.name}</h3>
-          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">{workflowName(workflows, trigger.workflow_id)}</p>
+          <p className="mt-2 text-xs text-[hsl(var(--muted))]">{workflowName(workflows, trigger.workflow_id)}</p>
         </div>
 
         <div className="flex flex-wrap justify-end gap-2">
           <button
-            className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
+            className="hud-chip signal-primary px-3 py-2 disabled:opacity-50"
             disabled={!trigger.enabled || runningTriggerID === trigger.id || (trigger.workflow_id === 'open-pilot' && !openPilotReady)}
             title={trigger.workflow_id === 'open-pilot' && !openPilotReady ? 'Fill repo and issue to run Open Pilot' : undefined}
             onClick={() => onRunTrigger(trigger.id)}
@@ -119,7 +119,7 @@ function TriggerCard({
 
       {trigger.workflow_id === 'open-pilot' ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Repo</span>
             <input
               className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]"
@@ -128,7 +128,7 @@ function TriggerCard({
               value={openPilotRepo}
             />
           </label>
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Issue</span>
             <input
               className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]"
@@ -140,7 +140,7 @@ function TriggerCard({
         </div>
       ) : null}
 
-      <div className="mt-4 grid gap-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))] sm:grid-cols-2">
+      <div className="mt-4 grid gap-3 text-xs text-[hsl(var(--faint))] sm:grid-cols-2">
         <div className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2">
           <div className="text-[hsl(var(--signal))]">Schedule</div>
           <div className="mt-1 text-[hsl(var(--ink))]">{trigger.schedule || 'Manual'}</div>
@@ -158,7 +158,7 @@ function TriggerCard({
           <div className="mt-1 text-[hsl(var(--ink))]">{trigger.enabled ? 'enabled' : 'disabled'}</div>
         </div>
       </div>
-      {trigger.last_error ? <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--danger))]">Last error: {trigger.last_error}</p> : null}
+      {trigger.last_error ? <p className="mt-3 text-xs text-[hsl(var(--danger))]">Last error: {trigger.last_error}</p> : null}
     </HudPanel>
   );
 }
@@ -176,7 +176,7 @@ function RunRow({ run, selected, onSelect }: { run: DashboardState['runs'][numbe
         <span className="text-sm font-medium text-[hsl(var(--ink))]">{run.workflow_id}</span>
         <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(run.status)}`}>{run.status}</span>
       </div>
-      <div className="border-t border-[hsl(var(--border-faint))] px-4 py-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+      <div className="border-t border-[hsl(var(--border-faint))] px-4 py-3 text-xs text-[hsl(var(--faint))]">
         <div>{run.id}</div>
         <div className="mt-1 text-[hsl(var(--muted))]">{formatTime(run.created_at)}</div>
       </div>
@@ -197,7 +197,7 @@ function SummaryRunRow({ run, selected, onSelect }: { run: NonNullable<OperatorS
         <span className="text-sm font-medium text-[hsl(var(--ink))]">{run.workflow_name}</span>
         <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(run.state)}`}>{run.state}</span>
       </div>
-      <div className="border-t border-[hsl(var(--border-faint))] px-4 py-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+      <div className="border-t border-[hsl(var(--border-faint))] px-4 py-3 text-xs text-[hsl(var(--faint))]">
         <div>{run.summary || run.id}</div>
         <div className="mt-1 text-[hsl(var(--muted))]">{formatTime(run.finished_at || run.started_at)}</div>
       </div>
@@ -237,7 +237,7 @@ function SelectedRunSummaryCard({
         <div>
           <HudLabel className="text-[hsl(var(--faint))]">Selected run</HudLabel>
           <h3 className="mt-2 text-xl font-semibold text-[hsl(var(--ink))]">{selectedRunDetail.run.summary || selectedRunDetail.run.id}</h3>
-          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{selectedRunDetail.run.workflow_id} · {selectedRunDetail.run.status}</p>
+          <p className="mt-2 text-xs text-[hsl(var(--faint))]">{selectedRunDetail.run.workflow_id} · {selectedRunDetail.run.status}</p>
         </div>
         <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(selectedRunDetail.run.status)}`}>{selectedRunDetail.run.status}</span>
       </div>
@@ -261,7 +261,7 @@ function SelectedRunSummaryCard({
 
       <div className="mt-4 flex flex-wrap gap-2">
         <button
-          className="hud-chip border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--signal))] transition hover:bg-[hsl(var(--panel-soft))]"
+          className="hud-chip signal-primary px-3 py-2"
           onClick={() => onOpenRunCockpit(selectedRunDetail.run.id)}
           type="button"
         >
@@ -355,7 +355,7 @@ export function OverviewDashboard({
             <HudPanel className="bg-[hsl(var(--panel-soft))] p-3">
               <HudLabel className="text-[hsl(var(--faint))]">Operator summary</HudLabel>
               <p className="mt-2 text-sm text-[hsl(var(--ink))]">{operatorSummary.status.summary}</p>
-              <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Observed {formatTime(operatorSummary.observed_at)} · schema {operatorSummary.schema_version}</p>
+              <p className="mt-2 text-xs text-[hsl(var(--faint))]">Observed {formatTime(operatorSummary.observed_at)} · schema {operatorSummary.schema_version}</p>
             </HudPanel>
             <HudPanel className="bg-[hsl(var(--panel-soft))] p-3">
               <HudLabel className="text-[hsl(var(--faint))]">Component posture</HudLabel>
@@ -364,7 +364,7 @@ export function OverviewDashboard({
                   <span key={component.id} className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(component.status)}`} title={component.summary}>{component.name}: {component.status}</span>
                 ))}
               </div>
-              {operatorSummary.alerts.length > 0 ? <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--warn))]">{operatorSummary.alerts.length} active alert{operatorSummary.alerts.length === 1 ? '' : 's'}</p> : null}
+              {operatorSummary.alerts.length > 0 ? <p className="mt-2 text-xs text-[hsl(var(--warn))]">{operatorSummary.alerts.length} active alert{operatorSummary.alerts.length === 1 ? '' : 's'}</p> : null}
             </HudPanel>
           </div>
         ) : null}
@@ -416,7 +416,7 @@ export function OverviewDashboard({
                   <div key={run.label} className="hud-panel flex items-center justify-between gap-4 bg-[hsl(var(--panel-strong))] px-4 py-3">
                     <div>
                       <div className="text-sm font-medium text-[hsl(var(--ink))]">{run.label}</div>
-                      <div className="mt-1 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{run.detail}</div>
+                      <div className="mt-1 text-xs text-[hsl(var(--faint))]">{run.detail}</div>
                     </div>
                     <div className="text-3xl font-semibold tracking-tight text-[hsl(var(--signal))]">{run.value}</div>
                   </div>

@@ -158,8 +158,8 @@ export function CorrelationItem({ destination }: { destination: CorrelationDesti
     <HudPanel className="bg-[hsl(var(--panel-soft))] p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <div className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{correlationKindLabels[destination.kind]}</div>
-          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{destination.label}</p>
+          <div className="text-xs text-[hsl(var(--signal))]">{correlationKindLabels[destination.kind]}</div>
+          <p className="mt-1 text-xs text-[hsl(var(--faint))]">{destination.label}</p>
         </div>
         <CopyValueButton label={`${destination.label} ${destination.value}`} value={destination.value} />
       </div>
@@ -201,7 +201,7 @@ export function RunFailureSummaryPanel({ summary }: { summary: RunFailureSummary
         <p className="mt-3 break-words text-sm leading-6 text-[hsl(var(--danger))]">{summary.detail}</p>
 
         {summary.gateFailures.length > 0 ? (
-          <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">
+          <p className="mt-3 text-xs text-[hsl(var(--muted))]">
             Gates: {summary.gateFailures.map((gate) => `${gate.gate} ${gate.status}`).join(' · ')}
           </p>
         ) : null}

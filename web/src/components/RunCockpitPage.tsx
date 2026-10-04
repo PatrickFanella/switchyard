@@ -57,7 +57,7 @@ function StepCard({ step, onStepAction, runID, runActionID }: { step: RunStep; o
         <div>
           <HudLabel className="text-[hsl(var(--faint))]">Step {step.position} · {step.executor}</HudLabel>
           <h4 className="mt-2 text-base font-semibold text-[hsl(var(--ink))]">{step.name}</h4>
-          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <p className="mt-2 text-xs text-[hsl(var(--faint))]">
             Attempts {step.attempt_count} · {formatTime(step.started_at)} → {formatTime(step.finished_at)} · {durationText(stepDurationMS(step))}
           </p>
         </div>
@@ -78,7 +78,7 @@ function StepCard({ step, onStepAction, runID, runActionID }: { step: RunStep; o
       {Object.entries(step.correlation_ids ?? {}).length > 0 ? (
         <div className="mt-4 grid gap-2">
           {Object.entries(step.correlation_ids ?? {}).map(([key, value]) => (
-            <div key={key} className="flex items-start justify-between gap-3 border-t border-[hsl(var(--border-faint))] pt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+            <div key={key} className="flex items-start justify-between gap-3 border-t border-[hsl(var(--border-faint))] pt-2 text-xs text-[hsl(var(--faint))]">
               <span className="text-[hsl(var(--signal))]">{key}</span>
               <span className="break-all text-right text-[hsl(var(--ink))]">{value}</span>
             </div>
@@ -211,7 +211,7 @@ export function RunCockpitPage({
               <div>
                 <HudLabel className="text-[hsl(var(--faint))]">{selectedRunDetail.run.workflow_id}</HudLabel>
                 <h3 className="mt-2 text-2xl font-semibold text-[hsl(var(--ink))]">{selectedRunDetail.run.summary || selectedRunDetail.run.id}</h3>
-                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">{selectedRunDetail.run.id}</p>
+                <p className="mt-2 text-xs text-[hsl(var(--muted))]">{selectedRunDetail.run.id}</p>
               </div>
               <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(selectedRunDetail.run.status)}`}>{selectedRunDetail.run.status}</span>
             </div>
@@ -315,7 +315,7 @@ export function RunCockpitPage({
                   {Object.entries(openPilotState.state.gate_status ?? {}).length > 0 ? (
                     Object.entries(openPilotState.state.gate_status ?? {}).map(([key, value]) => (
                       <HudPanel key={key} className="bg-[hsl(var(--panel-soft))] px-3 py-2">
-                        <div className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{key}</div>
+                        <div className="text-xs text-[hsl(var(--signal))]">{key}</div>
                         <p className="mt-2 text-sm text-[hsl(var(--ink))]">{value}</p>
                       </HudPanel>
                     ))
@@ -388,7 +388,7 @@ export function RunCockpitPage({
           <HudPanelStrong className="p-4">
             <div className="flex items-center justify-between gap-3">
               <HudLabel className="text-[hsl(var(--faint))]">Artifacts</HudLabel>
-              <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">{filteredArtifacts.length} visible</span>
+              <span className="text-xs text-[hsl(var(--muted))]">{filteredArtifacts.length} visible</span>
             </div>
             <div className="mt-4 grid gap-3">
               {filteredArtifacts.length === 0 ? (
@@ -400,9 +400,9 @@ export function RunCockpitPage({
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-[hsl(var(--ink))]">{artifactLabel(artifact)}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{artifact.kind}</p>
+                          <p className="mt-1 text-xs text-[hsl(var(--faint))]">{artifact.kind}</p>
                         </div>
-                        <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{formatTime(artifact.created_at)}</span>
+                        <span className="text-xs text-[hsl(var(--signal))]">{formatTime(artifact.created_at)}</span>
                       </div>
                       <ArtifactPreview artifact={artifact} />
                     </HudPanel>
@@ -415,7 +415,7 @@ export function RunCockpitPage({
           <HudPanelStrong className="p-4">
             <div className="flex items-center justify-between gap-3">
               <HudLabel className="text-[hsl(var(--faint))]">Events</HudLabel>
-              <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--muted))]">{filteredEvents.length} visible</span>
+              <span className="text-xs text-[hsl(var(--muted))]">{filteredEvents.length} visible</span>
             </div>
             <div className="mt-4 grid gap-3">
               {filteredEvents.length === 0 ? (
@@ -426,7 +426,7 @@ export function RunCockpitPage({
                     <HudPanel className="border-[hsl(var(--pulse))] bg-[hsl(var(--panel-soft))] p-4">
                       <div className="flex items-center justify-between gap-3">
                         <p className="hud-label text-[hsl(var(--pulse))]">{event.type}</p>
-                        <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{formatTime(event.created_at)}</span>
+                        <span className="text-xs text-[hsl(var(--faint))]">{formatTime(event.created_at)}</span>
                       </div>
                       <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{event.message}</p>
                     </HudPanel>

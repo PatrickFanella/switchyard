@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter" role="img" aria-labelledby="title desc">
+  <title id="title">Rail S open junction variation</title>
+  <desc id="desc">Two mirrored paired-track bends leave an open central junction while suggesting an S.</desc>
+  <path d="M52 8H24L12 20L27 28M52 18H28L26 20L40 28M12 56H40L52 44L37 36M12 46H36L38 44L24 36"/>
+</svg>
