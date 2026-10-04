@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -354,9 +355,37 @@ func buildOpenPilotInbox(ctx context.Context, input openPilotInboxInput) OpenPil
 		report.UpstreamError = "no Gitea issue reader is configured"
 	}
 
+	// Independent repository reads share a bounded worker pool. Slow upstream
+	// responses must not consume the entire inbox budget before later entries
+	// can be inspected.
+	upstreams := make([]struct {
+		issues []GiteaIssue
+		err    error
+	}, len(repositories))
+	if input.Issues != nil && discoveryError == nil {
+		jobs := make(chan int, len(repositories))
+		for index, repository := range repositories {
+			admitted, _, _ := openPilotInboxRepositoryAdmission(gate, repository, now)
+			if admitted && (!wildcard || polled[repository.ID]) {
+				jobs <- index
+			}
+		}
+		close(jobs)
+		var workers sync.WaitGroup
+		for worker := 0; worker < 4; worker++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for index := range jobs {
+					upstreams[index].issues, upstreams[index].err = openPilotInboxListRepository(ctx, input.Issues, repositories[index].Slug, report.Policy)
+				}
+			}()
+		}
+		workers.Wait()
+	}
 	queried, listed := 0, 0
 	var candidates []OpenPilotInboxIssue
-	for _, repository := range repositories {
+	for index, repository := range repositories {
 		entry := OpenPilotInboxRepository{ID: repository.ID, Slug: repository.Slug, ExecutorGeneration: repository.ExecutorGeneration, Polled: polled[repository.ID], Upstream: OpenPilotInboxRepositoryNotQueried}
 		entry.Admitted, entry.AdmissionCode, entry.AdmissionMessage = openPilotInboxRepositoryAdmission(gate, repository, now)
 		var upstream []GiteaIssue
@@ -366,7 +395,7 @@ func buildOpenPilotInbox(ctx context.Context, input openPilotInboxInput) OpenPil
 			entry.Upstream, entry.UpstreamError = OpenPilotInboxRepositoryUnavailable, RedactForLog(discoveryError.Error())
 		} else if entry.Admitted && input.Issues != nil && (!wildcard || polled[repository.ID]) {
 			queried++
-			issues, err := openPilotInboxListRepository(ctx, input.Issues, repository.Slug, report.Policy)
+			issues, err := upstreams[index].issues, upstreams[index].err
 			if err != nil {
 				entry.Upstream, entry.UpstreamError = OpenPilotInboxRepositoryUnavailable, RedactForLog(err.Error())
 			} else {
