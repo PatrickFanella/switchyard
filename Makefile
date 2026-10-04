@@ -166,6 +166,7 @@ compose-runtime-test: ## Test the rendered Compose runtime-isolation contract
 
 opencode-config-test: ## Test strict managed OpenCode command permissions
 	python3 -m unittest discover -s scripts -p 'test_opencode_config.py'
+	node --test scripts/test_opencode_v2_plugins.mjs
 
 docs-check: ## Verify current-status documents and stable API references agree
 	./scripts/check-docs-consistency.sh
