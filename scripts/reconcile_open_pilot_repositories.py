@@ -209,6 +209,17 @@ def pause(api: Client, key: str, value: bool):
                  "reason": "automatic repository onboarding"}, "PUT")
 
 
+def retain_executor_image(image: str, docker: Path):
+    result = subprocess.run([str(docker), "image", "inspect", "--format", "{{.Id}}", image],
+                            capture_output=True, text=True, timeout=30, check=True)
+    if result.stdout.strip() != image:
+        raise ValueError("executor image must resolve to its exact immutable local ID")
+    # Containerd can retire an untagged image when another build replaces its
+    # former tag. Keep a deterministic reference for the active pool and timer.
+    subprocess.run([str(docker), "tag", image, "switchyard-open-pilot-pinned:" + image.removeprefix("sha256:")],
+                   check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def activate(api: Client, env: dict, registry: dict, paths: dict[str, Path], compose: Path, env_file: Path):
     config = api.request("/api/runtime-config")
     settings = {x["key"]: x for x in config["settings"]}
@@ -247,12 +258,15 @@ def activate(api: Client, env: dict, registry: dict, paths: dict[str, Path], com
         for key, payload in payloads.items():
             write_atomic(paths[key], payload)
         command = [str(compose), "--env-file", str(env_file), "--file-set", str(paths["file_set"]), "--"]
-        subprocess.run(command + ["config", "--quiet"], check=True, timeout=60,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        activation_log = backup / "activation.log"
+        with activation_log.open("w") as log:
+            subprocess.run(command + ["config", "--quiet"], check=True, timeout=60,
+                           stdout=log, stderr=subprocess.STDOUT)
         # Existing healthy sidecars are retained; retired sidecars are not
         # removed automatically. No image build or volume deletion occurs.
-        subprocess.run(command + ["up", "-d", "--no-build", "api"], check=True, timeout=300,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with activation_log.open("a") as log:
+            subprocess.run(command + ["up", "-d", "--no-build", "api"], check=True, timeout=300,
+                           stdout=log, stderr=subprocess.STDOUT)
         for attempt in range(60):
             try:
                 current = api.request("/api/open-pilot/readiness")
@@ -334,6 +348,7 @@ def main():
             if not value or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
                 raise ValueError("preparation requires immutable local executor image IDs")
             env["OPEN_PILOT_PREPARATION_" + name + "_IMAGE"] = value
+            retain_executor_image(value, root / "deploy/docker-local")
     private_directory(args.catalog.parent)
     with (args.catalog.parent / "reconcile.lock").open("a") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

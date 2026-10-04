@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises';
 const password = process.env.OPENCODE_SERVER_PASSWORD;
 const headers = { authorization: 'Basic ' + Buffer.from('opencode:' + password).toString('base64') };
 async function get(path) {
@@ -6,6 +7,7 @@ async function get(path) {
   return response.json();
 }
 try {
+  await access('/tmp/switchyard-opencode-ready');
   const info = await get('/info');
   if (info.version !== '2.0.22') throw new Error('Unexpected OpenCode version');
   if ((process.env.OPENCODE_SECURITY_MODE ?? 'strict') === 'strict') {

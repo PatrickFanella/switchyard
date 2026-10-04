@@ -322,9 +322,19 @@ func buildOpenPilotInbox(ctx context.Context, input openPilotInboxInput) OpenPil
 	}
 
 	polled := map[string]bool{}
-	if len(input.PollRepos) == 1 && input.PollRepos[0] == "*" {
-		for _, repository := range repositories {
-			polled[repository.ID] = true
+	wildcard := len(input.PollRepos) == 1 && input.PollRepos[0] == "*"
+	var discoveryError error
+	if wildcard && input.Issues != nil {
+		if discovery, ok := input.Issues.(GiteaRepositoryLister); ok {
+			var visible []string
+			visible, discoveryError = discovery.ListOpenPilotRepositories(ctx)
+			for _, slug := range visible {
+				if target, err := gate.registry.ResolveTarget(slug, "1"); err == nil {
+					polled[target.RepositoryID] = true
+				}
+			}
+		} else {
+			discoveryError = errors.New("the Gitea issue reader does not support repository discovery")
 		}
 	}
 	for _, slug := range input.PollRepos {
@@ -351,7 +361,10 @@ func buildOpenPilotInbox(ctx context.Context, input openPilotInboxInput) OpenPil
 		entry.Admitted, entry.AdmissionCode, entry.AdmissionMessage = openPilotInboxRepositoryAdmission(gate, repository, now)
 		var upstream []GiteaIssue
 		upstreamKnown := false
-		if entry.Admitted && input.Issues != nil {
+		if entry.Admitted && input.Issues != nil && discoveryError != nil {
+			queried++
+			entry.Upstream, entry.UpstreamError = OpenPilotInboxRepositoryUnavailable, RedactForLog(discoveryError.Error())
+		} else if entry.Admitted && input.Issues != nil && (!wildcard || polled[repository.ID]) {
 			queried++
 			issues, err := openPilotInboxListRepository(ctx, input.Issues, repository.Slug, report.Policy)
 			if err != nil {

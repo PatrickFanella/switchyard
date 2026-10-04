@@ -308,3 +308,5 @@ https://www2.onnwee.me
 The managed executor pins `@opencode/cli@2.0.22` and uses the OpenCode 2 `/api` protocol. V2 server authentication uses the fixed username `opencode`; Switchyard retains `OPENCODE_SERVER_USERNAME` for legacy v1 endpoints. Endpoints without the `/api` suffix retain v1 compatibility for staged migration. Strict mode disables project configuration and keeps session state in memory; the managed plugin persists refreshed provider credentials in the sanitized `auth.json` before dispatch.
 
 Automatic repository onboarding uses a host-owned reconciler and user timer. It keeps a private catalog of every repository visible to the runtime account, prepares dedicated workspaces for eligible work in a bounded executor pool, and preserves normal admission and verification gates. See [repository discovery and preparation](docs/open-pilot.md#automatic-repository-discovery-and-preparation) for activation and recovery.
+
+Managed OpenCode startup restores retained credentials through the native v2 API before becoming healthy. Provider secrets stay in the private data mount; strict configuration and the in-memory session database remain enabled.

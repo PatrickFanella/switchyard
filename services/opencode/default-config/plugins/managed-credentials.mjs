@@ -2,8 +2,8 @@ import { existsSync, lstatSync, readFileSync, writeFileSync, renameSync, unlinkS
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-// V2 imports legacy auth.json into its session database. Strict mode keeps that
-// database in memory, so save refreshed credentials before provider dispatch.
+// Strict mode keeps the native database in memory. Startup restores these
+// credentials through the native API; save refreshes before provider dispatch.
 export function persistCredential(integrationID, value, dataHome = process.env.XDG_DATA_HOME) {
   if (!dataHome || !integrationID || !value) return;
   let credential;
@@ -12,8 +12,13 @@ export function persistCredential(integrationID, value, dataHome = process.env.X
   } else if (value.type === 'oauth' && typeof value.refresh === 'string' && value.refresh &&
       typeof value.access === 'string' && value.access && Number.isSafeInteger(value.expires) && value.expires >= 0) {
     credential = { type: 'oauth', refresh: value.refresh, access: value.access, expires: value.expires };
+    if (typeof value.methodID === 'string') credential.methodID = value.methodID;
     if (typeof value.metadata?.accountID === 'string') credential.accountId = value.metadata.accountID;
     if (typeof value.metadata?.enterpriseUrl === 'string') credential.enterpriseUrl = value.metadata.enterpriseUrl;
+    if (typeof value.metadata?.clientID === 'string') credential.metadata = { clientID: value.metadata.clientID };
+    if (Array.isArray(value.metadata?.scopes) && value.metadata.scopes.every((item) => typeof item === 'string')) {
+      credential.metadata = { ...credential.metadata, scopes: value.metadata.scopes };
+    }
   } else {
     throw new Error('Managed OpenCode received an unsupported credential');
   }

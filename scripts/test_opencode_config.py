@@ -179,6 +179,8 @@ class OpenCodeConfigContractTest(unittest.TestCase):
                             "expires": 123456,
                             "accountId": "legitimate-openai-account",
                             "enterpriseUrl": "https://provider.example",
+                            "methodID": "chatgpt-token-sharing",
+                            "metadata": {"clientID": "registered-client", "scopes": ["scope"], "remoteConfig": removed_marker},
                             "remoteConfig": removed_marker,
                         },
                         "legacy": {"type": "wellknown", "key": removed_marker, "token": removed_marker},
@@ -229,6 +231,8 @@ class OpenCodeConfigContractTest(unittest.TestCase):
                         "expires": 123456,
                         "accountId": "legitimate-openai-account",
                         "enterpriseUrl": "https://provider.example",
+                        "methodID": "chatgpt-token-sharing",
+                        "metadata": {"clientID": "registered-client", "scopes": ["scope"]},
                     },
                 },
             )

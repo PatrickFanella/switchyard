@@ -546,7 +546,9 @@ a successful topology transition.
 
 The reconciler uses stable numeric Gitea repository IDs for managed paths. It
 creates dedicated clones and private executor configuration, preserves the
-remote default branch, and pins executor images by immutable local ID. Newly
+remote default branch, and pins executor images by immutable local ID. The host
+retains deterministic tags for those IDs, and generated services never pull
+pinned local images from a registry. Newly
 onboarded repositories use `required_checks: ["*"]`: concrete checks must exist
 on the exact pull request head, and every reported check must pass. An empty or
 aggregate-only success cannot satisfy that policy. Existing repositories retain

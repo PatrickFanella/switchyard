@@ -26,6 +26,8 @@ COPY install.sh /usr/local/bin/switchyard-opencode-install
 COPY entrypoint.sh /usr/local/bin/switchyard-opencode-entrypoint
 COPY health.sh /usr/local/bin/switchyard-opencode-health
 COPY health.mjs /usr/local/libexec/switchyard-opencode-health.mjs
+COPY serve.mjs /usr/local/libexec/switchyard-opencode-serve.mjs
+COPY credentials.mjs /usr/local/libexec/switchyard-opencode-credentials.mjs
 COPY password.sh /usr/local/libexec/switchyard-opencode-password
 COPY default-config/ /opt/switchyard-opencode/default-config/
 RUN addgroup -S -g 10001 opencode \
@@ -55,4 +57,4 @@ VOLUME ["/home/opencode/.config/opencode", "/home/opencode/.local/share/opencode
 EXPOSE 4096
 
 ENTRYPOINT ["/usr/local/bin/switchyard-opencode-entrypoint"]
-CMD ["sh", "-c", "switchyard-opencode-install && opencode serve --hostname ${OPENCODE_SERVER_HOSTNAME:-0.0.0.0} --port ${OPENCODE_SERVER_PORT:-4096}"]
+CMD ["sh", "-c", "switchyard-opencode-install && exec node /usr/local/libexec/switchyard-opencode-serve.mjs"]
