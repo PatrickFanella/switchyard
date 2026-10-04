@@ -302,6 +302,7 @@ def _opencode_service(repository: Mapping[str, Any]) -> dict[str, Any]:
     if repository.get("opencode_image"):
         service.pop("build")
         service["image"] = repository["opencode_image"]
+        service["pull_policy"] = "never"
     return service
 
 
@@ -326,6 +327,7 @@ def _verifier_service(repository: Mapping[str, Any]) -> dict[str, Any]:
     if repository.get("verifier_image"):
         service.pop("build")
         service["image"] = repository["verifier_image"]
+        service["pull_policy"] = "never"
         service["init"] = True
         service["mem_limit"] = "4g"
         service["cpus"] = 4

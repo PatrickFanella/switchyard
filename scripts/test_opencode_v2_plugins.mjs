@@ -6,6 +6,27 @@ import { join } from 'node:path';
 import { persistCredential } from '../services/opencode/default-config/plugins/managed-credentials.mjs';
 import rtk from '../services/opencode/default-config/plugins/rtk.ts';
 import managed from '../services/opencode/default-config/plugins/switchyard-blacktower.ts';
+import { nativeCredential, restoreCredentials } from '../services/opencode/credentials.mjs';
+import { writeFileSync } from 'node:fs';
+
+test('startup restores credentials into an empty native database and preserves OAuth method identity', async () => {
+ const directory=mkdtempSync(join(tmpdir(),'switchyard-v2-restore-'));mkdirSync(join(directory,'opencode'));
+ try {
+  writeFileSync(join(directory,'opencode','auth.json'),JSON.stringify({openai:{type:'oauth',refresh:'refresh',access:'access',expires:1,methodID:'chatgpt-token-sharing',metadata:{clientID:'client',scopes:['scope']}},retained:{type:'api',key:'retained'}}));
+  const calls=[];const request=async(path,body)=>{calls.push({path,body});return {data:[{integrationID:'retained'}]};};
+  assert.equal(await restoreCredentials(request,directory),1);
+  assert.deepEqual(calls[1].body.value,{type:'oauth',methodID:'chatgpt-token-sharing',refresh:'refresh',access:'access',expires:1,metadata:{clientID:'client',scopes:['scope']}});
+  assert.equal(nativeCredential('github-copilot',{type:'oauth',refresh:'r',access:'a',expires:0}).methodID,'device');
+ } finally {rmSync(directory,{recursive:true,force:true});}
+});
+test('credential refresh retains native token-sharing metadata for the next restart', () => {
+ const directory=mkdtempSync(join(tmpdir(),'switchyard-v2-sharing-'));mkdirSync(join(directory,'opencode'));
+ try {
+  persistCredential('openai',{type:'oauth',methodID:'chatgpt-token-sharing',refresh:'refresh',access:'access',expires:2,metadata:{clientID:'client',scopes:['scope'],permissions:'discard'}},directory);
+  const saved=JSON.parse(readFileSync(join(directory,'opencode','auth.json'),'utf8')).openai;
+  assert.equal(saved.methodID,'chatgpt-token-sharing');assert.deepEqual(saved.metadata,{clientID:'client',scopes:['scope']});
+ } finally {rmSync(directory,{recursive:true,force:true});}
+});
 
 test('credential refresh survives an in-memory database restart without exposing permission state', () => {
  const directory=mkdtempSync(join(tmpdir(),'switchyard-v2-auth-'));mkdirSync(join(directory,'opencode'));

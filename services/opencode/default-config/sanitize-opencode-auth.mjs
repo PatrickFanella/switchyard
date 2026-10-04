@@ -36,6 +36,14 @@ function sanitizedCredential(value) {
     };
     if (typeof value.accountId === 'string') credential.accountId = value.accountId;
     if (typeof value.enterpriseUrl === 'string') credential.enterpriseUrl = value.enterpriseUrl;
+    if (typeof value.methodID === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(value.methodID)) {
+      credential.methodID = value.methodID;
+    }
+    if (typeof value.metadata?.clientID === 'string') credential.metadata = { clientID: value.metadata.clientID };
+    if (Array.isArray(value.metadata?.scopes) && value.metadata.scopes.length <= 32 &&
+        value.metadata.scopes.every((item) => typeof item === 'string' && item.length <= 256)) {
+      credential.metadata = { ...credential.metadata, scopes: value.metadata.scopes };
+    }
     return credential;
   }
   return undefined;

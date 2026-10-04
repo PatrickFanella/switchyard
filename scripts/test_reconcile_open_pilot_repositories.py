@@ -2,10 +2,11 @@ import json
 import os
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from reconcile_open_pilot_repositories import discover, select_pool, private_directory, Client, activate
+from reconcile_open_pilot_repositories import discover, select_pool, private_directory, Client, activate, retain_executor_image
 
 
 def repository(identifier, slug, **extra):
@@ -32,6 +33,19 @@ class Upstream:
 
 
 class RepositoryReconciliationTests(unittest.TestCase):
+    def test_image_retention_checks_exact_local_identity_before_tagging(self):
+        image = "sha256:" + "a" * 64
+        with patch("reconcile_open_pilot_repositories.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout=image + "\n")) as run:
+            retain_executor_image(image, Path("/deployment/deploy/docker-local"))
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0][-1], "switchyard-open-pilot-pinned:" + "a" * 64)
+        with patch("reconcile_open_pilot_repositories.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 0, stdout="sha256:" + "b" * 64)) as run:
+            with self.assertRaisesRegex(ValueError, "exact immutable"):
+                retain_executor_image(image, Path("/deployment/deploy/docker-local"))
+            self.assertEqual(run.call_count, 1)
+
     def test_future_repository_and_queue_rules(self):
         upstream = Upstream([repository(1, "owner/first")],
                             [issue("owner/first", 1, ["ready", "queued"])])

@@ -12,7 +12,8 @@ Builds the managed OpenCode server image used as Switchyard's agent execution se
 1. The image installs locked dependencies and a checksum-verified RTK installer.
 2. Container startup runs `switchyard-opencode-install`.
 3. Managed defaults are copied/merged into the mounted config directory.
-4. `opencode serve` starts on port 4096; the Go executor creates sessions and admits prompts through the native `/api` contract.
+4. The managed server wrapper starts `opencode serve` on port 4096 and restores retained provider credentials through the native credential API. Empty in-memory database bootstrap does not run the upstream legacy-credential migration. Health waits for credential restoration; native OAuth method and token-sharing metadata survive refresh/restart.
+5. The Go executor creates sessions and admits prompts through the native `/api` contract.
 
 ## Integration
 - Health-checked and networked with the API in `docker-compose.yml`.
