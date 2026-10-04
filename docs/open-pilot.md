@@ -64,9 +64,10 @@ Strict sidecars keep sessions in memory, so a container recreation can leave a
 paused run with a missing session. After inspecting that run, an operator may
 POST the lifecycle resume endpoint with `fresh_session_for_run=<terminal-run-id>`
 in addition to `repo` and `issue`. This explicit recovery requires a paused or failed
-issue whose safe resume cursor is agent work, a recorded session and full commit
-SHA, and a clean managed
-worktree at that exact commit. The store atomically fences the expected terminal prior
+issue whose safe resume cursor is agent work, a recorded session, and a clean
+managed worktree at its recorded full commit SHA. Before the first agent commit,
+the recorded executed branch-base SHA provides the same exact-HEAD fence; dirty
+or moved worktrees remain rejected. The store atomically fences the expected terminal prior
 run (paused, failed, or canceled), retains its history, and records the replaced session in the new run.
 The executor repeats the worktree check before creating the new session.
 Dirty or moved worktrees require inspection; ordinary resume never resets a
