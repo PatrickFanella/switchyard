@@ -59,7 +59,7 @@ func NewEnvModelBrokerStatusProvider() *EnvModelBrokerStatusProvider {
 	return &EnvModelBrokerStatusProvider{
 		llamaLineBaseURL:   strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		ollamaBaseURL:      strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/"),
-		openCodeBaseURL:    strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		openCodeBaseURL:    strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/"),
 		username:           os.Getenv("OPENCODE_SERVER_USERNAME"),
 		password:           os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		backend:            effectiveModelBrokerSelector(os.Getenv("MODEL_BROKER_BACKEND")),
@@ -219,7 +219,7 @@ func (p *EnvModelBrokerStatusProvider) nativeStatus(ctx context.Context, now tim
 		return status
 	}
 	if p.username != "" || p.password != "" {
-		req.SetBasicAuth(firstNonEmpty(p.username, "switchyard"), p.password)
+		req.SetBasicAuth(openCodeUsername(p.openCodeBaseURL, p.username), p.password)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {

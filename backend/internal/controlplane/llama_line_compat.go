@@ -958,7 +958,7 @@ func (a *API) llamaLineCompatConfig(w http.ResponseWriter, r *http.Request) {
 		"backend":                               "switchyard-native",
 		"llama_line_port":                       firstNonEmpty(os.Getenv("LLAMA_LINE_PORT"), "11434"),
 		"ollama_base_url_configured":            strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) != "",
-		"opencode_server_url":                   firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
+		"opencode_server_url":                   firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"),
 		"model_broker_timeout":                  modelBrokerTimeout().String(),
 		"ollama_model_prefixes":                 strings.Split(firstNonEmpty(os.Getenv("MODEL_BROKER_OLLAMA_MODELS"), "llama,qwen,mistral,codellama,nomic-embed,bge,deepseek,gemma,phi,hermes"), ","),
 		"max_depth":                             a.compatBroker.maxDepth,

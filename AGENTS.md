@@ -30,6 +30,8 @@ identity, pinned plugins, a read-only root filesystem, and no inherited MCP or
 global permission configuration. Development-only capability expansion must be
 explicit and must not become the production default.
 
+The managed OpenCode runtime pins `@opencode/cli@2.0.22`. Use `/api` endpoints for its native v2 contract; endpoints without that suffix retain the legacy v1 contract during migration. Verify the real pinned binary as well as adapter fixtures when changing this boundary.
+
 Keep production monitoring external to the application Compose stack. Scrape
 the canonical model listener for shared runtime metrics, keep the control API
 loopback-only, and republish backup freshness through the protected

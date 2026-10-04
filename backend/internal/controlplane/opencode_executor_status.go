@@ -54,7 +54,7 @@ func NewEnvOpenCodeExecutorStatusProvider() *EnvOpenCodeExecutorStatusProvider {
 	return &EnvOpenCodeExecutorStatusProvider{
 		ocqBaseURL:    strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey: os.Getenv("OCQ_GATEWAY_KEY"),
-		openCodeURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		openCodeURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/"),
 		username:      os.Getenv("OPENCODE_SERVER_USERNAME"),
 		password:      os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		backend:       firstNonEmpty(os.Getenv("OPENCODE_EXECUTOR_BACKEND"), "native"),
@@ -120,6 +120,9 @@ func (p *EnvOpenCodeExecutorStatusProvider) nativeStatus(ctx context.Context, no
 	if !status.Configured {
 		status.Error = "OPENCODE_SERVER_URL is not configured"
 		return status
+	}
+	if openCodeV2(p.openCodeURL) {
+		return p.nativeV2Status(ctx, status)
 	}
 	endpoint, err := url.Parse(p.openCodeURL + "/session")
 	if err != nil {

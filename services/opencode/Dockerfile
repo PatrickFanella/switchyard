@@ -13,7 +13,9 @@ ARG RTK_COMMIT=5a7880d404db8364d602f2ecdc41dd790f64013f
 ARG RTK_INSTALL_SHA256=d6eb73a772903e13ff34ee1be8a8b24e896ba9a978f20d2279a08b4083ea6f77
 
 COPY package.json package-lock.json /opt/opencode/
-RUN cd /opt/opencode && npm ci --omit=dev \
+RUN cd /opt/opencode && npm ci --omit=dev --ignore-scripts \
+	&& node node_modules/@opencode/cli/postinstall.mjs \
+	&& opencode --version \
 	&& curl -fsSL "https://raw.githubusercontent.com/rtk-ai/rtk/${RTK_COMMIT}/install.sh" -o /tmp/rtk-install.sh \
 	&& echo "${RTK_INSTALL_SHA256}  /tmp/rtk-install.sh" | sha256sum -c - \
 	&& sh /tmp/rtk-install.sh \
@@ -23,6 +25,7 @@ RUN cd /opt/opencode && npm ci --omit=dev \
 COPY install.sh /usr/local/bin/switchyard-opencode-install
 COPY entrypoint.sh /usr/local/bin/switchyard-opencode-entrypoint
 COPY health.sh /usr/local/bin/switchyard-opencode-health
+COPY health.mjs /usr/local/libexec/switchyard-opencode-health.mjs
 COPY password.sh /usr/local/libexec/switchyard-opencode-password
 COPY default-config/ /opt/switchyard-opencode/default-config/
 RUN addgroup -S -g 10001 opencode \

@@ -85,7 +85,7 @@ func NewEnvOpenPilotAdmissionGate() (*OpenPilotAdmissionGate, error) {
 	manifestSource, err := canonicalOpenPilotSourcePath(bound.SourcePath)
 	if err != nil || bound.ExecutorGeneration != generation || manifestSource != sourcePath ||
 		(bound.WorktreeRoot != "" && bound.WorktreeRoot != os.Getenv("OPEN_PILOT_WORKTREE_ROOT")) ||
-		(bound.OpenCodeEndpoint != "" && strings.TrimRight(bound.OpenCodeEndpoint, "/") != strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/")) ||
+		(bound.OpenCodeEndpoint != "" && strings.TrimRight(bound.OpenCodeEndpoint, "/") != strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/")) ||
 		(bound.VerifierEndpoint != "" && strings.TrimRight(bound.VerifierEndpoint, "/") != strings.TrimRight(os.Getenv("OPEN_PILOT_VERIFIER_URL"), "/")) {
 		return nil, errors.New("runtime manifest does not exactly match the execution-bound singleton")
 	}

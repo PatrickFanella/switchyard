@@ -174,7 +174,7 @@ func NewEnvModelBroker() *EnvModelBroker {
 		llamaLineBaseURL: strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
 		llamaLineAPIKey:  os.Getenv("LLAMA_LINE_API_KEY"),
 		ollamaBaseURL:    strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/"),
-		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		openCodeBaseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/"),
 		openCodeUsername: os.Getenv("OPENCODE_SERVER_USERNAME"),
 		openCodePassword: os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		client:           &http.Client{Timeout: modelBrokerTimeout()},

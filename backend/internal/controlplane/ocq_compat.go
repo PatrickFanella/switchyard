@@ -102,7 +102,7 @@ func (a *API) ocqCompatSettings(w http.ResponseWriter, r *http.Request) {
 		"provider":               "switchyard-opencode-executor",
 		"backend":                "switchyard-native",
 		"workspace":              firstNonEmpty(os.Getenv("MODEL_BROKER_WORKDIR"), os.Getenv("OCQ_DEFAULT_DIRECTORY"), "/workspace"),
-		"opencode_server_url":    firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"),
+		"opencode_server_url":    firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"),
 		"executor_status":        status.Status,
 		"session_count":          status.SessionCount,
 		"active_session_count":   status.ActiveSessionCount,

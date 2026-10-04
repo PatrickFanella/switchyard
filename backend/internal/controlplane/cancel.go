@@ -54,7 +54,7 @@ func NewEnvCancelDispatcherWithStore(store Store) *EnvCancelDispatcher {
 	dispatcher := &EnvCancelDispatcher{
 		ocqBaseURL:        strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/"),
 		ocqGatewayKey:     os.Getenv("OCQ_GATEWAY_KEY"),
-		openCodeBaseURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		openCodeBaseURL:   strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/"),
 		openCodeUsername:  os.Getenv("OPENCODE_SERVER_USERNAME"),
 		openCodePassword:  os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		llamaLineBaseURL:  strings.TrimRight(os.Getenv("LLAMA_LINE_BASE_URL"), "/"),
@@ -139,7 +139,7 @@ func (d *EnvCancelDispatcher) abortOpenCodeSession(ctx context.Context, sessionI
 	if route.baseURL == "" {
 		return []WorkflowExecutionEvent{{Type: "opencode.abort.skipped", Message: "OPENCODE_SERVER_URL is not configured"}}
 	}
-	endpoint, err := url.JoinPath(route.baseURL, "/session/", sessionID, "/abort")
+	endpoint, err := url.JoinPath(route.baseURL, "/session/", sessionID, openCodeInterruptPath(route.baseURL))
 	if err != nil {
 		return []WorkflowExecutionEvent{{Type: "opencode.abort.failed", Message: err.Error()}}
 	}
@@ -149,7 +149,7 @@ func (d *EnvCancelDispatcher) abortOpenCodeSession(ctx context.Context, sessionI
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if route.username != "" || route.password != "" {
-		req.SetBasicAuth(firstNonEmpty(route.username, "switchyard"), route.password)
+		req.SetBasicAuth(openCodeUsername(route.baseURL, route.username), route.password)
 	}
 	if d.ocqGatewayKey != "" && req.Header.Get("Authorization") == "" {
 		req.Header.Set("Authorization", "Bearer "+d.ocqGatewayKey)

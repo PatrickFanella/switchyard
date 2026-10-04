@@ -2,7 +2,8 @@
   "name": "switchyard-opencode-runtime",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "dependencies": {
-    "opencode-ai": "1.17.18"
+    "@opencode/cli": "2.0.22"
   }
 }

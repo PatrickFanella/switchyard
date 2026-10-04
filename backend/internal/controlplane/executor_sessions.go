@@ -305,7 +305,7 @@ type envExecutorSessionProber struct {
 func NewEnvExecutorSessionProber() ExecutorSessionProber {
 	prober := &envExecutorSessionProber{routes: map[string]executorSessionRoute{}, client: &http.Client{Timeout: 2 * time.Second}}
 	prober.routes[ExecutorSessionDefaultKey] = executorSessionRoute{
-		baseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/"),
+		baseURL:  strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/"),
 		username: os.Getenv("OPENCODE_SERVER_USERNAME"),
 		password: os.Getenv("OPENCODE_SERVER_PASSWORD"),
 		native:   resolveOpenCodeExecutorBackend().Backend != "ocq",
@@ -352,12 +352,16 @@ func (p *envExecutorSessionProber) ProbeSession(ctx context.Context, executorKey
 	if err != nil {
 		return ExecutorSessionProbe{Presence: ExecutorSessionUnknown, Reason: "executor endpoint is invalid"}
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?limit=1", nil)
+	query := "?limit=1"
+	if openCodeV2(route.baseURL) {
+		query += "&order=desc"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+query, nil)
 	if err != nil {
 		return ExecutorSessionProbe{Presence: ExecutorSessionUnknown, Reason: "executor request could not be built"}
 	}
 	if route.username != "" || route.password != "" {
-		request.SetBasicAuth(firstNonEmpty(route.username, "switchyard"), route.password)
+		request.SetBasicAuth(openCodeUsername(route.baseURL, route.username), route.password)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
@@ -372,6 +376,9 @@ func (p *envExecutorSessionProber) ProbeSession(ctx context.Context, executorKey
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return ExecutorSessionProbe{Presence: ExecutorSessionUnknown, Reason: "executor returned HTTP " + strconv.Itoa(response.StatusCode)}
+	}
+	if openCodeV2(route.baseURL) {
+		return decodeOpenCodeV2SessionProbe(io.LimitReader(response.Body, executorSessionProbeBody))
 	}
 	return decodeExecutorSessionProbe(io.LimitReader(response.Body, executorSessionProbeBody))
 }

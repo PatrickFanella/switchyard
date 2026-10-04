@@ -244,7 +244,7 @@ def render_runtime_manifest(registry: Mapping[str, Any], fingerprint: str) -> di
             "executor_generation": repository["executor_generation"],
             "source_path": f"{root}/source",
             "worktree_root": f"{root}/worktrees",
-            "opencode_endpoint": f"http://open-pilot-opencode-{identifier}:4096",
+            "opencode_endpoint": f"http://open-pilot-opencode-{identifier}:4096/api",
             "verifier_endpoint": f"http://open-pilot-verifier-{identifier}:8090",
             "password_file": f"/run/secrets/open-pilot-{identifier}-password",
         })

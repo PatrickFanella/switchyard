@@ -12,6 +12,9 @@ RUNTIME_DEFAULTS = Path(__file__).resolve().parent.parent / "backend/internal/ru
 
 
 class OpenCodeConfigContractTest(unittest.TestCase):
+    def test_native_v2_plugin_and_credential_contracts(self) -> None:
+        subprocess.run(["node", "--test", str(CONFIG.parents[3] / "scripts/test_opencode_v2_plugins.mjs")], check=True, capture_output=True, text=True)
+
     def test_plugin_timeout_fallbacks_match_runtime_contract(self) -> None:
         defaults = json.loads(RUNTIME_DEFAULTS.read_text(encoding="utf-8"))["defaults"]
         plugin = (CONFIG.parent / "plugins/switchyard-blacktower.ts").read_text(encoding="utf-8")
