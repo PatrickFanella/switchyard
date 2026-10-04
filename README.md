@@ -129,7 +129,7 @@ The local stack now runs Switchyard-native workflow, model-broker, and OpenCode 
 
 - The root Docker stack includes Postgres, API, web, and a local OpenCode server sidecar. Compatibility backends are cutover-only.
 - Switchyard API also exposes llama-line/Ollama-compatible model ingress on `LLAMA_LINE_PORT` for cutover: `/broker/status`, `/v1/chat/completions`, `/api/chat`, `/api/generate`, `/api/tags`, `/v1/models`, `/api/embed`, and `/v1/embeddings`. Admin queue/inflight and durable history/search/log/config compatibility surfaces remain on the authenticated control listener (`API_PORT`) and are never exposed by the model listener.
-- Workflow code targets Switchyard-native `ModelBroker` and `OpenCodeExecutor` contracts. The native broker routes provider-style models through `OPENCODE_SERVER_URL` (default `http://opencode:4096`) and routes Ollama/local models to `OLLAMA_BASE_URL` when configured. Use `ollama/<model>` to force Ollama routing, or tune automatic local-model prefixes with `MODEL_BROKER_OLLAMA_MODELS`. Do not point `OLLAMA_BASE_URL` at Switchyard's own `LLAMA_LINE_PORT`; it must be the real upstream Ollama server.
+- Workflow code targets Switchyard-native `ModelBroker` and `OpenCodeExecutor` contracts. The native broker routes provider-style models through `OPENCODE_SERVER_URL` (default `http://opencode:4096/api`) and routes Ollama/local models to `OLLAMA_BASE_URL` when configured. Use `ollama/<model>` to force Ollama routing, or tune automatic local-model prefixes with `MODEL_BROKER_OLLAMA_MODELS`. Do not point `OLLAMA_BASE_URL` at Switchyard's own `LLAMA_LINE_PORT`; it must be the real upstream Ollama server.
 - `MODEL_BROKER_RETRY_ATTEMPTS`, `MODEL_BROKER_RETRY_BACKOFF`, and `MODEL_BROKER_RECOVERY_STALE_AFTER` tune bounded upstream retry and async recovery behavior; keep attempts low for interactive clients.
 - llama-line-compatible client attribution uses `Authorization: Bearer <key>` mapped by `MODEL_BROKER_CLIENT_KEYS` (`client-name=token:priority`) or trusted headers `X-Switchyard-Client`/`X-Llama-Line-Client` plus `X-Switchyard-Priority`/`X-Llama-Line-Priority`. Broker history, status, logs, and audit surfaces expose the resolved client and priority.
 
@@ -304,3 +304,5 @@ GPL-3.0-only. See `LICENSE`.
 
 https://www2.onnwee.me
 
+
+The managed executor pins `@opencode/cli@2.0.22` and uses the OpenCode 2 `/api` protocol. V2 server authentication uses the fixed username `opencode`; Switchyard retains `OPENCODE_SERVER_USERNAME` for legacy v1 endpoints. Endpoints without the `/api` suffix retain v1 compatibility for staged migration. Strict mode disables project configuration and keeps session state in memory; the managed plugin persists refreshed provider credentials in the sanitized `auth.json` before dispatch.

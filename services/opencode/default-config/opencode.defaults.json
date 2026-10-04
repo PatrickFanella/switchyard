@@ -34,7 +34,6 @@
   },
   "compaction": {
     "auto": false,
-    "prune": true,
     "reserved": 10000
   },
   "experimental": {

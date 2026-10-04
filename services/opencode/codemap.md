@@ -4,15 +4,15 @@
 Builds the managed OpenCode server image used as Switchyard's agent execution service.
 
 ## Design
-- A pinned Node/Alpine image installs OpenCode, RTK, Git, Go, and build tooling.
-- In strict mode, `install.sh` removes unmanaged extension trees, replaces persisted configuration without reading it, and atomically sanitizes persistent `auth.json` to mode `0600`, retaining only valid API/OAuth provider credentials. The session DB is in memory. Development mode leaves auth state untouched, may merge reviewed local configuration, and may use persistent state.
+- A pinned Node/Alpine image installs OpenCode 2.0.22, RTK, Git, Go, and build tooling.
+- In strict mode, `install.sh` removes unmanaged extension trees, replaces persisted configuration without reading it, and atomically sanitizes persistent `auth.json` to mode `0600`, retaining only valid API/OAuth provider credentials. The session DB is in memory; the native context hook saves refreshed provider credentials before dispatch so they survive restart. Development mode leaves auth state untouched, may merge reviewed local configuration, and may use persistent state.
 - Persistent OpenCode config/data are pre-owned bind mounts; startup fails closed instead of recursively changing host ownership.
 
 ## Flow
 1. The image installs locked dependencies and a checksum-verified RTK installer.
 2. Container startup runs `switchyard-opencode-install`.
 3. Managed defaults are copied/merged into the mounted config directory.
-4. `opencode serve` starts on port 4096; the Go executor creates sessions and sends messages.
+4. `opencode serve` starts on port 4096; the Go executor creates sessions and admits prompts through the native `/api` contract.
 
 ## Integration
 - Health-checked and networked with the API in `docker-compose.yml`.

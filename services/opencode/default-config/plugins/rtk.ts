@@ -1,11 +1,10 @@
-export default async function rtkPlugin() {
-  return {
-    'tool.execute.before': async (input, output) => {
-      if (input.tool !== 'bash') return;
-      const command = output.args?.command;
-      if (typeof command !== 'string') return;
-      if (command.trimStart().startsWith('rtk ')) return;
-      output.args.command = `rtk ${command}`;
-    },
-  };
-}
+export default {
+  id: 'switchyard.rtk',
+  setup: async (ctx) => {
+    await ctx.shell.hook('create.before', (event) => {
+      if (!event.command.trimStart().startsWith('rtk ')) {
+        event.command = `rtk ${event.command}`;
+      }
+    });
+  },
+};

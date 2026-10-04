@@ -60,7 +60,7 @@ type EnvOpenCodeExecutor struct {
 type EnvOCQExecutor = EnvOpenCodeExecutor
 
 func NewEnvOpenCodeExecutor() *EnvOpenCodeExecutor {
-	baseURL := strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/")
+	baseURL := strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/")
 	if resolveOpenCodeExecutorBackend().Backend == "ocq" {
 		baseURL = strings.TrimRight(os.Getenv("OCQ_BASE_URL"), "/")
 	}
@@ -399,6 +399,9 @@ func (e *EnvOpenCodeExecutor) openCodeLatestMessageID(ctx context.Context, sessi
 }
 
 func (e *EnvOpenCodeExecutor) openCodeLatestMessage(ctx context.Context, sessionID string) (openCodeSessionMessage, error) {
+	if openCodeV2(e.baseURL) {
+		return e.openCodeV2LatestMessage(ctx, sessionID)
+	}
 	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, "/message")
 	if err != nil {
 		return openCodeSessionMessage{}, err
@@ -466,7 +469,7 @@ func (e *EnvOpenCodeExecutor) abortOpenCodeSession(ctx context.Context, sessionI
 	}
 	ctx, cancel := context.WithTimeout(ctx, openCodeAbortTimeout())
 	defer cancel()
-	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, "/abort")
+	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, openCodeInterruptPath(e.baseURL))
 	if err != nil {
 		return
 	}
@@ -484,6 +487,9 @@ func (e *EnvOpenCodeExecutor) abortOpenCodeSession(ctx context.Context, sessionI
 }
 
 func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directory string, preAttempt ...PreAttemptCallback) (string, error) {
+	if openCodeV2(e.baseURL) {
+		return e.createOpenCodeV2Session(ctx, directory, preAttempt...)
+	}
 	endpoint, err := url.Parse(e.baseURL + "/session")
 	if err != nil {
 		return "", err
@@ -525,6 +531,9 @@ func (e *EnvOpenCodeExecutor) createOpenCodeSession(ctx context.Context, directo
 }
 
 func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID string, request OpenCodeRequest) (string, error) {
+	if openCodeV2(e.baseURL) {
+		return e.postOpenCodeV2Prompt(ctx, sessionID, request)
+	}
 	endpoint, err := url.JoinPath(e.baseURL, "/session/", sessionID, "/message")
 	if err != nil {
 		return "", err
@@ -583,7 +592,7 @@ func (e *EnvOpenCodeExecutor) postOpenCodeMessage(ctx context.Context, sessionID
 
 func (e *EnvOpenCodeExecutor) applyOpenCodeAuth(req *http.Request) {
 	if e.username != "" || e.password != "" {
-		req.SetBasicAuth(firstNonEmpty(e.username, "switchyard"), e.password)
+		req.SetBasicAuth(openCodeUsername(e.baseURL, e.username), e.password)
 	}
 	if e.gatewayKey != "" && req.Header.Get("Authorization") == "" {
 		req.Header.Set("Authorization", "Bearer "+e.gatewayKey)

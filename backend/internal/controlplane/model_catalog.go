@@ -127,7 +127,7 @@ func ollamaModelCatalog(r *http.Request) providerModelCatalog {
 }
 
 func openCodeModelCatalog(r *http.Request) providerModelCatalog {
-	baseURL := strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096"), "/")
+	baseURL := strings.TrimRight(firstNonEmpty(os.Getenv("OPENCODE_SERVER_URL"), "http://opencode:4096/api"), "/")
 	catalog := providerModelCatalog{Configured: baseURL != "", BaseURL: baseURL, Status: "not_configured", Models: []modelCatalogID{}, Providers: []map[string]any{}}
 	if baseURL == "" {
 		catalog.Error = "OPENCODE_SERVER_URL is not configured"
@@ -135,6 +135,9 @@ func openCodeModelCatalog(r *http.Request) providerModelCatalog {
 	}
 	username := os.Getenv("OPENCODE_SERVER_USERNAME")
 	password := os.Getenv("OPENCODE_SERVER_PASSWORD")
+	if openCodeV2(baseURL) {
+		return openCodeV2ModelCatalog(r, catalog, baseURL, password)
+	}
 	response, err := fetchJSONMap(r, baseURL, "/config/providers", http.MethodGet, nil, username, password)
 	if err != nil {
 		// Older OpenCode builds may expose /provider instead.
