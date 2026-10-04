@@ -346,7 +346,7 @@ export function ProfilesPage() {
                 type="button"
               >
                 <span className="block text-sm font-semibold text-[hsl(var(--ink))]">{entry.profile?.name ?? entry.id}</span>
-                <span className="mt-1 block text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+                <span className="mt-1 block text-xs text-[hsl(var(--faint))]">
                   {entry.id} · {label}
                   {entry.identity?.draft_version ? ` · draft v${entry.identity.draft_version} pending` : ''}
                 </span>

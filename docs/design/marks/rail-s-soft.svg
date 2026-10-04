@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Rail S soft bends variation</title>
+  <desc id="desc">Two continuous S tracks use rounded bends and a broad diagonal passage.</desc>
+  <path d="M50 6H24C8 6 8 22 24 26L40 30C56 34 56 50 40 50H12M50 16H24C8 16 8 32 24 36L40 40C56 44 56 60 40 60H12"/>
+</svg>

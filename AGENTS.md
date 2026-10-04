@@ -37,6 +37,10 @@ loopback-only, and republish backup freshness through the protected
 `SWITCHYARD_BACKUP_METRICS_FILE` textfile rather than exposing private control
 routes.
 
+## Product branding
+
+Signal Yard uses the owner-selected E2 mark and Sora 600 wordmark. Canonical product tokens and editable identity masters live in `docs/design/`; regenerate web copies with `python3 docs/design/identity/sync_web_assets.py`. Keep fonts self-hosted with licenses and provenance in `web/public/brand`, and retain shared HUD class names as component compatibility contracts.
+
 ## Verification
 
 Run:

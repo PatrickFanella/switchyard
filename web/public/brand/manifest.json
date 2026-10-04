@@ -1,0 +1,90 @@
+{
+  "brand": "Signal Yard",
+  "mark": "E2",
+  "wordmark": "Sora 600",
+  "fontConversion": "fontTools TTFont WOFF2; full glyph repertoire retained",
+  "assets": [
+    {
+      "file": "fonts/sora-variable.woff2",
+      "source": "https://github.com/google/fonts/tree/main/ofl/sora",
+      "sourceBlob": "3b93d661fa07f5948799ba29979009b409cd4740",
+      "sourceSha256": "84ff7096ae3ec6c8be47d906d1a0ba4de7f2ce78c615275c77301964a316e16c",
+      "sha256": "85f0527972baba20b77a0869d6a25c7f58f0e28255d17f3ce1d6acb6f47cb549",
+      "version": "Version 2.000"
+    },
+    {
+      "file": "fonts/sora-OFL.txt",
+      "source": "https://github.com/google/fonts/tree/main/ofl/sora",
+      "sourceBlob": "f1d9d6af7ba46af6c2da765fa123d93239c913f5",
+      "sourceSha256": "ba0b9729c9428ba79a0459ab8ec575791b51509dbec213e383d0316d37fec299",
+      "sha256": "855bd3bf8c48eaa45d3c0bbc077a12c977f3ca9a8efb3124e049b9300d56837f",
+      "version": null,
+      "conversion": "Line endings and trailing whitespace normalized; license wording unchanged"
+    },
+    {
+      "file": "fonts/public-sans-variable.woff2",
+      "source": "https://github.com/google/fonts/tree/main/ofl/publicsans",
+      "sourceBlob": "c747e1de8c8deadb6ba852eb9a0a7d893b8bd36f",
+      "sourceSha256": "d75a7dc1a27eb9e336d5b33f55489d2ecb5621bf694d5c43b2415bce2ca830a8",
+      "sha256": "0fce1ac145d02d640110ff7330ae788db5ebfe0e08d342ee354284da489bc86f",
+      "version": "Version 2.001"
+    },
+    {
+      "file": "fonts/publicsans-OFL.txt",
+      "source": "https://github.com/google/fonts/tree/main/ofl/publicsans",
+      "sourceBlob": "9eef1e9900892e8e971c1e731546f7987241641b",
+      "sourceSha256": "157a9e77f7580246e97c769490e2e977ae94399f9d30f4556015c41fe8c28bac",
+      "sha256": "510d6e86ca0681edd7c5669df50c24b372a4d96b80bf507c2d29585132a24718",
+      "version": null,
+      "conversion": "Line endings and trailing whitespace normalized; license wording unchanged"
+    },
+    {
+      "file": "fonts/ibm-plex-mono-regular.woff2",
+      "source": "https://github.com/google/fonts/tree/main/ofl/ibmplexmono",
+      "sourceBlob": "0c9770d5183ba60dc4350d3e011b782a320761ae",
+      "sourceSha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+      "sha256": "2295ce7fb2690228d2ab268a833b44617273ea48afc6f44493138b465c122820",
+      "version": "Version 2.3"
+    },
+    {
+      "file": "fonts/ibm-plex-mono-medium.woff2",
+      "source": "https://github.com/google/fonts/tree/main/ofl/ibmplexmono",
+      "sourceBlob": "33c546f68b6007a45a3f10e845523abb2db25399",
+      "sourceSha256": "a9b4c49bb299e05b5f6c481e7fb5e78943d2793249a0c8874ab574a2d1ea6755",
+      "sha256": "a5a72d83d1d68b41c676c4f7c8fe874863ab3c88c67077f50e1f6f9f3ff48699",
+      "version": "Version 2.3"
+    },
+    {
+      "file": "fonts/ibmplexmono-OFL.txt",
+      "source": "https://github.com/google/fonts/tree/main/ofl/ibmplexmono",
+      "sourceBlob": "c35c4c618fab33da8695177b3a6cefe0810b7b28",
+      "sourceSha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+      "sha256": "d741e57d5f865e294df801f96b7b5161a88b211df65887e4358d271c9fc5fb4f",
+      "version": null,
+      "conversion": "Line endings and trailing whitespace normalized; license wording unchanged"
+    },
+    {
+      "file": "wordmark.svg",
+      "source": "docs/design/identity/lockup.svg",
+      "sha256": "3ec6e9274676a8450617985538d1911bc5aaae17e0066172a302bab8e6ea2449"
+    },
+    {
+      "file": "favicon.svg",
+      "source": "docs/design/identity/mark.svg",
+      "sourceSha256": "830000b964447b9724728dcfcf6764f1339c06270a6d3b83950d50a3be2f7792",
+      "sha256": "3bedfc48d54149e2d27ea195bc35c7920dbbcd03629a27beefa7ce4fda8e38d1"
+    },
+    {
+      "file": "mark.svg",
+      "source": "docs/design/identity/mark.svg",
+      "sourceSha256": "830000b964447b9724728dcfcf6764f1339c06270a6d3b83950d50a3be2f7792",
+      "sha256": "830000b964447b9724728dcfcf6764f1339c06270a6d3b83950d50a3be2f7792"
+    }
+  ],
+  "tokens": {
+    "source": "docs/design/tokens.json",
+    "sourceSha256": "4ff0d96f77f378acd9f3a3c758e63ab700cbdb31200b13adbc3433d6dbf0e156",
+    "generated": "web/brand-tokens.json",
+    "sha256": "4ff0d96f77f378acd9f3a3c758e63ab700cbdb31200b13adbc3433d6dbf0e156"
+  }
+}

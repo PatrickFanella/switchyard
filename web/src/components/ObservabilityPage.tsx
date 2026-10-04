@@ -81,7 +81,7 @@ export function ObservabilityPage() {
                       <span className="text-sm font-semibold text-[hsl(var(--ink))]">{request.model}</span>
                       <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
                     </div>
-                    <p className="mt-2 break-all text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+                    <p className="mt-2 break-all text-xs text-[hsl(var(--faint))]">
                       {request.id} · {request.path} · {request.duration_ms ?? 0}ms · {formatTime(request.created_at)}
                     </p>
                     {request.correlation_ids ? <p className="mt-2 break-all text-xs text-[hsl(var(--muted))]">Trace: {request.correlation_ids.trace_id ?? request.correlation_ids.llama_line_request_id ?? 'recorded'}</p> : null}
@@ -98,7 +98,7 @@ export function ObservabilityPage() {
                   <HudPanel key={request.id} className="bg-[hsl(var(--panel-soft))] p-3">
                     <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
                     <p className="mt-3 text-sm text-[hsl(var(--muted))]">{request.error || 'No error text recorded'}</p>
-                    <p className="mt-2 break-all text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{request.id}</p>
+                    <p className="mt-2 break-all text-xs text-[hsl(var(--faint))]">{request.id}</p>
                   </HudPanel>
                 ))}
               </div>

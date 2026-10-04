@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="square" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Switchyard turnout mark study</title>
+  <desc id="desc">Two parallel rails rise from the bottom and split into a straight route and a diagonal branch.</desc>
+  <path d="M21 55V9M31 55V9M21 43L49 15M31 43L57 17"/>
+</svg>

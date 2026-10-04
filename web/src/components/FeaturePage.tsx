@@ -50,7 +50,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
                 <HudField label="Capacity" value={queue.capacity} />
                 <HudField label="Workers" value={queue.workers} />
               </div>
-              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Updated {formatTime(queue.updated_at)}</p>
+              <p className="mt-4 text-xs text-[hsl(var(--faint))]">Updated {formatTime(queue.updated_at)}</p>
             </FeatureCard>
           ))}
         </div>
@@ -65,7 +65,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
                     <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(upstream.status)}`}>{upstream.status}</span>
                   </div>
                   <p className="mt-2 break-all text-xs text-[hsl(var(--muted))]">{upstream.url}</p>
-                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">Pending {upstream.pending} · seen {formatTime(upstream.last_seen_at)}</p>
+                  <p className="mt-2 text-xs text-[hsl(var(--faint))]">Pending {upstream.pending} · seen {formatTime(upstream.last_seen_at)}</p>
                 </HudPanel>
               ))}
             </div>
@@ -79,7 +79,7 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
                     <span className="text-sm font-semibold text-[hsl(var(--ink))]">{request.model}</span>
                     <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(request.status)}`}>{request.status}</span>
                   </div>
-                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{request.route} · {request.latency_ms}ms · depth {request.queue_depth}</p>
+                  <p className="mt-2 text-xs text-[hsl(var(--faint))]">{request.route} · {request.latency_ms}ms · depth {request.queue_depth}</p>
                 </HudPanel>
               ))}
             </div>
@@ -119,9 +119,9 @@ export function FeaturePage({ view, adapters, agentProfiles }: { view: ViewID; a
             <HudPanel key={profile.id} className="bg-[hsl(var(--panel-soft))] p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <span className="text-sm font-semibold text-[hsl(var(--ink))]">{profile.name}</span>
-                <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{profile.role}</span>
+                <span className="text-xs text-[hsl(var(--signal))]">{profile.role}</span>
               </div>
-              <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">{profile.allowed_executors.join(', ') || 'no executors declared'}</p>
+              <p className="mt-2 text-xs text-[hsl(var(--faint))]">{profile.allowed_executors.join(', ') || 'no executors declared'}</p>
             </HudPanel>
           ))}
         </div>

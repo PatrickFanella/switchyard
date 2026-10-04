@@ -38,11 +38,7 @@ const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: st
 
 function SwitchyardMark() {
   return (
-    <span className="brand-mark" aria-hidden="true">
-      <span />
-      <span />
-      <span />
-    </span>
+    <img className="brand-mark" src="/brand/favicon.svg" alt="" aria-hidden="true" width="40" height="40" />
   );
 }
 
@@ -85,7 +81,7 @@ export default function App() {
       <aside className="sidebar" aria-label="Primary navigation">
         <div className="brand">
           <SwitchyardMark />
-          <div><strong>Switchyard</strong><span>Automation runtime</span></div>
+          <div><strong className="brand-wordmark">switchyard</strong><span>Automation runtime</span></div>
         </div>
 
         <nav className="sidebar-nav">
@@ -107,6 +103,10 @@ export default function App() {
       </aside>
 
       <div className="workspace">
+        <div className="mobile-brand">
+          <SwitchyardMark />
+          <strong className="brand-wordmark">switchyard</strong>
+        </div>
         <header className="topbar">
           <div className="page-heading">
             <p>{copy.eyebrow}</p>

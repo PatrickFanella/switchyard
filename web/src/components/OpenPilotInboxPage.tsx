@@ -64,7 +64,7 @@ function IssueRow({ issue, selected, onSelect }: { issue: OpenPilotInboxIssue; s
         </div>
         <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${chip.classes}`}>{chip.label}</span>
       </div>
-      <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+      <p className="mt-3 text-xs text-[hsl(var(--faint))]">
         pickup: {issue.pickup}
         {issue.claim ? ` · phase: ${issue.claim.phase}` : ''}
         {issue.reason_codes.length > 0 ? ` · ${issue.reason_codes.join(', ')}` : ''}
@@ -137,7 +137,7 @@ function IssueDetail({ issue, busy, onDispatch, onResume, onOpenRun }: { issue: 
         {issue.checks.map((check, index) => (
           <HudPanel key={`${check.name}-${index}`} className="bg-[hsl(var(--panel-soft))] px-3 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]">{check.name}</span>
+              <span className="text-xs text-[hsl(var(--signal))]">{check.name}</span>
               <span className={`hud-chip px-2 py-0.5 text-[0.6rem] ${statusClasses(check.status === 'pass' ? 'succeeded' : check.status === 'fail' ? 'failed' : check.status === 'warn' ? 'paused' : 'canceled')}`}>{check.code}</span>
             </div>
             <p className="mt-1 text-sm text-[hsl(var(--ink))]">{check.message}</p>
@@ -226,11 +226,11 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
           className="grid gap-3 md:grid-cols-5"
           onSubmit={(event) => { event.preventDefault(); setFilter({ q: queryDraft, repo: repoDraft }); }}
         >
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Repository</span>
             <input className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]" onChange={(event) => setRepoDraft(event.target.value)} placeholder="all registered" value={repoDraft} />
           </label>
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Eligibility</span>
             <select className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]" onChange={(event) => setFilter({ eligibility: event.target.value as InboxEligibility })} value={link.eligibility}>
               <option value="all">all</option>
@@ -239,7 +239,7 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
               <option value="claimed">claimed</option>
             </select>
           </label>
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Pickup</span>
             <select className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]" onChange={(event) => setFilter({ pickup: event.target.value as InboxPickup })} value={link.pickup}>
               <option value="">any</option>
@@ -248,14 +248,14 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
               <option value="none">neither</option>
             </select>
           </label>
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Phase</span>
             <select className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]" onChange={(event) => setFilter({ phase: event.target.value })} value={link.phase}>
               <option value="">any</option>
               {phases.map((phase) => <option key={phase} value={phase}>{phase}</option>)}
             </select>
           </label>
-          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <label className="hud-panel bg-[hsl(var(--panel-soft))] px-3 py-2 text-xs text-[hsl(var(--faint))]">
             <span className="text-[hsl(var(--signal))]">Search</span>
             <input className="mt-2 w-full border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] px-2 py-2 text-sm normal-case tracking-normal text-[hsl(var(--ink))]" onChange={(event) => setQueryDraft(event.target.value)} placeholder="title, label, reason code" value={queryDraft} />
           </label>
@@ -278,7 +278,7 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
         ) : null}
 
         {report ? (
-          <div className="mt-4 flex flex-wrap gap-2 text-xs uppercase tracking-[0.18em] text-[hsl(var(--faint))]">
+          <div className="mt-4 flex flex-wrap gap-2 text-xs text-[hsl(var(--faint))]">
             {report.repositories.map((repository) => (
               <span key={repository.id} className={`hud-chip px-2.5 py-1 text-[0.62rem] ${statusClasses(!repository.admitted ? 'canceled' : repository.upstream === 'listed' ? 'succeeded' : 'failed')}`} title={repository.admission_message || repository.upstream_error || ''}>
                 {repository.slug}: {repository.admitted ? repository.upstream : repository.admission_code}{repository.polled ? ' · polled' : ''}

@@ -211,7 +211,7 @@ export function SessionsPage() {
           <span className="text-sm text-[hsl(var(--ink))]">
             Showing session <code className="break-all">{selected}</code>
           </span>
-          <a className="text-xs uppercase tracking-[0.18em] text-[hsl(var(--signal))]" href={formatSessionHash()}>All sessions</a>
+          <a className="text-xs text-[hsl(var(--signal))]" href={formatSessionHash()}>All sessions</a>
         </HudPanelStrong>
       ) : null}
 

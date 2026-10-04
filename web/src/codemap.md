@@ -11,7 +11,7 @@ Contains the dashboard application shell, API client, shared domain types, style
 - `promptAuthoring.ts` is the prompt authoring client: inventory and preview types, `GET /api/prompts` and `POST /api/prompts/preview` helpers, client-side variable listing for sample fields, template replacement in a definition, draft saves through `saveWorkflowDraft`, and run prompt-binding labels.
 - `navigationGuard.ts` lets a page with unsaved edits veto shell navigation; `useHashNavigation` consults it for sidebar and browser view changes.
 - `api.ts` centralizes fetch, normalization, formatting, and mutations.
-- `App.tsx` selects pages while hooks own URL and asynchronous state.
+- `App.tsx` selects pages while hooks own URL and asynchronous state. `styles.css` applies Signal Yard typography, shared control states, responsive branding, and local font faces. `web/brand-tokens.json` and `web/public/brand` contain generated design assets, with source hashes and font licenses.
 - `correlation.ts` defines typed correlation destinations (run, step, request, session, executor request, Gitea issue/PR/commit/CI, trace, span), the external-link allowlist derived from `/api/operator-safety` `correlation_targets`, run evidence deep links (`#/runs/<run>/<steps|artifacts|events>/<id>`), and the run failure summary. `correlation.test.ts` covers allowlist rejection and destination mapping.
 - `test-utils.tsx` provides strict typed fetch fixtures and DOM helpers for the dashboard suite; `App.test.tsx` navigates operator mutations, selection/error states, and hash routes; `components/ArtifactPreview.test.tsx` covers inline artifact decoding, sanitized rendering, and fallbacks.
 
