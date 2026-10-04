@@ -46,6 +46,48 @@ type inboxFixture struct {
 	manifest OpenPilotRuntimeManifest
 }
 
+type discoveringInboxReader struct {
+	*inboxIssueReader
+	visible []string
+	err     error
+}
+
+func (r *discoveringInboxReader) ListOpenPilotRepositories(context.Context) ([]string, error) {
+	return r.visible, r.err
+}
+
+func TestOpenPilotWildcardInboxRetainsMissingRepositoryHistoryWithoutPollingIt(t *testing.T) {
+	fixture := newInboxFixture(t)
+	fixture.api.openPilotPollRepos = []string{"*"}
+	_, run := fixture.dispatch(t, "owner/beta", "9")
+	if run.ID == "" {
+		t.Fatal("historical claim was not created")
+	}
+	fixture.reader.errs["owner/beta"] = errors.New("deleted repository must not be queried")
+	reader := &discoveringInboxReader{inboxIssueReader: fixture.reader, visible: []string{"owner/alpha"}}
+	fixture.api.SetOpenPilotIssueReader(reader)
+	_, _, report := fixture.inbox(t, "")
+	if report.Upstream != OpenPilotInboxUpstreamAvailable {
+		t.Fatalf("upstream = %s, error = %s", report.Upstream, report.UpstreamError)
+	}
+	for _, repository := range report.Repositories {
+		if repository.ID == "beta" && (repository.Polled || repository.Claims != 1 || repository.Upstream != OpenPilotInboxRepositoryNotQueried) {
+			t.Fatalf("retained repository = %+v", repository)
+		}
+	}
+	if _, ok := inboxIssue(report, "owner/beta#9"); !ok {
+		t.Fatal("missing repository history was hidden")
+	}
+	reader.err = errors.New("discovery unavailable")
+	_, _, report = fixture.inbox(t, "")
+	if report.Upstream != OpenPilotInboxUpstreamUnavailable {
+		t.Fatalf("failed discovery = %+v", report)
+	}
+	if _, ok := inboxIssue(report, "owner/beta#9"); !ok {
+		t.Fatal("failed discovery hid durable history")
+	}
+}
+
 // newInboxFixture builds an isolated-test two-repository runtime (owner/alpha
 // with alias legacy/alpha, owner/beta with alias legacy/beta) whose admission
 // gate admits registered repositories without the durable rollout gate.
