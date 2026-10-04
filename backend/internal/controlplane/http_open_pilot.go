@@ -567,7 +567,13 @@ func (a *API) openPilotInbox(w http.ResponseWriter, r *http.Request) {
 			input.Executors = env
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), openPilotInboxTimeout)
+	timeout := openPilotInboxTimeout
+	if len(a.openPilotPollRepos) == 1 && a.openPilotPollRepos[0] == "*" {
+		// Wildcard projection also discovers the paginated visible inventory.
+		// Retain a bounded request while allowing those extra Gitea round trips.
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	writeJSON(w, http.StatusOK, buildOpenPilotInbox(ctx, input))
 }
