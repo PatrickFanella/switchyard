@@ -1,0 +1,12 @@
+[Unit]
+Description=Discover and prepare Open Pilot repositories
+
+[Service]
+Type=oneshot
+UMask=0077
+WorkingDirectory=@REPOSITORY_ROOT@
+ExecStart=/usr/bin/python3 @REPOSITORY_ROOT@/scripts/reconcile_open_pilot_repositories.py --env-file @ENV_FILE@ --registry @REGISTRY@ --workspace-root @WORKSPACE_ROOT@ --catalog @CATALOG@ --deployment-root @REPOSITORY_ROOT@ --control-url @CONTROL_URL@ --capacity @CAPACITY@ --pinned switchyard,actions-smoke-test --opencode-image @OPENCODE_IMAGE@ --verifier-image @VERIFIER_IMAGE@ --apply --activate
+TimeoutStartSec=20min
+
+# Host-owned preparation needs the canonical local Docker boundary. These
+# permissions are never inherited by an executor or verifier container.

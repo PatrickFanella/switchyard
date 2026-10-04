@@ -105,6 +105,7 @@ func (o openPilotExecutor) ExecuteSteps(ctx context.Context, run Run, store Stor
 	if err != nil {
 		return WorkflowExecution{}, fmt.Errorf("select Open Pilot repository execution bundle: %w", err)
 	}
+	o = o.withRepositoryPolicy(execution.repository)
 	repo := run.Inputs["repo"]
 	issue := run.Inputs["issue"]
 	validate, err := createAndStartStep(store, CreateRunStepInput{RunID: run.ID, Position: 1, Name: "open-pilot.validate-issue", Executor: "internal", Inputs: run.Inputs})
@@ -1168,6 +1169,7 @@ func (o openPilotExecutor) ExecutePipelineStep(ctx context.Context, run Run, ste
 	if err != nil {
 		return PipelineStepExecution{}, fmt.Errorf("select Open Pilot repository execution bundle: %w", err)
 	}
+	o = o.withRepositoryPolicy(execution.repository)
 	if o.env != nil && o.env.store != nil {
 		state[openPilotAttemptStoreStateKey] = openPilotStoreFromContext(ctx, o.env.store)
 	}
@@ -2551,6 +2553,26 @@ func (o openPilotExecutor) resolveOpenPilotCIPullRequest(ctx context.Context, ru
 }
 
 func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSummary) (openPilotCICheckResult, bool) {
+	if len(requiredChecks) == 1 && requiredChecks[0] == "*" {
+		// Automatically onboarded repositories require concrete checks on the
+		// exact PR head. An empty or aggregate-only success cannot pass this mode.
+		if len(snapshot.Statuses) == 0 && len(snapshot.Checks) == 0 {
+			return openPilotCICheckResult{}, false
+		}
+		requiredChecks = nil
+		for _, status := range snapshot.Statuses {
+			if strings.TrimSpace(status.Context) == "" {
+				return openPilotCICheckResult{}, false
+			}
+			requiredChecks = append(requiredChecks, status.Context)
+		}
+		for _, check := range snapshot.Checks {
+			if strings.TrimSpace(check.Name) == "" {
+				return openPilotCICheckResult{}, false
+			}
+			requiredChecks = append(requiredChecks, check.Name)
+		}
+	}
 	if len(requiredChecks) == 0 {
 		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: no required checks configured"}, true
 	}

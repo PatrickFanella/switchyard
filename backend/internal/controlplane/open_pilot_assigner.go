@@ -33,12 +33,33 @@ func (a *OpenPilotAssigner) Poll(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("OPEN_PILOT_POLL_REPOS is not configured")
 	}
 	assigned := 0
-	for _, repo := range a.repos {
+	repos := a.repos
+	if len(repos) == 1 && repos[0] == "*" {
+		if a.runner.openPilotGateError != nil {
+			return 0, a.runner.openPilotGateError
+		}
+		if a.runner.openPilotGate == nil || a.runner.openPilotGate.registry == nil {
+			return 0, ErrInvalid
+		}
+		discovery, ok := a.issues.(GiteaRepositoryLister)
+		if !ok {
+			return 0, fmt.Errorf("the Gitea issue reader does not support repository discovery")
+		}
+		var err error
+		repos, err = discovery.ListOpenPilotRepositories(ctx)
+		if err != nil {
+			return 0, err
+		}
+	}
+	for _, repo := range repos {
 		if a.runner.openPilotGateError != nil {
 			return assigned, a.runner.openPilotGateError
 		}
 		target, err := a.runner.openPilotGate.ResolvePollRepository(repo)
 		if err != nil {
+			if len(a.repos) == 1 && a.repos[0] == "*" {
+				continue
+			}
 			return assigned, err
 		}
 		repo = target.RepositorySlug

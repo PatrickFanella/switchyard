@@ -23,7 +23,7 @@ from validate_production_config import (
 MAX_DOCUMENT_BYTES = 256 << 10
 MAX_REPOSITORIES = 32
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
-SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
+SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/(?!\.{1,2}\Z)[A-Za-z0-9._-]{1,100}\Z")
 OPERATOR_KEYS = {"version", "generation", "repositories"}
 REPOSITORY_KEYS = {
     "id", "slug", "aliases", "executor_generation", "source_path",
@@ -75,10 +75,16 @@ def load_operator_registry(path: Path) -> dict[str, Any]:
     ids: set[str] = set()
     names: set[str] = set()
     for index, repository in enumerate(repositories):
-        if not isinstance(repository, dict) or not REPOSITORY_KEYS.issubset(repository) or set(repository) - REPOSITORY_KEYS - {"verifier_image"}:
+        if not isinstance(repository, dict) or not REPOSITORY_KEYS.issubset(repository) or set(repository) - REPOSITORY_KEYS - {"verifier_image", "opencode_image", "base_branch", "required_checks"}:
             raise ValueError(f"operator repository {index} has unknown or missing fields")
         if "verifier_image" in repository and (not isinstance(repository["verifier_image"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", repository["verifier_image"])):
             raise ValueError("verifier_image must be an immutable local image ID")
+        if "base_branch" in repository and (not isinstance(repository["base_branch"], str) or not repository["base_branch"] or len(repository["base_branch"]) > 255 or any(ord(c) < 32 for c in repository["base_branch"])):
+            raise ValueError("base_branch must be a bounded Git branch name")
+        if "required_checks" in repository and (not isinstance(repository["required_checks"], list) or not 1 <= len(repository["required_checks"]) <= 64 or any(not isinstance(c, str) or not c.strip() or len(c) > 512 or any(ord(x) < 32 for x in c) for c in repository["required_checks"])):
+            raise ValueError("required_checks must contain bounded CI context names")
+        if "opencode_image" in repository and (not isinstance(repository["opencode_image"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", repository["opencode_image"])):
+            raise ValueError("opencode_image must be an immutable local image ID")
         identifier = repository["id"]
         generation = repository["executor_generation"]
         slug = repository["slug"]
@@ -238,6 +244,7 @@ def render_runtime_manifest(registry: Mapping[str, Any], fingerprint: str) -> di
         identifier = repository["id"]
         root = f"/open-pilot/repositories/{identifier}"
         repositories.append({
+            **{key: repository[key] for key in ("base_branch", "required_checks") if key in repository},
             "id": identifier,
             "slug": repository["slug"],
             "aliases": sorted(repository["aliases"], key=str.casefold),
@@ -259,7 +266,7 @@ def render_runtime_manifest(registry: Mapping[str, Any], fingerprint: str) -> di
 def _opencode_service(repository: Mapping[str, Any]) -> dict[str, Any]:
     identifier = repository["id"]
     root = f"/open-pilot/repositories/{identifier}"
-    return {
+    service = {
         "build": {"context": "./services/opencode", "args": {"SWITCHYARD_SOURCE_REVISION": "${SWITCHYARD_SOURCE_REVISION:-unknown}"}},
         "restart": "unless-stopped", "user": "0:0", "read_only": True,
         "security_opt": ["no-new-privileges:true"], "cap_drop": ["ALL"],
@@ -292,6 +299,11 @@ def _opencode_service(repository: Mapping[str, Any]) -> dict[str, Any]:
         "healthcheck": {"test": ["CMD", "/usr/local/bin/switchyard-opencode-health"], "interval": "10s", "timeout": "5s", "retries": 12},
     }
 
+    if repository.get("opencode_image"):
+        service.pop("build")
+        service["image"] = repository["opencode_image"]
+    return service
+
 
 def _verifier_service(repository: Mapping[str, Any]) -> dict[str, Any]:
     identifier = repository["id"]
@@ -321,7 +333,7 @@ def _verifier_service(repository: Mapping[str, Any]) -> dict[str, Any]:
     return service
 
 
-def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fingerprint: str) -> dict[str, Any]:
+def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fingerprint: str, *, start_paused: bool = False) -> dict[str, Any]:
     services: dict[str, Any] = {}
     networks: dict[str, Any] = {}
     volumes: dict[str, Any] = {}
@@ -350,6 +362,7 @@ def render_compose_override(registry: Mapping[str, Any], manifest_path: Path, fi
         ])
     services["api"] = {
         "environment": {
+            **({"SWITCHYARD_RUNTIME_START_PAUSED": "true"} if start_paused else {}),
             "SWITCHYARD_OPEN_PILOT_RUNTIME_MANIFEST": "/etc/switchyard/open-pilot-runtime-manifest.json",
             "SWITCHYARD_OPEN_PILOT_REGISTRY_FINGERPRINT": fingerprint,
             "SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE": "${SWITCHYARD_OPEN_PILOT_ACTIVATION_MODE:-disabled}",

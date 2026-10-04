@@ -524,3 +524,66 @@ the prior run inside the store transaction. It cannot choose a later cursor,
 replace a session, or bypass verification, review, CI, or merge policy. Combine
 it with the explicit session-recovery query only when that separate recovery
 is needed. Empty request bodies preserve ordinary resume behavior.
+
+
+## Automatic repository discovery and preparation
+
+Set `OPEN_PILOT_POLL_REPOS=*` to discover repositories visible to the existing
+Gitea runtime account on every poll. Discovery includes repositories created
+later. Archived repositories and repositories without issues are excluded from
+pickup. Discovery does not bypass the execution registry or durable admission.
+An operator-owned host reconciler prepares repositories when labeled or assigned
+work appears; the API, OpenCode executor, and verifier never receive a Docker
+socket or clone repositories during task execution.
+
+`scripts/reconcile_open_pilot_repositories.py` maintains a private catalog of all
+visible repositories independently of the active executor pool. Its default
+capacity is four repositories, including pinned entries. Pending work stays in
+the catalog when the pool is full. A repository with unfinished durable state
+keeps its executor slot. Retired slots retain their source, credentials, worktrees,
+containers, volumes, and history; only their running executors are stopped after
+a successful topology transition.
+
+The reconciler uses stable numeric Gitea repository IDs for managed paths. It
+creates dedicated clones and private executor configuration, preserves the
+remote default branch, and pins executor images by immutable local ID. Newly
+onboarded repositories use `required_checks: ["*"]`: concrete checks must exist
+on the exact pull request head, and every reported check must pass. An empty or
+aggregate-only success cannot satisfy that policy. Existing repositories retain
+their explicit CI contexts. Normal specification, command, verification, review,
+write, merge, and close gates remain in force. Source/executor preparation does
+not prove that every project's dependencies or test commands are supported by
+the selected verifier image. Configure a repository-specific prepared verifier
+profile when its tests need dependencies beyond the image's ambient toolchains.
+
+Run discovery without preparation first:
+
+```bash
+python3 scripts/reconcile_open_pilot_repositories.py \
+  --env-file /absolute/path/to/switchyard.env \
+  --registry /absolute/path/to/open-pilot/registry.json \
+  --workspace-root /absolute/path/to/automatic-workspaces \
+  --catalog /absolute/path/to/private-state/catalog.json \
+  --deployment-root /absolute/path/to/switchyard \
+  --control-url http://127.0.0.1:28080 \
+  --pinned switchyard,actions-smoke-test
+```
+
+Add `--apply`, `--opencode-image sha256:<immutable-id>`, and
+`--verifier-image sha256:<immutable-id>` to prepare selected repositories and
+write a candidate registry. Add `--activate` to publish the validated topology
+through the installed Compose wrapper. Activation defers when an operator pause
+or unfinished runtime runs exist. It saves the previous topology, preserves the
+completed proof identities, and uses the authenticated proof-to-allow transition
+for the new fingerprint. It never rewrites durable affinity or proof history.
+Install the operator timer only after validating its exact deployment paths,
+image IDs, account visibility, catalog, preparation, and recovery path.
+
+Render `deploy/switchyard-repository-discovery.service.in` with the absolute
+deployment paths, control URL, pool capacity, and immutable executor image IDs.
+Install it together with `deploy/switchyard-repository-discovery.timer` under
+the operator's user systemd directory, then run `systemctl --user daemon-reload`
+and `systemctl --user enable --now switchyard-repository-discovery.timer`.
+The timer runs five minutes after each completed reconciliation. Busy runtime
+or operator pauses retain the catalog with a deferral reason and retry on the
+next timer run. Other failures remain visible in the service journal.

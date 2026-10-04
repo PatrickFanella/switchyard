@@ -26,7 +26,7 @@ const (
 
 var (
 	openPilotRepositoryIDPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
-	openPilotRepositorySlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+	openPilotRepositorySlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}$`)
 	openPilotIssuePattern          = regexp.MustCompile(`^[0-9]+$`)
 
 	// ErrOpenPilotRepositoryUnknown means no registered canonical slug or alias matched.
@@ -51,6 +51,10 @@ type OpenPilotOperatorRepository struct {
 	ConfigPath         string   `json:"config_path"`
 	DataPath           string   `json:"data_path"`
 	PasswordFile       string   `json:"password_file"`
+	VerifierImage      string   `json:"verifier_image,omitempty"`
+	OpenCodeImage      string   `json:"opencode_image,omitempty"`
+	BaseBranch         string   `json:"base_branch,omitempty"`
+	RequiredChecks     []string `json:"required_checks,omitempty"`
 }
 
 // OpenPilotRuntimeManifest is the generated, read-only repository view consumed by the runtime.
@@ -72,6 +76,8 @@ type OpenPilotRuntimeRepository struct {
 	OpenCodeEndpoint   string   `json:"opencode_endpoint,omitempty"`
 	VerifierEndpoint   string   `json:"verifier_endpoint,omitempty"`
 	PasswordFile       string   `json:"password_file,omitempty"`
+	BaseBranch         string   `json:"base_branch,omitempty"`
+	RequiredChecks     []string `json:"required_checks,omitempty"`
 }
 
 // OpenPilotTarget is the canonical durable identity and immutable executor affinity for a run.
@@ -177,6 +183,14 @@ func ValidateOpenPilotRuntimeManifest(manifest OpenPilotRuntimeManifest) error {
 	}
 	entries := make([]openPilotRepositoryIdentity, 0, len(manifest.Repositories))
 	for index, repository := range manifest.Repositories {
+		if strings.ContainsAny(repository.BaseBranch, "\r\n\x00") || len(repository.BaseBranch) > 255 || len(repository.RequiredChecks) > 64 {
+			return fmt.Errorf("invalid open pilot runtime repository %d policy", index)
+		}
+		for _, check := range repository.RequiredChecks {
+			if strings.TrimSpace(check) == "" || len(check) > 512 || strings.ContainsAny(check, "\r\n\x00") {
+				return fmt.Errorf("invalid open pilot runtime repository %d required check", index)
+			}
+		}
 		for _, path := range []string{repository.SourcePath, repository.WorktreeRoot, repository.PasswordFile} {
 			if path != "" && !validAbsoluteOpenPilotPath(path) {
 				return fmt.Errorf("invalid open pilot runtime repository %d path", index)
@@ -212,6 +226,7 @@ func NewOpenPilotRepositoryRegistry(manifest OpenPilotRuntimeManifest) (*OpenPil
 	for index := range copyManifest.Repositories {
 		repository := &copyManifest.Repositories[index]
 		repository.Aliases = append([]string(nil), repository.Aliases...)
+		repository.RequiredChecks = append([]string(nil), repository.RequiredChecks...)
 		registry.byID[repository.ID] = index
 		registry.byName[foldOpenPilotRepositoryName(repository.Slug)] = index
 		for _, alias := range repository.Aliases {
@@ -260,6 +275,7 @@ func (r *OpenPilotRepositoryRegistry) RepositoryByID(id string) (OpenPilotRuntim
 	}
 	repository := r.manifest.Repositories[index]
 	repository.Aliases = append([]string(nil), repository.Aliases...)
+	repository.RequiredChecks = append([]string(nil), repository.RequiredChecks...)
 	return repository, true
 }
 
@@ -452,7 +468,7 @@ func validOpenPilotGeneration(value string) bool {
 }
 
 func validOpenPilotRepositorySlug(value string) bool {
-	return openPilotRepositorySlugPattern.MatchString(value)
+	return openPilotRepositorySlugPattern.MatchString(value) && !strings.HasSuffix(value, "/.") && !strings.HasSuffix(value, "/..")
 }
 
 func foldOpenPilotRepositoryName(value string) string {
