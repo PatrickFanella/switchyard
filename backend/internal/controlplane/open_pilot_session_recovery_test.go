@@ -204,3 +204,37 @@ func TestFreshSessionCanRecoverTerminalFailedRepairAtSafeAgentCursor(t *testing.
 		t.Fatal("commit cursor permitted a new agent session")
 	}
 }
+
+func TestFreshSessionInitialAttemptUsesExactCleanBranchBase(t *testing.T) {
+	plan, pr := reviewDiffFixture(t, "initial branch baseline\n")
+	store := NewStore(nil)
+	state, prior := sessionRecoveryState(t, store, plan.Repo)
+	delete(state.ResumeInputs, "resume.open-pilot.commit-changes.sha")
+	state.ResumeInputs["resume.open-pilot.branch-plan.base_sha"] = pr.Head.SHA
+	if err := validateOpenPilotFreshSessionState(state, prior.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateOpenPilotFreshSessionWorktree(t.Context(), plan, state.ResumeInputs); err != nil {
+		t.Fatal(err)
+	}
+	state.ResumeInputs["resume.open-pilot.branch-plan.base_sha"] = pr.Base.SHA
+	if err := validateOpenPilotFreshSessionWorktree(t.Context(), plan, state.ResumeInputs); err == nil {
+		t.Fatal("accepted moved initial branch head")
+	}
+	state.ResumeInputs["resume.open-pilot.branch-plan.base_sha"] = pr.Head.SHA
+	if err := os.WriteFile(filepath.Join(plan.WorktreePath, "unfinished.txt"), []byte("preserve me"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateOpenPilotFreshSessionWorktree(t.Context(), plan, state.ResumeInputs); err == nil {
+		t.Fatal("accepted dirty initial attempt")
+	}
+	state.ResumeInputs["resume.open-pilot.commit-changes.sha"] = "invalid"
+	if err := validateOpenPilotFreshSessionState(state, prior.ID); err == nil {
+		t.Fatal("invalid recorded commit fell back to the branch base")
+	}
+	delete(state.ResumeInputs, "resume.open-pilot.commit-changes.sha")
+	state.ResumeInputs["resume.open-pilot.branch-plan.executed"] = "false"
+	if err := validateOpenPilotFreshSessionState(state, prior.ID); err == nil {
+		t.Fatal("unexecuted branch accepted for recovery")
+	}
+}

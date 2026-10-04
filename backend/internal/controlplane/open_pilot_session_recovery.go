@@ -19,7 +19,7 @@ func validateOpenPilotFreshSessionState(state OpenPilotIssueState, expectedRunID
 	if err != nil || inputs["retry_from_step"] != "open-pilot.agent-work" {
 		return ErrConflict
 	}
-	if !openPilotFullGitSHA(state.ResumeInputs["resume.open-pilot.commit-changes.sha"]) || openPilotResumeSessionID(state.ResumeInputs) == "" {
+	if !openPilotFullGitSHA(openPilotSessionRecoveryHead(state.ResumeInputs)) || openPilotResumeSessionID(state.ResumeInputs) == "" {
 		return ErrInvalid
 	}
 	return nil
@@ -48,10 +48,23 @@ func applyOpenPilotFreshSessionResume(state OpenPilotIssueState, prior Run, expe
 	return nil
 }
 
+// A first agent attempt has no post-agent commit yet. Its recorded branch base
+// is also a safe recovery fence, provided the full identity and clean-tree
+// preflight below confirms the worktree is still exactly at that commit.
+func openPilotSessionRecoveryHead(inputs map[string]string) string {
+	if committed := inputs["resume.open-pilot.commit-changes.sha"]; committed != "" {
+		return committed
+	}
+	if inputs["resume.open-pilot.branch-plan.executed"] == "true" {
+		return inputs["resume.open-pilot.branch-plan.base_sha"]
+	}
+	return ""
+}
+
 func validateOpenPilotFreshSessionWorktree(ctx context.Context, plan OpenPilotWorktreePlan, inputs map[string]string) error {
-	expected := inputs["resume.open-pilot.commit-changes.sha"]
+	expected := openPilotSessionRecoveryHead(inputs)
 	if !openPilotFullGitSHA(expected) {
-		return errors.New("fresh OpenCode session requires a recorded full commit SHA")
+		return errors.New("fresh OpenCode session requires a recorded full commit or branch base SHA")
 	}
 	identity, err := validateOpenPilotWorktreeIdentity(ctx, plan.Repo, plan.RepoPath, plan.WorktreePath, plan.Branch, false)
 	if err != nil {
