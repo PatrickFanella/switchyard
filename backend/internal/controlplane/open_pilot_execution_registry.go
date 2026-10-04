@@ -20,6 +20,23 @@ type openPilotExecutionBundle struct {
 	worktreeManager  OpenPilotWorktreeManager
 }
 
+// Repository policy is applied to a value copy; concurrent runs never mutate
+// the shared executor configuration or inherit another repository's branch.
+func (o openPilotExecutor) withRepositoryPolicy(repository OpenPilotRuntimeRepository) openPilotExecutor {
+	if o.env == nil || (repository.BaseBranch == "" && len(repository.RequiredChecks) == 0) {
+		return o
+	}
+	configured := *o.env
+	if repository.BaseBranch != "" {
+		configured.openPilotBaseBranch = repository.BaseBranch
+	}
+	if len(repository.RequiredChecks) > 0 {
+		configured.openPilotCIRequiredChecks = append([]string(nil), repository.RequiredChecks...)
+	}
+	o.env = &configured
+	return o
+}
+
 func openPilotExecutionBundleKey(repositoryID, executorGeneration string) string {
 	return repositoryID + "\x00" + executorGeneration
 }

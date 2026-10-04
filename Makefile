@@ -179,6 +179,7 @@ open-pilot-check: ## Verify Open Pilot templates are present
 
 open-pilot-topology-test: ## Test registry validation, deterministic rendering, and password-file loading
 	python3 -m unittest discover -s scripts -p 'test_open_pilot_registry.py'
+	python3 -m unittest discover -s scripts -p 'test_reconcile_open_pilot_repositories.py'
 	python3 -m unittest discover -s scripts -p 'test_opencode_password_file.py'
 
 verifier-preparation-test: ## Test the prepared offline verifier profile contract and preparation script

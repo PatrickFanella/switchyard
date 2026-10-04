@@ -322,6 +322,11 @@ func buildOpenPilotInbox(ctx context.Context, input openPilotInboxInput) OpenPil
 	}
 
 	polled := map[string]bool{}
+	if len(input.PollRepos) == 1 && input.PollRepos[0] == "*" {
+		for _, repository := range repositories {
+			polled[repository.ID] = true
+		}
+	}
 	for _, slug := range input.PollRepos {
 		if target, err := gate.registry.ResolveTarget(slug, "1"); err == nil {
 			polled[target.RepositoryID] = true

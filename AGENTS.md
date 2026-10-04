@@ -65,3 +65,10 @@ Before working on any task, read `codemap.md` to understand:
 For deep work on a specific folder, also read that folder's `codemap.md`.
 
 Prepared verifier images are operator-built outside the restricted execution boundary. Bind dependency inputs and preparation provenance to immutable image IDs, and every verification result to its exact source snapshot; preserve offline verification and never mount the Docker socket into a verifier. See `docs/open-pilot.md`.
+
+Automatic repository discovery is host-owned. `OPEN_PILOT_POLL_REPOS=*` discovers
+the runtime account's visible repositories; the private catalog is independent
+of the bounded executor registry. Prepare dedicated clones and immutable image
+pins through the repository reconciler, preserve unfinished executor identities,
+and activate only while runtime runs are idle through the supported rollout API.
+Keep its user timer, credentials, catalog, and recovery files outside git.

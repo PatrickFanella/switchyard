@@ -12,6 +12,7 @@ Installs the Docker Compose stack as a host-managed systemd service and defines 
 - `runner/Dockerfile` composes the digest-pinned Gitea runner image with the exact Go toolchain required by CI; `runner/README.md` documents publishing and label configuration.
 - The installer removes a legacy standalone llama-line service during native cutover.
 - Backup service/timer templates are installed alongside the runtime unit and enabled only through an explicit opt-in with a configured backup destination.
+- The user-owned repository-discovery service and timer reconcile visible Gitea repositories every five minutes. Render their explicit deployment paths and immutable executor image IDs before installation; unfinished runs defer activation, and private catalog/recovery files stay outside the checkout.
 - Restore-drill service/timer templates are rendered from the validated policy calendar and bounded RTO. They are enabled only with `SWITCHYARD_INSTALL_RESTORE_DRILL_TIMER=1`; all probes precede mutation, and deadline initialization occurs immediately before timer enable with rollback on failure.
 - Starter monitoring rules cover canonical model-ingress availability, broker
   backlog, worker failures, and backup freshness. The API republishes the

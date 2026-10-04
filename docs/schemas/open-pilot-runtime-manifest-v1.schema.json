@@ -3,43 +3,115 @@
   "$id": "switchyard.open-pilot-runtime-manifest.v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "registry_generation", "registry_fingerprint", "repositories"],
+  "required": [
+    "version",
+    "registry_generation",
+    "registry_fingerprint",
+    "repositories"
+  ],
   "properties": {
-    "version": {"const": 1},
-    "registry_generation": {"$ref": "#/$defs/generation"},
-    "registry_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "version": {
+      "const": 1
+    },
+    "registry_generation": {
+      "$ref": "#/$defs/generation"
+    },
+    "registry_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
     "repositories": {
       "type": "array",
       "minItems": 1,
       "maxItems": 32,
-      "items": {"$ref": "#/$defs/repository"}
+      "items": {
+        "$ref": "#/$defs/repository"
+      }
     }
   },
   "$defs": {
-    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"},
-    "generation": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"},
-    "slug": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
-    "absolutePath": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^/"},
-    "endpoint": {"type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "pattern": "^https?://"},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "generation": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/(?!\\.{1,2}$)[A-Za-z0-9._-]{1,100}$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "format": "uri",
+      "pattern": "^https?://"
+    },
     "repository": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "slug", "aliases", "executor_generation"],
+      "required": [
+        "id",
+        "slug",
+        "aliases",
+        "executor_generation"
+      ],
       "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "slug": {"$ref": "#/$defs/slug"},
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "slug": {
+          "$ref": "#/$defs/slug"
+        },
         "aliases": {
           "type": "array",
           "maxItems": 32,
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/slug"}
+          "items": {
+            "$ref": "#/$defs/slug"
+          }
         },
-        "executor_generation": {"$ref": "#/$defs/generation"},
-        "source_path": {"$ref": "#/$defs/absolutePath"},
-        "worktree_root": {"$ref": "#/$defs/absolutePath"},
-        "opencode_endpoint": {"$ref": "#/$defs/endpoint"},
-        "verifier_endpoint": {"$ref": "#/$defs/endpoint"},
-        "password_file": {"$ref": "#/$defs/absolutePath"}
+        "executor_generation": {
+          "$ref": "#/$defs/generation"
+        },
+        "source_path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "worktree_root": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "opencode_endpoint": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "verifier_endpoint": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "password_file": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "base_branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "required_checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
       }
     }
   }

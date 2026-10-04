@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile the Open Pilot repository catalog every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=15s
+Unit=switchyard-repository-discovery.service
+
+[Install]
+WantedBy=timers.target
