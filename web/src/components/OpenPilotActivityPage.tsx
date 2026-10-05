@@ -42,7 +42,7 @@ function ActionRow({ entry, expanded }: { entry: Entry; expanded: boolean }) {
       <time dateTime={entry.stamp ? new Date(entry.stamp).toISOString() : undefined}>{entry.stamp ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(entry.stamp) : 'Time not recorded'}</time>
       <span className="activity-kind">{entry.kind}</span>
       <strong>{entry.title}</strong>
-      {entry.status && <span className={`hud-chip ${statusClasses(entry.status)}`}>{entry.status}</span>}
+      {entry.status && <span className={`hud-chip ${statusClasses(entry.status === 'error' ? 'failed' : entry.status === 'completed' ? 'succeeded' : entry.status === 'streaming' ? 'running' : entry.status)}`}>{entry.status}</span>}
       {preview && <span className="activity-preview">{preview.slice(0, 240)}{preview.length > 240 ? '…' : ''}</span>}
     </summary>
     <div className="activity-details">

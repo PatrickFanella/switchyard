@@ -130,3 +130,6 @@ button.signal-primary:disabled { opacity: .5; }
 .activity-preview { width:100%; margin-top:.5rem; font-family:monospace; font-size:.75rem; color:hsl(var(--muted)); overflow-wrap:anywhere; }
 
 .activity-current { padding:.75rem 1rem; font-size:.8rem; color:hsl(var(--signal)); background:hsl(var(--panel-soft)); }
+
+.activity-toolbar .hud-chip { padding:.5rem .75rem; font-size:.75rem; }
+.activity-row .hud-chip, .activity-run-header .hud-chip { padding:.2rem .45rem; font-size:.7rem; }
