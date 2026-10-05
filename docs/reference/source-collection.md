@@ -147,8 +147,8 @@ Grounded steps also publish `generated` and `grounding_item_count`.
 | Step | Executor | Purpose |
 |---|---|---|
 | `prepare` | internal | Records prompt inputs (`changemaker-input.json`), unchanged from version 1. |
-| `collect-sources` | source | `gitea-activity` over `source_repositories`, `source_window`, `source_until`, `source_max_items`; attaches `changemaker-sources.json`. |
-| `changemaker-draft` | model (`content-writer`) | Grounded on `collect-sources`. The prompt tells the model to write only from the items between `<collected-sources>` tags, cite each factual statement by ID, leave out unsupported claims, and keep suggestions separate. Attaches `changemaker-draft.md`. |
+| `collect-sources` | source | `gitea-activity` over `source_repositories`, `source_window`, `source_until`, `source_max_items`, with 1200-character body excerpts; attaches `changemaker-sources.json`. |
+| `changemaker-draft` | model (`content-writer`) | Grounded on `collect-sources`. The prompt tells the model to write only from the items between `<collected-sources>` tags and cite each factual statement by ID. The digest has Activity, What people notice, Open questions and Suggestions sections. Activity and Open questions carry merge state, blockers and gaps for the operator. What people notice describes each user-visible change as the person meets it, with the problem it addresses when a source states it, for editors who write public posts. Attaches `changemaker-draft.md`. |
 | `attach` | internal | Attaches `changemaker-digest.md` and publishes the handoff outputs. |
 
 Run inputs: `topic` and `prompt` (required), and the optional

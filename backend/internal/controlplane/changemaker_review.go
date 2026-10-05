@@ -269,7 +269,7 @@ func neutralizeChangemakerRevisionText(value string, maxBytes int) string {
 	value = strings.ToValidUTF8(value, "")
 	value = strings.ReplaceAll(value, "{{", "{ {")
 	value = strings.ReplaceAll(value, "}}", "} }")
-	for _, tag := range []string{"</reviewer-notes>", "</previous-draft>", "</collected-sources>", "<collected-sources>"} {
+	for _, tag := range []string{"</reviewer-notes>", "</previous-draft>", "</collected-sources>", "<collected-sources>", "</writer-request>", "<writer-request>"} {
 		value = strings.ReplaceAll(value, tag, "[removed tag]")
 	}
 	if len(value) > maxBytes {

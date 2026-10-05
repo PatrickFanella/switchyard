@@ -20,7 +20,7 @@ func SeedDefaults(store Store) error {
 	}
 	triggers := []Trigger{
 		{ID: "manual-open-pilot", WorkflowID: "open-pilot", Type: TriggerManual, Name: "Run Open Pilot now", Description: "Manual trigger for issue-to-PR automation.", Enabled: true},
-		{ID: "daily-changemaker-native", WorkflowID: "changemaker-daily-digest", Type: TriggerCron, Name: "Daily Changemaker Native", Description: "Native workflow-creator Changemaker template.", Enabled: false, Schedule: "0 9 * * *", Inputs: map[string]string{"topic": "daily project activity", "prompt": "Write a concise narrative digest of notable project activity. Include what changed, why it matters, and suggested next steps."}},
+		{ID: "daily-changemaker-native", WorkflowID: "changemaker-daily-digest", Type: TriggerCron, Name: "Daily Changemaker Native", Description: "Native workflow-creator Changemaker template.", Enabled: false, Schedule: "0 9 * * *", Inputs: map[string]string{"topic": "daily project activity", "prompt": "Write the daily digest of project activity. Report what merged, what is open and what is blocked. For each change a product user would see, say who notices it and what problem it addresses, using what the sources state. Keep verification gaps in Open questions and next steps in Suggestions."}},
 		{ID: "gitea-open-pilot-poll", WorkflowID: "open-pilot", Type: TriggerPoll, Name: "Gitea ready-for-agent poll", Description: "Poll Gitea for work ready to become Open Pilot runs.", Enabled: false, Schedule: "*/10 * * * *"},
 		{ID: "manual-devlog", WorkflowID: "devlog", Type: TriggerManual, Name: "Generate devlog", Description: "Manual devlog draft generation.", Enabled: true},
 	}
