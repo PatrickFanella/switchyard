@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
 type inboxIssueReader struct {
+	mu            sync.Mutex
 	listed        map[string][]GiteaIssue
 	assigned      map[string][]GiteaIssue
 	errs          map[string]error
@@ -20,6 +22,8 @@ type inboxIssueReader struct {
 }
 
 func (r *inboxIssueReader) ListIssues(_ context.Context, repo string, _ []string) ([]GiteaIssue, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.lists++
 	if err := r.errs[repo]; err != nil {
 		return nil, err
@@ -28,6 +32,8 @@ func (r *inboxIssueReader) ListIssues(_ context.Context, repo string, _ []string
 }
 
 func (r *inboxIssueReader) ListAssignedIssues(_ context.Context, repo, _ string) ([]GiteaIssue, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.assignedLists++
 	if err := r.errs[repo]; err != nil {
 		return nil, err
