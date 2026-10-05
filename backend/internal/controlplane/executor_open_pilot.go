@@ -2552,26 +2552,35 @@ func (o openPilotExecutor) resolveOpenPilotCIPullRequest(ctx context.Context, ru
 	return GiteaPullRequest{}, false, errors.New("open-pilot pull request not found by head")
 }
 
-func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSummary) (openPilotCICheckResult, bool) {
+func resolveOpenPilotRequiredChecks(requiredChecks []string, snapshot GiteaCheckSummary) ([]string, bool) {
 	if len(requiredChecks) == 1 && requiredChecks[0] == "*" {
 		// Automatically onboarded repositories require concrete checks on the
 		// exact PR head. An empty or aggregate-only success cannot pass this mode.
 		if len(snapshot.Statuses) == 0 && len(snapshot.Checks) == 0 {
-			return openPilotCICheckResult{}, false
+			return nil, false
 		}
 		requiredChecks = nil
 		for _, status := range snapshot.Statuses {
 			if strings.TrimSpace(status.Context) == "" {
-				return openPilotCICheckResult{}, false
+				return nil, false
 			}
 			requiredChecks = append(requiredChecks, status.Context)
 		}
 		for _, check := range snapshot.Checks {
 			if strings.TrimSpace(check.Name) == "" {
-				return openPilotCICheckResult{}, false
+				return nil, false
 			}
 			requiredChecks = append(requiredChecks, check.Name)
 		}
+	}
+	return requiredChecks, true
+}
+
+func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSummary) (openPilotCICheckResult, bool) {
+	var concrete bool
+	requiredChecks, concrete = resolveOpenPilotRequiredChecks(requiredChecks, snapshot)
+	if !concrete {
+		return openPilotCICheckResult{}, false
 	}
 	if len(requiredChecks) == 0 {
 		return openPilotCICheckResult{status: "passed", summary: "CI checks passed: no required checks configured"}, true
@@ -2599,6 +2608,11 @@ func evaluateOpenPilotCIChecks(requiredChecks []string, snapshot GiteaCheckSumma
 
 func buildOpenPilotCIRepairFeedback(requiredChecks []string, snapshot GiteaCheckSummary, currentHeadSHA string) (string, bool) {
 	if strings.TrimSpace(snapshot.SHA) == "" || snapshot.SHA != strings.TrimSpace(currentHeadSHA) {
+		return "", false
+	}
+	var concrete bool
+	requiredChecks, concrete = resolveOpenPilotRequiredChecks(requiredChecks, snapshot)
+	if !concrete {
 		return "", false
 	}
 	failed := make([]openPilotCIFailedCheck, 0, len(requiredChecks))
@@ -2647,6 +2661,11 @@ func buildOpenPilotCIRepairFeedback(requiredChecks []string, snapshot GiteaCheck
 }
 
 func augmentOpenPilotCIRepairFeedback(ctx context.Context, reader GiteaCIJobLogReader, repo string, requiredChecks []string, snapshot GiteaCheckSummary, feedback string) string {
+	var concrete bool
+	requiredChecks, concrete = resolveOpenPilotRequiredChecks(requiredChecks, snapshot)
+	if !concrete {
+		return feedback
+	}
 	for _, required := range requiredChecks {
 		for _, status := range snapshot.Statuses {
 			if status.Context != required || !openPilotCIFailureState(status.Status) {

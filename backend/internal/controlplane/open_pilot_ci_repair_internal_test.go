@@ -67,6 +67,39 @@ func TestBuildOpenPilotCIRepairFeedbackRequiresNamedCurrentHeadFailure(t *testin
 	}
 }
 
+func TestWildcardCIFailureProducesRepairFeedbackAndDiagnostics(t *testing.T) {
+	snapshot := GiteaCheckSummary{SHA: "head", State: "failure", Statuses: []GiteaCommitStatus{{Context: "CI / quality-gates", Status: "failure", TargetURL: "/OWNER/REPO/actions/runs/2/jobs/3"}, {Context: "CI / deploy", Status: "skipped"}}}
+	required := []string{"*"}
+	result, done := evaluateOpenPilotCIChecks(required, snapshot)
+	if !done || result.status != "failed" {
+		t.Fatalf("CI result = %+v, %t", result, done)
+	}
+	feedback, ok := buildOpenPilotCIRepairFeedback(required, snapshot, "head")
+	if !ok || !strings.Contains(feedback, "CI / quality-gates") || strings.Contains(feedback, "CI / deploy") {
+		t.Fatalf("feedback = %q, %t", feedback, ok)
+	}
+	reader := &staticCIJobLogReader{log: "error: quality gate failed"}
+	feedback = augmentOpenPilotCIRepairFeedback(t.Context(), reader, "OWNER/REPO", required, snapshot, feedback)
+	if reader.target != snapshot.Statuses[0].TargetURL || !strings.Contains(feedback, "quality gate failed") {
+		t.Fatalf("feedback = %q, target = %q", feedback, reader.target)
+	}
+	checkSnapshot := GiteaCheckSummary{SHA: "head", Checks: []GiteaCheckRun{{Name: "unit tests", Conclusion: "failure"}}}
+	if got, concrete := buildOpenPilotCIRepairFeedback(required, checkSnapshot, "head"); !concrete || !strings.Contains(got, "unit tests") {
+		t.Fatalf("check-run feedback = %q, %t", got, concrete)
+	}
+	for name, candidate := range map[string]GiteaCheckSummary{
+		"aggregate": {SHA: "head", State: "failure"},
+		"unnamed":   {SHA: "head", Statuses: []GiteaCommitStatus{{Status: "failure"}}},
+		"stale":     {SHA: "old", Statuses: snapshot.Statuses},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, concrete := buildOpenPilotCIRepairFeedback(required, candidate, "head"); concrete || got != "" {
+				t.Fatalf("feedback = %q, %t", got, concrete)
+			}
+		})
+	}
+}
+
 func TestBuildOpenPilotCIRepairFeedbackIsBounded(t *testing.T) {
 	required := make([]string, 20)
 	statuses := make([]GiteaCommitStatus, 20)
