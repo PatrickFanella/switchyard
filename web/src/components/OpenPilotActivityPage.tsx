@@ -87,12 +87,16 @@ export function OpenPilotActivityPage({ runID = '' }: { runID?: string }) {
 
   return <HudSection kicker="Open Pilot" title="Live activity" note={runID ? 'Agent tools, responses, step execution, and runtime events for this run.' : 'Follow active Open Pilot work and the latest completed runs. New runs appear automatically.'}>
     <div className="activity-toolbar">
-      {paused ? <span className="hud-chip">Live feed paused</span> : <LiveRefreshIndicator live={live} />}
+      <div className="activity-live-status">{paused ? <span className="hud-chip">Live feed paused</span> : <LiveRefreshIndicator live={live} />}</div>
+      <div className="activity-buttons">
       <button className="hud-chip" type="button" onClick={() => setPaused(!paused)}>{paused ? 'Resume live feed' : 'Pause live feed'}</button>
       <button className="hud-chip" type="button" onClick={() => void refreshNow()}>Refresh activity</button>
       <button className="hud-chip" type="button" onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse details' : 'Expand all details'}</button>
+      </div>
+      <div className="activity-filters">
       <label>Action type <select value={kind} onChange={event => setKind(event.target.value)}>{['all', 'tool', 'text', 'step', 'lifecycle', 'user', 'shell', 'idle'].map(value => <option key={value} value={value}>{value === 'all' ? 'All actions' : value}</option>)}</select></label>
       <label className="activity-search">Search actions <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Tool, file, output, error, or ID" /></label>
+      </div>
     </div>
     <p className="activity-note">Refreshes every 3 seconds while visible. Each action opens its recorded arguments, output, metadata, and error. Credentials are redacted.</p>
     {!runID && <p className="activity-note">Up to six runs from the latest 100 runtime runs; active work is shown first. Open any run for its dedicated feed.</p>}
