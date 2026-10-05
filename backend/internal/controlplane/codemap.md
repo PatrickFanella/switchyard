@@ -38,3 +38,5 @@ Owns Switchyard's automation runtime: workflows, definitions, pipelines, trigger
 - Persists through PostgreSQL schemas in `migrations/`; can use in-memory state for local runs.
 - Integrates with managed OpenCode, Ollama/llama-line, Gitea, Git, command execution, and OTEL spans.
 - Important entry points: `http.go`, `http_routes.go`, `http_runs.go`, `http_workflow_definitions.go`, `http_open_pilot.go`, `runner.go`, `executor.go`, `executor_open_pilot.go`, `executor_devlog.go`, `backend_decision.go`, `store.go`, `postgres_store.go`, `pipeline.go`, `worker.go`, `scheduler.go`.
+
+- `run_activity.go`: authenticated per-run activity projection; reads bounded public v2 messages from correlated executor sessions and redacts retained context.

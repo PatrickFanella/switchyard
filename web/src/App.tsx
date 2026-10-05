@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { HudErrorState, HudLed } from './components/hud';
 import { FeaturePage } from './components/FeaturePage';
+import { OpenPilotActivityPage } from './components/OpenPilotActivityPage';
 import { RunCockpitPage } from './components/RunCockpitPage';
 import { ObservabilityPage } from './components/ObservabilityPage';
 import { OverviewDashboard } from './components/OverviewDashboard';
@@ -16,12 +17,13 @@ import { views } from './types';
 export { openPilotStateFields } from './types';
 
 const navigationGroups: { label: string; items: ViewID[] }[] = [
-  { label: 'Operate', items: ['overview', 'inbox', 'runs', 'queues'] },
+  { label: 'Operate', items: ['overview', 'activity', 'inbox', 'runs', 'queues'] },
   { label: 'Inspect', items: ['observability', 'sessions', 'logs'] },
   { label: 'Configure', items: ['workflows', 'prompts', 'agents', 'skills', 'config'] },
 ];
 
 const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: string }> = {
+  activity: { eyebrow: 'Open Pilot', title: 'Live activity', description: 'Follow agent tools, responses, runtime steps, and their recorded evidence.' },
   overview: { eyebrow: 'Control plane', title: 'Operations overview', description: 'Monitor live work, dispatch workflows, and resolve exceptions.' },
   inbox: { eyebrow: 'Open Pilot', title: 'Issue inbox', description: 'Review intake candidates, eligibility, and lifecycle claims before dispatch.' },
   workflows: { eyebrow: 'Workflow authoring', title: 'Workflow catalog', description: 'Browse workflow definitions, edit linear drafts, and compare, activate, or roll back versions. Saving a draft never activates it.' },
@@ -44,6 +46,7 @@ function SwitchyardMark() {
 
 function NavIcon({ view }: { view: ViewID }) {
   const paths: Record<ViewID, ReactNode> = {
+    activity: <><path d="M3 12h4l2-6 4 12 2-6h6"/></>,
     overview: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
     inbox: <><path d="M4 13h4l2 3h4l2-3h4"/><path d="M4 13 6 5h12l2 8v6H4z"/></>,
     workflows: <><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M9 6h6a3 3 0 0 1 3 3v6"/></>,
@@ -128,7 +131,7 @@ export default function App() {
 
           {activeView === 'overview' ? (
             <OverviewDashboard dashboard={data.dashboard} loading={data.loading} openPilotIssue={data.openPilotIssue} openPilotReady={data.openPilotReady} openPilotRepo={data.openPilotRepo} openPilotState={data.openPilotState} onCancelRun={data.cancelRun} onRefresh={data.refresh} onRetryRun={data.retryRun} onResumeOpenPilotState={data.resumeOpenPilotState} onRunTrigger={data.runTrigger} onOpenInbox={() => setActiveView('inbox')} onOpenRunCockpit={openRunCockpit} onSelectRun={data.setSelectedRunID} onToggleTrigger={data.toggleTrigger} refreshing={data.refreshing} runActionID={data.runActionID} runningTriggerID={data.runningTriggerID} selectedRunDetail={data.selectedRunDetail} selectedRunID={selectedRunID} setOpenPilotIssue={data.setOpenPilotIssue} setOpenPilotRepo={data.setOpenPilotRepo} workflows={data.dashboard.workflows} updatingTriggerID={data.updatingTriggerID} workflowDefinitions={data.workflowDefinitions} />
-          ) : activeView === 'inbox' ? (
+          ) : activeView === 'activity' ? <OpenPilotActivityPage /> : activeView === 'inbox' ? (
             <OpenPilotInboxPage onOpenRun={openRunCockpit} />
           ) : activeView === 'workflows' ? (
             <WorkflowCatalogPage />

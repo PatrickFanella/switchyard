@@ -615,3 +615,30 @@ and `systemctl --user enable --now switchyard-repository-discovery.timer`.
 The timer runs five minutes after each completed reconciliation. Busy runtime
 or operator pauses retain the catalog with a deferral reason and retry on the
 next timer run. Other failures remain visible in the service journal.
+
+## Live operator activity
+
+The **Activity** page (`#/activity`) follows active Open Pilot work and recent
+completed runs. Each Open Pilot run also has a dedicated feed in its cockpit.
+The feed refreshes every three seconds while the page is visible, pauses in a
+hidden tab, backs off on failures, and keeps the last successful snapshot.
+Operators can pause, refresh, search recorded content, filter action types, and
+expand individual actions or all details.
+
+`GET /api/runs/{id}/activity` is an authenticated, read-only control-plane route.
+It combines retained run steps/events/artifacts with public OpenCode v2 messages
+from sessions already correlated with that run. Tool actions include their
+status, arguments, output, metadata, errors, timestamps, and session identity;
+public agent responses and submitted prompts are available too. Run and step
+inputs/outputs, model/profile metadata, and artifacts remain expandable even
+when an executor generation or retained session is unavailable. Credentials are
+redacted; private reasoning, provider internals, and binary image payloads are
+excluded from the projection.
+
+The global view selects six runs from the newest 100 runtime runs, prioritizing
+active work. Each run reads up to four correlated sessions and the latest 100
+messages per session, with a five-second request budget and a two-MiB response
+limit per executor request. Long text fields are bounded at 64 KiB with a visible
+truncation marker. Retained context includes up to 200 steps/artifacts and 500
+events. The response explains omitted history and unavailable upstream data.
+This is a current activity window, not a permanent transcript archive.

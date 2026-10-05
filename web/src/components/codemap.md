@@ -29,3 +29,5 @@ Renders operator-facing pages and reusable HUD controls for runtime overview, ru
 ## Integration
 - Consumes `../types`, `../api`, and state from `../hooks`.
 - Styling contracts are defined in `../styles.css`.
+
+- `OpenPilotActivityPage.tsx`: global and per-run live operator feed, public agent tool/message details, retained evidence, filters, and refresh controls.

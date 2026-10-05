@@ -1750,6 +1750,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RunDetail" }
         default: { $ref: "#/components/responses/Error" }
+  /api/runs/{runId}/activity:
+    get:
+      summary: Read live agent actions and retained run evidence
+      description: Authenticated operator projection of public OpenCode v2 tool calls and responses, plus redacted run context. Reads only sessions correlated with this run, with bounded requests and explicit availability warnings.
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Activity snapshot with actions, warnings, and retained run context
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, generated_at, detail, activity]
+                properties:
+                  run_id: { type: string }
+                  generated_at: { type: string, format: date-time }
+                  detail: { $ref: "#/components/schemas/RunDetail" }
+                  activity:
+                    type: object
+                    required: [actions, warnings, truncated]
+                    properties:
+                      actions:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, session_id, kind, title, details]
+                          properties:
+                            id: { type: string }
+                            session_id: { type: string }
+                            kind: { type: string }
+                            title: { type: string }
+                            status: { type: string }
+                            time: { type: object }
+                            details: { type: object, additionalProperties: true }
+                      warnings: { type: array, items: { type: string } }
+                      truncated: { type: boolean }
+        default: { $ref: "#/components/responses/Error" }
   /api/runs/{runId}/retry:
     post:
       summary: Retry a run as a new run

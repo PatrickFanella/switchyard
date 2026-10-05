@@ -238,8 +238,8 @@ describe('App', () => {
       root.render(<App />);
     });
 
-    const selects = Array.from(container.querySelectorAll('select')) as HTMLSelectElement[];
-    expect(selects.length).toBeGreaterThanOrEqual(2);
+    const selects = Array.from(container.querySelectorAll('select')).filter(select => Array.from(select.options).some(option => option.value === 'failed')) as HTMLSelectElement[];
+    expect(selects.length).toBe(1);
 
     await act(async () => {
       selects[0].value = 'failed';
