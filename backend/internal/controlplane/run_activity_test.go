@@ -88,7 +88,7 @@ func TestRunActivityOwnedSessionAuthenticationAndBoundary(t *testing.T) {
 	}
 	target = "/api/runs/" + f.runs["alpha"].ID
 	if w := request(api.ControlPlaneHandler(), "read-token"); w.Code != 200 || strings.Contains(w.Body.String(), sessionViewSecret) {
-		t.Fatal("expanded step context exposed a credential")
+		t.Fatalf("expanded context status=%d credential_present=%t body=%s", w.Code, strings.Contains(w.Body.String(), sessionViewSecret), RedactForLog(w.Body.String()))
 	}
 	target += "/activity"
 	if w := request(api.ModelIngressHandler(), "admin-token"); w.Code != 404 {

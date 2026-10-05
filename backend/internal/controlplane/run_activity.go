@@ -31,6 +31,19 @@ type AgentActivity struct {
 
 var activityQuotedSecret = regexp.MustCompile(`(?i)((?:api[_-]?key|password|secret|token|authorization)["']?\s*[:=]\s*["']?)[^"'\s,;}]+`)
 
+// Round-trip typed store records before applying the recursive public projection.
+func redactedActivityJSON(value any) any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var projected any
+	if json.Unmarshal(encoded, &projected) != nil {
+		return nil
+	}
+	return activitySafe(projected)
+}
+
 func activitySafe(value any) any {
 	switch v := value.(type) {
 	case map[string]any:

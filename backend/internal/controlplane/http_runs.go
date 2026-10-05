@@ -150,7 +150,7 @@ func (a *API) runAction(w http.ResponseWriter, r *http.Request) {
 			body["policy"] = policy
 		}
 	}
-	writeJSON(w, http.StatusOK, activitySafe(body))
+	writeJSON(w, http.StatusOK, redactedActivityJSON(body))
 }
 
 // workflowModelPolicy previews the profile and model policy a new run of the
