@@ -2,11 +2,11 @@ package controlplane
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -139,7 +139,7 @@ func TestActivityPaginationCursorDoesNotProveMoreHistory(t *testing.T) {
 }
 
 func TestExpandedRunContextPreservesInlineArtifactIntegrity(t *testing.T) {
-	uri := "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("a", 70000)))
+	uri := "data:text/plain," + url.PathEscape("public docs password=example-value\n"+strings.Repeat("a", 70000))
 	detail := RunDetail{Artifacts: []Artifact{{URI: uri}}, Run: Run{Inputs: map[string]string{"password": "private-password"}}}
 	projected := redactedActivityJSON(detail).(map[string]any)
 	artifacts := projected["artifacts"].([]any)

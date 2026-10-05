@@ -41,7 +41,15 @@ func redactedActivityJSON(value any) any {
 	if json.Unmarshal(encoded, &projected) != nil {
 		return nil
 	}
-	return activitySafeWithLimit(projected, false)
+	redacted := activitySafeWithLimit(projected, false)
+	// Artifacts are immutable opaque payloads with producer-bound size and digest.
+	// Keep their existing run-detail contract; the activity window is separate.
+	if original, ok := projected.(map[string]any); ok {
+		if artifacts, exists := original["artifacts"]; exists {
+			redacted.(map[string]any)["artifacts"] = artifacts
+		}
+	}
+	return redacted
 }
 
 func activitySafe(value any) any {
