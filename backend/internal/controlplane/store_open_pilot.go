@@ -447,6 +447,9 @@ func setOpenPilotCIRepairDiagnostics(state *OpenPilotIssueState, runID, feedback
 	}
 	state.GateStatus["ci_checks"] = "failed"
 	if queued {
+		// The child resumes coding. Retaining the parent's CI cursor makes an
+		// interrupted repair resume CI instead of the unfinished agent step.
+		state.LastStepName = "open-pilot.agent-work"
 		state.Phase, state.OperatorSummary, state.RecommendedNextAction = OpenPilotPhaseBranchPrepared, "Required CI checks failed; automatic repair queued ("+strconv.Itoa(attempt)+"/2)", "automatic_ci_repair"
 	} else {
 		state.Phase, state.OperatorSummary, state.RecommendedNextAction = OpenPilotPhaseFailed, "Required CI checks still failing; automatic repair exhausted (2/2)", "manual_review"

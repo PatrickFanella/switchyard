@@ -796,7 +796,7 @@ func openPilotMissingLabels(actual, required []string) []string {
 // openPilotIssueSpecReady mirrors validateOpenPilotIssue's specification rule.
 func openPilotIssueSpecReady(body string) bool {
 	lower := strings.ToLower(body)
-	return strings.Contains(lower, "acceptance") && strings.Contains(lower, "test")
+	return strings.Contains(lower, "acceptance") && (strings.Contains(lower, "test") || strings.Contains(lower, "verification") || strings.Contains(lower, "verify"))
 }
 
 func openPilotInboxMatches(item OpenPilotInboxIssue, filter OpenPilotInboxFilter) bool {
