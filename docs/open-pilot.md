@@ -292,6 +292,11 @@ original run-attempt fence. It releases the lease and reconciles the issue state
 instead of leaving the run active until lease recovery. This does not allow an
 expired or reclaimed attempt to write over its replacement.
 
+An automatic CI repair records `open-pilot.agent-work` as the child's resume
+cursor. If that coding step is interrupted, operator recovery continues the
+unfinished correction on the existing branch and PR. The parent's failed CI
+result and the two-attempt automatic repair budget remain retained.
+
 ## Queue an issue by labels
 
 The existing label-based path requires both labels:
