@@ -359,7 +359,7 @@ func safeOpenPilotResumeInputs(state OpenPilotIssueState, pipelines ...*Pipeline
 	case OpenPilotPhaseAIReviewed:
 		step = "open-pilot.ci-checks"
 	case OpenPilotPhaseFailed, OpenPilotPhasePaused:
-		if openPilotPausedBeforeBranch(state) {
+		if openPilotPausedBeforeBranch(state) || openPilotFailedValidationBeforeBranch(state) {
 			step = "open-pilot.validate-issue"
 			break
 		}
@@ -408,7 +408,7 @@ func openPilotResumeStepPosition(step string, pipelines ...*Pipeline) string {
 
 func validateOpenPilotResumeEvidence(state OpenPilotIssueState, step string) error {
 	if step == "open-pilot.validate-issue" {
-		if state.Branch != "" || state.WorktreePath != "" || (state.Phase != OpenPilotPhaseRequested || state.LastStepName != "") && !openPilotPausedBeforeBranch(state) {
+		if state.Branch != "" || state.WorktreePath != "" || (state.Phase != OpenPilotPhaseRequested || state.LastStepName != "") && !openPilotPausedBeforeBranch(state) && !openPilotFailedValidationBeforeBranch(state) {
 			return ErrInvalid
 		}
 		return nil
@@ -607,9 +607,21 @@ func openPilotPausedBeforeBranch(state OpenPilotIssueState) bool {
 	return state.Phase == OpenPilotPhasePaused && state.LastStepName == "open-pilot.branch-plan" && state.Branch == "" && state.WorktreePath == ""
 }
 
+// A validation-only failure can be rechecked after the issue specification is
+// corrected, without trusting branch or executor evidence that never existed.
+func openPilotFailedValidationBeforeBranch(state OpenPilotIssueState) bool {
+	return (state.Phase == OpenPilotPhaseFailed || state.Phase == OpenPilotPhasePaused) && state.LastStepName == "open-pilot.validate-issue" && state.Branch == "" && state.WorktreePath == "" && state.PullRequestID == 0 && state.PullRequestNum == 0 && state.PullRequestURL == ""
+}
+
 func validateOpenPilotPreBranchResumeRun(state OpenPilotIssueState, prior Run, steps []RunStep) error {
 	if state.Phase == OpenPilotPhaseRequested {
 		if prior.Status != RunCanceled || len(steps) != 0 {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if openPilotFailedValidationBeforeBranch(state) {
+		if prior.Status != RunFailed || len(steps) != 1 || steps[0].Position != 1 || steps[0].Name != "open-pilot.validate-issue" || steps[0].Status != StepFailed {
 			return ErrInvalid
 		}
 		return nil

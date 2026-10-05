@@ -12,6 +12,7 @@ import (
 func TestOpenPilotCanceledBeforeExecutionResume(t *testing.T) {
 	testOpenPilotCanceledBeforeExecutionResume(t, NewStore(nil))
 	testOpenPilotPausedBeforeBranchResume(t, NewStore(nil))
+	testOpenPilotFailedValidationResume(t, NewStore(nil))
 }
 
 func TestPostgresOpenPilotCanceledBeforeExecutionResume(t *testing.T) {
@@ -30,6 +31,7 @@ func TestPostgresOpenPilotCanceledBeforeExecutionResume(t *testing.T) {
 	defer db.ExecContext(context.Background(), `delete from open_pilot_issue_states where repo like 'preexecution/%'`)
 	testOpenPilotCanceledBeforeExecutionResume(t, NewPostgresStore(db, time.Now))
 	testOpenPilotPausedBeforeBranchResume(t, NewPostgresStore(db, time.Now))
+	testOpenPilotFailedValidationResume(t, NewPostgresStore(db, time.Now))
 }
 
 func testOpenPilotCanceledBeforeExecutionResume(t *testing.T, store Store) {
@@ -168,5 +170,72 @@ func TestCanceledBeforeExecutionResumeCreatesFirstWorktree(t *testing.T) {
 	saved, err := store.OpenPilotIssueState("owner/repo", "1")
 	if err != nil || saved.Phase != OpenPilotPhaseBranchPrepared || saved.WorktreePath == "" {
 		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+}
+
+func testOpenPilotFailedValidationResume(t *testing.T, store Store) {
+	t.Helper()
+	if err := SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		phase  OpenPilotPhase
+		status RunStepStatus
+		branch string
+		extra  bool
+		want   bool
+	}{
+		{"failed", OpenPilotPhaseFailed, StepFailed, "", false, true},
+		{"operator-paused", OpenPilotPhasePaused, StepFailed, "", false, true},
+		{"validation-succeeded", OpenPilotPhaseFailed, StepSucceeded, "", false, false},
+		{"branch-present", OpenPilotPhaseFailed, StepFailed, "existing", false, false},
+		{"later-step-present", OpenPilotPhaseFailed, StepFailed, "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := fmt.Sprintf("preexecution/v%d", time.Now().UnixNano())
+			input := trustedOpenPilotInput(repo, "1", CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": repo, "issue": "1"}})
+			saved, prior, err := store.ClaimAndCreateOpenPilotInitialRun(repo, "1", input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			step, err := store.CreateRunStep(CreateRunStepInput{RunID: prior.ID, Position: 1, Name: "open-pilot.validate-issue", Executor: "internal"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.FinishRunStep(step.ID, tc.status, "spec rejected", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			if tc.extra {
+				if _, err := store.CreateRunStep(CreateRunStepInput{RunID: prior.ID, Position: 2, Name: "open-pilot.branch-plan", Executor: "internal"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			saved.Phase, saved.LastStepName, saved.Branch = tc.phase, "open-pilot.validate-issue", tc.branch
+			if _, err := store.UpsertOpenPilotIssueState(saved); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.FinishRun(prior.ID, RunFailed, "spec rejected"); err != nil {
+				t.Fatal(err)
+			}
+			_, run, err := store.ClaimAndCreateOpenPilotResumeRun(repo, "1", input)
+			if tc.want {
+				if err != nil || run.Inputs["retry_from_step"] != "open-pilot.validate-issue" {
+					t.Fatalf("resume=%+v error=%v", run, err)
+				}
+				if _, _, err := store.ClaimAndCreateOpenPilotResumeRun(repo, "1", input); err == nil {
+					t.Fatal("duplicate active resume accepted")
+				}
+				if _, err := store.FinishRun(run.ID, RunCanceled, "test complete"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil {
+				t.Fatal("unsafe prebranch resume accepted")
+			}
+			old, err := store.RunDetail(prior.ID)
+			if err != nil || old.Run.Status != RunFailed {
+				t.Fatalf("prior changed: %v", err)
+			}
+		})
 	}
 }
