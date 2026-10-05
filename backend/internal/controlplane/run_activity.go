@@ -41,10 +41,14 @@ func redactedActivityJSON(value any) any {
 	if json.Unmarshal(encoded, &projected) != nil {
 		return nil
 	}
-	return activitySafe(projected)
+	return activitySafeWithLimit(projected, false)
 }
 
 func activitySafe(value any) any {
+	return activitySafeWithLimit(value, true)
+}
+
+func activitySafeWithLimit(value any, bounded bool) any {
 	switch v := value.(type) {
 	case map[string]any:
 		out := map[string]any{}
@@ -56,7 +60,7 @@ func activitySafe(value any) any {
 			if sensitiveJSONKey(key) {
 				out[key] = "[REDACTED]"
 			} else {
-				out[key] = activitySafe(child)
+				out[key] = activitySafeWithLimit(child, bounded)
 			}
 		}
 		return out
@@ -66,13 +70,13 @@ func activitySafe(value any) any {
 			if m, ok := child.(map[string]any); ok && (m["type"] == "reasoning" || m["type"] == "image") {
 				continue
 			}
-			out = append(out, activitySafe(child))
+			out = append(out, activitySafeWithLimit(child, bounded))
 		}
 		return out
 	case string:
 		// Redact before bounding so a cutoff cannot split a credential.
 		v = activityQuotedSecret.ReplaceAllString(RedactForLog(v), `${1}[REDACTED]`)
-		if len(v) > 65536 {
+		if bounded && len(v) > 65536 {
 			v = v[:65536] + "\n[truncated after 64 KiB]"
 		}
 		return v

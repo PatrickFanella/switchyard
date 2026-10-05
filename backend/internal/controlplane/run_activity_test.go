@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -134,5 +135,21 @@ func TestActivityPaginationCursorDoesNotProveMoreHistory(t *testing.T) {
 			t.Fatalf("count=%d actions=%d truncated=%t err=%v", count, len(actions), truncated, err)
 		}
 		server.Close()
+	}
+}
+
+func TestExpandedRunContextPreservesInlineArtifactIntegrity(t *testing.T) {
+	uri := "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("a", 70000)))
+	detail := RunDetail{Artifacts: []Artifact{{URI: uri}}, Run: Run{Inputs: map[string]string{"password": "private-password"}}}
+	projected := redactedActivityJSON(detail).(map[string]any)
+	artifacts := projected["artifacts"].([]any)
+	if got := artifacts[0].(map[string]any)["uri"]; got != uri {
+		t.Fatal("run detail redaction broke the existing inline artifact byte contract")
+	}
+	if projected["run"].(map[string]any)["inputs"].(map[string]any)["password"] != "[REDACTED]" {
+		t.Fatal("credential redaction was lost")
+	}
+	if bounded := activitySafe(uri).(string); len(bounded) >= len(uri) || !strings.Contains(bounded, "truncated") {
+		t.Fatal("activity window lost its explicit size bound")
 	}
 }
