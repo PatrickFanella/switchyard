@@ -149,7 +149,7 @@ func (p *envExecutorSessionProber) readActivity(ctx context.Context, key, sessio
 	if err != nil {
 		return nil, false, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?limit=100&order=desc", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?limit=101&order=desc", nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -177,7 +177,13 @@ func (p *envExecutorSessionProber) readActivity(ctx context.Context, key, sessio
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, false, fmt.Errorf("executor activity response was unreadable")
 	}
-	return projectAgentMessages(session, body.Data), body.Cursor.Next != "", nil
+	// V2 emits pagination cursors even at the end of history. Read one extra
+	// message so the omitted-history flag is based on evidence, not cursor presence.
+	truncated := len(body.Data) > 100
+	if truncated {
+		body.Data = body.Data[:100]
+	}
+	return projectAgentMessages(session, body.Data), truncated, nil
 }
 
 func (a *API) runActivity(w http.ResponseWriter, r *http.Request) {

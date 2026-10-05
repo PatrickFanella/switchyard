@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,7 +52,7 @@ func TestRunActivityOwnedSessionAuthenticationAndBoundary(t *testing.T) {
 		if !ok || user != "opencode" || password != "executor-password" {
 			t.Error("executor authentication was omitted")
 		}
-		if r.URL.Query().Get("limit") != "100" || r.URL.Query().Get("order") != "desc" {
+		if r.URL.Query().Get("limit") != "101" || r.URL.Query().Get("order") != "desc" {
 			t.Errorf("query: %s", r.URL.RawQuery)
 		}
 		paths = append(paths, r.URL.Path)
@@ -83,8 +84,8 @@ func TestRunActivityOwnedSessionAuthenticationAndBoundary(t *testing.T) {
 	if strings.Contains(w.Body.String(), sessionViewSecret) || strings.Contains(w.Body.String(), "private-password") {
 		t.Fatal("response exposed a credential")
 	}
-	if !strings.Contains(w.Body.String(), "four newest") && !strings.Contains(w.Body.String(), "latest 100") {
-		t.Fatal("pagination omission was not explained")
+	if strings.Contains(w.Body.String(), "earlier messages are omitted") {
+		t.Fatal("cursor presence incorrectly claimed omitted history")
 	}
 	target = "/api/runs/" + f.runs["alpha"].ID
 	if w := request(api.ControlPlaneHandler(), "read-token"); w.Code != 200 || strings.Contains(w.Body.String(), sessionViewSecret) {
@@ -115,5 +116,23 @@ func TestActivityUpstreamFailureAndBounds(t *testing.T) {
 	_, _, err := p.readActivity(context.Background(), "missing", "ses_owned")
 	if err == nil {
 		t.Fatal("missing executor generation was not reported")
+	}
+}
+
+func TestActivityPaginationCursorDoesNotProveMoreHistory(t *testing.T) {
+	for _, count := range []int{20, 101} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			messages := make([]map[string]any, count)
+			for i := range messages {
+				messages[i] = map[string]any{"id": fmt.Sprint(i), "type": "idle"}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": messages, "cursor": map[string]string{"next": "end-cursor"}})
+		}))
+		p := &envExecutorSessionProber{client: server.Client(), routes: map[string]executorSessionRoute{"default": {baseURL: server.URL + "/api", native: true}}}
+		actions, truncated, err := p.readActivity(context.Background(), "default", "ses_owned")
+		if err != nil || truncated != (count > 100) || len(actions) != min(count, 100) {
+			t.Fatalf("count=%d actions=%d truncated=%t err=%v", count, len(actions), truncated, err)
+		}
+		server.Close()
 	}
 }
