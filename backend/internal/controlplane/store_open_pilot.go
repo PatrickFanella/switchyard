@@ -818,7 +818,7 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 	if !ok || prior.Status == RunQueued || prior.Status == RunRunning {
 		return OpenPilotIssueState{}, Run{}, ErrInvalid
 	}
-	if state.Phase == OpenPilotPhaseRequested || openPilotPausedBeforeBranch(state) {
+	if state.Phase == OpenPilotPhaseRequested || openPilotPausedBeforeBranch(state) || openPilotFailedValidationBeforeBranch(state) {
 		var priorSteps []RunStep
 		for _, step := range s.steps {
 			if step.RunID == prior.ID {

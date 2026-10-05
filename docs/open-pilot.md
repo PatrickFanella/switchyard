@@ -478,6 +478,13 @@ temporary commit supports archive tests; it is never published or used as source
 revision evidence.
 The source worktree manifest is checked again after verification.
 
+An issue that failed its initial specification validation can be resumed after
+its instructions are corrected. The lifecycle stores require exactly one
+failed `open-pilot.validate-issue` step on the failed prior run and no branch,
+worktree, or pull request evidence. An operator pause preserves this recovery
+path. Resume fetches and validates the issue again; it does not bypass the
+specification or admission gates, mutate the prior run, or admit duplicate work.
+
 A canceled Open Pilot run still in `requested` can be resumed through the normal
 lifecycle endpoint only when the prior run has no steps. Both store implementations
 check this under their normal claim locks. The new run starts at issue validation,
