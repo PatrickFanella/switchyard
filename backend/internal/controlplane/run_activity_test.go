@@ -149,7 +149,7 @@ func TestExpandedRunContextPreservesInlineArtifactIntegrity(t *testing.T) {
 	if projected["run"].(map[string]any)["inputs"].(map[string]any)["password"] != "[REDACTED]" {
 		t.Fatal("credential redaction was lost")
 	}
-	if bounded := activitySafe(uri).(string); len(bounded) >= len(uri) || !strings.Contains(bounded, "truncated") {
+	if bounded := activitySafe(strings.Repeat("a", 70000)).(string); len(bounded) >= 70000 || !strings.Contains(bounded, "truncated") {
 		t.Fatal("activity window lost its explicit size bound")
 	}
 }
