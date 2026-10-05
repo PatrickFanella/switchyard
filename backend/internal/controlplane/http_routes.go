@@ -123,6 +123,7 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/runs", a.listRuns)
 	mux.HandleFunc("POST /api/runs", a.createRun)
 	mux.HandleFunc("GET /api/runs/{id}", a.runAction)
+	mux.HandleFunc("GET /api/runs/{id}/activity", a.runActivity)
 	mux.HandleFunc("GET /api/runs/{id}/steps", a.runAction)
 	mux.HandleFunc("POST /api/runs/{id}/retry", a.runAction)
 	mux.HandleFunc("POST /api/runs/{id}/cancel", a.runAction)

@@ -7,6 +7,7 @@ import type { LiveRefreshState } from '../hooks/useLiveRefresh';
 import { ArtifactPreview } from './ArtifactPreview';
 import { ChangemakerReviewPanel } from './ChangemakerReviewPanel';
 import { DevlogReviewPanel } from './DevlogReviewPanel';
+import { OpenPilotActivityPage } from './OpenPilotActivityPage';
 import { RunPolicyEvidence } from './RunPolicyEvidence';
 import { collectCorrelations, summarizeRunFailure } from '../correlation';
 import { CorrelationLinks, EvidenceAnchor, EvidenceFocusNotice, RunFailureSummaryPanel, RunUnavailableNotice, useCorrelationTargets, useEvidenceFocus } from './CorrelationLinks';
@@ -86,6 +87,10 @@ function StepCard({ step, onStepAction, runID, runActionID }: { step: RunStep; o
         </div>
       ) : null}
 
+      <details className="activity-context mt-4">
+        <summary>Recorded step inputs, outputs, and full metadata</summary>
+        <pre className="activity-json">{JSON.stringify(step, null, 2)}</pre>
+      </details>
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           className="hud-chip border-[hsl(var(--pulse))] bg-[hsl(var(--pulse-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--ink))] transition hover:bg-[hsl(var(--border-faint))] disabled:cursor-not-allowed disabled:opacity-50"
@@ -267,6 +272,7 @@ export function RunCockpitPage({
       <EvidenceFocusNotice state={evidenceFocus} />
       {failureSummary ? <RunFailureSummaryPanel summary={failureSummary} /> : null}
       <RunPolicyEvidence policy={selectedRunDetail.policy} />
+      {selectedRunDetail.run.workflow_id === 'open-pilot' && <OpenPilotActivityPage runID={selectedRunID} />}
 
       <HudSection kicker="Open Pilot lifecycle" title="Open Pilot lifecycle" note="Repository issue state, lifecycle gates, and repair loop details live here for Open Pilot runs.">
         {openPilot ? (

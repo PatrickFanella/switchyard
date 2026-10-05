@@ -310,3 +310,9 @@ The managed executor pins `@opencode/cli@2.0.22` and uses the OpenCode 2 `/api` 
 Automatic repository onboarding uses a host-owned reconciler and user timer. It keeps a private catalog of every repository visible to the runtime account, prepares dedicated workspaces for eligible work in a bounded executor pool, and preserves normal admission and verification gates. See [repository discovery and preparation](docs/open-pilot.md#automatic-repository-discovery-and-preparation) for activation and recovery.
 
 Managed OpenCode startup restores retained credentials through the native v2 API before becoming healthy. Provider secrets stay in the private data mount; strict configuration and the in-memory session database remain enabled.
+
+Open Pilot's **Activity** page (`#/activity`) follows live agent tool calls and
+runtime events. Expand an action for its arguments, output, errors, model data,
+and session identity, or open the run cockpit for its dedicated feed and full
+recorded step context. See [live operator activity](docs/open-pilot.md#live-operator-activity)
+for refresh behavior and history limits.

@@ -95,12 +95,15 @@ async function render(element: React.ReactElement) {
 }
 
 async function settle() {
-  // The digest check awaits crypto.subtle and then commits state; give it a few ticks.
-  for (let index = 0; index < 3; index += 1) {
+  // Web Crypto completion depends on the worker pool, so wait for its rendered
+  // result instead of assuming a fixed number of timer ticks is sufficient.
+  const deadline = Date.now() + 2_000;
+  do {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
-  }
+  } while (document.querySelector('[data-integrity="pending"]') && Date.now() < deadline);
+  expect(document.querySelector('[data-integrity="pending"]')).toBeNull();
 }
 
 function buttons(container: HTMLElement) {

@@ -272,7 +272,13 @@ export function useLiveRefresh({
     inFlight,
   };
 
-  return { ...state, claimTicket, markUpdated, invalidate };
+  const refreshNow = useCallback(async () => {
+    clearTimer();
+    await runLoad();
+    schedule(backoffDelay(activeInterval, failuresRef.current, maxBackoff));
+  }, [activeInterval, clearTimer, maxBackoff, runLoad, schedule]);
+
+  return { ...state, claimTicket, markUpdated, invalidate, refreshNow };
 }
 
 export function isTerminalRunStatus(status: string) {

@@ -22,8 +22,8 @@ type OpenPilotInboxPageProps = {
 const phases = ['requested', 'validated', 'branch_prepared', 'agent_completed', 'verified', 'committed', 'pushed', 'pr_created', 'ai_reviewed', 'ci_passed', 'merge_ready', 'merged', 'issue_closed', 'failed', 'paused'];
 
 const upstreamCopy: Record<Exclude<OpenPilotInboxReport['upstream'], 'available'>, string> = {
-  partial: 'Gitea listing failed for some repositories. The queue may be incomplete; durable claims are still shown.',
-  unavailable: 'Gitea listing failed for every admitted repository. This is not an empty queue; durable claims are still shown.',
+  partial: 'Gitea listing failed for some repositories. The queue may be incomplete; saved lifecycles are still shown.',
+  unavailable: 'Gitea listing failed for every admitted repository. This is not an empty queue; saved lifecycles are still shown.',
   not_queried: 'Gitea was not queried: no repository is admitted or no issue reader is configured.',
 };
 
@@ -33,7 +33,11 @@ function currentLink() {
 
 function eligibilityChip(issue: OpenPilotInboxIssue) {
   if (issue.eligible) return { label: 'eligible', classes: statusClasses('succeeded') };
-  if (issue.claim) return { label: issue.claim.active_run ? 'running' : 'claimed', classes: statusClasses(issue.claim.active_run ? 'running' : 'queued') };
+  if (issue.claim) {
+    const phase = issue.claim.phase;
+    const status = issue.claim.active_run ? 'running' : phase === 'issue_closed' ? 'succeeded' : phase === 'failed' ? 'failed' : phase === 'paused' ? 'paused' : 'queued';
+    return { label: issue.claim.active_run ? 'running' : phase === 'issue_closed' ? 'completed' : phase.replaceAll('_', ' '), classes: statusClasses(status) };
+  }
   return { label: 'ineligible', classes: statusClasses('failed') };
 }
 
@@ -60,12 +64,12 @@ function IssueRow({ issue, selected, onSelect }: { issue: OpenPilotInboxIssue; s
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <HudLabel className="text-[hsl(var(--faint))]">{issue.key}</HudLabel>
-          <div className="mt-2 text-sm font-semibold text-[hsl(var(--ink))]">{issue.title || (issue.source === 'state' ? 'Durable claim (not listed by Gitea)' : 'Untitled issue')}</div>
+          <div className="mt-2 text-sm font-semibold text-[hsl(var(--ink))]">{issue.title || (issue.source === 'state' ? 'Saved issue lifecycle' : 'Untitled issue')}</div>
         </div>
         <span className={`hud-chip px-2.5 py-1 text-[0.62rem] ${chip.classes}`}>{chip.label}</span>
       </div>
       <p className="mt-3 text-xs text-[hsl(var(--faint))]">
-        pickup: {issue.pickup}
+        {issue.source === 'state' ? 'Gitea details not fetched' : `pickup: ${issue.pickup}`}
         {issue.claim ? ` · phase: ${issue.claim.phase}` : ''}
         {issue.reason_codes.length > 0 ? ` · ${issue.reason_codes.join(', ')}` : ''}
       </p>
@@ -75,9 +79,11 @@ function IssueRow({ issue, selected, onSelect }: { issue: OpenPilotInboxIssue; s
 
 function IssueDetail({ issue, busy, onDispatch, onResume, onOpenRun }: { issue: OpenPilotInboxIssue | null; busy: boolean; onDispatch: (issue: OpenPilotInboxIssue) => void; onResume: (issue: OpenPilotInboxIssue) => void; onOpenRun: (runID: string) => void }) {
   if (!issue) {
-    return <HudEmptyState>Select an issue to inspect eligibility, the existing claim, and evidence links.</HudEmptyState>;
+    return <HudEmptyState>Select an issue to inspect pickup readiness, its saved lifecycle, and evidence links.</HudEmptyState>;
   }
   const claim = issue.claim;
+  const upstream = issue.source === 'upstream';
+  const unknown = 'Unknown — Gitea details not fetched';
   return (
     <HudPanelStrong className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -90,14 +96,14 @@ function IssueDetail({ issue, busy, onDispatch, onResume, onOpenRun }: { issue: 
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <HudField label="Pickup" value={issue.pickup} />
-        <HudField label="Bot assigned" value={issue.bot_assigned ? 'yes' : 'no'} />
-        <HudField label="Labels" value={issue.labels.join(', ') || '—'} />
-        <HudField label="Missing labels" value={issue.missing_labels.join(', ') || '—'} />
-        <HudField label="Specification" value={issue.spec_ready ? 'ready' : issue.spec_required ? 'missing (required)' : 'missing'} />
-        <HudField label="Test command" value={issue.test_command || '—'} />
+        <HudField label="Pickup" value={upstream ? issue.pickup : unknown} />
+        <HudField label="Bot assigned" value={upstream ? (issue.bot_assigned ? 'yes' : 'no') : unknown} />
+        <HudField label="Labels" value={upstream ? (issue.labels.join(', ') || '—') : unknown} />
+        <HudField label="Missing labels" value={upstream ? (issue.missing_labels.join(', ') || '—') : unknown} />
+        <HudField label="Specification" value={upstream ? (issue.spec_ready ? 'ready' : issue.spec_required ? 'missing (required)' : 'missing') : unknown} />
+        <HudField label="Test command" value={upstream ? (issue.test_command || '—') : unknown} />
         <HudField label="Executor" value={`${issue.repository_id}/${issue.executor_generation}`} />
-        <HudField label="Source" value={issue.source === 'upstream' ? 'Gitea listing' : 'durable claim only'} />
+        <HudField label="Source" value={issue.source === 'upstream' ? 'Gitea listing' : 'Saved lifecycle; Gitea details unavailable'} />
       </div>
 
       {claim ? (
@@ -215,7 +221,7 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
       <HudSection
         kicker="Open Pilot"
         title="Issue inbox"
-        note="Open issues from admitted repositories with pickup path, specification readiness, eligibility reason codes, and existing lifecycle claims. Dispatch and resume use the existing admission and claim paths."
+        note="Review new intake and existing Open Pilot work. Saved lifecycles remain visible when Gitea details are unavailable; completed work is grouped separately."
         actions={[
           <button key="refresh" className="hud-chip border-[hsl(var(--signal))] bg-[hsl(var(--signal-soft))] px-3 py-2 text-[0.62rem] text-[hsl(var(--signal))] disabled:opacity-50" disabled={loading} onClick={() => setReloadToken((value) => value + 1)} type="button">
             {loading ? 'Loading…' : 'Refresh'}
@@ -290,7 +296,7 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
       </HudSection>
 
       <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <HudSection kicker="Queue" title="Intake candidates">
+        <HudSection kicker="Queue" title="Issues and lifecycles">
           <div className="grid gap-3">
             {loading && !report ? <HudLoadingState>Loading the Open Pilot inbox…</HudLoadingState> : null}
             {report && report.issues.length === 0 ? (
@@ -304,8 +310,15 @@ export function OpenPilotInboxPage({ onOpenRun }: OpenPilotInboxPageProps) {
                       : 'The queue is empty: no open issue carries the queue labels or bot assignment.'}
               </HudEmptyState>
             ) : null}
-            {report?.issues.map((issue) => (
-              <IssueRow key={issue.key} issue={issue} onSelect={(key) => navigate({ ...link, issue: key })} selected={issue.key === link.issue} />
+            {[
+              { title: 'Intake candidates', issues: report?.issues.filter(issue => !issue.claim) ?? [] },
+              { title: 'Existing lifecycles', issues: report?.issues.filter(issue => issue.claim && issue.claim.phase !== 'issue_closed') ?? [] },
+              { title: 'Completed lifecycles', issues: report?.issues.filter(issue => issue.claim?.phase === 'issue_closed') ?? [] },
+            ].filter(group => group.issues.length > 0).map(group => (
+              <section key={group.title} aria-label={group.title} className="grid gap-3">
+                <h3 className="text-sm font-semibold text-[hsl(var(--muted))]">{group.title} <span className="text-[hsl(var(--faint))]">({group.issues.length} on this page)</span></h3>
+                {group.issues.map(issue => <IssueRow key={issue.key} issue={issue} onSelect={(key) => navigate({ ...link, issue: key })} selected={issue.key === link.issue} />)}
+              </section>
             ))}
             {report && (link.cursor || report.has_more) ? (
               <div className="flex flex-wrap gap-2">

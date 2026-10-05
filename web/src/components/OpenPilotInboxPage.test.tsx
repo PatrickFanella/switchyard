@@ -68,6 +68,24 @@ describe('inbox deep links', () => {
 });
 
 describe('OpenPilotInboxPage', () => {
+  it('groups completed saved lifecycles and leaves unfetched Gitea fields unknown', async () => {
+    window.location.hash = '#/inbox/issue=owner%2Falpha%231';
+    const saved = issue({
+      source: 'state', title: '', pickup: 'unknown', eligible: false, action: 'none', labels: [], missing_labels: [], spec_ready: false,
+      claim: { state_id: 'opi-1', phase: 'issue_closed', active_run: false, next_action: 'Complete', issue_closed: true, repair_attempts: 0, max_repair_attempts: 2, updated_at: '2026-06-17T00:04:00.000Z' },
+    });
+    mockDashboardFetch(url => url.pathname === '/api/open-pilot/inbox' ? jsonResponse(report({ issues: [saved], matched: 1 })) : undefined);
+    const { container, root } = await renderApp('Completed lifecycles');
+    const completed = container.querySelector('section[aria-label="Completed lifecycles"]');
+    expect(completed?.textContent).toContain('Saved issue lifecycle');
+    expect(completed?.textContent).toContain('completed');
+    expect(container.querySelector('section[aria-label="Intake candidates"]')).toBeNull();
+    expect(container.textContent).toContain('Unknown — Gitea details not fetched');
+    expect(container.textContent).not.toContain('missing (required)');
+    expect(container.textContent).not.toContain('Durable claim (not listed by Gitea)');
+    await unmount(root);
+  });
+
   it('shows an empty queue only when upstream data is available', async () => {
     window.location.hash = '#/inbox';
     mockDashboardFetch((url) => url.pathname === '/api/open-pilot/inbox' ? jsonResponse(report()) : undefined);

@@ -41,6 +41,7 @@ export function mockDashboardFetch(handler?: FetchHandler) {
     else if (method === 'GET' && url.pathname === '/api/workflows') payload = { workflows: [{ id: 'open-pilot', kind: 'open-pilot', name: 'Open Pilot', description: 'Open Pilot', owns: [], uses: [], status: 'seeded' }] };
     else if (method === 'GET' && url.pathname === '/api/triggers') payload = { triggers: [{ id: 'trigger-1', workflow_id: 'open-pilot', type: 'manual', name: 'Open Pilot trigger', description: 'Trigger for cockpit tests', enabled: true }] };
     else if (method === 'GET' && url.pathname === '/api/runs') payload = { runs: [run] };
+    else if (method === 'GET' && url.pathname === '/api/runs/run-1/activity') payload = { run_id: 'run-1', generated_at: '', detail: { ...runDetail, steps: [], events: [], artifacts: [] }, activity: { actions: [], warnings: [], truncated: false } };
     else if (method === 'GET' && url.pathname === '/api/runs/run-1') payload = runDetail;
     else if (method === 'GET' && url.pathname === '/api/adapters') payload = adapters;
     else if (method === 'GET' && url.pathname === '/api/scheduler') payload = { enabled: false, running: false, interval: 'disabled' };
