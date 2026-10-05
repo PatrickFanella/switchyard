@@ -243,6 +243,13 @@ func (p *WorkerPool) execute(ctx context.Context, workerID string, run Run) {
 		p.mu.Unlock()
 	}()
 	finished, err := p.runner.ExecuteClaimedRun(attemptCtx, run, workerID)
+	if err != nil && execCtx.Err() != nil {
+		// Execution cancellation must not cancel the fenced terminal write. Keep
+		// the original attempt identity so a reclaimed worker cannot finish it.
+		finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(attemptCtx), 5*time.Second)
+		finished, err = p.store.WithContext(finishCtx).FinishClaimedRun(run.ID, workerID, run.AttemptCount, runStatusForError(execCtx.Err()), execCtx.Err().Error())
+		finishCancel()
+	}
 	if err == nil && (finished.Status == RunFailed || finished.Status == RunTimedOut) && finished.AttemptCount < finished.MaxAttempts {
 		backoff := runRetryBackoff(finished.AttemptCount)
 		if _, retryErr := p.store.RequeueFailedRun(finished.ID, p.now().UTC().Add(backoff), fmt.Sprintf("Retry %d/%d scheduled after %s", finished.AttemptCount+1, finished.MaxAttempts, backoff)); retryErr == nil {

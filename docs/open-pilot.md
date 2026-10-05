@@ -279,6 +279,19 @@ or autonomous merges: the deployed lifecycle modes and repository policy must
 already permit them. Enable `OPEN_PILOT_REQUIRE_ISSUE_SPEC=true` to require
 acceptance criteria and test instructions.
 
+Specification validation also accepts verification instructions (`verification`
+or `verify`) alongside acceptance criteria. It does not require an executable
+test command for documentation or operational evidence tasks. Command policy,
+dependencies, provider qualification, and natural-run evidence still apply.
+
+Set the run deadline longer than the coding-step deadline and leave room for
+verification, review, and CI. A ten-minute run budget can interrupt an otherwise
+productive coding session. When execution reaches its deadline, the worker
+records the timeout through a separate bounded persistence context with the
+original run-attempt fence. It releases the lease and reconciles the issue state
+instead of leaving the run active until lease recovery. This does not allow an
+expired or reclaimed attempt to write over its replacement.
+
 ## Queue an issue by labels
 
 The existing label-based path requires both labels:

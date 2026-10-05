@@ -3464,8 +3464,7 @@ func (e *EnvWorkflowExecutors) validateOpenPilotIssue(repo, issueNumber string, 
 		return fmt.Errorf("open-pilot issue missing required labels: %s", strings.Join(missing, ", "))
 	}
 	if e.requireIssueSpec {
-		body := strings.ToLower(issue.Body)
-		if !strings.Contains(body, "acceptance") || !strings.Contains(body, "test") {
+		if !openPilotIssueSpecReady(issue.Body) {
 			return fmt.Errorf("open-pilot issue must include acceptance criteria and test instructions")
 		}
 	}

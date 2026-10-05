@@ -10,6 +10,62 @@ import (
 	"git.subcult.tv/PatrickFanella/switchyard/internal/controlplane"
 )
 
+// PostgreSQL rejects writes through an expired query context. Mirror that
+// behavior without making this worker regression depend on a database.
+type expiredWriteStore struct {
+	controlplane.Store
+	ctx context.Context
+}
+
+func (s *expiredWriteStore) WithContext(ctx context.Context) controlplane.Store {
+	return &expiredWriteStore{Store: s.Store.WithContext(ctx), ctx: ctx}
+}
+
+func (s *expiredWriteStore) FinishClaimedRun(id, worker string, attempt int, status controlplane.RunStatus, summary string) (controlplane.Run, error) {
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return controlplane.Run{}, s.ctx.Err()
+	}
+	return s.Store.FinishClaimedRun(id, worker, attempt, status, summary)
+}
+
+func TestWorkerPoolPersistsTimeoutBeforeLeaseRecovery(t *testing.T) {
+	t.Setenv("SWITCHYARD_RUN_TIMEOUT", "30ms")
+	store := &expiredWriteStore{Store: controlplane.NewStore(time.Now)}
+	if err := controlplane.SeedDefaults(store); err != nil {
+		t.Fatal(err)
+	}
+	runner := controlplane.NewRunner(store, controlplane.MapExecutorRegistry{
+		"devlog": controlplane.WorkflowExecutorFunc(func(ctx context.Context, _ controlplane.Run) (controlplane.WorkflowExecution, error) {
+			<-ctx.Done()
+			return controlplane.WorkflowExecution{}, ctx.Err()
+		}),
+	})
+	run, err := runner.Enqueue(controlplane.CreateRunInput{WorkflowID: "devlog", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pool := controlplane.NewWorkerPool(store, runner, 1, time.Minute, time.Millisecond, time.Now)
+	pool.Start(ctx)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		detail, err := store.RunDetail(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.Run.Status == controlplane.RunTimedOut {
+			if detail.Run.ClaimedBy != "" || detail.Run.LeaseExpiresAt != nil || detail.Run.Summary != context.DeadlineExceeded.Error() {
+				t.Fatalf("timeout retained lease or wrong diagnostic: %+v", detail.Run)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	detail, _ := store.RunDetail(run.ID)
+	t.Fatalf("timeout was not persisted before lease recovery: %+v", detail.Run)
+}
+
 func TestWorkerPoolClaimsAndExecutesQueuedRun(t *testing.T) {
 	store := controlplane.NewStore(func() time.Time { return time.Unix(100, 0) })
 	if err := controlplane.SeedDefaults(store); err != nil {
