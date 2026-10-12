@@ -122,11 +122,11 @@ func TestValidateOpenPilotRuntimeManifestRejectsInvalidIdentity(t *testing.T) {
 		})
 	}
 	if err := ValidateOpenPilotRuntimeManifest(manifest); err != nil {
-		t.Fatalf("32 repositories: %v", err)
+		t.Fatalf("maximum repositories: %v", err)
 	}
 	manifest.Repositories = append(manifest.Repositories, OpenPilotRuntimeRepository{ID: "overflow", Slug: "owner/overflow", Aliases: []string{}, ExecutorGeneration: "overflow"})
 	if err := ValidateOpenPilotRuntimeManifest(manifest); err == nil {
-		t.Fatal("expected 33 repositories to fail")
+		t.Fatal("expected repositories beyond discovery bound to fail")
 	}
 }
 

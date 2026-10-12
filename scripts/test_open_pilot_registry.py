@@ -49,6 +49,18 @@ class OpenPilotRegistryTest(unittest.TestCase):
         registry = load_operator_registry(self.write_registry([repository]))
         self.assertEqual(registry["repositories"][0]["verifier_image"], repository["verifier_image"])
 
+    def test_registry_accepts_full_catalog_beyond_old_32_repository_limit(self):
+        base = self.repository("base", "owner/base")
+        repositories = []
+        for index in range(241):
+            entry = dict(base, id=f"repo-{index}", slug=f"owner/repo-{index}")
+            for key in ("source_path", "worktree_root", "config_path", "data_path", "password_file"):
+                entry[key] = f"/private/repo-{index}/{key}"
+            repositories.append(entry)
+        registry = load_operator_registry(self.write_registry(repositories))
+        manifest = render_runtime_manifest(registry, registry_fingerprint(registry))
+        self.assertEqual(len(manifest["repositories"]), 241)
+
     def tearDown(self) -> None:
         self.temporary.cleanup()
 

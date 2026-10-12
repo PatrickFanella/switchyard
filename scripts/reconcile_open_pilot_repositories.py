@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Discover Gitea repositories and prepare eligible work in a bounded host pool."""
+"""Discover Gitea repositories and prepare eligible work on the host."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 from open_pilot_registry import (
     SLUG, canonical_json, load_operator_registry, prepare_registry_filesystem,
-    registry_fingerprint, render_compose_file_set, render_compose_override,
+    registry_fingerprint, render_compose_file_set, render_compose_override, MAX_REPOSITORIES,
     render_runtime_manifest, write_atomic,
 )
 from validate_production_config import parse_dotenv, sanitized_git_env
@@ -120,9 +120,21 @@ def discover(client: Client, labels: list[str], assignee: str):
     return catalog
 
 
-def select_pool(registry: dict, catalog: list[dict], states: list[dict], pinned: set[str], capacity: int):
-    if not 1 <= capacity <= 32 or len(pinned) > capacity:
-        raise ValueError("executor capacity must contain pinned repositories and be at most 32")
+def parse_capacity(value: str):
+    if value == "all":
+        return None
+    try:
+        capacity = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("capacity must be all or a positive repository count") from error
+    if not 1 <= capacity <= MAX_REPOSITORIES:
+        raise argparse.ArgumentTypeError("capacity exceeds the repository discovery bound")
+    return capacity
+
+
+def select_pool(registry: dict, catalog: list[dict], states: list[dict], pinned: set[str], capacity: int | None):
+    if capacity is not None and (not 1 <= capacity <= MAX_REPOSITORIES or len(pinned) > capacity):
+        raise ValueError("executor capacity must contain pinned repositories and fit the discovery bound")
     needed = {x["slug"].casefold() for x in catalog if x["issues"] and not x["blocker"]}
     protected = {x.get("repository_id") for x in states if x.get("phase") != "issue_closed"}
     keep, retired = [], []
@@ -135,7 +147,10 @@ def select_pool(registry: dict, catalog: list[dict], states: list[dict], pinned:
     pending = [x for x in catalog if x["slug"].casefold() in needed - existing]
     # Numeric Gitea IDs survive renames; derived filesystem paths never use slugs.
     pending.sort(key=lambda x: x["gitea_id"])
-    available = max(0, capacity - len(keep))
+    # In all-repository mode, identity registration follows approved work. The
+    # runtime worker count bounds execution; a fixed repository count must not
+    # strand unrelated work behind paused identities or permanently pinned slots.
+    available = len(pending) if capacity is None else max(0, capacity - len(keep))
     return keep, pending[:available], pending[available:], retired
 
 
@@ -334,7 +349,8 @@ def main():
     parser.add_argument("--deployment-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--opencode-image")
     parser.add_argument("--verifier-image")
-    parser.add_argument("--capacity", type=int, default=4)
+    parser.add_argument("--capacity", type=parse_capacity, default="all",
+                        help="all (default) onboards every repository with approved work; a count opts into a fixed pool")
     parser.add_argument("--pinned", default="switchyard,actions-smoke-test")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--activate", action="store_true")
@@ -365,7 +381,16 @@ def main():
         if args.apply:
             private_directory(args.workspace_root)
             candidate = copy.deepcopy(registry)
-            candidate["repositories"] = keep + [prepare_repository(x, args.workspace_root, env, registry["generation"], root / "services/opencode/default-config") for x in selected]
+            candidate["repositories"] = list(keep)
+            report["preparation_errors"] = []
+            for item in selected:
+                try:
+                    candidate["repositories"].append(prepare_repository(item, args.workspace_root, env, registry["generation"], root / "services/opencode/default-config"))
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    # One repository's access, storage, or preparation failure
+                    # must not suppress monitoring or onboarding of other repos.
+                    report["preparation_errors"].append({"repository": item["slug"], "error": type(error).__name__})
+            write_atomic(args.catalog, canonical_json(report))
             prepare_registry_filesystem(candidate, os.getuid(), os.getgid(), env["GITEA_BASE_URL"])
             if registry_fingerprint(candidate) != registry_fingerprint(registry):
                 candidate_path = args.catalog.parent / "candidate-registry.json"
@@ -381,7 +406,7 @@ def main():
                     except ReconciliationDeferred as error:
                         report["deferred"] = str(error)
                     write_atomic(args.catalog, canonical_json(report))
-        print(json.dumps({"repositories": len(catalog), "selected": report["selected"], "pending": len(pending), "applied": report["applied"], "deferred": report.get("deferred")}))
+        print(json.dumps({"repositories": len(catalog), "selected": report["selected"], "pending": len(pending), "applied": report["applied"], "deferred": report.get("deferred"), "preparation_errors": report.get("preparation_errors", [])}))
 
 
 if __name__ == "__main__":

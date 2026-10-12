@@ -55,7 +55,13 @@ func (s *PostgresStore) ConfigureOpenPilotRollout(input ConfigureOpenPilotRollou
 		}
 		for _, target := range current.ProofTargets {
 			var succeeded bool
-			err := tx.QueryRowContext(s.operationContext(), `select exists(select 1 from open_pilot_issue_states where repository_id=$1 and executor_generation=$2 and canonical_issue=$3 and phase=$4 and issue_closed)`, target.RepositoryID, target.ExecutorGeneration, target.Issue, OpenPilotPhaseIssueClosed).Scan(&succeeded)
+			err := tx.QueryRowContext(s.operationContext(), `select case when exists(select 1 from open_pilot_issue_states where repository_id=$1 and executor_generation=$2 and canonical_issue=$3)
+then exists(select 1 from open_pilot_issue_states where repository_id=$1 and executor_generation=$2 and canonical_issue=$3 and phase='issue_closed' and issue_closed and canonical_repo=$4)
+else exists(select 1 from open_pilot_qualified_proofs where repository_id=$1 and executor_generation=$2 and canonical_issue=$3 and repository_slug=$4)
+ or exists(select 1 from runs r where r.workflow_id='open-pilot' and r.status='succeeded'
+ and r.inputs->>'_switchyard.open_pilot.repository_id'=$1 and r.inputs->>'_switchyard.open_pilot.executor_generation'=$2 and r.inputs->>'issue'=$3 and r.inputs->>'repo'=$4
+ and exists(select 1 from run_steps s where s.run_id=r.id and s.name='open-pilot.merge-pr' and s.status='succeeded')
+ and exists(select 1 from run_steps s where s.run_id=r.id and s.name='open-pilot.close-issue' and s.status='succeeded')) end`, target.RepositoryID, target.ExecutorGeneration, target.Issue, target.RepositorySlug).Scan(&succeeded)
 			if err != nil || !succeeded {
 				_ = tx.Rollback()
 				if err != nil {
@@ -67,6 +73,12 @@ func (s *PostgresStore) ConfigureOpenPilotRollout(input ConfigureOpenPilotRollou
 		if len(current.ProofTargets) != 2 {
 			_ = tx.Rollback()
 			return OpenPilotRolloutStatus{}, ErrConflict
+		}
+		for _, target := range current.ProofTargets {
+			if _, err := tx.ExecContext(s.operationContext(), `insert into open_pilot_qualified_proofs(repository_id,executor_generation,canonical_issue,repository_slug) values($1,$2,$3,$4) on conflict do nothing`, target.RepositoryID, target.ExecutorGeneration, target.Issue, target.RepositorySlug); err != nil {
+				_ = tx.Rollback()
+				return OpenPilotRolloutStatus{}, err
+			}
 		}
 		targets, expires = current.ProofTargets, current.ExpiresAt
 	}

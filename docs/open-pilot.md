@@ -575,10 +575,14 @@ work appears; the API, OpenCode executor, and verifier never receive a Docker
 socket or clone repositories during task execution.
 
 `scripts/reconcile_open_pilot_repositories.py` maintains a private catalog of all
-visible repositories independently of the active executor pool. Its default
-capacity is four repositories, including pinned entries. Pending work stays in
-the catalog when the pool is full. A repository with unfinished durable state
-keeps its executor slot. Retired slots retain their source, credentials, worktrees,
+visible repositories independently of execution concurrency. The default
+`--capacity all` prepares every writable, non-empty repository with labeled or
+assigned work, including newly discovered repositories. It does not clone idle
+repositories. A numeric `--capacity` explicitly opts into a fixed repository
+pool; it is not the production default. Registry validation accepts the same
+10,000-repository bound as paginated discovery, with a 16 MiB manifest limit.
+Worker concurrency still bounds simultaneous runs. A repository with unfinished
+durable state keeps its executor identity. Retired slots retain their source, credentials, worktrees,
 containers, volumes, and history; only their running executors are stopped after
 a successful topology transition.
 
@@ -615,12 +619,17 @@ write a candidate registry. Add `--activate` to publish the validated topology
 through the installed Compose wrapper. Activation defers when an operator pause
 or unfinished runtime runs exist. It saves the previous topology, preserves the
 completed proof identities, and uses the authenticated proof-to-allow transition
-for the new fingerprint. It never rewrites durable affinity or proof history.
+for the new fingerprint. It never rewrites durable affinity or proof history. When proof lifecycle rows
+have been cleaned up, qualification requires a successful run with the exact
+repository, generation and issue plus successful merge and close steps. The
+proof-to-allow transaction retains a separate qualification receipt, so later
+run retention does not strand automatic onboarding. Existing failed or unfinished
+proof lifecycle rows cannot be overridden by historical receipts.
 Install the operator timer only after validating its exact deployment paths,
 image IDs, account visibility, catalog, preparation, and recovery path.
 
 Render `deploy/switchyard-repository-discovery.service.in` with the absolute
-deployment paths, control URL, pool capacity, and immutable executor image IDs.
+deployment paths, control URL, `--capacity all`, and immutable executor image IDs.
 Install it together with `deploy/switchyard-repository-discovery.timer` under
 the operator's user systemd directory, then run `systemctl --user daemon-reload`
 and `systemctl --user enable --now switchyard-repository-discovery.timer`.
