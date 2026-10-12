@@ -174,7 +174,7 @@ func (a *API) buildOperatorSummary(ctx context.Context, now time.Time) OperatorS
 				Summary:      boundedOperatorText(run.Summary, 240),
 			})
 		}
-		if (run.Status == RunFailed || run.Status == RunTimedOut) && len(summary.Alerts) < 5 {
+		if (run.Status == RunFailed || run.Status == RunTimedOut) && len(summary.Alerts) < 5 && !openPilotRunResolved(a.store.WithContext(ctx), run) {
 			summary.Alerts = append(summary.Alerts, OperatorSummaryAlert{
 				ID:         "run-" + run.ID,
 				Severity:   "warning",
@@ -212,6 +212,14 @@ func (a *API) buildOperatorSummary(ctx context.Context, now time.Time) OperatorS
 
 	summary.Status = deriveOperatorSummaryStatus(summary)
 	return summary
+}
+
+func openPilotRunResolved(store Store, run Run) bool {
+	if run.WorkflowID != string(WorkflowOpenPilot) {
+		return false
+	}
+	state, err := store.OpenPilotIssueState(run.Inputs["repo"], run.Inputs["issue"])
+	return err == nil && state.RunID == run.ID && state.GateStatus["merge"] == "merged" && state.MergeCommitSHA != "" && (state.Phase == OpenPilotPhaseMerged || state.Phase == OpenPilotPhaseIssueClosed)
 }
 
 func operatorSummaryDeployment() OperatorSummaryDeployment {
