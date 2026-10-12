@@ -1430,6 +1430,31 @@ paths:
         "201": { $ref: "#/components/responses/OpenPilotResumeResponse" }
         "202": { $ref: "#/components/responses/OpenPilotAcceptedResumeResponse" }
         default: { $ref: "#/components/responses/Error" }
+  /api/open-pilot/state/reconcile:
+    post:
+      summary: Reconcile an externally merged Open Pilot pull request
+      description: >-
+        Admin-only control action. Reads the recorded PR and issue from Gitea,
+        rejects changed identities or active runs, and records the observed merge
+        and issue status. Preserves failed run history and prior AI/CI results.
+        Does not create a run, merge a PR, or close an issue.
+      parameters:
+        - $ref: "#/components/parameters/Repo"
+        - $ref: "#/components/parameters/Issue"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_run_id, expected_updated_at]
+              properties:
+                expected_run_id: { type: string }
+                expected_updated_at: { type: string, format: date-time }
+      responses:
+        "200": { $ref: "#/components/responses/OpenPilotStateResponse" }
+        default: { $ref: "#/components/responses/Error" }
   /api/workflows:
     get:
       summary: List workflows
