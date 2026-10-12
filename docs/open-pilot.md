@@ -249,6 +249,18 @@ resume calls `POST /api/open-pilot/state/resume`. Both apply the admission
 gate, the atomic `(repo, issue)` claim, and admin authorization, so the inbox
 adds no new path around them.
 
+If an operator merged the recorded PR outside Open Pilot, use
+`POST /api/open-pilot/state/reconcile?repo=<slug>&issue=<number>` with the
+current state's `expected_run_id` and `expected_updated_at` in the JSON body.
+This admin-only action reads the PR and issue from Gitea, verifies the recorded
+PR ID, number, source repository, head branch, base branch, and merge commit,
+and rejects active runs or a changed state. It records `merged` while the issue
+is open, or `issue_closed` when Gitea reports it closed. It does not close issues,
+rerun the agent, or mark rejected AI review and CI gates as passed. An audit
+event preserves the previous diagnostic; failed runs remain in history.
+The operator summary stops reporting those reconciled lifecycle failures as
+active alerts. An open issue still needs its remaining acceptance work reviewed.
+
 ## Queue an issue by assignment
 
 Set `OPEN_PILOT_ASSIGNEE=open-pilot` in the runtime configuration to enable

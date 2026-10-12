@@ -59,6 +59,7 @@ type Store interface {
 	OpenPilotIssueState(string, string) (OpenPilotIssueState, error)
 	OpenPilotIssueStateForTarget(OpenPilotTarget) (OpenPilotIssueState, error)
 	UpsertOpenPilotIssueState(OpenPilotIssueState) (OpenPilotIssueState, error)
+	ReconcileOpenPilotExternalMerge(OpenPilotIssueState, GiteaPullRequest, GiteaIssue) (OpenPilotIssueState, error)
 	TransitionOpenPilotIssueState(string, string, OpenPilotPhase) (OpenPilotIssueState, error)
 	ClaimAndCreateOpenPilotResumeRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
 	ClaimAndCreateOpenPilotInitialRun(string, string, CreateRunInput) (OpenPilotIssueState, Run, error)
