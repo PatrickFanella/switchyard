@@ -68,7 +68,8 @@ Prepared verifier images are operator-built outside the restricted execution bou
 
 Automatic repository discovery is host-owned. `OPEN_PILOT_POLL_REPOS=*` discovers
 the runtime account's visible repositories; the private catalog is independent
-of the bounded executor registry. Prepare dedicated clones and immutable image
+of execution concurrency. Use `--capacity all` for on-demand enrollment of all
+repositories with approved work; numeric repository caps are an explicit opt-in. Prepare dedicated clones and immutable image
 pins through the repository reconciler, preserve unfinished executor identities,
 and activate only while runtime runs are idle through the supported rollout API.
 Keep its user timer, credentials, catalog, and recovery files outside git.

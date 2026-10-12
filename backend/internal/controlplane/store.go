@@ -193,6 +193,7 @@ type MemoryStore struct {
 	openPilotIssueStates       map[string]OpenPilotIssueState
 	openPilotReservations      map[string][]string
 	openPilotRollout           OpenPilotRolloutStatus
+	openPilotQualifiedProofs   map[OpenPilotProofTarget]bool
 	runs                       map[string]Run
 	steps                      map[string]RunStep
 	events                     map[string][]RunEvent
@@ -225,7 +226,7 @@ func NewStore(now func() time.Time) *MemoryStore {
 		now = time.Now
 	}
 	created := now().UTC()
-	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, agentProfiles: map[string]AgentProfileIdentity{}, agentProfileVersions: map[string]map[int]AgentProfileVersion{}, agentProfileAudit: map[string][]AgentProfileAuditEntry{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, openPilotRollout: OpenPilotRolloutStatus{Mode: "legacy", ProofTargets: []OpenPilotProofTarget{}, UpdatedAt: created}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: created, webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
+	return &MemoryStore{now: now, workflowDefinitions: map[string]WorkflowDefinition{}, workflowDefinitionVersions: map[string]map[int]WorkflowDefinition{}, agentProfiles: map[string]AgentProfileIdentity{}, agentProfileVersions: map[string]map[int]AgentProfileVersion{}, agentProfileAudit: map[string][]AgentProfileAuditEntry{}, workflows: map[string]Workflow{}, triggers: map[string]Trigger{}, openPilotIssueStates: map[string]OpenPilotIssueState{}, openPilotReservations: map[string][]string{}, openPilotQualifiedProofs: map[OpenPilotProofTarget]bool{}, openPilotRollout: OpenPilotRolloutStatus{Mode: "legacy", ProofTargets: []OpenPilotProofTarget{}, UpdatedAt: created}, runs: map[string]Run{}, steps: map[string]RunStep{}, events: map[string][]RunEvent{}, artifacts: map[string][]Artifact{}, modelBrokerRequests: map[string]ModelBrokerRequest{}, modelBrokerFeedback: []ModelBrokerFeedback{}, compatibilityUsage: map[string]CompatibilityUsageDaily{}, artifactDaily: map[string]ArtifactDailyBucket{}, artifactObservationStarted: created, webhookAuth: map[string]WebhookAuthMetadata{}, webhookReceipts: map[string]webhookReceipt{}}
 }
 
 func (s *MemoryStore) Ready(context.Context) error { return nil }

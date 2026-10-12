@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import tempfile
@@ -6,7 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from reconcile_open_pilot_repositories import discover, select_pool, private_directory, Client, activate, retain_executor_image
+from reconcile_open_pilot_repositories import discover, select_pool, parse_capacity, private_directory, Client, activate, retain_executor_image
 
 
 def repository(identifier, slug, **extra):
@@ -33,6 +34,23 @@ class Upstream:
 
 
 class RepositoryReconciliationTests(unittest.TestCase):
+    def test_all_repository_mode_onboards_beyond_old_limit_and_future_repositories(self):
+        registry = {"repositories": [{"id": "paused", "slug": "owner/paused"}]}
+        states = [{"repository_id": "paused", "phase": "paused"}]
+        catalog = [{"gitea_id": x, "slug": f"owner/r{x}", "issues": [1], "blocker": ""} for x in range(1, 242)]
+        keep, selected, pending, retired = select_pool(registry, catalog, states, set(), parse_capacity("all"))
+        self.assertEqual([x["id"] for x in keep], ["paused"])
+        self.assertEqual(len(selected), 241)
+        self.assertEqual(selected[-1]["slug"], "owner/r241")
+        self.assertEqual(pending, [])
+        self.assertEqual(retired, [])
+
+    def test_explicit_repository_limit_remains_opt_in(self):
+        self.assertEqual(parse_capacity("4"), 4)
+        for value in ["0", "-1", "10001", "unlimited"]:
+            with self.assertRaises(argparse.ArgumentTypeError):
+                parse_capacity(value)
+
     def test_image_retention_checks_exact_local_identity_before_tagging(self):
         image = "sha256:" + "a" * 64
         with patch("reconcile_open_pilot_repositories.subprocess.run",

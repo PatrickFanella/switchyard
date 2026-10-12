@@ -19,9 +19,9 @@ import (
 
 const (
 	openPilotRepositoryContractVersion = 1
-	maxOpenPilotRepositories           = 32
+	maxOpenPilotRepositories           = 10000
 	maxOpenPilotAliases                = 32
-	maxOpenPilotManifestBytes          = 256 << 10
+	maxOpenPilotManifestBytes          = 16 << 20
 )
 
 var (

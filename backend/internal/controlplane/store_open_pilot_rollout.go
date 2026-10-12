@@ -25,6 +25,9 @@ func (s *MemoryStore) ConfigureOpenPilotRollout(input ConfigureOpenPilotRolloutI
 	targets := cloneOpenPilotProofTargets(input.ProofTargets)
 	expires := input.ExpiresAt
 	if input.Mode == "allow" {
+		for _, target := range s.openPilotRollout.ProofTargets {
+			s.openPilotQualifiedProofs[target] = true
+		}
 		targets = cloneOpenPilotProofTargets(s.openPilotRollout.ProofTargets)
 		expires = s.openPilotRollout.ExpiresAt
 	}
@@ -59,11 +62,42 @@ func (s *MemoryStore) reconcileOpenPilotRolloutLocked(now time.Time) {
 func (s *MemoryStore) openPilotProofSucceededLocked(targets []OpenPilotProofTarget) bool {
 	for _, target := range targets {
 		state, ok := s.openPilotProofStateLocked(target)
-		if !ok || state.Phase != OpenPilotPhaseIssueClosed || !state.IssueClosed {
+		if ok {
+			if state.Phase != OpenPilotPhaseIssueClosed || !state.IssueClosed || state.CanonicalRepo != target.RepositorySlug {
+				return false
+			}
+			continue
+		}
+		if !s.openPilotQualifiedProofs[target] && !s.openPilotProofRunSucceededLocked(target) {
 			return false
 		}
 	}
 	return len(targets) == 2
+}
+
+// Recover qualification from retained execution evidence when a cleaned-up proof
+// lifecycle is absent. A successful run alone does not establish merge and close.
+func (s *MemoryStore) openPilotProofRunSucceededLocked(target OpenPilotProofTarget) bool {
+	for _, run := range s.runs {
+		if run.WorkflowID != string(WorkflowOpenPilot) || run.Status != RunSucceeded ||
+			run.Inputs[openPilotRepositoryIDInputKey] != target.RepositoryID ||
+			run.Inputs[openPilotExecutorGenerationInputKey] != target.ExecutorGeneration ||
+			run.Inputs["repo"] != target.RepositorySlug || run.Inputs["issue"] != target.Issue {
+			continue
+		}
+		merged, closed := false, false
+		for _, step := range s.steps {
+			if step.RunID != run.ID || step.Status != StepSucceeded {
+				continue
+			}
+			merged = merged || step.Name == "open-pilot.merge-pr"
+			closed = closed || step.Name == "open-pilot.close-issue"
+		}
+		if merged && closed {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryStore) openPilotProofStateLocked(target OpenPilotProofTarget) (OpenPilotIssueState, bool) {

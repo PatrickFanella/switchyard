@@ -316,3 +316,9 @@ runtime events. Expand an action for its arguments, output, errors, model data,
 and session identity, or open the run cockpit for its dedicated feed and full
 recorded step context. See [live operator activity](docs/open-pilot.md#live-operator-activity)
 for refresh behavior and history limits.
+
+With `OPEN_PILOT_POLL_REPOS=*`, the host repository reconciler monitors all Gitea
+repositories visible to the runtime account, including newly created ones. Its
+`--capacity all` default prepares repositories when `ready-for-agent` issues or
+issues assigned to `open-pilot` appear. Execution concurrency remains bounded by
+the configured workers; see [automatic repository discovery](docs/open-pilot.md#automatic-repository-discovery-and-preparation).

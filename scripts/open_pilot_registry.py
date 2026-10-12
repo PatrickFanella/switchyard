@@ -20,8 +20,8 @@ from validate_production_config import (
 )
 
 
-MAX_DOCUMENT_BYTES = 256 << 10
-MAX_REPOSITORIES = 32
+MAX_DOCUMENT_BYTES = 16 << 20
+MAX_REPOSITORIES = 10000
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/(?!\.{1,2}\Z)[A-Za-z0-9._-]{1,100}\Z")
 OPERATOR_KEYS = {"version", "generation", "repositories"}
