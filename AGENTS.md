@@ -73,3 +73,9 @@ repositories with approved work; numeric repository caps are an explicit opt-in.
 pins through the repository reconciler, preserve unfinished executor identities,
 and activate only while runtime runs are idle through the supported rollout API.
 Keep its user timer, credentials, catalog, and recovery files outside git.
+
+The native Open Pilot overseer owns bounded issue-label admission and recovery
+policy alongside the scheduler. Keep its decisions and pending action evidence
+in the revision-checked persistence contract; leave execution, leases and retries
+with workers and repository preparation with the host reconciler. Do not add an
+external app schedule or separate runtime for this module.

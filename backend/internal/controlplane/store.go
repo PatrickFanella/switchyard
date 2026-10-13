@@ -181,6 +181,7 @@ type OpenPilotCIRepairResult struct {
 }
 
 type MemoryStore struct {
+	overseerPersistence        *memoryOverseerPersistence
 	mu                         sync.RWMutex
 	now                        func() time.Time
 	workflowDefinitions        map[string]WorkflowDefinition

@@ -1420,6 +1420,76 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/OpenPilotStateResponse" }
         default: { $ref: "#/components/responses/Error" }
+  /api/open-pilot/overseer:
+    get:
+      summary: Read native Open Pilot overseer configuration and evidence
+      description: Control listener only. Returns persistent configuration, lane occupancy, ordered candidates and holds, incidents, pending action, and action history. Does not write Gitea labels or dispatch work.
+      responses:
+        "200":
+          description: Native overseer state
+          content:
+            application/json:
+              schema: { type: object }
+    put:
+      summary: Configure the native Open Pilot overseer
+      description: Admin only. Persists enabled state, queue and recovery policy, lane limit and interval. Requires the current state revision; does not modify deployment, security, worker concurrency or existing runtime gates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision, config]
+              properties:
+                expected_revision: { type: integer, format: int64 }
+                config:
+                  type: object
+                  required: [enabled, queue_enabled, recovery_enabled, max_open_lanes, interval_seconds]
+                  properties:
+                    enabled: { type: boolean }
+                    queue_enabled: { type: boolean }
+                    recovery_enabled: { type: boolean }
+                    max_open_lanes: { type: integer, minimum: 1, maximum: 100, default: 3 }
+                    interval_seconds: { type: integer, minimum: 60, maximum: 3600, default: 900 }
+      responses:
+        "200":
+          description: Updated persistent overseer state
+        "400":
+          description: Invalid configuration or missing revision
+        "409":
+          description: Stale state revision
+  /api/open-pilot/overseer/check:
+    post:
+      summary: Preview a native Open Pilot overseer check
+      description: Admin only. Runs observation immediately and persists its report without label promotion, requeue or lifecycle reconciliation. The complete scan shares the native overseer singleton lock.
+      responses:
+        "200":
+          description: Updated overseer observation
+          content:
+            application/json:
+              schema: { type: object }
+        "409":
+          description: Another overseer cycle owns the lock
+  /api/open-pilot/overseer/pending/release:
+    post:
+      summary: Release an uncertain reservation after operator review
+      description: Admin only. Requires the current revision, exact pending action ID and a review reason. Preserves the action in history and its consumed budget. Does not retry the action, remove labels or alter lifecycle gates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision, action_id, reason]
+              properties:
+                expected_revision: { type: integer, format: int64 }
+                action_id: { type: string }
+                reason: { type: string, minLength: 1, maxLength: 512 }
+      responses:
+        "200":
+          description: Reservation released with audit history retained
+        "409":
+          description: Stale revision, changed action, or active cycle
   /api/open-pilot/state/resume:
     post:
       summary: Resume Open Pilot issue state

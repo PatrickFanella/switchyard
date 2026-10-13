@@ -3,6 +3,8 @@
 ## Responsibility
 Contains the dashboard application shell, API client, shared domain types, styles, pages, and state hooks.
 
+- `components/OpenPilotOverseerPage.tsx` serves `#/overseer`: native lane occupancy, ordered candidates, incident/action evidence, admin revision-checked configuration, observation-only checks and reviewed intent release. Its component tests cover read-only controls, stale revisions, preview separation and review requirements.
+
 ## Design
 - `types.ts` mirrors backend JSON contracts and supplies empty/default states.
 - `openPilotInbox.ts` holds the inbox contract types, request/dispatch helpers, and `#/inbox/<params>` deep-link parsing.

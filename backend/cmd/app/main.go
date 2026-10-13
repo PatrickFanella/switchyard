@@ -194,6 +194,7 @@ func run() error {
 		}
 		scheduler = controlplane.NewScheduler(store, runner, interval, nil)
 		scheduler.SetOpenPilotAssigner(controlplane.NewEnvOpenPilotAssigner(store, runner, controlplane.NewEnvGiteaClient()))
+		scheduler.SetOpenPilotOverseer(api.OpenPilotOverseer())
 		timezone := strings.TrimSpace(os.Getenv("SWITCHYARD_SCHEDULER_TIMEZONE"))
 		if timezone == "" {
 			timezone = runtimeconfig.String("SWITCHYARD_SCHEDULER_TIMEZONE")

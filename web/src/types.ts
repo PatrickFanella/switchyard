@@ -620,7 +620,7 @@ export type OperatorSafetyStatus = {
   warnings: string[];
 };
 
-export type ViewID = 'activity' | 'overview' | 'inbox' | 'workflows' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
+export type ViewID = 'activity' | 'overview' | 'inbox' | 'overseer' | 'workflows' | 'runs' | 'queues' | 'observability' | 'sessions' | 'logs' | 'prompts' | 'config' | 'agents' | 'skills';
 
 export type ViewMeta = {
   id: ViewID;
@@ -686,6 +686,7 @@ export const views: ViewMeta[] = [
   { id: 'activity', label: 'Activity', source: 'Open Pilot' },
   { id: 'overview', label: 'Overview', source: 'Switchyard' },
   { id: 'inbox', label: 'Inbox', source: 'Open Pilot' },
+  { id: 'overseer', label: 'Overseer', source: 'Open Pilot' },
   { id: 'workflows', label: 'Workflows', source: 'Workflow definitions' },
   { id: 'runs', label: 'Runs', source: 'Switchyard' },
   { id: 'queues', label: 'Queues', source: 'ModelBroker' },

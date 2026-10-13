@@ -1,7 +1,7 @@
 {
   "contract_version": "switchyard.postgres-object-set.v1",
   "provider": "postgres",
-  "migration_head": "039_open_pilot_qualified_proofs.sql",
+  "migration_head": "040_open_pilot_overseer.sql",
   "migration_ledger": [
     "001_controlplane.sql",
     "002_trigger_scheduler.sql",
@@ -35,7 +35,8 @@
     "035_devlog_delivery.sql",
     "036_workflow_definition_active_version.sql",
     "038_changemaker_review.sql",
-    "039_open_pilot_qualified_proofs.sql"
+    "039_open_pilot_qualified_proofs.sql",
+    "040_open_pilot_overseer.sql"
   ],
   "required_objects": [
     "agent_profile_audit",
@@ -55,6 +56,7 @@
     "model_broker_feedback",
     "model_broker_requests",
     "open_pilot_issue_states",
+    "open_pilot_overseer",
     "open_pilot_qualified_proofs",
     "open_pilot_rollout_control",
     "run_events",

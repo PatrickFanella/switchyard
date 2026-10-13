@@ -6,6 +6,7 @@ import { RunCockpitPage } from './components/RunCockpitPage';
 import { ObservabilityPage } from './components/ObservabilityPage';
 import { OverviewDashboard } from './components/OverviewDashboard';
 import { OpenPilotInboxPage } from './components/OpenPilotInboxPage';
+import { OpenPilotOverseerPage } from './components/OpenPilotOverseerPage';
 import { QueuesPage } from './components/QueuesPage';
 import { WorkflowCatalogPage } from './components/WorkflowCatalogPage';
 import { apiBase } from './api';
@@ -17,7 +18,7 @@ import { views } from './types';
 export { openPilotStateFields } from './types';
 
 const navigationGroups: { label: string; items: ViewID[] }[] = [
-  { label: 'Operate', items: ['overview', 'activity', 'inbox', 'runs', 'queues'] },
+  { label: 'Operate', items: ['overview', 'activity', 'inbox', 'overseer', 'runs', 'queues'] },
   { label: 'Inspect', items: ['observability', 'sessions', 'logs'] },
   { label: 'Configure', items: ['workflows', 'prompts', 'agents', 'skills', 'config'] },
 ];
@@ -26,6 +27,7 @@ const pageCopy: Record<ViewID, { eyebrow: string; title: string; description: st
   activity: { eyebrow: 'Open Pilot', title: 'Live activity', description: 'Follow agent tools, responses, runtime steps, and their recorded evidence.' },
   overview: { eyebrow: 'Control plane', title: 'Operations overview', description: 'Monitor live work, dispatch workflows, and resolve exceptions.' },
   inbox: { eyebrow: 'Open Pilot', title: 'Issue inbox', description: 'Review intake candidates, eligibility, and lifecycle claims before dispatch.' },
+  overseer: { eyebrow: 'Open Pilot', title: 'Overseer', description: 'Manage ordered issue admission, open lanes, and bounded lifecycle recovery.' },
   workflows: { eyebrow: 'Workflow authoring', title: 'Workflow catalog', description: 'Browse workflow definitions, edit linear drafts, and compare, activate, or roll back versions. Saving a draft never activates it.' },
   runs: { eyebrow: 'Execution', title: 'Run cockpit', description: 'Trace every step, artifact, event, and operator decision.' },
   queues: { eyebrow: 'Model broker', title: 'Request queues', description: 'Inspect queued and inflight model work across upstreams.' },
@@ -49,6 +51,7 @@ function NavIcon({ view }: { view: ViewID }) {
     activity: <><path d="M3 12h4l2-6 4 12 2-6h6"/></>,
     overview: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
     inbox: <><path d="M4 13h4l2 3h4l2-3h4"/><path d="M4 13 6 5h12l2 8v6H4z"/></>,
+    overseer: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></>,
     workflows: <><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M9 6h6a3 3 0 0 1 3 3v6"/></>,
     runs: <><path d="M8 5h8"/><path d="M8 12h8"/><path d="M8 19h8"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/></>,
     queues: <><path d="M4 6h16"/><path d="M7 12h13"/><path d="M10 18h10"/><circle cx="4" cy="12" r="1"/><circle cx="7" cy="18" r="1"/></>,
@@ -133,7 +136,7 @@ export default function App() {
             <OverviewDashboard dashboard={data.dashboard} loading={data.loading} openPilotIssue={data.openPilotIssue} openPilotReady={data.openPilotReady} openPilotRepo={data.openPilotRepo} openPilotState={data.openPilotState} onCancelRun={data.cancelRun} onRefresh={data.refresh} onRetryRun={data.retryRun} onResumeOpenPilotState={data.resumeOpenPilotState} onRunTrigger={data.runTrigger} onOpenInbox={() => setActiveView('inbox')} onOpenRunCockpit={openRunCockpit} onSelectRun={data.setSelectedRunID} onToggleTrigger={data.toggleTrigger} refreshing={data.refreshing} runActionID={data.runActionID} runningTriggerID={data.runningTriggerID} selectedRunDetail={data.selectedRunDetail} selectedRunID={selectedRunID} setOpenPilotIssue={data.setOpenPilotIssue} setOpenPilotRepo={data.setOpenPilotRepo} workflows={data.dashboard.workflows} updatingTriggerID={data.updatingTriggerID} workflowDefinitions={data.workflowDefinitions} />
           ) : activeView === 'activity' ? <OpenPilotActivityPage /> : activeView === 'inbox' ? (
             <OpenPilotInboxPage onOpenRun={openRunCockpit} />
-          ) : activeView === 'workflows' ? (
+          ) : activeView === 'overseer' ? <OpenPilotOverseerPage /> : activeView === 'workflows' ? (
             <WorkflowCatalogPage />
           ) : activeView === 'runs' ? (
             <RunCockpitPage selectedRunID={selectedRunID} selectedRunDetail={data.selectedRunDetail} selectedRunMissing={data.missingRunID !== '' && data.missingRunID === selectedRunID} openPilotState={data.openPilotState} runActionID={data.runActionID} onRetryRun={data.retryRun} onCancelRun={data.cancelRun} onResumeOpenPilotState={data.resumeOpenPilotState} onStepAction={data.stepAction} onBackToOverview={() => setActiveView('overview')} onRefresh={data.refresh} liveRefresh={data.liveRefresh} />
