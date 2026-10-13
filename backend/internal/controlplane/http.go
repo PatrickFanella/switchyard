@@ -31,6 +31,7 @@ type API struct {
 	canceler              CancelDispatcher
 	scheduler             *Scheduler
 	workerPool            *WorkerPool
+	overseer              *OpenPilotOverseer
 	retention             *RetentionManager
 	asyncDispatch         bool
 	compatibilityObserver *CompatibilityObserver
@@ -59,8 +60,13 @@ func (a *API) Shutdown(ctx context.Context) error {
 }
 
 func NewAPIWithModelService(store Store, runner *Runner, service *ModelService) *API {
-	return &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), executorSessionProber: NewEnvExecutorSessionProber(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings(), devlogDelivery: NewEnvDevlogDelivery(), changemakerPublication: NewEnvChangemakerPublication()}
+	api := &API{store: store, runner: runner, adapterProbe: NewEnvAdapterProbe(), modelBroker: NewEnvModelBrokerStatusProvider(), modelRuntime: service, compatBroker: &llamaLineCompatTracker{maxDepth: service.queueDepth, runtime: service}, openCode: NewEnvOpenCodeExecutorStatusProvider(), openPilotRepositories: NewEnvOpenPilotRepositoryStatusProvider(), executorSessionProber: NewEnvExecutorSessionProber(), openPilotIssues: NewEnvGiteaClient(), openPilotPollRepos: openPilotPollRepositoriesFromEnv(), canceler: NewEnvCancelDispatcherWithStore(store), runtimeSettings: newRuntimeSettings(), devlogDelivery: NewEnvDevlogDelivery(), changemakerPublication: NewEnvChangemakerPublication()}
+	api.overseer = NewOpenPilotOverseer(store, runner, NewEnvGiteaClient())
+	api.overseer.guard = api.guardOpenPilotOverseer
+	return api
 }
+
+func (a *API) OpenPilotOverseer() *OpenPilotOverseer { return a.overseer }
 
 // SetOpenPilotIssueReader replaces the Gitea issue reader used by the read-only
 // Open Pilot inbox. A nil reader marks upstream data as unavailable.

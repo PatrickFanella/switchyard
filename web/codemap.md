@@ -3,6 +3,8 @@
 ## Responsibility
 Implements the React operator dashboard for monitoring, dispatching, and controlling Switchyard.
 
+- `src/components/OpenPilotOverseerPage.tsx` adds the Operate → Overseer view for native Open Pilot intake/recovery policy, occupied lanes, ordered holds and durable action evidence.
+
 ## Design
 - Vite + React 19 + TypeScript, with a single-page hash router and typed REST client.
 - Components retain reusable HUD class names for compatibility while applying the Signal Yard design tokens, E2 identity, and self-hosted Sora/Public Sans/IBM Plex Mono fonts through a responsive shell; stateful API orchestration is isolated in hooks.

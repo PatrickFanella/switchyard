@@ -3,6 +3,8 @@
 ## Responsibility
 Implements Switchyard's Go control-plane API, workflow runtime, native model broker, OpenCode executor adapter, persistence, scheduler, workers, and CLI.
 
+- The native Open Pilot overseer runs alongside the scheduler, persists configuration and action reservations in PostgreSQL, and bounds ordered issue admission without changing worker concurrency or host-owned repository preparation.
+
 ## Design
 - Two binaries share `internal/controlplane`: `cmd/app` is the server and `cmd/switchyard` is the operator CLI.
 - `internal/runtimeconfig/defaults-v1.json` is the versioned source for critical runtime defaults consumed by Go and checked against rendered Compose and `.env.example`.

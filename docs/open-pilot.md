@@ -564,6 +564,98 @@ it with the explicit session-recovery query only when that separate recovery
 is needed. Empty request bodies preserve ordinary resume behavior.
 
 
+## Native overseer and queue admission
+
+Switchyard owns the Open Pilot overseer. The API process runs its bounded
+checks alongside the native scheduler; a slow inspection does not block cron
+or polling dispatch. No T3 task, external agent, model call, or additional
+Compose service is required. Repository discovery and executor preparation
+remain host-owned, and workers retain lease recovery and execution retries.
+
+Open **Operate → Overseer** (`#/overseer`) to inspect lanes, ordered candidates,
+hold reasons, incidents, and action history. The master switch defaults to
+**disabled**, with queue admission and recovery selected, **three global lanes**,
+**one lane per repository**, and a **15-minute interval**. An administrator can
+save those settings through revision-checked controls. Preview check observes
+without adding labels or recovering work, including while the master switch
+is disabled. Scheduler/worker pauses, unsafe configuration, unavailable model
+or executor providers, and disabled/proof rollout stop automatic work.
+
+An open lane includes a queued label, runtime assignment, queued/running
+Open Pilot run, unresolved failed/paused issue, or open Open Pilot PR. These
+observations are deduplicated by repository and issue. Closed issues and
+operator-canceled runs without queue labels or runtime assignment do not
+consume lanes. Manual queues and assignments count against capacity; the
+overseer does not remove them when they exceed the limit. Its limit bounds its
+own promotions: Gitea has no atomic fleet-wide reservation against other label
+writers. Complete paged scans and an immediate capacity/order recheck are
+required before admission; unknown or partial scope stops writes.
+
+Eligible issues must have `ready-for-agent`, an acceptance/verification
+specification, closed prerequisites, a writable nonempty repository, and an
+existing `agent:queued` label. Native Gitea dependencies and explicit `Blocked
+by`, `Dependencies`, `Prerequisites`, or `Depends on` declarations hold work
+until their referenced issues close. Ambiguous dependencies and foreign-host
+links hold for review; ordinary context links are not dependencies. Explicit
+human-approval/no-auto-merge boundaries also hold. Among eligible issues,
+ordering is priority (`priority: P0`, P1, P2, ...), numbered milestone/phase,
+milestone due date, first observed ready time, creation time, repository, and
+issue number. First observed ready time is not the historical label-add time.
+
+Admission adds `agent:queued` through Gitea's additive label endpoint using the
+configured Open Pilot runtime account and `OPEN_PILOT_GITEA_WRITE_MODE=allow`.
+It preserves other labels and assignees. Each cycle admits at most one issue
+and waits for its durable native pickup before another promotion, so polling
+search order cannot reorder a newly admitted batch. Existing lifecycle claims
+use recovery assessment; they never become fresh admissions that undo an
+operator cancellation. The host reconciler prepares queued repositories and
+the existing Open Pilot poll owns creating runs and enforcing admission.
+
+Recovery requires the same incident on two consecutive complete observations
+at least 15 minutes apart. The initial implementation can fence and requeue a
+confirmed transient terminal failure on its existing run, pipeline snapshot,
+branch, and attempt budget, or reconcile an externally merged recorded PR
+when the issue is already closed. It does not resume operator-paused or
+canceled work, expand attempt/CI/review budgets, or bypass verification gates.
+Reconciliation validates the exact recorded PR identity and state revision,
+preserves original failed gate evidence, and does not merge or close anything.
+A repeated transient failure after an overseer requeue requires operator
+review; it is not automatically requeued again within 24 hours. Ordinary
+running/queued work remains worker-owned; silence or age alone does
+not trigger an abort. File-managed model, timeout, concurrency, rollout, and
+security changes require the existing operator procedures.
+
+Configuration, first-ready observations, incident continuity, recovery lineage,
+and action reservations persist in PostgreSQL (`open_pilot_overseer`, migration
+040). A dedicated session holds a nonblocking PostgreSQL advisory lock across
+inspection, reservation, write, and readback; lock loss cancels the cycle.
+Revision checks prevent stale settings or ledger writes. The memory backend
+provides equivalent process-local locking for development only.
+
+Every external action has a durable intent before its side effect. At most one
+action occurs per cycle and four across the fleet in a rolling hour; recovery
+also allows at most two interventions per repository ID, executor generation,
+and issue in a rolling 24 hours, across child run IDs. Label promotions count
+against the hourly limit. An interrupted cycle reconciles its pending intent
+before further writes. An uncertain outcome stays reserved and needs operator
+review; releasing a reviewed reservation requires its exact revision, action
+ID, and a reason, retains its history and consumed budget, and performs no
+external retry. Evidence is not silently pruned; reaching a history bound
+stops automatic writes for a retention review. Verified queue admission or a
+requeue is not proof of workflow completion, hosted CI success, or deployment.
+
+The authenticated control listener exposes:
+
+- `GET /api/open-pilot/overseer`: persisted configuration and observation.
+- `PUT /api/open-pilot/overseer`: admin settings with `expected_revision`.
+- `POST /api/open-pilot/overseer/check`: admin observation-only preview.
+- `POST /api/open-pilot/overseer/pending/release`: admin reviewed reservation release.
+
+These routes are absent from model and webhook ingress. Installing this code
+does not enable it or change the deployed production revision. Enable the
+native module after deploying and reviewing a complete preview; retire the
+external overseer schedule to avoid two operators acting on the same work.
+
 ## Automatic repository discovery and preparation
 
 Set `OPEN_PILOT_POLL_REPOS=*` to discover repositories visible to the existing

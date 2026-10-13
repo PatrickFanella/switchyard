@@ -290,6 +290,14 @@ See `docs/architecture/one-repo-control-plane.md` for the monorepo architecture,
 ## Open Pilot
 
 This repository keeps the Open Pilot issue template and PR template.
+
+The native **Overseer** page (`#/overseer`) controls bounded issue admission and
+recovery through Switchyard's scheduler. It defaults to disabled, three global
+lanes, one lane per repository, and 15-minute checks. Ready issues wait for
+closed prerequisites, then follow priority, milestone, and oldest-ready order;
+configuration and reserved actions persist in PostgreSQL. See [native overseer
+and queue admission](docs/open-pilot.md#native-overseer-and-queue-admission).
+
 Bootstrap labels after creating or moving the repository:
 
 ```bash

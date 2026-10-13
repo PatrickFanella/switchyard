@@ -29,6 +29,7 @@ type Scheduler struct {
 	async    bool
 	location *time.Location
 	assigner *OpenPilotAssigner
+	overseer *OpenPilotOverseer
 
 	mu       sync.RWMutex
 	running  bool
@@ -39,6 +40,7 @@ type Scheduler struct {
 }
 
 func (s *Scheduler) SetOpenPilotAssigner(assigner *OpenPilotAssigner) { s.assigner = assigner }
+func (s *Scheduler) SetOpenPilotOverseer(overseer *OpenPilotOverseer) { s.overseer = overseer }
 
 // SetPaused suspends or resumes scheduled dispatch without stopping the
 // scheduler loop. The flag is process-local and is not persisted.
@@ -93,7 +95,30 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Unlock()
 
 	go func() {
+		var overseerWG sync.WaitGroup
+		if s.overseer != nil {
+			overseerWG.Add(1)
+			go func() {
+				defer overseerWG.Done()
+				ticker := time.NewTicker(s.interval)
+				defer ticker.Stop()
+				for {
+					if !s.Paused() {
+						if err := s.overseer.Tick(ctx, false, false); err != nil && err != ErrConflict && ctx.Err() == nil {
+							slog.Error("Open Pilot overseer check failed", "error", RedactForLog(err.Error()))
+						}
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}()
+		}
 		defer func() {
+			overseerWG.Wait()
+
 			s.mu.Lock()
 			s.running = false
 			close(s.done)
