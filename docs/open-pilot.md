@@ -625,6 +625,34 @@ running/queued work remains worker-owned; silence or age alone does
 not trigger an abort. File-managed model, timeout, concurrency, rollout, and
 security changes require the existing operator procedures.
 
+A failed pre-PR local verification with explicit compiler/test evidence can
+also return to `open-pilot.agent-work` with bounded, redacted failure feedback.
+The correction keeps its existing branch, worktree/session context, and exact
+source pipeline/profile snapshot. It clears stale coding completion and later
+gate outputs, then runs coding and all later gates again. The source failed run
+and its exhausted execution-attempt history stay unchanged; the correction is
+one-attempt work charged to a protected coding-repair lineage counter, bounded
+by the remaining native coding/review repair allowance and overseer limits.
+Normal resumes cannot reset that counter. A previous correction must have
+passed local verification before another automatic correction is considered.
+
+Missing offline dependency packages, verifier-preparation mismatches, and
+verifier connectivity failures are `verifier_preparation_required`, not coding
+failures. They need host-owned preparation repair before verification can run
+again; the overseer neither gives the verifier network access nor spends coding
+repairs repeating the same environment failure. Unknown verification failures
+and exhausted repair budgets remain explicit review incidents. Hosted CI and
+AI-review corrections retain their existing native repair owners and budgets.
+
+Administrators may use `POST /api/open-pilot/state/repair?repo=OWNER/REPO&issue=N`
+with `expected_run_id`, `expected_updated_at`, and optional factual `feedback`.
+This dedicated action requires a failed local-verification run, specific
+compiler/test evidence, durable branch context, and the original snapshot. It
+rejects paused/canceled runs, existing PRs, stale owners, and exhausted repair
+limits. Ordinary `/state/resume` continues deriving its safe cursor and does
+not silently rewind verification to coding. The Overseer history links the
+resulting coding run; queued correction is not proof of successful repair.
+
 Configuration, first-ready observations, incident continuity, recovery lineage,
 and action reservations persist in PostgreSQL (`open_pilot_overseer`, migration
 040). A dedicated session holds a nonblocking PostgreSQL advisory lock across
@@ -650,6 +678,7 @@ The authenticated control listener exposes:
 - `PUT /api/open-pilot/overseer`: admin settings with `expected_revision`.
 - `POST /api/open-pilot/overseer/check`: admin observation-only preview.
 - `POST /api/open-pilot/overseer/pending/release`: admin reviewed reservation release.
+- `POST /api/open-pilot/state/repair`: admin fenced pre-PR coding correction.
 
 These routes are absent from model and webhook ingress. Installing this code
 does not enable it or change the deployed production revision. Enable the

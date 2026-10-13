@@ -25,6 +25,7 @@ type OpenPilotOverseerAction struct {
 	Repo               string     `json:"repo"`
 	Issue              int        `json:"issue"`
 	RunID              string     `json:"run_id,omitempty"`
+	ResultingRunID     string     `json:"resulting_run_id,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 	Outcome            string     `json:"outcome"`
@@ -282,6 +283,19 @@ func (o *OpenPilotOverseer) resolvePending(ctx context.Context, state *OpenPilot
 			return err
 		}
 		confirmed = current.RunID == action.RunID && current.Phase == OpenPilotPhaseIssueClosed && current.MergeCommitSHA == action.MergeCommitSHA
+	case "coding_repair":
+		current, err := o.store.WithContext(ctx).OpenPilotIssueState(action.Repo, strconv.Itoa(action.Issue))
+		if err != nil {
+			return err
+		}
+		detail, err := o.store.RunDetailContext(ctx, current.RunID)
+		if err != nil {
+			return err
+		}
+		confirmed = current.RunID != action.RunID && detail.Run.Inputs[openPilotCodingRepairParentKey] == action.RunID
+		if confirmed {
+			action.ResultingRunID = current.RunID
+		}
 	case "requeue":
 		detail, err := o.store.RunDetailContext(ctx, action.RunID)
 		if err != nil {
@@ -432,6 +446,7 @@ func (o *OpenPilotOverseer) inspect(ctx context.Context, state *OpenPilotOversee
 		issue    *GiteaIssue
 		kind     string
 		incident OpenPilotOverseerIncident
+		feedback string
 	}
 	recoveries := []recovery{}
 	for _, s := range states {
@@ -468,7 +483,7 @@ func (o *OpenPilotOverseer) inspect(ctx context.Context, state *OpenPilotOversee
 			recordedPR = &pr
 			if pr.Merged && issue.State == "closed" {
 				incident := o.observe(state, report, s.Repo, s.Issue, s.RunID, "external_merge", "Recorded PR merged and issue closed outside lifecycle", overseerRecoveryFingerprint(s, run))
-				recoveries = append(recoveries, recovery{s, run, &pr, &issue, "reconcile", incident})
+				recoveries = append(recoveries, recovery{state: s, run: run, pr: &pr, issue: &issue, kind: "reconcile", incident: incident})
 				continue
 			}
 			if pr.Merged || pr.State != "open" {
@@ -477,6 +492,25 @@ func (o *OpenPilotOverseer) inspect(ctx context.Context, state *OpenPilotOversee
 			}
 		}
 		if issue.State != "open" {
+			continue
+		}
+		if s.Phase == OpenPilotPhaseFailed && s.LastStepName == "open-pilot.verify-command" && run.Status == RunFailed {
+			detail, err := o.store.RunDetailContext(ctx, s.RunID)
+			if err != nil {
+				return err
+			}
+			kind, feedback := openPilotVerificationFailure(detail)
+			count, err := openPilotCodingRepairCount(s.ResumeInputs)
+			if err != nil {
+				return err
+			}
+			if kind == "coding_repair" && count+s.RepairAttempts >= s.MaxRepairAttempts {
+				kind, feedback = "repair_budget_exhausted", "Coding/review repair budget exhausted; operator review required"
+			}
+			incident := o.observe(state, report, s.Repo, s.Issue, s.RunID, kind, feedback, overseerRecoveryFingerprint(s, run))
+			if kind == "coding_repair" && s.PullRequestNum == 0 && run.PipelineSnapshot != nil {
+				recoveries = append(recoveries, recovery{state: s, run: run, kind: "coding_repair", incident: incident, feedback: feedback})
+			}
 			continue
 		}
 		incident := o.observe(state, report, s.Repo, s.Issue, s.RunID, "terminal_failure", firstNonEmpty(s.OperatorSummary, run.Summary), overseerRecoveryFingerprint(s, run))
@@ -565,6 +599,16 @@ func (o *OpenPilotOverseer) inspect(ctx context.Context, state *OpenPilotOversee
 				report.Error = "A prior recovery failed again; operator review is required"
 				continue
 			}
+			if action.Kind == "coding_repair" {
+				progress, err := o.codingRepairProgress(ctx, state, action, report.CheckedAt)
+				if err != nil {
+					return err
+				}
+				if !progress {
+					report.Error = "A coding hand-back failed again without verified progress; operator review is required"
+					continue
+				}
+			}
 			if !overseerBudget(state, action, report.CheckedAt) {
 				continue
 			}
@@ -591,7 +635,34 @@ func (o *OpenPilotOverseer) inspect(ctx context.Context, state *OpenPilotOversee
 			if err := guardOverseerCycle(ctx); err != nil {
 				return err
 			}
-			if recovery.kind == "reconcile" {
+			if recovery.kind == "coding_repair" {
+				issue, err := o.client.FetchIssue(ctx, action.Repo, strconv.Itoa(action.Issue))
+				if err != nil {
+					return err
+				}
+				if issue.State != "open" {
+					return ErrConflict
+				}
+				detail, err := o.store.RunDetailContext(ctx, action.RunID)
+				if err != nil {
+					return err
+				}
+				kind, feedback := openPilotVerificationFailure(detail)
+				if kind != "coding_repair" || feedback != recovery.feedback {
+					return ErrConflict
+				}
+				prepared, err := o.runner.prepareOpenPilotStateRunInput(current, CreateRunInput{WorkflowID: string(WorkflowOpenPilot), Inputs: map[string]string{"repo": current.Repo, "issue": current.Issue}, PipelineSnapshot: detail.Run.PipelineSnapshot, OpenPilotCodingRepair: &OpenPilotCodingRepairRequest{ExpectedRunID: action.RunID, ExpectedUpdatedAt: action.ExpectedUpdatedAt, Feedback: feedback}})
+				if err != nil {
+					return err
+				}
+				_, child, err := o.store.WithContext(ctx).ClaimAndCreateOpenPilotResumeRun(current.Repo, current.Issue, prepared)
+				if err != nil {
+					return err
+				}
+				state.Pending.ResultingRunID = child.ID
+				o.finish(state, report, "returned to Open Pilot coding with verification feedback; subsequent progress requires observation")
+				return save()
+			} else if recovery.kind == "reconcile" {
 				pr, err := o.client.GetPullRequest(ctx, action.Repo, current.PullRequestNum)
 				if err != nil {
 					return err
@@ -849,4 +920,33 @@ func overseerRepeatedRecovery(state *OpenPilotOverseerState, action OpenPilotOve
 		}
 	}
 	return false
+}
+
+func (o *OpenPilotOverseer) codingRepairProgress(ctx context.Context, state *OpenPilotOverseerState, action OpenPilotOverseerAction, now time.Time) (bool, error) {
+	for _, previous := range state.History {
+		sameOwner := strings.EqualFold(previous.Repo, action.Repo)
+		if previous.RepositoryID != "" && action.RepositoryID != "" {
+			sameOwner = previous.RepositoryID == action.RepositoryID
+		}
+		if previous.Kind != "coding_repair" || !sameOwner || previous.Issue != action.Issue || previous.ExecutorGeneration != action.ExecutorGeneration || !previous.CreatedAt.After(now.Add(-24*time.Hour)) {
+			continue
+		}
+		if previous.ResultingRunID == "" {
+			return false, nil
+		}
+		detail, err := o.store.RunDetailContext(ctx, previous.ResultingRunID)
+		if err != nil {
+			return false, err
+		}
+		progress := false
+		for _, step := range detail.Steps {
+			if step.Name == "open-pilot.verify-command" && step.Status == StepSucceeded {
+				progress = true
+			}
+		}
+		if !progress {
+			return false, nil
+		}
+	}
+	return true, nil
 }

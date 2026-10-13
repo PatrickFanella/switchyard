@@ -1490,6 +1490,31 @@ paths:
           description: Reservation released with audit history retained
         "409":
           description: Stale revision, changed action, or active cycle
+  /api/open-pilot/state/repair:
+    post:
+      summary: Return failed local verification to Open Pilot coding
+      description: Admin only. Requires explicit compiler/test evidence, a failed pre-PR run, durable branch evidence and the original pipeline snapshot. Atomically consumes the preserved coding/review repair budget and creates a one-attempt correction run on the same branch with failure feedback. Does not resume paused/canceled work, reset the source run attempts, change verifier networking or bypass later gates.
+      parameters:
+        - $ref: "#/components/parameters/Repo"
+        - $ref: "#/components/parameters/Issue"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_run_id, expected_updated_at]
+              properties:
+                expected_run_id: { type: string }
+                expected_updated_at: { type: string, format: date-time }
+                feedback: { type: string, maxLength: 4096 }
+      responses:
+        "201":
+          description: Coding correction queued; source run history and budgets preserved
+        "400":
+          description: Invalid feedback or missing durable coding evidence
+        "409":
+          description: Stale owner, unsafe failure type, immutable snapshot conflict or exhausted repair budget
   /api/open-pilot/state/resume:
     post:
       summary: Resume Open Pilot issue state

@@ -237,6 +237,11 @@ func (r *Runner) prepareOpenPilotStateRunInput(state OpenPilotIssueState, input 
 	delete(input.Inputs, openPilotRepositoryIDInputKey)
 	delete(input.Inputs, openPilotExecutorGenerationInputKey)
 	delete(input.Inputs, openPilotLifecycleResumeInputKey)
+	for key := range input.Inputs {
+		if strings.HasPrefix(key, openPilotCodingRepairPrefix) {
+			delete(input.Inputs, key)
+		}
+	}
 	if err := validateCreateRunInput(input); err != nil {
 		return CreateRunInput{}, err
 	}
@@ -888,7 +893,7 @@ func validateCreateRunInput(input CreateRunInput) error {
 		if sensitiveJSONKey(key) {
 			return ErrInvalid
 		}
-		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") {
+		if strings.HasPrefix(key, "resume.open-pilot.ci-repair.") || strings.HasPrefix(key, openPilotCodingRepairPrefix) {
 			return ErrInvalid
 		}
 		if input.WorkflowID == string(WorkflowOpenPilot) && reservedOpenPilotAffinityInput(key) {

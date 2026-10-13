@@ -16,7 +16,7 @@ export type OverseerState = {
   config: OverseerConfig;
   next_check_at?: string;
   pending?: { id: string; kind: string; repo: string; issue: number; outcome: string };
-  history: { id: string; kind: string; repo: string; issue: number; outcome: string; created_at: string }[];
+  history: { id: string; kind: string; repo: string; issue: number; outcome: string; created_at: string; resulting_run_id?: string }[];
   report: {
     checked_at?: string;
     complete: boolean;
@@ -104,7 +104,7 @@ export function OpenPilotOverseerPage() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             {(['enabled', 'queue_enabled', 'recovery_enabled'] as const).map((key) => <label key={key} className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={draft[key]} disabled={!canWrite || busy} onChange={(event) => setDraft({ ...draft, [key]: event.target.checked })} />
-              {{ enabled: 'Enable native overseer', queue_enabled: 'Admit ready issues', recovery_enabled: 'Recover confirmed transient failures' }[key]}
+              {{ enabled: 'Enable native overseer', queue_enabled: 'Admit ready issues', recovery_enabled: 'Recover failures and return code fixes' }[key]}
             </label>)}
             <label className="text-sm">Maximum open lanes
               <input aria-label="Maximum open lanes" className="ml-2 w-20 border border-[hsl(var(--border-faint))] bg-[hsl(var(--void))] p-2" type="number" min={1} max={100} value={draft.max_open_lanes} disabled={!canWrite || busy} onChange={(event) => setDraft({ ...draft, max_open_lanes: Number(event.target.value) })} />
@@ -134,7 +134,7 @@ export function OpenPilotOverseerPage() {
         <HudPanelStrong className="mt-4 p-4">
           <h3 className="hud-label">Incidents and action history</h3>
           {arrayOrEmpty(state.report.incidents).map((incident) => <p className="mt-2 text-sm" key={incident.key}>{incident.repo}#{incident.issue} · {incident.message} · {incident.observations} observations</p>)}
-          {arrayOrEmpty(state.history).length === 0 ? <HudEmptyState>No actions recorded.</HudEmptyState> : <ul className="mt-3 grid gap-2">{state.history.slice(-20).reverse().map((entry) => <li className="text-xs text-[hsl(var(--muted))]" key={entry.id}>{displayTime(entry.created_at)} · {entry.kind} {entry.repo ? `${entry.repo}#${entry.issue}` : ''} · {entry.outcome}</li>)}</ul>}
+          {arrayOrEmpty(state.history).length === 0 ? <HudEmptyState>No actions recorded.</HudEmptyState> : <ul className="mt-3 grid gap-2">{state.history.slice(-20).reverse().map((entry) => <li className="text-xs text-[hsl(var(--muted))]" key={entry.id}>{displayTime(entry.created_at)} · {entry.kind} {entry.repo ? `${entry.repo}#${entry.issue}` : ''} · {entry.outcome}{entry.resulting_run_id ? <> · <a className="underline" href={`#/runs/${encodeURIComponent(entry.resulting_run_id)}`}>Coding run</a></> : null}</li>)}</ul>}
         </HudPanelStrong>
       </> : null}
     </HudSection>

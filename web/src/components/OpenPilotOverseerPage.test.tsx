@@ -68,3 +68,9 @@ it('reads back a persisted partial preview and explains the guard that blocked i
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('runtime is stopped or intentionally paused');
   expect(container.querySelector('[role="status"]')).toBeNull();
 });
+
+it('links the resulting coding run from the hand-back receipt', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url) => json(String(url).includes('control-access') ? { can_write: false, role: 'read' } : { ...fixture, history: [{ id: 'repair-1', kind: 'coding_repair', repo: 'owner/repo', issue: 1, outcome: 'returned to coding with feedback', created_at: '2026-10-13T00:00:00Z', resulting_run_id: 'run-correction' }] })));
+  const container = await render();
+  expect(container.querySelector('a[href="#/runs/run-correction"]')?.textContent).toBe('Coding run');
+});

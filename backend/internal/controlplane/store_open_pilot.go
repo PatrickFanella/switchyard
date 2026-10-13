@@ -842,9 +842,12 @@ func (s *MemoryStore) ClaimAndCreateOpenPilotResumeRun(repo, issue string, input
 		return OpenPilotIssueState{}, Run{}, err
 	}
 	for name, value := range input.Inputs {
-		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" && !strings.HasPrefix(name, "resume.open-pilot.ci-repair.") {
+		if name != "retry_from_step" && name != "retry_from_step_position" && name != "repo" && name != "issue" && !strings.HasPrefix(name, "resume.open-pilot.ci-repair.") && !strings.HasPrefix(name, openPilotCodingRepairPrefix) {
 			inputs[name] = value
 		}
+	}
+	if err := applyOpenPilotCodingRepair(&state, prior, &input, inputs); err != nil {
+		return OpenPilotIssueState{}, Run{}, err
 	}
 	if err := applyOpenPilotFreshSessionResume(state, prior, input.OpenPilotFreshSessionRunID, inputs); err != nil {
 		return OpenPilotIssueState{}, Run{}, err

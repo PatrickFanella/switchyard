@@ -79,6 +79,7 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/open-pilot/state", a.openPilotState)
 	mux.HandleFunc("POST /api/open-pilot/state/pause", a.pauseOpenPilotState)
 	mux.HandleFunc("POST /api/open-pilot/state/resume", a.resumeOpenPilotState)
+	mux.HandleFunc("POST /api/open-pilot/state/repair", a.repairOpenPilotCoding)
 	mux.HandleFunc("POST /api/open-pilot/state/reconcile", a.reconcileOpenPilotState)
 	mux.HandleFunc("GET /api/scheduler", a.schedulerStatus)
 	mux.HandleFunc("GET /api/workers", a.workerStatus)

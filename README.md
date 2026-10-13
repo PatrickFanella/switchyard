@@ -295,7 +295,9 @@ The native **Overseer** page (`#/overseer`) controls bounded issue admission and
 recovery through Switchyard's scheduler. It defaults to disabled, three global
 lanes, one lane per repository, and 15-minute checks. Ready issues wait for
 closed prerequisites, then follow priority, milestone, and oldest-ready order;
-configuration and reserved actions persist in PostgreSQL. See [native overseer
+configuration and reserved actions persist in PostgreSQL. Explicit local
+compiler/test failures can return to coding with bounded feedback and preserved
+repair lineage; verifier-environment failures need preparation repair first. See [native overseer
 and queue admission](docs/open-pilot.md#native-overseer-and-queue-admission).
 
 Bootstrap labels after creating or moving the repository:
