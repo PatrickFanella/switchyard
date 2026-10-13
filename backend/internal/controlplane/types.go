@@ -313,15 +313,16 @@ type RuntimeMetrics struct {
 }
 
 type CreateRunInput struct {
-	WorkflowID                 string            `json:"workflow_id"`
-	TriggerID                  string            `json:"trigger_id,omitempty"`
-	Inputs                     map[string]string `json:"inputs,omitempty"`
-	MaxAttempts                int               `json:"max_attempts,omitempty"`
-	PipelineSnapshot           *Pipeline         `json:"-"`
-	OpenPilotTarget            *OpenPilotTarget  `json:"-"`
-	OpenPilotFreshSessionRunID string            `json:"-"`
-	OpenPilotFeedbackRunID     string            `json:"-"`
-	OpenPilotFeedback          string            `json:"-"`
+	WorkflowID                 string                        `json:"workflow_id"`
+	TriggerID                  string                        `json:"trigger_id,omitempty"`
+	Inputs                     map[string]string             `json:"inputs,omitempty"`
+	MaxAttempts                int                           `json:"max_attempts,omitempty"`
+	PipelineSnapshot           *Pipeline                     `json:"-"`
+	OpenPilotTarget            *OpenPilotTarget              `json:"-"`
+	OpenPilotFreshSessionRunID string                        `json:"-"`
+	OpenPilotFeedbackRunID     string                        `json:"-"`
+	OpenPilotFeedback          string                        `json:"-"`
+	OpenPilotCodingRepair      *OpenPilotCodingRepairRequest `json:"-"`
 }
 
 type WebhookAuthKey struct {

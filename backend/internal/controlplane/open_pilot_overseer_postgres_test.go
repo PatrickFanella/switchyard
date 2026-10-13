@@ -29,6 +29,12 @@ func TestPostgresOverseerPersistenceOwnershipAndInterruptedIntent(t *testing.T) 
 		_, _ = db.ExecContext(context.Background(), `delete from runs where inputs->>'repo'=$1`, repo)
 	}()
 	assertOverseerFencedRequeue(t, store, repo)
+	codingRepo := repo + "-coding"
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), `delete from open_pilot_issue_states where repo=$1`, codingRepo)
+		_, _ = db.ExecContext(context.Background(), `delete from runs where inputs->>'repo'=$1`, codingRepo)
+	}()
+	assertCodingRepairStore(t, store, codingRepo)
 	p := newOverseerPersistence(store)
 	initial, err := p.load(ctx)
 	if err != nil {

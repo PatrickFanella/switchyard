@@ -416,6 +416,9 @@ func assertOverseerFencedRequeue(t *testing.T, store Store, repo string) {
 	if _, err := requeuer.RequeueOpenPilotOverseerRun(context.Background(), state, detail.Run.AttemptCount, time.Now()); !errors.Is(err, ErrConflict) {
 		t.Fatal("duplicate recovery accepted", err)
 	}
+	if _, err := store.FinishRun(prior.ID, RunCanceled, "fixture complete"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestOverseerFencedRequeue(t *testing.T) {

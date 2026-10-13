@@ -42,3 +42,5 @@ Owns Switchyard's automation runtime: workflows, definitions, pipelines, trigger
 - Important entry points: `http.go`, `http_routes.go`, `http_runs.go`, `http_workflow_definitions.go`, `http_open_pilot.go`, `runner.go`, `executor.go`, `executor_open_pilot.go`, `executor_devlog.go`, `backend_decision.go`, `store.go`, `postgres_store.go`, `pipeline.go`, `worker.go`, `scheduler.go`.
 
 - `run_activity.go`: authenticated per-run activity projection; reads bounded public v2 messages from correlated executor sessions and redacts retained context.
+
+- `open_pilot_coding_repair.go` classifies bounded verifier evidence and prepares fenced pre-PR coding corrections on the original branch and pipeline snapshot. The resume stores preserve its protected lineage counter and one-attempt child execution budget; `http_open_pilot_coding_repair.go` exposes the admin-only state/repair contract. The overseer routes environment/preparation failures to review and requires verified progress before repeated coding corrections.
