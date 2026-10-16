@@ -345,6 +345,12 @@ all tools and vetoes provider retries. The broker also disables its own retries
 for this request shape. Unsupported settings and legacy executor paths fail
 closed. Existing coding profiles keep their prior policy.
 
+Before sending source text, the executor assigns a fixed extraction session
+title to suppress OpenCode's separate small-model title request. A failed title
+update refuses dispatch. Image builds also set explicit read permissions on the
+JavaScript runtime helpers so a restrictive build-context umask cannot prevent
+the non-root executor from starting.
+
 This uses the provider connection already managed by OpenCode. A model catalog
 entry proves configured availability, not successful provider execution or a
 billing entitlement. The output-token budget includes reasoning where the

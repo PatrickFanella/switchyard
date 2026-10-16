@@ -12,13 +12,14 @@ func TestBoundedExtractionProfileReachesNativeOpenCode(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		ready, failure bool
-	}{{"missing-plugin", false, false}, {"ready", true, false}, {"provider-failure-no-retry", true, true}, {"truncated", true, false}} {
+	}{{"missing-plugin", false, false}, {"ready", true, false}, {"title-failure", true, false}, {"provider-failure-no-retry", true, true}, {"truncated", true, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ready := tc.ready
 			posts := 0
 			posted := false
 			selected := false
 			agent := false
+			titled := false
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/plugin":
@@ -29,6 +30,18 @@ func TestBoundedExtractionProfileReachesNativeOpenCode(t *testing.T) {
 					}
 				case "/api/session":
 					w.Write([]byte(`{"data":{"id":"ses_bounded"}}`))
+				case "/api/session/ses_bounded":
+					var b map[string]string
+					json.NewDecoder(r.Body).Decode(&b)
+					if r.Method != http.MethodPatch || b["title"] != "Switchyard news extraction" {
+						t.Error("extraction session must have a fixed title before prompting")
+					}
+					if tc.name == "title-failure" {
+						w.WriteHeader(503)
+						return
+					}
+					titled = true
+					w.WriteHeader(204)
 				case "/api/session/ses_bounded/agent":
 					var b map[string]string
 					json.NewDecoder(r.Body).Decode(&b)
@@ -42,6 +55,9 @@ func TestBoundedExtractionProfileReachesNativeOpenCode(t *testing.T) {
 					selected = b.Model["providerID"] == "openai" && b.Model["id"] == "gpt-6.1-sol" && b.Model["variant"] == "low"
 					w.WriteHeader(204)
 				case "/api/session/ses_bounded/prompt":
+					if !titled {
+						t.Error("source dispatched before title was set")
+					}
 					posted = true
 					posts++
 					w.Write([]byte(`{"data":{"id":"input"}}`))
@@ -71,7 +87,11 @@ func TestBoundedExtractionProfileReachesNativeOpenCode(t *testing.T) {
 			t.Setenv("MODEL_BROKER_BACKEND", "native")
 			t.Setenv("MODEL_BROKER_RETRY_ATTEMPTS", "3")
 			response, err := NewEnvModelBroker().Generate(context.Background(), request.modelRequest(request.Model, "bounded", nil))
-			if tc.failure || tc.name == "truncated" {
+			if tc.name == "title-failure" {
+				if err == nil || posts != 0 || selected || agent {
+					t.Fatal("failed title update admitted extraction", err, posts)
+				}
+			} else if tc.failure || tc.name == "truncated" {
 				if err == nil || posts != 1 {
 					t.Fatal("provider failure retried", err, posts)
 				}

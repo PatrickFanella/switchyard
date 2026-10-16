@@ -100,6 +100,14 @@ func (e *EnvOpenCodeExecutor) postOpenCodeV2Prompt(ctx context.Context, sessionI
 		return "", err
 	}
 	path := "/session/" + url.PathEscape(sessionID)
+	if request.Extraction {
+		// A default title triggers a separate small-model generation in OpenCode.
+		// Name the session before admitting source text, and fail closed if it fails.
+		if err := e.v2JSON(ctx, http.MethodPatch, path, map[string]string{"title": "Switchyard news extraction"}, nil, request.PreAttempt); err != nil {
+			return "", err
+		}
+		request.PreAttempt = nil
+	}
 	// Selection is session state in v2, rather than an ignored prompt field.
 	if request.Agent != "" {
 		if err := e.v2JSON(ctx, http.MethodPost, path+"/agent", map[string]string{"agent": request.Agent}, nil, request.PreAttempt); err != nil {
