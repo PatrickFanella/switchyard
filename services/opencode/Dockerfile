@@ -3,7 +3,7 @@ FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432
 ARG SWITCHYARD_SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision="${SWITCHYARD_SOURCE_REVISION}"
 
-RUN apk add --no-cache bash=5.3.9-r1 build-base=0.5-r4 curl=8.22.0-r0 git=2.54.0-r0 go=1.26.8-r0 make=4.4.1-r4 ripgrep=15.1.0-r0 openssh-client-default=10.3_p1-r1 su-exec=0.3-r0 wget=1.25.0-r3 \
+RUN apk add --no-cache bash=5.3.9-r1 build-base=0.5-r4 curl=8.22.0-r0 git=2.54.0-r0 go=1.26.9-r0 make=4.4.1-r4 ripgrep=15.1.0-r0 openssh-client-default=10.3_p1-r1 su-exec=0.3-r0 wget=1.25.0-r3 \
 	&& rg --version \
 	&& corepack enable
 
