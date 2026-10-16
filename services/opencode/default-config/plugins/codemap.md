@@ -5,6 +5,7 @@ Adds Switchyard-specific OpenCode runtime metadata and RTK command rewriting.
 
 ## Design
 - `switchyard-blacktower.ts` applies managed timeouts, tool-output limits, and request metadata through plugin hooks.
+- `extraction.ts` bounds the dedicated OpenAI news-extraction agent, removes tools and vetoes retries.
 - `rtk.ts` rewrites eligible shell commands to their RTK equivalents while preserving execution semantics.
 
 ## Flow

@@ -52,3 +52,15 @@ test('managed metadata uses native request options', async () => {
  let callback;await managed.setup({session:{hook:async(name,fn)=>{assert.equal(name,'context');callback=fn;}},provider:{list:async()=>({data:[]})}});
  const event={model:{providerID:'fixture'},options:{metadata:{retained:true}}};await callback(event);assert.equal(event.options.metadata.switchyard_managed,true);assert.equal(event.options.metadata.retained,true);
 });
+
+test('extraction hooks bound only the dedicated OpenAI profile and disable retries', async () => {
+ const {default: extraction}=await import('../services/opencode/default-config/plugins/extraction.ts');
+ const hooks={};await extraction.setup({session:{hook:async(name,fn)=>{hooks[name]=fn;}}});
+ const ordinary={agent:'build',model:{providerID:'openai',id:'gpt-6.1-sol'},options:{},tools:{read:{}}};
+ hooks.context(ordinary);assert.deepEqual(ordinary.options,{});assert.ok(ordinary.tools.read);
+ const event={agent:'switchyard-news-extractor',model:{providerID:'openai',id:'gpt-6.1-sol'},options:{maxTokens:99999,reasoningEffort:'high'},tools:{read:{}}};
+ hooks.context(event);assert.equal(event.options.maxTokens,1024);assert.equal(event.options.reasoningEffort,'low');assert.deepEqual(event.tools,{});
+ assert.throws(()=>hooks.context({...event,model:{providerID:'openrouter',id:'gpt-6.1-sol'}}),/selected OpenAI model/);
+ const retry={agent:'switchyard-news-extractor',decision:{retry:true,delay:0}};hooks.retry(retry);assert.deepEqual(retry.decision,{retry:false});
+ const other={agent:'build',decision:{retry:true,delay:10}};hooks.retry(other);assert.equal(other.decision.retry,true);
+});

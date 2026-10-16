@@ -2,7 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "/home/opencode/.config/opencode/plugins/rtk.ts",
-    "/home/opencode/.config/opencode/plugins/switchyard-blacktower.ts"
+    "/home/opencode/.config/opencode/plugins/switchyard-blacktower.ts",
+    "/home/opencode/.config/opencode/plugins/extraction.ts"
   ],
   "agent": {
     "explore": { "disable": true },

@@ -96,3 +96,19 @@ Subcorp should point `OLLAMA_BASE_URL` and embedding URLs at `http://10.0.0.50:1
 - `GET /api/models` reports installed Ollama models from the real upstream Ollama `/api/tags` endpoint and OpenCode provider/model metadata from the configured OpenCode server.
 - `POST /api/models/pull` pulls Ollama models by calling upstream Ollama `/api/pull` with `stream:false`.
 - OpenCode metadata can be refreshed with `opencode models --refresh`; OpenCode does not pull provider model weights.
+
+## Bounded OpenCode news extraction
+
+`POST /v1/chat/completions` recognizes `reasoning_effort` for the dedicated
+`openai/gpt-6.1-sol` news-extraction profile. The permitted shape uses `low`,
+`max_tokens: 1024`, `response_format: {"type":"json_object"}`, no tools and no
+temperature. Requested settings select the tool-free managed agent and low
+OpenCode v2 variant. The active extraction plugin sets semantic `maxTokens` and
+`reasoningEffort` and disables retries; the native broker disables retries too.
+Other shapes with an explicit reasoning setting are rejected rather than
+silently ignored. Ollama, llama-line and legacy OCQ are not bounded extraction
+routes. Provider credentials stay in OpenCode, outside the client request.
+
+See the [OpenCode plugin API](https://opencode.ai/v2/docs/build/plugins/) for
+semantic generation settings and retry hooks. Provider-side effective limits,
+request counts and completion behavior need pinned-runtime and live evidence.
