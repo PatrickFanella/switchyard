@@ -35,6 +35,7 @@ RUN addgroup -S -g 10001 opencode \
 	&& install -d -o opencode -g opencode /home/opencode/.config/opencode /home/opencode/.local/share/opencode /home/opencode/.cache \
 	&& chmod 0755 /usr/local/bin/switchyard-opencode-install /usr/local/bin/switchyard-opencode-entrypoint /usr/local/bin/switchyard-opencode-health \
 	&& chmod 0644 /usr/local/libexec/switchyard-opencode-password \
+	&& chmod 0644 /usr/local/libexec/switchyard-opencode-health.mjs /usr/local/libexec/switchyard-opencode-serve.mjs /usr/local/libexec/switchyard-opencode-credentials.mjs \
 	&& chmod -R a+rX /opt/switchyard-opencode/default-config
 
 WORKDIR /workspace
