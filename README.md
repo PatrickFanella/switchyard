@@ -332,3 +332,22 @@ repositories visible to the runtime account, including newly created ones. Its
 `--capacity all` default prepares repositories when `ready-for-agent` issues or
 issues assigned to `open-pilot` appear. Execution concurrency remains bounded by
 the configured workers; see [automatic repository discovery](docs/open-pilot.md#automatic-repository-discovery-and-preparation).
+
+### Bounded news extraction through OpenCode
+
+The native chat broker accepts one explicit extraction profile:
+`openai/gpt-6.1-sol`, `reasoning_effort: low`, `max_tokens: 1024`, JSON-object
+response format, no tools and no temperature. It selects the managed
+`switchyard-news-extractor` agent and low model variant on OpenCode v2. The
+`switchyard.extraction` plugin must be active before a prompt is admitted; it
+sets the semantic output-token budget to 1,024, requests low reasoning, removes
+all tools and vetoes provider retries. The broker also disables its own retries
+for this request shape. Unsupported settings and legacy executor paths fail
+closed. Existing coding profiles keep their prior policy.
+
+This uses the provider connection already managed by OpenCode. A model catalog
+entry proves configured availability, not successful provider execution or a
+billing entitlement. The output-token budget includes reasoning where the
+selected provider protocol counts it; a client timeout is not a spend receipt.
+Run an isolated pinned-runtime fixture and a separately authorized bounded live
+request before claiming deployment or real extraction success.

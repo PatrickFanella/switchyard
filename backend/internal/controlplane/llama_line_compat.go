@@ -32,8 +32,9 @@ type llamaLineCompatChatRequest struct {
 	ResponseFormat *struct {
 		Type string `json:"type"`
 	} `json:"response_format"`
-	MaxTokens   int      `json:"max_tokens"`
-	Temperature *float64 `json:"temperature"`
+	ReasoningEffort string   `json:"reasoning_effort"`
+	MaxTokens       int      `json:"max_tokens"`
+	Temperature     *float64 `json:"temperature"`
 }
 
 func (r llamaLineCompatChatRequest) modelRequest(model, requestID string, preAttempt PreAttemptCallback) ModelRequest {
@@ -43,6 +44,9 @@ func (r llamaLineCompatChatRequest) modelRequest(model, requestID string, preAtt
 	}
 	if r.MaxTokens > 0 {
 		options["num_predict"] = r.MaxTokens
+	}
+	if r.ReasoningEffort != "" {
+		options["reasoning_effort"] = r.ReasoningEffort
 	}
 	if r.Temperature != nil {
 		options["temperature"] = *r.Temperature

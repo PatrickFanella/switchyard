@@ -17,6 +17,7 @@ import (
 )
 
 type OpenCodeRequest struct {
+	Extraction   bool
 	Model        string
 	Agent        string
 	Prompt       string
@@ -106,6 +107,9 @@ func NewEnvOCQExecutor() *EnvOpenCodeExecutor {
 }
 
 func (e *EnvOpenCodeExecutor) SendPrompt(ctx context.Context, request OpenCodeRequest) (OpenCodeResponse, error) {
+	if request.Extraction && (!openCodeV2(e.baseURL) || resolveOpenCodeExecutorBackend().Backend != "native" || request.Model != "openai/gpt-6.1-sol" || request.Agent != "switchyard-news-extractor") {
+		return OpenCodeResponse{}, errors.New("bounded extraction requires the native OpenCode v2 profile")
+	}
 	decision := resolveOpenCodeExecutorBackend()
 	var response OpenCodeResponse
 	var err error
@@ -240,6 +244,14 @@ func (e *EnvOpenCodeExecutor) sendPromptViaOpenCode(ctx context.Context, request
 		content := ""
 		if err == nil {
 			content, err = e.waitForOpenCodeSessionIdle(messageCtx, sessionID, priorMessageID)
+		}
+		if err == nil && request.Extraction {
+			latest, inspectErr := e.openCodeLatestMessage(messageCtx, sessionID)
+			if inspectErr != nil {
+				err = inspectErr
+			} else if latest.ProviderFinish != "stop" {
+				err = errors.New("bounded extraction provider completion is incomplete")
+			}
 		}
 		if err == nil {
 			return OpenCodeResponse{Content: content, SessionID: sessionID, RequestID: requestID, CorrelationIDs: correlation}, nil
@@ -378,8 +390,9 @@ func (e openCodeProviderError) Error() string {
 }
 
 type openCodeSessionMessage struct {
-	Structured json.RawMessage
-	Error      *openCodeMessageError
+	ProviderFinish string `json:"-"`
+	Structured     json.RawMessage
+	Error          *openCodeMessageError
 
 	ID     string
 	Role   string

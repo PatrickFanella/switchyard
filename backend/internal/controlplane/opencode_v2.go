@@ -91,6 +91,11 @@ func (e *EnvOpenCodeExecutor) createOpenCodeV2Session(ctx context.Context, direc
 	return response.Data.ID, nil
 }
 func (e *EnvOpenCodeExecutor) postOpenCodeV2Prompt(ctx context.Context, sessionID string, request OpenCodeRequest) (string, error) {
+	if request.Extraction {
+		if err := e.openCodeExtractionReady(ctx); err != nil {
+			return "", err
+		}
+	}
 	if err := e.openCodeV2ManagedReady(ctx); err != nil {
 		return "", err
 	}
@@ -104,7 +109,7 @@ func (e *EnvOpenCodeExecutor) postOpenCodeV2Prompt(ctx context.Context, sessionI
 	}
 	if request.Model != "" {
 		model := openCodeModelPayload(request.Model)
-		if err := e.v2JSON(ctx, http.MethodPost, path+"/model", map[string]any{"model": map[string]string{"providerID": model["providerID"], "id": model["modelID"]}}, nil, request.PreAttempt); err != nil {
+		if err := e.v2JSON(ctx, http.MethodPost, path+"/model", map[string]any{"model": extractionModelSelection(model, request.Extraction)}, nil, request.PreAttempt); err != nil {
 			return "", err
 		}
 		request.PreAttempt = nil
@@ -196,7 +201,7 @@ func (e *EnvOpenCodeExecutor) openCodeV2LatestMessage(ctx context.Context, sessi
 		if latest.Outcome != "succeeded" {
 			return openCodeSessionMessage{}, fmt.Errorf("OpenCode v2 session failed")
 		}
-		result := openCodeSessionMessage{ID: latest.ID, Role: "assistant", Finish: "stop"}
+		result := openCodeSessionMessage{ID: latest.ID, Role: "assistant", Finish: "stop", ProviderFinish: message.Finish}
 		for _, part := range message.Content {
 			result.Parts = append(result.Parts, struct {
 				Type string `json:"type"`
@@ -351,4 +356,32 @@ func (e *EnvOpenCodeExecutor) openCodeV2ManagedReady(ctx context.Context) error 
 		return nil
 	}
 	return fmt.Errorf("OpenCode v2 managed agent is not ready")
+}
+
+func extractionModelSelection(model map[string]string, extraction bool) map[string]string {
+	selected := map[string]string{"providerID": model["providerID"], "id": model["modelID"]}
+	if extraction {
+		selected["variant"] = "low"
+	}
+	return selected
+}
+
+func (e *EnvOpenCodeExecutor) openCodeExtractionReady(ctx context.Context) error {
+	var plugins struct {
+		Data []struct {
+			ID    string `json:"id"`
+			State struct {
+				Status string `json:"status"`
+			} `json:"state"`
+		} `json:"data"`
+	}
+	if err := e.v2JSON(ctx, http.MethodGet, "/plugin", nil, &plugins); err != nil {
+		return err
+	}
+	for _, p := range plugins.Data {
+		if p.ID == "switchyard.extraction" && p.State.Status == "active" {
+			return nil
+		}
+	}
+	return fmt.Errorf("OpenCode bounded extraction plugin is not ready")
 }
