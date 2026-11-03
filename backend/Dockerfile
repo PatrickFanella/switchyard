@@ -10,7 +10,7 @@ ARG SWITCHYARD_SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://git.subcult.tv/subculture-collective/switchyard" \
       org.opencontainers.image.revision="${SWITCHYARD_SOURCE_REVISION}"
 WORKDIR /app
-RUN apk add --no-cache git=2.49.1-r0 nodejs=22.23.2-r0 npm=11.6.4-r0
+RUN apk add --no-cache git=2.49.1-r0 nodejs=22.23.4-r0 npm=11.6.4-r0
 RUN addgroup -g 1000 switchyard && adduser -D -H -u 1000 -G switchyard switchyard
 USER 1000:1000
 
