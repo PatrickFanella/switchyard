@@ -133,6 +133,7 @@ afterEach(async () => {
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('inline artifact decoding', () => {
@@ -407,6 +408,9 @@ describe('ArtifactPreview', () => {
   });
 
   it('is wired into the run cockpit evidence panel', async () => {
+    // The cockpit uses the real clock; pin it so fixture retention stays in the future.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now());
     const detail: RunDetail = {
       run: { id: 'run-1', workflow_id: 'devlog', status: 'succeeded', created_at: past, summary: 'Devlog run' },
       steps: [],
