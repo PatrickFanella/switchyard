@@ -1,5 +1,7 @@
 # Switchyard
 
+![Switchyard identity](docs/brand/switchyard/readme-lockup.png)
+
 Switchyard is a Go backend and Vite React TypeScript monorepo for a cohesive automation runtime: workflow orchestration, model routing, OpenCode execution, built-in agent profiles, operator dashboard/API, and first-party workflows such as Open Pilot, native workflow-creator templates, and Devlog.
 
 OCQ, llama-line, and Changemaker are historical references that have been absorbed into native Switchyard modules. The product direction is to keep their useful ideas as first-party contracts: model broker, OpenCode executor, profiles/personas, workflow policy, logs, artifacts, and operator controls.
@@ -357,3 +359,7 @@ billing entitlement. The output-token budget includes reasoning where the
 selected provider protocol counts it; a client timeout is not a spend receipt.
 Run an isolated pinned-runtime fixture and a separately authorized bounded live
 request before claiming deployment or real extraction success.
+
+## Brand assets
+
+The product identity and selected public exports are recorded in [the brand handoff](docs/brand/switchyard/GUIDE.md) and [source hashes](docs/brand/switchyard/export.json). Regenerate from SUBCULT Studio with `python3 studio/scripts/export_remaining_brand.py switchyard /path/to/this/repository`; use `--check` to verify the export without writing.

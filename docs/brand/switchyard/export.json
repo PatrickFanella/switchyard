@@ -1,0 +1,79 @@
+{
+  "studio_repository": "subculture-collective/subcult-tv",
+  "studio_revision": "6907e56c181949c1d99064dbc38ae9fe660a66d0",
+  "brand": "switchyard",
+  "files": [
+    {
+      "source": "studio/brands/switchyard/GUIDE.md",
+      "target": "docs/brand/switchyard/GUIDE.md",
+      "sha256": "88d2b20fb54ea0e0839a0b5ee8703a569fe91ba893d3e222768b6bbf7a133d78",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/readme-lockup.png",
+      "target": "docs/brand/switchyard/readme-lockup.png",
+      "sha256": "c07e38c4864febb396500e9be7ecef5c31db802b95f022edb01772e77abc7c29",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/social/avatar.png",
+      "target": "docs/brand/switchyard/avatar.png",
+      "sha256": "ffb39c1a47618ba975dd678bc87d1014f80e03b181052ff885021f7023e00052",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/favicon.svg",
+      "target": "web/public/brand/switchyard/favicon.svg",
+      "sha256": "9c355494353bbc37631350638ecba76b0543c1a34a94a4376be044577f30514a",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/favicon.ico",
+      "target": "web/public/brand/switchyard/favicon.ico",
+      "sha256": "012919a3df428155f0e70686a2e116368d7eddf374e641a1ae3238c7355dec6f",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/apple-touch-icon.png",
+      "target": "web/public/brand/switchyard/apple-touch-icon.png",
+      "sha256": "db540fa396339616ef0f767960bc500b7bb8834965f97585986a152446cb2dfb",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/og.png",
+      "target": "web/public/brand/switchyard/og.png",
+      "sha256": "bbf36cd5a9f3317856e6327a947c60cbbc7c2d5bbb7f8f11433b6cc988246b99",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/mark.svg",
+      "target": "web/public/brand/switchyard/mark.svg",
+      "sha256": "0c3b22c4f0d9c265a2950fb311ba22b7c2aefd564e718a7eb4896d9511ba3084",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/favicon.svg",
+      "target": "web/public/favicon.svg",
+      "sha256": "9c355494353bbc37631350638ecba76b0543c1a34a94a4376be044577f30514a",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/favicon.ico",
+      "target": "web/public/favicon.ico",
+      "sha256": "012919a3df428155f0e70686a2e116368d7eddf374e641a1ae3238c7355dec6f",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/apple-touch-icon.png",
+      "target": "web/public/apple-touch-icon.png",
+      "sha256": "db540fa396339616ef0f767960bc500b7bb8834965f97585986a152446cb2dfb",
+      "transformation": "unchanged copy"
+    },
+    {
+      "source": "studio/brands/switchyard/product/og.png",
+      "target": "web/public/og.png",
+      "sha256": "bbf36cd5a9f3317856e6327a947c60cbbc7c2d5bbb7f8f11433b6cc988246b99",
+      "transformation": "unchanged copy"
+    }
+  ]
+}
