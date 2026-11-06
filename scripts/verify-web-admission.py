@@ -22,6 +22,15 @@ def run(args):
     return result.stdout
 
 
+def startup(config, expected):
+    values = {key: config.get(key) for key in expected}
+    # Docker image configs may omit User; container inspect reports the same
+    # implicit default user as an empty string. Explicit users remain exact.
+    if 'User' in values and values['User'] is None:
+        values['User'] = ''
+    return values
+
+
 def check_native(contract, receiver):
     for filename, digest in contract['files'].items():
         assert sha(Path(filename).read_bytes()) == digest, 'Native configuration changed'
@@ -69,9 +78,9 @@ def main():
         assert run(['git', '--git-dir', cache, 'rev-parse', revision + ':' + path]).decode().strip() == expected, 'Review native/UI compatibility before admission'
     web = receiver.inspect('switchyard-web-1')
     assert web['NetworkSettings']['Networks']['switchyard_default']['IPAddress'] == contract['web_ipv4']
-    assert {key: web['Config'].get(key) for key in contract['web_startup']} == contract['web_startup']
+    assert startup(web['Config'], contract['web_startup']) == contract['web_startup']
     image = receiver.inspect(receiver.image_tag(profile, 'web', revision), 'image')
-    assert {key: image['Config'].get(key) for key in contract['web_startup']} == contract['web_startup']
+    assert startup(image['Config'], contract['web_startup']) == contract['web_startup']
     assert sorted(image['Config']['Env']) == contract['web_image_environment']
     check_native(contract, receiver)
     receiver.assert_current_main(profile, revision)
