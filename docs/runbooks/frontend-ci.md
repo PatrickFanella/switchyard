@@ -7,6 +7,11 @@ existing `web` service on Kvant. Pull requests build and qualify without
 deploying. Native production releases retain the qualification, backup,
 restore and promotion requirements in [release and rollback](release-and-rollback.md).
 
+The dedicated Almaz runner registers through `http://gitea:3000/`. Delivery
+accepts that exact internal Gitea address and the canonical public Gitea URL.
+Every main push must finish frontend delivery successfully; a skipped delivery
+fails the main job instead of reporting deployment as green.
+
 This lane covers the existing dashboard contract and its selected Signal Yard
 identity. The host admission contract pins backend and UI source objects,
 dependency/build inputs, native container identities and start times, runtime
