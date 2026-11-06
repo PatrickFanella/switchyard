@@ -13,7 +13,11 @@ help:
 deps: ## Install web dependencies
 	pnpm --dir web install --frozen-lockfile
 
-verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check open-pilot-topology-test verifier-preparation-test release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test remote-production-smoke-test web-gate-test workspace-init-test ## Run all checks
+verify: deps fmt lint test build reproducible-build-check compose-config compose-runtime-test opencode-config-test docs-check docs-contract-test open-pilot-check open-pilot-topology-test verifier-preparation-test release-evidence-test restore-contract-test restore-scheduler-test alert-lifecycle-test production-config-test remote-production-smoke-test web-gate-test workspace-init-test web-admission-test ## Run all checks
+
+.PHONY: web-admission-test
+web-admission-test: ## Check native-state and identity refusal for frontend delivery
+	python3 -B -m unittest discover -s scripts -p 'test_verify_web_admission.py'
 
 fmt: ## Format/check Go and web sources
 	@git ls-files --cached --others --exclude-standard 'backend/**/*.go' | xargs -r gofmt -w

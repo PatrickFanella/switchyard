@@ -41,6 +41,12 @@ routes.
 
 ## Product branding
 
+Frontend CI promotion is scoped to the existing `web` service and requires the
+host-owned native/source admission contract. Preserve the canonical
+`deploy/docker-local` boundary, exact Tailscale and pinned bridge admission,
+and the `open-pilot` runtime identity. Native production promotion retains its
+release qualification and backup/restore gates; see `docs/runbooks/frontend-ci.md`.
+
 Signal Yard uses the owner-selected E2 mark and Sora 600 wordmark. Canonical product tokens and editable identity masters live in `docs/design/`; regenerate web copies with `python3 docs/design/identity/sync_web_assets.py`. Keep fonts self-hosted with licenses and provenance in `web/public/brand`, and retain shared HUD class names as component compatibility contracts.
 
 ## Verification
