@@ -15,6 +15,16 @@ spec.loader.exec_module(admission)
 
 
 class NativeAdmissionTests(unittest.TestCase):
+    def test_image_and_container_default_user_encodings_share_one_startup_contract(self):
+        expected = {'User': '', 'Entrypoint': ['/docker-entrypoint.sh'],
+                    'Cmd': ['nginx', '-g', 'daemon off;'], 'WorkingDir': '/', 'StopSignal': 'SIGQUIT'}
+        for user in [None, '']:
+            self.assertEqual(admission.startup(dict(expected, User=user), expected), expected)
+        for key, value in [('User', '1000:1000'), ('User', 'nginx'), ('Cmd', ['sh']),
+                           ('Entrypoint', ['/other-entrypoint.sh']), ('WorkingDir', '/tmp'), ('StopSignal', 'SIGTERM')]:
+            with self.subTest(field=key, value=value):
+                self.assertNotEqual(admission.startup(dict(expected, **{key: value}), expected), expected)
+
     def test_optimized_python_cannot_disable_guards(self):
         result = subprocess.run([sys.executable, '-O', str(Path(__file__).with_name('verify-web-admission.py')), '--help'], capture_output=True)
         self.assertNotEqual(result.returncode, 0)
