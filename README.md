@@ -44,6 +44,11 @@ See [`docs/status.md`](docs/status.md) for the current capability and release-ev
 
 ## Verification gates
 
+Main pushes also automate the admitted frontend deployment after the full
+baseline gate and actual-image HTTP checks. The [frontend CI runbook](docs/runbooks/frontend-ci.md)
+describes source compatibility, native-state guards, protected origin checks
+and frontend rollback. Native production promotion retains its full release gates.
+
 `make verify` is the required baseline gate for every push and pull request; it is run by the `switchyard-check` Gitea workflow. `make verify-production` is the full release-qualification gate, available manually and on the weekly `switchyard-production-verify` workflow schedule.
 
 Both workflows target the dedicated `switchyard-production` runner label. Its reproducible job image is defined in `deploy/runner/Dockerfile` and must be published and configured by immutable digest. The baseline CI runner contract is Go `1.26.6`, Node.js major `24`, Corepack-provided pnpm `10.33.0`, Make, Docker Engine, and the Docker Compose plugin. The production runner contract adds Docker Buildx with a bootstrappable BuildKit builder that can produce an OCI archive with the pinned SBOM generator and `--provenance=mode=max` options used by `make release-artifacts`. Both workflows validate these contracts before running Make; CI supplies only the non-secret `POSTGRES_PASSWORD=switchyard-ci-only-not-a-secret` needed for clean-checkout Compose validation. No CI setup action supplies these tools.

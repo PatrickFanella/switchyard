@@ -41,4 +41,9 @@ Scripts use strict shell mode, isolated temporary/container resources, explicit 
 - `test-restore-postgres-integration.sh` creates a real migrated fixture, publishes a completed bundle, and runs the pinned PostgreSQL adapter in the production gate.
 
 ## Integration
+
+`qualify-web-image.py` checks the actual frontend image's static nginx responses
+and source marker without publishing a listener. `verify-web-admission.py`
+checks host-owned native/source compatibility and the retained `open-pilot`
+identity before frontend-only promotion; its refusal tests run in `make verify`.
 Invoked by `Makefile` verification, recovery, and production gates; targets the Go API, PostgreSQL, Docker Compose, model ingress, and current documentation contracts.

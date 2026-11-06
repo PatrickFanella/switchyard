@@ -44,3 +44,65 @@ jobs:
         run: |
           make verify
           git diff --exit-code -- ':(glob)backend/**/*.go'
+      - name: Build and qualify the frontend image
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          docker build --build-arg "SWITCHYARD_SOURCE_REVISION=$revision" \
+            -t "fleet-deploy/switchyard-web/web:$revision" web
+          python3 scripts/qualify-web-image.py "fleet-deploy/switchyard-web/web:$revision" "$revision"
+      - name: Deploy the admitted frontend and check the protected origin
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.server_url == 'https://git.subcult.tv'
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMELAB_WEB_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.HOMELAB_WEB_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          directory="$(mktemp -d)"
+          trap 'rm -rf "$directory"' EXIT
+          chmod 700 "$directory"
+          test -n "$DEPLOY_KEY" && test -n "$KNOWN_HOSTS"
+          printf '%s\n' "$DEPLOY_KEY" > "$directory/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$directory/known_hosts"
+          chmod 600 "$directory/key" "$directory/known_hosts"
+          ssh_args=(-i "$directory/key" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$directory/known_hosts"
+            -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+          switchyard_remote() {
+            # The fixed protocol commands contain only the validated local revision.
+            # shellcheck disable=SC2029
+            ssh "${ssh_args[@]}" onnwee@10.0.0.50 "$1"
+          }
+          accepted="$(switchyard_remote "artifact $revision web")"
+          if python3 -c 'import json,sys;sys.exit(0 if json.loads(sys.argv[1])["available"] else 1)' "$accepted"; then
+            echo "Reusing the accepted frontend image."
+          else
+            docker save "fleet-deploy/switchyard-web/web:$revision" | switchyard_remote "receive $revision web"
+          fi
+          switchyard_remote "deploy $revision"
+          python3 - "$revision" <<'PY'
+          import json, sys, urllib.error, urllib.request
+          revision = sys.argv[1]
+          origin = 'http://100.65.164.66:28081'
+          for query in ['', '?v=' + revision, '?v=stale']:
+              with urllib.request.urlopen(origin + '/build-info.json' + query, timeout=15) as response:
+                  assert json.load(response) == {'source_commit': revision, 'repository': 'subculture-collective/switchyard'}
+                  assert response.headers.get('Cache-Control') == 'no-store'
+          with urllib.request.urlopen(origin + '/healthz', timeout=15) as response:
+              assert response.status == 200
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          try:
+              opener.open(urllib.request.Request('https://switchyard.subcult.tv/', headers={'User-Agent': 'SUBCULT-deploy/1'}), timeout=15)
+          except urllib.error.HTTPError as error:
+              assert error.code == 401 and error.headers.get('Location', '').startswith('https://auth.subcult.tv/')
+          else:
+              raise AssertionError('The public operator route did not require authentication')
+          print(json.dumps({'source_commit': revision, 'origin_marker_queries': 3, 'native_health': 'PASS', 'public_authentication': 'PASS'}))
+          PY
