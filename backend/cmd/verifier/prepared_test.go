@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const testProfile = "go1.26.6-node24-pnpm10.33.0-v2"
+const testProfile = "go1.26.10-node24-pnpm10.33.0-v2"
 
 func TestPreparedDependenciesRejectDriftAndMissingInputs(t *testing.T) {
 	root := t.TempDir()
@@ -166,7 +166,7 @@ func TestPreparedStatusReportsProfileAndMissingBundle(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !decoded.Prepared || decoded.Profile != testProfile || decoded.Toolchains["go"] != "1.26.6" || decoded.Toolchains["pnpm"] != "10.33.0" || !reflect.DeepEqual(decoded.Commands, [][]string{{"make", "verify"}}) || len(decoded.Inputs) != 11 {
+	if !decoded.Prepared || decoded.Profile != testProfile || decoded.Toolchains["go"] != "1.26.10" || decoded.Toolchains["pnpm"] != "10.33.0" || !reflect.DeepEqual(decoded.Commands, [][]string{{"make", "verify"}}) || len(decoded.Inputs) != 12 {
 		t.Fatalf("prepared status = %s", recorder.Body.String())
 	}
 	writePreparedManifest(t, bundle, preparedManifest{Version: 2, Profile: "go1.99-unknown", BaseSHA: strings.Repeat("c", 40), Files: files})

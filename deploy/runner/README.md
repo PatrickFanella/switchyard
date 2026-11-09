@@ -1,6 +1,7 @@
 # Gitea Runner Image
 
-The `switchyard-production` runner label uses this image. Both base images are
+The `switchyard-production-go1.26.10` runner label uses this image. Keep the existing
+`switchyard-production` label and its image for older revision contracts. Both base images are
 pinned by digest; publish the built image to a registry reachable by the runner's
 Docker daemon and configure the label with the published manifest digest.
 

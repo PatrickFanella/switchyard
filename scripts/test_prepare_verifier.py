@@ -42,15 +42,16 @@ class PrepareVerifierTest(unittest.TestCase):
         contract = json.loads(prepare_verifier.PROFILES_PATH.read_text())
         self.assertEqual(contract["version"], 1)
         self.assertEqual(self.profile["commands"], [["make", "verify"]])
-        self.assertEqual(self.profile["toolchains"], {"go": "1.26.6", "node": "24", "pnpm": "10.33.0"})
+        self.assertEqual(self.profile["toolchains"], {"go": "1.26.10", "node": "24", "pnpm": "10.33.0"})
         self.assertTrue(set(self.profile["prepared_inputs"]).issubset(self.profile["inputs"]))
-        self.assertEqual(len(self.profile["inputs"]), 11)
+        self.assertEqual(len(self.profile["inputs"]), 12)
 
     def test_manifest_binds_every_input_at_the_exact_revision(self):
         revision = self.commit({
             "backend/go.mod": "module fixture.test/backend\n\ngo 1.22\n",
             "web/package.json": '{"name":"web","packageManager":"pnpm@10.33.0"}\n',
             "web/pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+            "web/pnpm-workspace.yaml": "overrides: {undici: ^8.12.4}\n",
         })
         self.commit({"web/pnpm-lock.yaml": "lockfileVersion: '9.0'\n# later change\n"})
         files, contents = prepare_verifier.committed_inputs(self.repo, revision, self.profile)
@@ -58,7 +59,7 @@ class PrepareVerifierTest(unittest.TestCase):
         self.assertEqual(files["web/pnpm-lock.yaml"], hashlib.sha256(b"lockfileVersion: '9.0'\n").hexdigest())
         self.assertIsNone(files["backend/go.sum"])
         self.assertIsNone(files["pnpm-workspace.yaml"])
-        self.assertEqual(set(contents), {"backend/go.mod", "web/package.json", "web/pnpm-lock.yaml"})
+        self.assertEqual(set(contents), {"backend/go.mod", "web/package.json", "web/pnpm-lock.yaml", "web/pnpm-workspace.yaml"})
         manifest = prepare_verifier.build_manifest(revision, files, "sha256:" + "0" * 64)
         self.assertEqual(manifest["version"], 2)
         self.assertEqual(manifest["profile"], prepare_verifier.PROFILE)

@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES_PATH = ROOT / "backend/cmd/verifier/profiles.json"
-PROFILE = "go1.26.6-node24-pnpm10.33.0-v2"
+PROFILE = "go1.26.10-node24-pnpm10.33.0-v2"
 
 
 class PreparationError(ValueError):
