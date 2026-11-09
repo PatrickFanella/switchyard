@@ -374,7 +374,7 @@ contract. The verifier binary embeds it and `scripts/prepare_verifier.py` reads
 the same file. Each profile names:
 
 - `toolchains`: pinned versions. The current profile,
-  `go1.26.6-node24-pnpm10.33.0-v2`, pins Go 1.26.6, Node 24, and pnpm 10.33.0.
+  `go1.26.10-node24-pnpm10.33.0-v2`, pins Go 1.26.10, Node 24, and pnpm 10.33.0. The new profile also binds and prepares `web/pnpm-workspace.yaml` so dependency overrides travel with their lockfile. The Go 1.26.6 profiles remain registered for previously prepared manifests.
   `web/package.json` must declare `pnpm@10.33.0` or omit `packageManager`.
 - `inputs`: every dependency input bound to the image, including files that
   must stay absent: `backend/go.mod`, `backend/go.sum`, `web/package.json`,
