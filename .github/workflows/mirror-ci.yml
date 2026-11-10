@@ -47,6 +47,20 @@ jobs:
         with:
           path: ${{ env.PNPM_STORE }}
           key: pnpm-store-v1-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+      - name: Install the Gitea runner's Docker Compose 5.2.0
+        # The Compose isolation tests read create_host_path: false from
+        # rendered config, which the hosted image's older Compose omits.
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_dir="$HOME/.docker/cli-plugins"
+          mkdir -p "$plugin_dir"
+          curl -fsSL --retry 3 -o "$plugin_dir/docker-compose" \
+            https://github.com/docker/compose/releases/download/v5.2.0/docker-compose-linux-x86_64
+          echo "018f9612ecabc5f2d7aaa53d6f5f44453a87611e2d72c8ef84d7b1eca070e719  $plugin_dir/docker-compose" | sha256sum -c -
+          chmod 755 "$plugin_dir/docker-compose"
+          version="$(docker compose version --short)"
+          [ "${version#v}" = "5.2.0" ] || { echo "expected Compose 5.2.0; found $version" >&2; exit 1; }
       - name: Verify baseline runner tool contract
         shell: bash
         run: |
