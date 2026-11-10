@@ -1,8 +1,10 @@
 name: Mirror CI
 run-name: Mirror CI ${{ github.sha }}
 
-# Pull request verification for the canonical Gitea repository. Gitea keeps
-# main pushes, frontend delivery, release qualification and production proof.
+# Pull request verification. GitHub subculture-collective is the source: this
+# runs on every pushed branch except main, and branch protection requires
+# "Mirror CI gate" before a pull request can merge. Kvant mirrors main to
+# Gitea, where .gitea/workflows run the main-branch jobs.
 on:
   push:
     branches-ignore: [main]
