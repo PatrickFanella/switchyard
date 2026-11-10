@@ -1,0 +1,107 @@
+name: Mirror CI
+run-name: Mirror CI ${{ github.sha }}
+
+# Pull request verification for the canonical Gitea repository. Gitea keeps
+# main pushes, frontend delivery, release qualification and production proof.
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Baseline make verify
+    if: github.repository == 'subculture-collective/switchyard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # CI-only Compose validation value; never use for a deployed database.
+      POSTGRES_PASSWORD: switchyard-ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.10'
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Activate pnpm 10.33.0 with Corepack
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+          echo "PNPM_STORE=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.PNPM_STORE }}
+          key: pnpm-store-v1-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+      - name: Verify baseline runner tool contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "Runner contract failure: $*" >&2; exit 1; }
+          [ "$(go version | awk '{print $3}')" = "go1.26.10" ] || fail "expected Go 1.26.10; found $(go version)"
+          [ "$(node -p 'process.versions.node.split(".")[0]')" = "24" ] || fail "expected Node.js major 24; found $(node --version)"
+          [ "$(pnpm --version)" = "10.33.0" ] || fail "expected pnpm 10.33.0 via Corepack; found $(pnpm --version)"
+          make --version >/dev/null || fail "Make is not runnable"
+          docker --version >/dev/null || fail "Docker Engine is not runnable"
+          docker compose version >/dev/null || fail "Docker Compose plugin is required"
+      - name: Verify Switchyard baseline
+        run: |
+          # Workspace-preparation tests refuse group-writable directories;
+          # match the Gitea runner's 022 umask explicitly.
+          umask 022
+          make verify
+          git diff --exit-code -- ':(glob)backend/**/*.go'
+
+  web-image:
+    name: Frontend image qualification
+    if: github.repository == 'subculture-collective/switchyard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build and qualify the frontend image
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          docker build --build-arg "SWITCHYARD_SOURCE_REVISION=$revision" \
+            -t "fleet-deploy/switchyard-web/web:$revision" web
+          python3 scripts/qualify-web-image.py "fleet-deploy/switchyard-web/web:$revision" "$revision"
+
+  mirror-gate:
+    name: Mirror CI gate
+    if: always() && github.repository == 'subculture-collective/switchyard'
+    needs:
+      - verify
+      - web-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every verification job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ["RESULTS"])
+          expected = {'verify', 'web-image'}
+          assert set(results) == expected, results
+          for name, result in results.items():
+              assert result["result"] == "success", name + " did not pass"
+          PY

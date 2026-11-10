@@ -3,8 +3,9 @@
 The `switchyard-check` job runs the full baseline `make verify`, builds the
 frontend with its source revision and checks nginx's actual static responses.
 Main pushes on Gitea then deliver that image through a restricted SSH key to the
-existing `web` service on Kvant. Pull requests build and qualify without
-deploying. Native production releases retain the qualification, backup,
+existing `web` service on Kvant. Pull requests run the same baseline and image
+qualification in `.github/workflows/mirror-ci.yml` on the GitHub organization
+copy, without deploying or using secrets. Native production releases retain the qualification, backup,
 restore and promotion requirements in [release and rollback](release-and-rollback.md).
 
 The dedicated Almaz runner registers through `http://gitea:3000/`. Delivery

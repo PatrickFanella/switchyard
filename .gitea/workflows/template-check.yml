@@ -1,13 +1,15 @@
 name: switchyard-check
 
+# Pull request verification runs in .github/workflows/mirror-ci.yml on the
+# GitHub organization copy. This workflow verifies main and delivers the frontend.
 on:
   push:
     branches: [main]
-  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Main pushes deliver the frontend; never cancel a delivery part-way through.
+  cancel-in-progress: false
 
 permissions:
   contents: read
