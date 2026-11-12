@@ -1,0 +1,46 @@
+version: 2
+
+# Ready pull requests in this repository merge themselves once Mirror CI
+# passes, so every ecosystem ignores major versions, groups minor and patch
+# updates into one pull request and keeps at most two open.
+#
+# Not covered on purpose:
+# - Dockerfiles: base images are pinned by digest and the Go image version is
+#   part of the runner and verifier-profile contract (see deploy/runner).
+# - services/opencode: @opencode/cli is pinned to an exact qualified version.
+updates:
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      web-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
